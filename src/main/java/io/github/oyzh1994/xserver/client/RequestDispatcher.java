@@ -72,6 +72,11 @@ public final class RequestDispatcher {
         route(client, request);
     }
 
+    /** Name of the last request routed, used only to make the error log readable. */
+    public String currentRequest() {
+        return currentRequest;
+    }
+
     private XRequest decodeCore(ClientConnection client, byte opcode, byte minorOpcode, X11Input in) {
         try {
             // A handful of requests have to be decoded here; see VariableLengthDecoders for why.
@@ -107,7 +112,15 @@ public final class RequestDispatcher {
         extension.handleRequest(server, client, request);
     }
 
+    /**
+     * The name of the request being handled, for the error log. Set before routing so a handler
+     * that throws can say which request it was; an opcode number alone makes a client's error
+     * report hard to act on.
+     */
+    private String currentRequest = "?";
+
     private void route(ClientConnection client, XRequest request) {
+        currentRequest = request.getClass().getSimpleName();
         switch (request) {
             // ---- windows -------------------------------------------------
             case com.github.moaxcp.x11.protocol.xproto.CreateWindow r -> windows.create(client, r);

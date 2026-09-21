@@ -9,16 +9,15 @@ rasteriser are all implemented here.
 
 ## Running it
 
-```sh
-./mvnw compile
-java -cp "target/classes:$(cat /tmp/cp.txt)" io.github.oyzh1994.xserver.Main --display :1
-```
-
-Or through Maven:
+Build with Maven (3.9 or newer) and run:
 
 ```sh
-./mvnw exec:java -Dexec.args="--display :1 --geometry 1280x800"
+mvn compile
+mvn exec:java -Dexec.args="--display :1 --geometry 1280x800"
 ```
+
+Or run `io.github.oyzh1994.xserver.Main` straight from the IDE, which is what the tests do. The only
+runtime dependency beyond the JDK is the JavaFX and protocol jars Maven resolves.
 
 Then point any X client at it:
 
@@ -157,7 +156,7 @@ server failed to draw or the display failed to show it.
 ## Tests
 
 ```sh
-./mvnw test
+mvn test
 ```
 
 - `RasterizerTest` — the raster ops, line and arc geometry, dashes, fills and clipping, checked

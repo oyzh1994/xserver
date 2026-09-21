@@ -431,8 +431,8 @@ public final class XServer {
             }
             dispatcher.dispatch(client, opcode, minorOpcode, in, requestBytes);
         } catch (ProtocolException e) {
-            log.info("{} opcode {} error {}: {}", client, opcode & 0xFF, e.errorCode(),
-                    e.getMessage());
+            log.info("{}: {} rejected the request (error {}): {}", client,
+                    dispatcher.currentRequest(), e.errorCode(), e.getMessage());
             client.sendError(e.errorCode(), e.badValue());
         } catch (RuntimeException e) {
             log.error("{} opcode {} failed", client, opcode & 0xFF, e);
