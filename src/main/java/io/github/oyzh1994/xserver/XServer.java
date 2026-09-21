@@ -165,6 +165,10 @@ public final class XServer {
         extensions.register(new io.github.oyzh1994.xserver.extension.ShapeExtension(), 1, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XTestExtension(), 0, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XFixesExtension(), 2, 1);
+        // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
+        // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
+        var render = new io.github.oyzh1994.xserver.extension.RenderExtension();
+        extensions.register(render, render.eventCount(), render.errorCount());
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }

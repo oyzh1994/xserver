@@ -51,6 +51,11 @@ import java.util.List;
  * <p>In all, sixteen requests are decoded here and handed to the same handlers as everything else.
  * The field order is taken from the generated readers, which are correct apart from the arithmetic.
  *
+ * <p>Being hand written, these decoders also size their lists from the length of the request as it
+ * arrived rather than from the sixteen bit field inside it, which is what makes a request sent as a
+ * BIG-REQUEST - anything over 64K, such as an image upload or a large property - come out whole.
+ * See {@link #count}.
+ *
  * <p>If the library is ever fixed upstream this class can be deleted and the dispatch in
  * {@code RequestDispatcher} simplified back to a single call.
  */
@@ -91,24 +96,24 @@ public final class VariableLengthDecoders {
      * Decodes one of the affected requests. The opcode byte has already been consumed; the input
      * starts at the request's data byte.
      */
-    public static XRequest decode(int opcode, X11Input in) throws IOException {
+    public static XRequest decode(int opcode, X11Input in, int requestBytes) throws IOException {
         return switch (opcode) {
-            case SET_CLIP_RECTANGLES -> readSetClipRectangles(in);
-            case POLY_POINT -> readPolyPoint(in);
-            case POLY_LINE -> readPolyLine(in);
-            case POLY_SEGMENT -> readPolySegment(in);
-            case POLY_RECTANGLE -> readPolyRectangle(in);
-            case POLY_ARC -> readPolyArc(in);
-            case FILL_POLY -> readFillPoly(in);
-            case POLY_FILL_RECTANGLE -> readPolyFillRectangle(in);
-            case POLY_FILL_ARC -> readPolyFillArc(in);
-            case STORE_COLORS -> readStoreColors(in);
-            case QUERY_TEXT_EXTENTS -> readQueryTextExtents(in);
-            case PUT_IMAGE -> readPutImage(in);
-            case POLY_TEXT8 -> readPolyText8(in);
-            case POLY_TEXT16 -> readPolyText16(in);
-            case FREE_COLORS -> readFreeColors(in);
-            case QUERY_COLORS -> readQueryColors(in);
+            case SET_CLIP_RECTANGLES -> readSetClipRectangles(in, requestBytes);
+            case POLY_POINT -> readPolyPoint(in, requestBytes);
+            case POLY_LINE -> readPolyLine(in, requestBytes);
+            case POLY_SEGMENT -> readPolySegment(in, requestBytes);
+            case POLY_RECTANGLE -> readPolyRectangle(in, requestBytes);
+            case POLY_ARC -> readPolyArc(in, requestBytes);
+            case FILL_POLY -> readFillPoly(in, requestBytes);
+            case POLY_FILL_RECTANGLE -> readPolyFillRectangle(in, requestBytes);
+            case POLY_FILL_ARC -> readPolyFillArc(in, requestBytes);
+            case STORE_COLORS -> readStoreColors(in, requestBytes);
+            case QUERY_TEXT_EXTENTS -> readQueryTextExtents(in, requestBytes);
+            case PUT_IMAGE -> readPutImage(in, requestBytes);
+            case POLY_TEXT8 -> readPolyText8(in, requestBytes);
+            case POLY_TEXT16 -> readPolyText16(in, requestBytes);
+            case FREE_COLORS -> readFreeColors(in, requestBytes);
+            case QUERY_COLORS -> readQueryColors(in, requestBytes);
             default -> throw new IllegalArgumentException("opcode " + opcode + " is not custom decoded");
         };
     }
@@ -117,9 +122,9 @@ public final class VariableLengthDecoders {
     // Byte lists that fill the rest of the request
     // ------------------------------------------------------------------
 
-    private static PutImage readPutImage(X11Input in) throws IOException {
+    private static PutImage readPutImage(X11Input in, int requestBytes) throws IOException {
         byte format = in.readByte();
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
         short width = in.readCard16();
@@ -130,7 +135,7 @@ public final class VariableLengthDecoders {
         byte depth = in.readByte();
         in.readPad(2);
         // Everything after the fixed part is image data, one bit or pixel at a time.
-        byte[] data = readBytes(in, count(length, 24, 1));
+        byte[] data = readBytes(in, count(requestBytes, 24, 1));
         return PutImage.builder()
                 .format(format)
                 .drawable(drawable)
@@ -145,14 +150,14 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyText8 readPolyText8(X11Input in) throws IOException {
+    private static PolyText8 readPolyText8(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
         short x = in.readInt16();
         short y = in.readInt16();
-        byte[] items = readBytes(in, count(length, 16, 1));
+        byte[] items = readBytes(in, count(requestBytes, 16, 1));
         return PolyText8.builder()
                 .drawable(drawable)
                 .gc(gc)
@@ -162,14 +167,14 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyText16 readPolyText16(X11Input in) throws IOException {
+    private static PolyText16 readPolyText16(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
         short x = in.readInt16();
         short y = in.readInt16();
-        byte[] items = readBytes(in, count(length, 16, 1));
+        byte[] items = readBytes(in, count(requestBytes, 16, 1));
         return PolyText16.builder()
                 .drawable(drawable)
                 .gc(gc)
@@ -183,12 +188,12 @@ public final class VariableLengthDecoders {
     // Pixel lists
     // ------------------------------------------------------------------
 
-    private static FreeColors readFreeColors(X11Input in) throws IOException {
+    private static FreeColors readFreeColors(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int cmap = in.readCard32();
         int planeMask = in.readCard32();
-        int n = count(length, 12, 4);
+        int n = count(requestBytes, 12, 4);
         int[] pixels = new int[n];
         for (int i = 0; i < n; i++) {
             pixels[i] = in.readCard32();
@@ -200,11 +205,11 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static QueryColors readQueryColors(X11Input in) throws IOException {
+    private static QueryColors readQueryColors(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int cmap = in.readCard32();
-        int n = count(length, 8, 4);
+        int n = count(requestBytes, 8, 4);
         int[] pixels = new int[n];
         for (int i = 0; i < n; i++) {
             pixels[i] = in.readCard32();
@@ -227,12 +232,12 @@ public final class VariableLengthDecoders {
     // Geometry lists
     // ------------------------------------------------------------------
 
-    private static PolyPoint readPolyPoint(X11Input in) throws IOException {
+    private static PolyPoint readPolyPoint(X11Input in, int requestBytes) throws IOException {
         byte coordinateMode = in.readByte();
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        List<Point> points = readPoints(in, count(length, 12, 4));
+        List<Point> points = readPoints(in, count(requestBytes, 12, 4));
         return PolyPoint.builder()
                 .coordinateMode(coordinateMode)
                 .drawable(drawable)
@@ -241,12 +246,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyLine readPolyLine(X11Input in) throws IOException {
+    private static PolyLine readPolyLine(X11Input in, int requestBytes) throws IOException {
         byte coordinateMode = in.readByte();
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        List<Point> points = readPoints(in, count(length, 12, 4));
+        List<Point> points = readPoints(in, count(requestBytes, 12, 4));
         return PolyLine.builder()
                 .coordinateMode(coordinateMode)
                 .drawable(drawable)
@@ -255,12 +260,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolySegment readPolySegment(X11Input in) throws IOException {
+    private static PolySegment readPolySegment(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        int n = count(length, 12, 8);
+        int n = count(requestBytes, 12, 8);
         List<Segment> segments = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             segments.add(Segment.builder()
@@ -277,12 +282,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyRectangle readPolyRectangle(X11Input in) throws IOException {
+    private static PolyRectangle readPolyRectangle(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        int n = count(length, 12, 8);
+        int n = count(requestBytes, 12, 8);
         List<Rectangle> rectangles = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             rectangles.add(Rectangle.builder()
@@ -299,12 +304,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyArc readPolyArc(X11Input in) throws IOException {
+    private static PolyArc readPolyArc(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        int n = count(length, 12, 12);
+        int n = count(requestBytes, 12, 12);
         List<Arc> arcs = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             arcs.add(readArc(in));
@@ -316,17 +321,17 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static FillPoly readFillPoly(X11Input in) throws IOException {
+    private static FillPoly readFillPoly(X11Input in, int requestBytes) throws IOException {
         // FillPoly is the odd one out: its shape and coordinate mode come after the drawable and
         // the GC rather than in the data byte.
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
         byte shape = in.readByte();
         byte coordinateMode = in.readByte();
         in.readPad(2);
-        List<Point> points = readPoints(in, count(length, 16, 4));
+        List<Point> points = readPoints(in, count(requestBytes, 16, 4));
         return FillPoly.builder()
                 .shape(shape)
                 .coordinateMode(coordinateMode)
@@ -336,12 +341,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyFillRectangle readPolyFillRectangle(X11Input in) throws IOException {
+    private static PolyFillRectangle readPolyFillRectangle(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        int n = count(length, 12, 8);
+        int n = count(requestBytes, 12, 8);
         List<Rectangle> rectangles = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             rectangles.add(Rectangle.builder()
@@ -358,12 +363,12 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static PolyFillArc readPolyFillArc(X11Input in) throws IOException {
+    private static PolyFillArc readPolyFillArc(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int drawable = in.readCard32();
         int gc = in.readCard32();
-        int n = count(length, 12, 12);
+        int n = count(requestBytes, 12, 12);
         List<Arc> arcs = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             arcs.add(readArc(in));
@@ -375,13 +380,13 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static SetClipRectangles readSetClipRectangles(X11Input in) throws IOException {
+    private static SetClipRectangles readSetClipRectangles(X11Input in, int requestBytes) throws IOException {
         byte ordering = in.readByte();
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int gc = in.readCard32();
         short clipXOrigin = in.readInt16();
         short clipYOrigin = in.readInt16();
-        int n = count(length, 12, 8);
+        int n = count(requestBytes, 12, 8);
         List<Rectangle> rectangles = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             rectangles.add(Rectangle.builder()
@@ -400,11 +405,11 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static StoreColors readStoreColors(X11Input in) throws IOException {
+    private static StoreColors readStoreColors(X11Input in, int requestBytes) throws IOException {
         in.readPad(1);
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int cmap = in.readCard32();
-        int n = count(length, 8, 12);
+        int n = count(requestBytes, 8, 12);
         List<Coloritem> items = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             items.add(Coloritem.builder()
@@ -421,15 +426,15 @@ public final class VariableLengthDecoders {
                 .build();
     }
 
-    private static QueryTextExtents readQueryTextExtents(X11Input in) throws IOException {
+    private static QueryTextExtents readQueryTextExtents(X11Input in, int requestBytes) throws IOException {
         // The data byte flags an odd string length. That is what tells the server one byte of the
         // request is padding rather than half a character: a three character string occupies seven
         // bytes after the opcode, so the request is padded to sixteen and the naive count finds a
         // fourth, spurious character.
         boolean oddLength = in.readBool();
-        int length = Short.toUnsignedInt(in.readCard16());
+        in.readCard16();
         int font = in.readCard32();
-        int n = (length * 4 - 8 - (oddLength ? 1 : 0)) / 2;
+        int n = (requestBytes - 8 - (oddLength ? 1 : 0)) / 2;
         List<Char2b> string = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
             string.add(Char2b.builder()
@@ -448,11 +453,19 @@ public final class VariableLengthDecoders {
     // ------------------------------------------------------------------
 
     /**
-     * Elements in a list that follows a header of {@code headerBytes} excluding the opcode, where
-     * {@code lengthUnits} is the whole request in four byte units.
+     * Elements in a list that follows a header of {@code headerBytes}, where {@code requestBytes} is
+     * the byte length of the whole request as this class sees it - with the opcode byte already
+     * consumed, and {@code headerBytes} counting that byte as though it were still there.
+     *
+     * <p>The length is taken from the request as it arrived rather than from the sixteen bit field
+     * inside it. That field cannot describe a request larger than 64K, so for one sent as a
+     * BIG-REQUEST it holds a truncated value, and a list sized from it comes out short: a PutImage
+     * would draw a fraction of its rows and a PolyText8 would draw part of its string, with no error
+     * anywhere to say so. The size that arrives beside the field is always the truth, whatever the
+     * header length was.
      */
-    private static int count(int lengthUnits, int headerBytes, int elementBytes) {
-        int available = lengthUnits * 4 - headerBytes;
+    private static int count(int requestBytes, int headerBytes, int elementBytes) {
+        int available = requestBytes - headerBytes;
         if (available <= 0) {
             return 0;
         }

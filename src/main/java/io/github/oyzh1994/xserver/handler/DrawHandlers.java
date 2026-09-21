@@ -46,6 +46,9 @@ import java.util.List;
  */
 public final class DrawHandlers {
 
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(DrawHandlers.class);
+
 
     /** Coordinate modes. */
     private static final int COORD_MODE_ORIGIN = 0;
@@ -102,6 +105,11 @@ public final class DrawHandlers {
         XResource destination = server.resources().requireDrawable(client, r.getDstDrawable());
         XGC gc = gc(client, r.getGc());
         Target target = target(destination, gc);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("CopyArea {} -> {} {}x{} from ({},{}) to ({},{})", source, destination,
+                    Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
+                    r.getSrcX(), r.getSrcY(), r.getDstX(), r.getDstY());
+        }
         target.rasterizer().copyArea(storeOf(source), originXOf(source) + r.getSrcX(),
                 originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
                 Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()));
@@ -113,6 +121,11 @@ public final class DrawHandlers {
         XResource destination = server.resources().requireDrawable(client, r.getDstDrawable());
         XGC gc = gc(client, r.getGc());
         Target target = target(destination, gc);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("CopyPlane {} -> {} {}x{} from ({},{}) to ({},{})", source, destination,
+                    Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
+                    r.getSrcX(), r.getSrcY(), r.getDstX(), r.getDstY());
+        }
         target.rasterizer().copyPlane(storeOf(source), originXOf(source) + r.getSrcX(),
                 originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
                 Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
@@ -135,10 +148,35 @@ public final class DrawHandlers {
             throw ProtocolException.badMatch();
         }
         Target target = target(drawable, gc);
+        if (drawable instanceof XWindow) {
+            // Drawing into a window is what puts something on the screen; a run in which it never
+            // happens says the client is rendering somewhere else and never presenting.
+            LOG.info("PutImage draws into WINDOW {} at ({},{}) {}x{}",
+                    drawable, r.getDstX(), r.getDstY(), Short.toUnsignedInt(r.getWidth()),
+                    Short.toUnsignedInt(r.getHeight()));
+        }
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("PutImage format={} depth={} data={} bytes {}x{} to {} at ({},{})",
+                    format, Byte.toUnsignedInt(r.getDepth()), r.getData().size(),
+                    Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
+                    drawable, r.getDstX(), r.getDstY());
+        }
+        int width = Short.toUnsignedInt(r.getWidth());
+        int height = Short.toUnsignedInt(r.getHeight());
         ImageCodec.putImage(target.store(), gc, target.x(r.getDstX()), target.y(r.getDstY()),
-                Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()), format,
-                Byte.toUnsignedInt(r.getLeftPad()), depthOf(drawable), r.getData().toArray(), 0,
-                client.isBigEndian());
+                width, height, format, Byte.toUnsignedInt(r.getLeftPad()), depthOf(drawable),
+                r.getData().toArray(), 0, client.isBigEndian());
+        if (LOG.isDebugEnabled()) {
+            // The decoded corners: a put that "succeeds" but lands black is otherwise invisible in
+            // the log, and that is exactly the difference between a drawn window and a black one.
+            int x = target.x(r.getDstX());
+            int y = target.y(r.getDstY());
+            LOG.debug("PutImage landed: tl={} tr={} bl={} br={}",
+                    hex(target.store().pixel(x, y)),
+                    hex(target.store().pixel(x + width - 1, y)),
+                    hex(target.store().pixel(x, y + height - 1)),
+                    hex(target.store().pixel(x + width - 1, y + height - 1)));
+        }
         afterDrawing(client, gc, drawable, 0);
     }
 
@@ -392,6 +430,10 @@ public final class DrawHandlers {
 
     private XWindow window(ClientConnection client, int id) {
         return (XWindow) server.resources().require(client, id, XResource.CLASS_WINDOW, false);
+    }
+
+    private static String hex(int argb) {
+        return "0x" + Integer.toHexString(argb);
     }
 
     private XGC gc(ClientConnection client, int id) {

@@ -66,6 +66,11 @@ public final class EventDispatcher {
         }
         try {
             client.output().writeEvent(event);
+            if (log.isDebugEnabled()) {
+                // What the server tells the client matters as much as what the client asks for: a
+                // toolkit that never learns its window is visible will never draw into it.
+                log.debug("event {} -> {}", event.getClass().getSimpleName(), client);
+            }
         } catch (IOException e) {
             log.debug("dropping event for {}: {}", client.peer(), e.getMessage());
             client.close();

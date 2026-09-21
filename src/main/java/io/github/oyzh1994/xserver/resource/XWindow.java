@@ -370,19 +370,29 @@ public final class XWindow extends XResource {
         return parent == null;
     }
 
-    /** Position of the window's origin in screen coordinates, ignoring the border. */
+    /**
+     * Position of the window's origin - the top left of its contents, inside the border - in screen
+     * coordinates.
+     *
+     * <p>{@code x} and {@code y} locate the window's <em>outer</em> corner on the wire, so they
+     * point at the outside of its own border and the contents start one border further in. A
+     * child's position is likewise measured from its parent's outer corner, so each step towards
+     * the root adds that ancestor's own border as well. Leaving either border out of the sum puts
+     * every window that has one - which is most toolkits' toplevels and everything xterm creates -
+     * that many pixels up and to the left of where the client asked for it.
+     */
     public int absoluteX() {
-        int result = x;
+        int result = x + borderWidth;
         for (XWindow window = parent; window != null; window = window.parent) {
-            result += window.x - window.borderWidth;
+            result += window.x + window.borderWidth;
         }
         return result;
     }
 
     public int absoluteY() {
-        int result = y;
+        int result = y + borderWidth;
         for (XWindow window = parent; window != null; window = window.parent) {
-            result += window.y - window.borderWidth;
+            result += window.y + window.borderWidth;
         }
         return result;
     }

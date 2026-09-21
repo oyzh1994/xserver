@@ -35,8 +35,9 @@ import java.util.List;
  *       image per screen and children are painted into it in order, so there is no separate
  *       "contents of this window including its children" to read; a picture behaves as though the
  *       mode were {@code ClipByChildren}, which is the default and what toolkits ask for.</li>
- *   <li>Transforms are applied as affine maps. The projective terms of the matrix are evaluated for
- *       the common identity case and otherwise ignored.</li>
+ *   <li>Transforms are evaluated in double precision rather than in the 16.16 fixed point the
+ *       protocol uses, so a scaled or rotated source can land a pixel away from where a server
+ *       working in fixed point would put it.</li>
  * </ul>
  */
 public final class Picture extends XResource {
@@ -108,6 +109,14 @@ public final class Picture extends XResource {
 
     /** Set by the gradient requests: the colour is a function of position rather than a constant. */
     private Gradient gradient;
+
+    /**
+     * The window's visible rectangle, cached because it is consulted once per pixel and computing
+     * it walks the ancestor chain allocating a rectangle at every step. {@link #refreshClip()}
+     * renews it at the start of a drawing request; the lazy fallback means a picture that was never
+     * refreshed still clips correctly rather than not at all.
+     */
+    private Rectangle windowClip;
 
     public Picture(int id, ClientConnection owner, XResource drawable, PictFormat format,
                    Screen screen, PixelStore store, int originX, int originY, XWindow window) {
@@ -384,16 +393,32 @@ public final class Picture extends XResource {
         return hasContent(x, y) ? store.pixel(originX + x, originY + y) : 0;
     }
 
+    /**
+     * Renews the cached window clip. Called once at the start of each drawing request, while the
+     * window tree cannot change underneath it - the server holds its lock for the whole request.
+     */
+    public void refreshClip() {
+        windowClip = window == null ? null : window.clipRect();
+    }
+
+    /**
+     * Whether the drawable has pixels this server can reach at a picture coordinate. For a window
+     * that means inside its rectangle and not obscured: the contents of obscured pixels are
+     * undefined, and reading them anyway would let a source picture sample a sibling's pixels.
+     */
     private boolean hasContent(int x, int y) {
         if (x < 0 || y < 0 || x >= width() || y >= height()) {
             return false;
         }
-        if (window != null) {
-            // Obscured pixels of a window have undefined contents; using only the visible part
-            // keeps a source picture from sampling a sibling's pixels.
-            return window.clipRect().contains(originX + x, originY + y);
+        if (window == null) {
+            return true;
         }
-        return true;
+        Rectangle clip = windowClip;
+        if (clip == null) {
+            clip = window.clipRect();
+            windowClip = clip;
+        }
+        return clip.contains(originX + x, originY + y);
     }
 
     private static int clamp(int value, int size) {
@@ -434,13 +459,7 @@ public final class Picture extends XResource {
 
     /** Whether a pixel can be written: inside the drawable, visible, and inside the clip. */
     public boolean isWritable(int x, int y) {
-        if (x < 0 || y < 0 || x >= width() || y >= height()) {
-            return false;
-        }
-        if (window != null && !window.clipRect().contains(originX + x, originY + y)) {
-            return false;
-        }
-        return withinClip(x, y);
+        return hasContent(x, y) && withinClip(x, y);
     }
 
     /** Writes a non-premultiplied ARGB pixel, ignoring the write when the clip forbids it. */
@@ -470,15 +489,29 @@ public final class Picture extends XResource {
      * A RENDER transform: the matrix that maps destination pixel coordinates back to source pixel
      * coordinates when a picture is used as a source or mask.
      *
-     * <p>The nine values arrive as 16.16 fixed point. The protocol lays them out so that
+     * <p>The nine values arrive as 16.16 fixed point, in the order
+     * {@code matrix11 matrix12 matrix13 matrix21 matrix22 matrix23 matrix31 matrix32 matrix33},
+     * and a point is carried through them as a row vector on the left of the matrix:
      *
      * <pre>
-     *   xs = (m11*x + m21*y + m31) / (m13*x + m23*y + m33)
-     *   ys = (m12*x + m22*y + m32) / (m13*x + m23*y + m33)
+     *   xs = (m11*x + m12*y + m13) / (m31*x + m32*y + m33)
+     *   ys = (m21*x + m22*y + m23) / (m31*x + m32*y + m33)
      * </pre>
      *
-     * <p>which is the same convention pixman uses, and which {@code SetPictureTransform} has to
-     * invert to decide whether the matrix is legal.
+     * <p>The <em>third column</em> holds the translation and the <em>third row</em> the projective
+     * terms, which is the opposite way round from the way the columns of a 3x3 matrix are usually
+     * named here. The specification says only that "the transform maps from destination pixel
+     * geometry back to the source pixel geometry"; what settles the layout is what clients send.
+     * Every client that uses a transform - cairo above all - writes an affine map
+     * {@code (x*xx + y*xy + x0, x*yx + y*yy + y0)} into these fields in the order they appear on
+     * the wire, so {@code matrix13} and {@code matrix23} are the translations and {@code matrix31}
+     * and {@code matrix32} are zero. Reading the translation out of the third row instead makes
+     * every scaled or rotated composite sample the wrong place: a picture under a 2x scale lands a
+     * long way outside its own drawable, reads as transparent everywhere, and paints nothing at
+     * all - an entirely blank window, with no error anywhere.
+     *
+     * <p>{@code SetPictureTransform} has to invert the matrix to decide whether it is legal; the
+     * determinant is unaffected by transposing, so {@link #isInvertible()} holds either way.
      */
     public record Transform(int m11, int m12, int m13, int m21, int m22, int m23,
                             int m31, int m32, int m33) {
@@ -496,7 +529,7 @@ public final class Picture extends XResource {
         }
 
         public boolean isProjective() {
-            return m13 != 0 || m23 != 0 || m33 != ONE;
+            return m31 != 0 || m32 != 0 || m33 != ONE;
         }
 
         /**
@@ -513,20 +546,20 @@ public final class Picture extends XResource {
 
         /** Source x for a destination point. */
         public double mapX(double x, double y) {
-            double denominator = isProjective() ? (m13 * x + m23 * y + m33) / (double) ONE : 1.0;
+            double denominator = isProjective() ? (m31 * x + m32 * y + m33) / (double) ONE : 1.0;
             if (denominator == 0) {
                 return Double.NaN;
             }
-            return ((m11 * x + m21 * y + m31) / (double) ONE) / denominator;
+            return ((m11 * x + m12 * y + m13) / (double) ONE) / denominator;
         }
 
         /** Source y for a destination point. */
         public double mapY(double x, double y) {
-            double denominator = isProjective() ? (m13 * x + m23 * y + m33) / (double) ONE : 1.0;
+            double denominator = isProjective() ? (m31 * x + m32 * y + m33) / (double) ONE : 1.0;
             if (denominator == 0) {
                 return Double.NaN;
             }
-            return ((m12 * x + m22 * y + m32) / (double) ONE) / denominator;
+            return ((m21 * x + m22 * y + m23) / (double) ONE) / denominator;
         }
     }
 

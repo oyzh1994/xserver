@@ -47,6 +47,12 @@ public final class ClientOutput {
 
     private boolean broken;
 
+    /**
+     * True when bytes have been buffered but not yet handed to the socket. A caller holding a
+     * reply in here holds a client waiting for it, which is why the request loop asks.
+     */
+    private boolean pending;
+
     public ClientOutput(OutputStream out, boolean bigEndian) {
         this.out = out;
         this.bigEndian = bigEndian;
@@ -96,9 +102,18 @@ public final class ClientOutput {
         write(serialize(struct::write));
     }
 
+    /**
+     * Writes an event and pushes it out.
+     *
+     * <p>An event is often produced with no request in flight - a focus change arrives from the
+     * toolkit's own thread - and a client waiting for that event has nothing else to send. Left in
+     * the buffer it would sit there until some unrelated request happened to arrive, which for a
+     * client blocked on the event is never.
+     */
     public synchronized void writeEvent(XEvent event) throws IOException {
         byte[] bytes = serialize(out -> event.write(out));
         write(padTo(bytes, EVENT_SIZE));
+        flush();
     }
 
     /**
@@ -123,12 +138,18 @@ public final class ClientOutput {
         write(bytes);
     }
 
+    /** True when a reply, event or error is still sitting in the buffer. */
+    public synchronized boolean hasPending() {
+        return pending;
+    }
+
     public synchronized void flush() throws IOException {
         if (broken) {
             return;
         }
         try {
             out.flush();
+            pending = false;
         } catch (IOException e) {
             broken = true;
             throw e;
@@ -155,6 +176,7 @@ public final class ClientOutput {
         }
         try {
             out.write(bytes);
+            pending = true;
         } catch (IOException e) {
             broken = true;
             throw e;

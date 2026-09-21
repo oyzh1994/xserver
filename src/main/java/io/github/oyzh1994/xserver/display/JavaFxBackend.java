@@ -293,6 +293,7 @@ public final class JavaFxBackend implements DisplayBackend {
                 Platform.runLater(() -> {
                     dumpImage(prefix + "-image-" + frame + ".png");
                     dumpFramebuffer(prefix + "-buffer-" + frame + ".png");
+                    dumpScene(prefix + "-scene-" + frame + ".png");
                 });
             }
         }, "xserver-frame-dump");
@@ -300,7 +301,11 @@ public final class JavaFxBackend implements DisplayBackend {
         thread.start();
     }
 
-    private static final int DUMP_FRAMES = 30;
+    /**
+     * How many frames the dump captures, one a second. A client that takes a while to paint its
+     * first frame can miss a thirty second window, so {@code -Dxserver.dumpFrames} lengthens it.
+     */
+    private static final int DUMP_FRAMES = Integer.getInteger("xserver.dumpFrames", 30);
 
     private final AtomicBoolean dumpScheduled = new AtomicBoolean();
 
@@ -314,6 +319,34 @@ public final class JavaFxBackend implements DisplayBackend {
         java.awt.image.BufferedImage out = new java.awt.image.BufferedImage(w, h,
                 java.awt.image.BufferedImage.TYPE_INT_ARGB);
         javafx.scene.image.PixelReader reader = image.getPixelReader();
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                out.setRGB(x, y, reader.getArgb(x, y));
+            }
+        }
+        write(out, path);
+    }
+
+    /**
+     * Runs on the JavaFX thread; renders the scene the window is showing into an image.
+     *
+     * <p>The image dump above reads the {@code WritableImage} the framebuffer is wrapped in, which
+     * is what this backend hands to the scene - and so it says nothing about what the window makes
+     * of it. A scene that failed to repaint its canvas, or a canvas whose pixels never reached it,
+     * leaves both of the other dumps correct while the window on screen shows something else
+     * entirely, which is the one failure a window on a display nobody can look at hides.
+     */
+    private void dumpScene(String path) {
+        Scene current = stage == null ? null : stage.getScene();
+        if (current == null) {
+            return;
+        }
+        javafx.scene.image.WritableImage shot = current.snapshot(null);
+        int w = (int) shot.getWidth();
+        int h = (int) shot.getHeight();
+        java.awt.image.BufferedImage out = new java.awt.image.BufferedImage(w, h,
+                java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        javafx.scene.image.PixelReader reader = shot.getPixelReader();
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
                 out.setRGB(x, y, reader.getArgb(x, y));

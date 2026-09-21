@@ -34,9 +34,9 @@ import java.util.List;
  * converted back on the way out; the values this class reads and writes are always the server's
  * non-premultiplied {@code 0xAARRGGBB}. {@code Src} and {@code Over} - the two that matter to cairo,
  * GTK and Xft - are exact, and so are the other twelve Porter-Duff operators and the disjoint and
- * conjoint families. The twelve blend modes added in RENDER 0.11 (multiply through luminosity) are
- * evaluated as the standard separable blend followed by source-over, which is what they are; only
- * the four non-separable HSL modes are approximated, as source-over.
+ * conjoint families. Of the blend modes added in RENDER 0.11, the eleven separable ones (multiply
+ * through exclusion) are evaluated as the standard blend followed by source-over, which is what
+ * they are; only the four non-separable HSL modes are approximated, as source-over.
  *
  * <p>The destination is the screen framebuffer or a pixmap, both of which store ARGB, and the
  * framebuffer forces every stored pixel opaque. Compositing onto the screen therefore always ends
@@ -117,21 +117,21 @@ public final class Compositor {
 
         @Override
         public int argbAt(int x, int y) {
-            double dx = baseX + x;
-            double dy = baseY + y;
-            double sx;
-            double sy;
+            // The registration comes first and the transform second: the protocol aligns the
+            // source location with the top left of the destination rectangle, and the transform
+            // then maps that already shifted point back into the source. Applying the transform
+            // to the unshifted point and adding the registration afterwards puts the pattern one
+            // registration's worth of source pixels out of place under every scale and rotation.
+            double dx = baseX + x + offsetX;
+            double dy = baseY + y + offsetY;
+            double sx = dx;
+            double sy = dy;
             if (transform != null) {
                 sx = transform.mapX(dx, dy);
                 sy = transform.mapY(dx, dy);
                 if (Double.isNaN(sx) || Double.isNaN(sy)) {
                     return TRANSPARENT;
                 }
-                sx += offsetX;
-                sy += offsetY;
-            } else {
-                sx = dx + offsetX;
-                sy = dy + offsetY;
             }
             int argb = picture.sample(sx, sy);
             if (!picture.format().hasAlpha()) {
@@ -186,6 +186,7 @@ public final class Compositor {
         if (width <= 0 || height <= 0) {
             return;
         }
+        prepare(src, mask, dst);
         Sampler source = new PictureSampler(src, srcX - dstX, srcY - dstY, dstX, dstY);
         Sampler maskSampler = mask == null
                 ? null
@@ -205,6 +206,7 @@ public final class Compositor {
      * time without a round trip through {@code ChangePicture}.
      */
     public void fillRectangles(int op, Picture dst, int argb, List<Rectangle> rectangles) {
+        prepare(dst);
         boolean drew = false;
         for (Rectangle rectangle : rectangles) {
             if (rectangle.width <= 0 || rectangle.height <= 0) {
@@ -243,6 +245,7 @@ public final class Compositor {
         if (shapes.isEmpty()) {
             return;
         }
+        prepare(src, dst);
         // One offset for the whole request: the pattern stays globally aligned in the destination
         // rather than restarting at each polygon.
         int offsetX = srcX - registrationX;
@@ -293,6 +296,7 @@ public final class Compositor {
      * @param picture the destination, which the caller has already checked is alpha-only
      */
     public void addTraps(Picture picture, List<Shape> shapes, boolean sharp) {
+        prepare(picture);
         boolean drew = false;
         for (Shape shape : shapes) {
             Rectangle region = clip(shape.getBounds2D(), picture);
@@ -320,19 +324,21 @@ public final class Compositor {
      *
      * <p>The placements are in destination picture coordinates, with each glyph's metric offsets
      * already applied. {@code CompositeGlyphs} carries no destination field - the caller encodes
-     * the starting position in the first glyph element's delta - so the glyph origin is the
-     * destination origin and {@code srcX}/{@code srcY} register the pattern against it.
+     * the starting position in the first glyph element's delta - so the pattern is registered
+     * against the request's starting position, which {@code offsetX}/{@code offsetY} must already
+     * account for: they are the source coordinate that corresponds to destination {@code (0, 0)}.
      *
      * <p>When {@code accumulate} is set the glyphs are first merged into one coverage image and
      * composited once, matching the protocol's mask-format path; otherwise each glyph is composited
      * on its own, which is the path the protocol takes when the request has no mask format and is
      * what lets overlapping glyphs build up under {@code PictOpAdd}.
      */
-    public void glyphs(int op, Picture src, Picture dst, int srcX, int srcY,
+    public void glyphs(int op, Picture src, Picture dst, int offsetX, int offsetY,
                        List<PlacedGlyph> glyphs, boolean accumulate, boolean componentAlpha) {
         if (glyphs.isEmpty()) {
             return;
         }
+        prepare(src, dst);
         if (!accumulate) {
             boolean drew = false;
             for (PlacedGlyph placed : glyphs) {
@@ -341,7 +347,7 @@ public final class Compositor {
                     continue;
                 }
                 int[] coverage = glyphCoverage(placed, region);
-                draw(op, new PictureSampler(src, srcX, srcY, region.x, region.y),
+                draw(op, new PictureSampler(src, offsetX, offsetY, region.x, region.y),
                         new CoverageSampler(coverage, region.width, region.height),
                         componentAlpha, dst, region.x, region.y, region.width, region.height);
                 drew = true;
@@ -363,7 +369,7 @@ public final class Compositor {
             }
             addCoverage(coverage, region, glyphCoverage(placed, glyphRegion), glyphRegion);
         }
-        draw(op, new PictureSampler(src, srcX, srcY, region.x, region.y),
+        draw(op, new PictureSampler(src, offsetX, offsetY, region.x, region.y),
                 new CoverageSampler(coverage, region.width, region.height), componentAlpha, dst,
                 region.x, region.y, region.width, region.height);
         finish(dst);
@@ -833,8 +839,22 @@ public final class Compositor {
      * display backends latch on to before the next repaint.
      */
     private void finish(Picture dst) {
-        if (dst.window() != null) {
+        if (dst.window() != null && server != null) {
             server.markScreenDirty();
+        }
+    }
+
+    /**
+     * Renews every picture's cached visible rectangle before the pixel loop starts. A window's clip
+     * is consulted once per pixel, so it is worth computing once per request - and the request is
+     * the right scope, because the server holds its lock for the whole of one and the window tree
+     * cannot move underneath it.
+     */
+    private static void prepare(Picture... pictures) {
+        for (Picture picture : pictures) {
+            if (picture != null) {
+                picture.refreshClip();
+            }
         }
     }
 }

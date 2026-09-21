@@ -65,7 +65,7 @@ public final class RequestDispatcher {
             dispatchExtension(client, opcode, minorOpcode, in);
             return;
         }
-        XRequest request = decodeCore(client, opcode, minorOpcode, in);
+        XRequest request = decodeCore(client, opcode, minorOpcode, in, requestBytes);
         if (server.options().logRequests()) {
             log.debug("{} -> {}", client, request.getClass().getSimpleName());
         }
@@ -77,11 +77,12 @@ public final class RequestDispatcher {
         return currentRequest;
     }
 
-    private XRequest decodeCore(ClientConnection client, byte opcode, byte minorOpcode, X11Input in) {
+    private XRequest decodeCore(ClientConnection client, byte opcode, byte minorOpcode,
+                                X11Input in, int requestBytes) {
         try {
             // A handful of requests have to be decoded here; see VariableLengthDecoders for why.
             if (VariableLengthDecoders.handles(opcode & 0xFF)) {
-                return VariableLengthDecoders.decode(opcode & 0xFF, in);
+                return VariableLengthDecoders.decode(opcode & 0xFF, in, requestBytes);
             }
             return xproto.readRequest(opcode, minorOpcode, in);
         } catch (IOException e) {
@@ -104,10 +105,20 @@ public final class RequestDispatcher {
         }
         XRequest request;
         try {
-            request = extension.plugin().readRequest(opcode, minorOpcode, in);
+            request = extension.decodeRequest(minorOpcode & 0xFF, in);
+            if (request == null) {
+                request = extension.plugin().readRequest(opcode, minorOpcode, in);
+            }
         } catch (IOException | RuntimeException e) {
+            // The cause matters: a decoder that runs off the end of the request and one that
+            // rejects a value look identical in the error the client sees.
             throw new ProtocolException(ProtocolException.REQUEST, minorOpcode & 0xFF,
-                    "malformed " + extension.name() + " request " + (minorOpcode & 0xFF));
+                    "could not decode " + extension.name() + " request " + (minorOpcode & 0xFF)
+                            + ": " + e);
+        }
+        if (server.options().logRequests()) {
+            log.debug("{} -> {} ({} minor {})", client, request.getClass().getSimpleName(),
+                    extension.name(), minorOpcode & 0xFF);
         }
         extension.handleRequest(server, client, request);
     }
@@ -121,6 +132,7 @@ public final class RequestDispatcher {
 
     private void route(ClientConnection client, XRequest request) {
         currentRequest = request.getClass().getSimpleName();
+        client.recordRequest(request.getClass());
         switch (request) {
             // ---- windows -------------------------------------------------
             case com.github.moaxcp.x11.protocol.xproto.CreateWindow r -> windows.create(client, r);

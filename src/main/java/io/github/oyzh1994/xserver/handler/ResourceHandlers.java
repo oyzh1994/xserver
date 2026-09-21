@@ -95,6 +95,9 @@ import java.util.Map;
  */
 public final class ResourceHandlers {
 
+    /** Largest pixmap the server will allocate, about 64 MB of pixels. */
+    private static final long MAX_PIXMAP_PIXELS = 16L * 1024 * 1024;
+
     /** Every bit defined by the Gc value mask; anything else in a mask is a BadValue. */
     private static final int GC_VALID_MASK = 0x7FFFFF;
 
@@ -454,6 +457,12 @@ public final class ResourceHandlers {
         // the protocol's depth range rather than the visual list.
         if (depth == 0 || depth > 32) {
             throw ProtocolException.badValue(depth);
+        }
+        // Every pixmap owns its pixels, so an absurd size is an allocation failure rather than a
+        // protocol error - and an OutOfMemoryError here would drop the connection with no
+        // explanation. The limit is generous: 4096x4096 is far more than any client needs.
+        if ((long) width * height > MAX_PIXMAP_PIXELS) {
+            throw ProtocolException.badAlloc();
         }
         Screen screen = screenOf(drawable);
         XPixmap pixmap = new XPixmap(r.getPid(), client, screen, width, height, depth,
@@ -1292,8 +1301,16 @@ public final class ResourceHandlers {
         }
     }
 
+    /**
+     * One channel of a protocol colour as the eight bits this server stores.
+     *
+     * <p>The top byte is taken rather than the value scaled: {@code XParseColor} turns an eight bit
+     * component into a sixteen bit one by repeating it, so {@code #ff0000} arrives as {@code 0xff00}
+     * and must come back out as {@code 0xff}. Rounding - which is what a scale would do - gives
+     * {@code 0xfe} instead, and every named colour a client allocates is then a shade too dark.
+     */
     private static int to8(int value16) {
-        return (value16 * 255 + 32767) / 65535;
+        return (value16 >> 8) & 0xFF;
     }
 
     private static int to16(int value8) {

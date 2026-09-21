@@ -71,6 +71,13 @@ public final class ClientConnection implements Runnable {
     /** Set while a client connection is being torn down, so late events are dropped. */
     private volatile boolean shuttingDown;
 
+    /** How many requests have been handled, and the last few, kept for the disconnect log. */
+    private static final int RECENT_REQUEST_COUNT = 12;
+    private int requestCount;
+    private int recentRequestIndex;
+    private Class<?> currentRequest;
+    private boolean loggedDisconnect;
+
     public ClientConnection(XServer server, Socket socket, int index) throws IOException {
         this(server, socket, null, index);
     }
@@ -183,21 +190,87 @@ public final class ClientConnection implements Runnable {
 
     @Override
     public void run() {
+        String reason = "the connection ended";
         try {
             handshake();
             server.registerClient(this);
             requestLoop();
-        } catch (EOFException | java.net.SocketException e) {
-            log.debug("client {} disconnected", peer);
+            reason = closed ? "closed by the server" : "the request loop ended";
+        } catch (EOFException e) {
+            reason = "the client closed the connection";
+        } catch (java.net.SocketException e) {
+            reason = "socket error: " + e.getMessage();
         } catch (IOException e) {
-            if (!closed) {
-                log.info("client {} connection error: {}", peer, e.getMessage());
-            }
+            reason = "read failed: " + e;
         } catch (RuntimeException e) {
-            log.warn("client {} failed", peer, e);
+            reason = "failed handling " + currentRequestName();
+            log.warn("client {} failed during {}", peer, currentRequestName(), e);
+        } catch (Error e) {
+            // An Error would otherwise kill the thread and drop the connection with no explanation
+            // at all, which is exactly the kind of silent disconnect that is impossible to debug
+            // from the outside.
+            reason = "fatal error handling " + currentRequestName();
+            log.error("client {} hit {} during {}", peer, e.getClass().getSimpleName(),
+                    currentRequestName(), e);
         } finally {
+            logDisconnect(reason);
             shutdown();
         }
+    }
+
+    /**
+     * Explains why a connection ended, and what it had been doing. A client that disconnects
+     * abruptly is one of the hardest things to diagnose from the server side, so the last few
+     * requests it sent are kept and reported here.
+     */
+    private void logDisconnect(String reason) {
+        if (loggedDisconnect) {
+            return;
+        }
+        loggedDisconnect = true;
+        if (requestCount == 0 && reason.startsWith("the client closed")) {
+            // A connection that never sent a request is noise, not a diagnostic.
+            log.debug("client {} connected and left without a request", peer);
+            return;
+        }
+        log.info("client {} disconnected after {} requests: {}; last requests: {}", peer,
+                requestCount, reason, recentRequests());
+    }
+
+    private final Class<?>[] recentRequests = new Class<?>[RECENT_REQUEST_COUNT];
+
+    /** Names of the last few requests, oldest first, for the disconnect log. */
+    private String recentRequests() {
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < RECENT_REQUEST_COUNT; i++) {
+            Class<?> type = recentRequests[(recentRequestIndex + i) % RECENT_REQUEST_COUNT];
+            if (type == null) {
+                continue;
+            }
+            if (text.length() > 0) {
+                text.append(", ");
+            }
+            text.append(type.getSimpleName());
+        }
+        return text.length() == 0 ? "none" : text.toString();
+    }
+
+    private String currentRequestName() {
+        Class<?> current = currentRequest;
+        return current == null ? "the request loop" : current.getSimpleName();
+    }
+
+    /** Records the request now being handled, for the disconnect log. */
+    public void recordRequest(Class<?> type) {
+        currentRequest = type;
+        recentRequests[recentRequestIndex] = type;
+        recentRequestIndex = (recentRequestIndex + 1) % RECENT_REQUEST_COUNT;
+        requestCount++;
+    }
+
+    /** How many requests this client has sent, used in the disconnect log. */
+    public int requestCount() {
+        return requestCount;
     }
 
     // ------------------------------------------------------------------
@@ -264,17 +337,20 @@ public final class ClientConnection implements Runnable {
             currentOpcode = (byte) opcode;
             currentMinorOpcode = (byte) data;
 
-            dispatch(opcode, data, value(lengthUnits), body);
+            dispatch(opcode, data, lengthUnits, body);
 
-            if (in.available() == 0) {
+            // A reply still in the buffer is a client waiting for it, and a client waiting for a
+            // reply sends nothing more. That alone would only delay things; what makes it fatal is
+            // that the bytes still readable here need not be a whole request. Xlib flushes its
+            // sixteen kilobyte buffer wherever it fills, so a small round trip followed by a large
+            // PutImage reaches the server as the reply-worthy request and the head of the image.
+            // Waiting for the rest of that image means waiting for a client that is itself waiting
+            // for this reply - both sides stop, for good. Flushing while the loop can still make
+            // progress is what keeps that from happening.
+            if (output.hasPending()) {
                 output.flush();
             }
         }
-    }
-
-    /** Clamps the request length into the card16 the generated decoders expect. */
-    private static int value(int lengthUnits) {
-        return lengthUnits > MAX_REQUEST_UNITS ? MAX_REQUEST_UNITS : lengthUnits;
     }
 
     private void dispatch(int opcode, int data, int lengthUnits, byte[] body) {
@@ -282,14 +358,23 @@ public final class ClientConnection implements Runnable {
         // expect: they read the data byte, the length and then the payload.
         byte[] parserBytes = new byte[3 + body.length];
         parserBytes[0] = (byte) data;
-        putCard16(parserBytes, 1, lengthUnits);
+        // The length field is sixteen bits wide, so a BIG-REQUESTS request - one larger than 64K -
+        // cannot be described by it at all. What is written here is therefore a placeholder, and
+        // the true length travels beside it: a decoder that sizes a trailing list from this field
+        // alone would read a fraction of what the client sent.
+        putCard16(parserBytes, 1, Math.min(lengthUnits, MAX_REQUEST_UNITS));
         System.arraycopy(body, 0, parserBytes, 3, body.length);
 
         ByteArrayInputStream bytes = new ByteArrayInputStream(parserBytes);
         X11Input requestIn = bigEndian ? new X11BigEndianInputStream(bytes)
                 : new X11LittleEndianInputStream(bytes);
 
-        server.executeRequest(this, (byte) opcode, (byte) data, requestIn, parserBytes.length);
+        // The size handed over is the request's own minus its opcode byte, because that is the shape
+        // the decoder is given. A BIG-REQUESTS request is four bytes longer than that description
+        // suggests - its header is eight bytes rather than four - and the difference has to be taken
+        // out here, or a decoder sizing a trailing list from it overshoots by exactly those bytes.
+        server.executeRequest(this, (byte) opcode, (byte) data, requestIn,
+                parserBytes.length + 1);
     }
 
     private void putCard16(byte[] bytes, int offset, int value) {

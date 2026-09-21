@@ -33,6 +33,18 @@ public interface Extension {
     default void init(XServer server) {
     }
 
+    /**
+     * Decodes a request the generated decoder cannot, or returns null to let the plugin decode it.
+     *
+     * <p>Some generated readers size their last list from the request length with the wrong
+     * arithmetic and throw on perfectly valid requests. An extension that has such a request says so
+     * here; see {@code VariableLengthDecoders} for the full explanation.
+     */
+    default XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
+            throws java.io.IOException {
+        return null;
+    }
+
     /** Handles one decoded request. */
     void handleRequest(XServer server, ClientConnection client, XRequest request);
 

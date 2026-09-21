@@ -289,6 +289,53 @@ class VariableLengthDecodersTest {
     // ------------------------------------------------------------------
 
     /**
+     * A request too large for the sixteen bit length field, which is therefore sent as a
+     * BIG-REQUEST, must decode whole.
+     *
+     * <p>The field then describes nothing usable - 600000 bytes of image data of which it can name
+     * only the low sixteen bits' worth - so the decoder has to size the trailing list from the
+     * request length it was handed. Sizing it from the field, which is what this decoder used to do,
+     * silently drops most of the image: a client that paints through {@code XPutImage} gets a
+     * fraction of its window and no error to explain it.
+     */
+    @Test
+    void putImageLargerThanTheLengthFieldDecodesWhole() throws IOException {
+        int width = 500;
+        int height = 300;
+        byte[] data = new byte[width * height * 4];
+        for (int i = 0; i < data.length; i++) {
+            data[i] = (byte) i;
+        }
+        PutImage request = PutImage.builder()
+                .format((byte) 2)
+                .drawable(DRAWABLE)
+                .gc(GC)
+                .width((short) width)
+                .height((short) height)
+                .dstX((short) 0)
+                .dstY((short) 0)
+                .leftPad((byte) 0)
+                .depth((byte) 24)
+                .data(ByteLists.immutable.of(data))
+                .build();
+        // The generated writer lays the request out, including the length field, which for a
+        // request this size can only hold the low sixteen bits of the true length. That is exactly
+        // the field a BIG-REQUESTS request carries, so what it produced is the wire image of one.
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        X11LittleEndianOutputStream out = new X11LittleEndianOutputStream(buffer);
+        request.write((byte) 72, out);
+        out.flush();
+        byte[] encoded = buffer.toByteArray();
+
+        X11Input in = new X11LittleEndianInputStream(
+                new ByteArrayInputStream(encoded, 1, encoded.length - 1));
+        PutImage decoded = (PutImage) VariableLengthDecoders.decode(72, in, encoded.length);
+
+        assertEquals(data.length, decoded.getData().size(), "the image data was truncated");
+        assertEquals(data[data.length - 1], decoded.getData().get(data.length - 1));
+    }
+
+    /**
      * Encodes a request with the generated writer and decodes it with the server's decoder. The
      * decoder expects the input to start just after the opcode byte, which is how the request loop
      * hands it over.
@@ -304,7 +351,7 @@ class VariableLengthDecodersTest {
         int opcode = encoded[0] & 0xFF;
         X11Input in = new X11LittleEndianInputStream(
                 new ByteArrayInputStream(encoded, 1, encoded.length - 1));
-        XRequest decoded = VariableLengthDecoders.decode(opcode, in);
+        XRequest decoded = VariableLengthDecoders.decode(opcode, in, encoded.length);
         assertInstanceOf(request.getClass(), decoded,
                 "decoder returned the wrong request type for opcode " + opcode);
         return (T) decoded;

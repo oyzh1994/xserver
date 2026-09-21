@@ -37,6 +37,8 @@ import com.github.moaxcp.x11.protocol.xproto.TranslateCoordinatesReply;
 import com.github.moaxcp.x11.protocol.xproto.UnmapNotifyEvent;
 import com.github.moaxcp.x11.protocol.xproto.UnmapSubwindows;
 import com.github.moaxcp.x11.protocol.xproto.UnmapWindow;
+import com.github.moaxcp.x11.protocol.xproto.VisibilityNotifyEvent;
+import com.github.moaxcp.x11.protocol.xproto.Visibility;
 import com.github.moaxcp.x11.protocol.xproto.WindowClass;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
@@ -476,6 +478,7 @@ public final class WindowHandlers {
             window.markNeedsFullExpose();
             paintWindow(window);
             deliverExpose(window, window.absoluteBounds());
+            deliverVisibilityNotify(window, Visibility.UNOBSCURED.getValue());
             for (XWindow child : window.children()) {
                 if (child.isMapped()) {
                     mapWindow(child);
@@ -895,7 +898,38 @@ public final class WindowHandlers {
         }
     }
 
-    /** Sends an Expose for the part of {@code rect} that is actually visible. */
+    /**
+     * Tells the clients watching a window that its visibility changed.
+     *
+     * <p>Toolkits use this to decide when a window is worth drawing: a window that is mapped but
+     * never reported as visible can leave an application waiting for a notification that never
+     * comes, with its window sitting unpainted. The server keeps no obscured-region tracking, so a
+     * viewable window is reported as unobscured - which is right for the common case of a window
+     * that is on top.
+     */
+    public void deliverVisibilityNotify(XWindow window, int state) {
+        if (!window.isViewable()) {
+            return;
+        }
+        server.events().deliverToWindow(window, EventMasks.VISIBILITY_CHANGE,
+                (recipient, w, child, x, y) -> VisibilityNotifyEvent.builder()
+                        .firstEventOffset((byte) 0)
+                        .sentEvent(false)
+                        .sequenceNumber(recipient.sequenceNumber())
+                        .window(w.id())
+                        .state((byte) state)
+                        .build());
+    }
+
+    /**
+     * Sends an Expose for the part of {@code rect} that is actually visible.
+     *
+     * <p>{@code rect} arrives in screen coordinates, which is what every caller works in, but the
+     * event carries window relative ones. Without the translation a window away from the origin is
+     * told to repaint a rectangle that lies outside it - a window at y=600 is told "repaint from
+     * y=600" - and a client that believes the rectangle redraws nothing at all, leaving the window
+     * as whatever the framebuffer held before: a black window that never paints.
+     */
     public void deliverExpose(XWindow window, Rectangle rect) {
         if (!window.isViewable()) {
             return;
@@ -904,14 +938,16 @@ public final class WindowHandlers {
         if (visible.isEmpty()) {
             return;
         }
+        int x = visible.x - window.absoluteX();
+        int y = visible.y - window.absoluteY();
         server.events().deliverToWindow(window, EventMasks.EXPOSURE,
-                (recipient, w, child, x, y) -> ExposeEvent.builder()
+                (recipient, w, child, eventX, eventY) -> ExposeEvent.builder()
                         .firstEventOffset((byte) 0)
                         .sentEvent(false)
                         .sequenceNumber(recipient.sequenceNumber())
                         .window(w.id())
-                        .x((short) visible.x)
-                        .y((short) visible.y)
+                        .x((short) x)
+                        .y((short) y)
                         .width((short) visible.width)
                         .height((short) visible.height)
                         .count((short) 0)

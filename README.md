@@ -89,11 +89,16 @@ Events: structure notifications, exposes, property and colormap notifications, c
 the full detail lattice, pointer and keyboard events with propagation and `doNotPropagateMask`, and
 `ClientMessage` in both directions.
 
-Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine operations),
-`XTEST` (synthetic input), `XFIXES` (cursor images, regions, `SetWindowClipRegion`).
+Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
+operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
+`SetWindowClipRegion`), and `RENDER` — pictures, formats, `Composite` with the full operator table,
+`FillRectangles`, `Trapezoids`/`Triangles`/`TriStrip`/`TriFan`, the solid and gradient fills, and
+the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
+their text with.
 
 Verified against real clients: `xdpyinfo`, `xwininfo`, `xprop`, `xlsclients`, `xwd`, `xeyes`,
-`xlogo`, `xclock`, `xcalc`, `xmessage`, `xterm` (core fonts), and `twm` as a window manager.
+`xlogo`, `xclock`, `xcalc`, `xmessage`, `xterm` with core fonts and with Xft (`-fa`, which needs
+RENDER), and `twm` as a window manager.
 
 ## Bugs worked around in the protocol library
 
@@ -136,12 +141,27 @@ If a window is ever blank again, `-Dxserver.dumpFrame=<prefix>` writes the JavaF
 framebuffer behind it to PNG files once a second. Comparing the two says immediately whether the
 server failed to draw or the display failed to show it.
 
+## RENDER formats are matched by shape, not by identity
+
+A client does not look up a picture format by its id. It looks it up by the *shape* of the pixel
+layout - `XRenderFindFormat(type, depth, redMask, greenMask, blueMask, alphaMask, ...)` - and the
+masks it compares against are **field widths, not pixel masks**. `RGB24` is `red 0xff, green 0xff,
+blue 0xff` with the shifts carried separately, and `ARGB32` is the same with `alpha 0xff`.
+
+Reporting the full pixel mask (`0xff0000`) instead, or letting it be truncated to the 16 bits the
+wire format gives it, says every channel is zero bits wide. Nothing errors: the lookup simply fails,
+and Xft's per-display `solidFormat` - which it resolves once, as `ARGB32` - comes back null, so every
+`XftDrawString` returns without sending a request at all. The window keeps its background and its
+cursor and simply never draws text.
+
+Two smaller traps in the same area: the `CompositeGlyphs` command stream is in the connection's byte
+order (only the glyphset-switch item is always most-significant-byte first), and a glyph is drawn at
+`origin - info.x/y`, not `+`.
+
 ## Known limitations
 
-- **No RENDER extension.** Clients that need it (GTK 3+, Qt 5+, cairo, xterm with `-fa`) fail to
-  start or fall back to core drawing. This is the single biggest gap for modern toolkits.
 - **No Composite, DAMAGE, RandR or XInput2.** `xeyes` prints a warning about the missing
-  `XInputExtension` and falls back.
+  `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
 - **A bounding shape does not clip drawing.** SHAPE's input shape is honoured for hit testing; the
   bounding shape only affects `QueryExtents` and `GetRectangles`, so a shaped window's corners are
   still painted.

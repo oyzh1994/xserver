@@ -12,12 +12,12 @@ public class XServerTest {
 
     @Test
     public void test1() {
-        String[] args = new String[]{"--display:1"};
+        String[] args = new String[]{"--display", "0"};
         Main.main(args);
     }
 
     static void main() {
-        String[] args = new String[]{"--display:1"};
+        String[] args = new String[]{"--display", "2", "--log-requests"};
         Main.main(args);
     }
 }
