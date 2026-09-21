@@ -82,7 +82,29 @@ public record VisualInfo(
         int r = extract(pixel, redMask, bitsPerRgbValue);
         int g = extract(pixel, greenMask, bitsPerRgbValue);
         int b = extract(pixel, blueMask, bitsPerRgbValue);
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
+        return alphaOf(pixel) | (r << 16) | (g << 8) | b;
+    }
+
+    /**
+     * Whether the bits this visual leaves unused are an alpha channel.
+     *
+     * <p>Only ARGB32 qualifies here: depth 24 has no spare byte at all, and the spare bit a 16 bit
+     * TrueColor visual has is not an alpha channel.
+     */
+    public boolean hasAlpha() {
+        return isTrueColor() && depth == 32;
+    }
+
+    /**
+     * The alpha a wire pixel carries, or opaque for a visual that has no alpha channel.
+     *
+     * <p>A client that uploads into an ARGB32 drawable - a RENDER source, a cursor image, a
+     * translucent window - sends 0xAARRGGBB and expects the top byte to be kept. Forcing it opaque
+     * is what turns a cursor's transparent surround into a solid black block, and it would make
+     * every translucent surface opaque.
+     */
+    private int alphaOf(int pixel) {
+        return hasAlpha() ? (pixel & 0xFF000000) : 0xFF000000;
     }
 
     /**

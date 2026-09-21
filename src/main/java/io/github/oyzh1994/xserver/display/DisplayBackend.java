@@ -40,8 +40,15 @@ public interface DisplayBackend {
      */
     void start(Screen screen, int displayNumber, InputSink input);
 
-    /** Copies the damaged region of the framebuffer to the screen. */
-    void present(Screen screen, Rectangle damage);
+    /**
+     * Copies the damaged region of the framebuffer to the screen, then draws the pointer sprite
+     * over it.
+     *
+     * <p>{@code cursor} is null when there is nothing to draw. It is passed with the frame rather
+     * than painted into the framebuffer so that a frame always shows the pointer at the position it
+     * had when the frame was taken, and so that what the clients drew is never covered by it.
+     */
+    void present(Screen screen, Rectangle damage, CursorSprite cursor);
 
     /** Tears the window down. */
     void stop();

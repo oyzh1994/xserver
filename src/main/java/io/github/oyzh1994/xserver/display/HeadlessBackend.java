@@ -27,8 +27,9 @@ public final class HeadlessBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage) {
-        // Deliberately empty, and cheap enough to be called on every server tick.
+    public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+        // Deliberately empty, and cheap enough to be called on every server tick. The pointer
+        // sprite goes the same way: with no window there is nowhere to draw it.
     }
 
     @Override

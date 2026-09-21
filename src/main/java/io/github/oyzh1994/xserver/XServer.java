@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ConnectionSetup;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.client.RequestDispatcher;
+import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.display.VisualInfo;
@@ -389,13 +390,54 @@ public final class XServer {
         }
     }
 
-    /** Flushes any framebuffer damage to the display backend. */
+    /** Flushes any framebuffer damage to the display backend, with the pointer sprite over it. */
     public void presentDamage() {
-        input.tickCursor(screen);
+        // The sprite is drawn by the backend rather than into the framebuffer, so a pointer move
+        // changes what is on screen without changing a pixel of the framebuffer. The areas it left
+        // and arrived at are marked as damage instead, so the frame that showed the old position is
+        // painted again from underneath it.
+        CursorSprite cursor;
+        serverLock.lock();
+        try {
+            cursor = input.cursorSprite();
+        } finally {
+            serverLock.unlock();
+        }
+        if (!sameSprite(lastCursor, cursor)) {
+            markSpriteDamage(lastCursor);
+            markSpriteDamage(cursor);
+            lastCursor = cursor;
+        }
         Rectangle damage = screen.framebuffer().takeDamage();
         if (damage != null && backend != null) {
-            backend.present(screen, damage);
+            backend.present(screen, damage, cursor);
         }
+    }
+
+    /** The sprite the last frame went out with, so a move can be turned into damage. */
+    private CursorSprite lastCursor;
+
+    /**
+     * Marks the area a sprite covers as needing to be painted again.
+     *
+     * <p>Nothing in the framebuffer changed there - the sprite is drawn over the frame by the
+     * backend - but reusing the damage rectangle is what keeps every backend down to one way of
+     * being told what to repaint.
+     */
+    private void markSpriteDamage(CursorSprite sprite) {
+        if (sprite != null) {
+            screen.framebuffer().markDirty(sprite.x(), sprite.y(), sprite.x() + sprite.width(),
+                    sprite.y() + sprite.height());
+        }
+    }
+
+    /** Whether two sprites would draw the same picture in the same place. */
+    private static boolean sameSprite(CursorSprite previous, CursorSprite current) {
+        if (previous == null || current == null) {
+            return previous == current;
+        }
+        return previous.x() == current.x() && previous.y() == current.y()
+                && previous.pixels() == current.pixels();
     }
 
     public void markScreenDirty() {

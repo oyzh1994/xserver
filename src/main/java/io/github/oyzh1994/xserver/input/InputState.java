@@ -8,16 +8,15 @@ import com.github.moaxcp.x11.protocol.xproto.KeyReleaseEvent;
 import com.github.moaxcp.x11.protocol.xproto.MotionNotifyEvent;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
-import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.event.EventDispatcher.EventFactory;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.extension.ShapeExtension;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
 
-import java.awt.Rectangle;
 import java.util.List;
 
 /**
@@ -57,12 +56,9 @@ public final class InputState implements DisplayBackend.InputSink {
     private Grab pointerGrab;
     private Grab keyboardGrab;
 
-    /** Pixels hidden behind the cursor sprite, so it can be removed again. */
-    private int[] cursorBackup;
-    private Rectangle cursorBackupRect;
-    private int cursorDrawX = Integer.MIN_VALUE;
-    private int cursorDrawY = Integer.MIN_VALUE;
-    private XCursor cursorDrawn;
+    /** The current cursor's pixels, copied once per cursor because the backend asks every frame. */
+    private int[] cursorPixels;
+    private XCursor cursorPixelsFor;
 
     public InputState(XServer server) {
         this.server = server;
@@ -450,21 +446,35 @@ public final class InputState implements DisplayBackend.InputSink {
     // ------------------------------------------------------------------
 
     /**
-     * Draws or removes the cursor sprite. Called from the display loop just before the framebuffer
-     * is presented, so the sprite never becomes part of what {@code GetImage} reads back.
+     * The sprite to draw over the screen at the current pointer position, or null when there is
+     * none.
+     *
+     * <p>It is handed to the display backend rather than painted into the framebuffer - see
+     * {@link CursorSprite} for why - so this is a description of what to draw: the top left corner
+     * the cursor's hotspot puts the image at, and the image itself.
+     *
+     * <p>Pixels are cached per cursor. A backend asks for this once a frame, and a cursor's image
+     * only changes when a client replaces it.
      */
-    public void tickCursor(Screen screen) {
-        server.lockServer();
-        try {
-            XCursor cursor = cursorFor();
-            if (pointerX == cursorDrawX && pointerY == cursorDrawY && cursor == cursorDrawn) {
-                return;
-            }
-            restoreCursor(screen);
-            drawCursor(screen, cursor);
-        } finally {
-            server.unlockServer();
+    public CursorSprite cursorSprite() {
+        XCursor cursor = cursorFor();
+        if (cursor == null) {
+            return null;
         }
+        int width = cursor.width();
+        int height = cursor.height();
+        if (cursorPixelsFor != cursor) {
+            int[] pixels = new int[width * height];
+            for (int row = 0; row < height; row++) {
+                for (int col = 0; col < width; col++) {
+                    pixels[row * width + col] = cursor.pixel(col, row);
+                }
+            }
+            cursorPixels = pixels;
+            cursorPixelsFor = cursor;
+        }
+        return new CursorSprite(pointerX - cursor.hotspotX(), pointerY - cursor.hotspotY(),
+                width, height, cursorPixels);
     }
 
     private XCursor cursorFor() {
@@ -475,62 +485,5 @@ public final class InputState implements DisplayBackend.InputSink {
             }
         }
         return server.rootCursor();
-    }
-
-    private void restoreCursor(Screen screen) {
-        if (cursorBackup == null || cursorBackupRect == null) {
-            return;
-        }
-        Framebuffer framebuffer = screen.framebuffer();
-        for (int row = 0; row < cursorBackupRect.height; row++) {
-            for (int col = 0; col < cursorBackupRect.width; col++) {
-                framebuffer.setPixel(cursorBackupRect.x + col, cursorBackupRect.y + row,
-                        cursorBackup[row * cursorBackupRect.width + col]);
-            }
-        }
-        cursorBackup = null;
-        cursorBackupRect = null;
-    }
-
-    private void drawCursor(Screen screen, XCursor cursor) {
-        if (cursor == null) {
-            return;
-        }
-        Framebuffer framebuffer = screen.framebuffer();
-        int originX = pointerX - cursor.hotspotX();
-        int originY = pointerY - cursor.hotspotY();
-        int width = cursor.width();
-        int height = cursor.height();
-        cursorBackup = new int[width * height];
-        cursorBackupRect = new Rectangle(originX, originY, width, height);
-        for (int row = 0; row < height; row++) {
-            for (int col = 0; col < width; col++) {
-                int x = originX + col;
-                int y = originY + row;
-                if (!framebuffer.contains(x, y)) {
-                    continue;
-                }
-                cursorBackup[row * width + col] = framebuffer.pixel(x, y);
-                int argb = cursor.pixel(col, row);
-                int alpha = (argb >>> 24) & 0xFF;
-                if (alpha == 0) {
-                    continue;
-                }
-                framebuffer.setPixel(x, y, alpha == 0xFF ? argb
-                        : blend(argb, framebuffer.pixel(x, y)));
-            }
-        }
-        cursorDrawX = pointerX;
-        cursorDrawY = pointerY;
-        cursorDrawn = cursor;
-    }
-
-    private static int blend(int src, int dst) {
-        int sa = (src >>> 24) & 0xFF;
-        int inv = 255 - sa;
-        int r = (((src >> 16) & 0xFF) * sa + ((dst >> 16) & 0xFF) * inv) / 255;
-        int g = (((src >> 8) & 0xFF) * sa + ((dst >> 8) & 0xFF) * inv) / 255;
-        int b = ((src & 0xFF) * sa + (dst & 0xFF) * inv) / 255;
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 }

@@ -42,6 +42,8 @@ public final class SwingBackend implements DisplayBackend {
     private volatile boolean closed;
     private volatile JFrame frame;
     private volatile ScreenPanel panel;
+    /** The pointer sprite that goes with the last presented frame. */
+    private volatile CursorSprite cursor;
 
     private InputSink input;
 
@@ -71,11 +73,13 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage) {
+    public void present(Screen screen, Rectangle damage, CursorSprite sprite) {
         ScreenPanel target = panel;
         if (target == null || closed || damage == null) {
             return;
         }
+        // The panel draws the sprite itself, on top of the image it copies out of the framebuffer.
+        this.cursor = sprite;
         // The image copy and the repaint both belong to the event dispatch thread; the server
         // calls this from its render loop, so the work is posted rather than done here.
         int x = damage.x;
@@ -201,6 +205,10 @@ public final class SwingBackend implements DisplayBackend {
         private final int stride;
         private final BufferedImage image;
 
+        /** The pointer sprite as an image, rebuilt when a client replaces the cursor. */
+        private BufferedImage cursorImage;
+        private int[] cursorPixels;
+
         ScreenPanel(Framebuffer framebuffer) {
             this.pixels = framebuffer.pixels();
             this.stride = framebuffer.stride();
@@ -237,10 +245,32 @@ public final class SwingBackend implements DisplayBackend {
             int y0 = Math.max(0, clip.y);
             int x1 = Math.min(image.getWidth(), clip.x + clip.width);
             int y1 = Math.min(image.getHeight(), clip.y + clip.height);
-            if (x0 >= x1 || y0 >= y1) {
+            if (x0 < x1 && y0 < y1) {
+                g.drawImage(image, x0, y0, x1, y1, x0, y0, x1, y1, null);
+            }
+            // Over the frame, never in it: the sprite is what the framebuffer must not hold.
+            drawCursor(g);
+        }
+
+        /**
+         * Draws the pointer sprite, rebuilding the image only when a client replaced the cursor.
+         *
+         * <p>The sprite's pixels are cached per cursor, so a moving pointer keeps handing over the
+         * same array and only the position changes.
+         */
+        private void drawCursor(Graphics g) {
+            CursorSprite sprite = cursor;
+            if (sprite == null) {
                 return;
             }
-            g.drawImage(image, x0, y0, x1, y1, x0, y0, x1, y1, null);
+            if (sprite.pixels() != cursorPixels) {
+                cursorPixels = sprite.pixels();
+                cursorImage = new BufferedImage(sprite.width(), sprite.height(),
+                        BufferedImage.TYPE_INT_ARGB);
+                cursorImage.setRGB(0, 0, sprite.width(), sprite.height(), sprite.pixels(), 0,
+                        sprite.width());
+            }
+            g.drawImage(cursorImage, sprite.x(), sprite.y(), null);
         }
     }
 

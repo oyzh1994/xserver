@@ -57,6 +57,8 @@ public final class JavaFxBackend implements DisplayBackend {
 
     /** The damage waiting to be flushed, grown by every {@link #present} until the FX thread runs. */
     private Rectangle pendingDamage;
+    /** The sprite that goes with that damage; the latest one wins, since only it is on screen. */
+    private CursorSprite pendingCursor;
     private boolean flushScheduled;
 
     private volatile boolean closed;
@@ -71,6 +73,10 @@ public final class JavaFxBackend implements DisplayBackend {
     private GraphicsContext graphics;
     private WritableImage image;
     private PixelBuffer<IntBuffer> pixelBuffer;
+
+    /** The pointer sprite as a JavaFX image, rebuilt when a client replaces the cursor. */
+    private WritableImage cursorImage;
+    private int[] cursorPixels;
 
     /**
      * The image the framebuffer is presented through. Exposed so a test can read it back and prove
@@ -126,7 +132,7 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage) {
+    public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
         if (closed || damage == null) {
             return;
         }
@@ -136,6 +142,7 @@ public final class JavaFxBackend implements DisplayBackend {
             pendingDamage = pendingDamage == null
                     ? new Rectangle(damage)
                     : pendingDamage.union(damage);
+            pendingCursor = cursor;
             if (flushScheduled) {
                 return;
             }
@@ -239,8 +246,10 @@ public final class JavaFxBackend implements DisplayBackend {
     /** Runs on the FX thread. */
     private void flushDamage() {
         Rectangle region;
+        CursorSprite cursor;
         synchronized (damageLock) {
             region = pendingDamage;
+            cursor = pendingCursor;
             pendingDamage = null;
             flushScheduled = false;
         }
@@ -267,6 +276,32 @@ public final class JavaFxBackend implements DisplayBackend {
         }
         graphics.drawImage(image, damage.x, damage.y, damage.width, damage.height,
                 damage.x, damage.y, damage.width, damage.height);
+        drawCursor(cursor);
+    }
+
+    /**
+     * Draws the pointer sprite over the part of the frame that was just blitted.
+     *
+     * <p>The canvas keeps what was drawn into it, so the sprite is painted last and the damage
+     * region - which the server grows to cover the sprite's previous position as well - has already
+     * been repainted from the framebuffer underneath it. That is what makes a moving sprite leave
+     * nothing behind without touching the framebuffer itself.
+     *
+     * <p>Runs on the FX thread.
+     */
+    private void drawCursor(CursorSprite sprite) {
+        if (sprite == null || graphics == null) {
+            return;
+        }
+        if (sprite.pixels() != cursorPixels) {
+            // The cursor was replaced by a client: build the image once for the new one. Its pixels
+            // are cached per cursor, so a moving pointer keeps the same array.
+            cursorPixels = sprite.pixels();
+            cursorImage = new WritableImage(sprite.width(), sprite.height());
+            cursorImage.getPixelWriter().setPixels(0, 0, sprite.width(), sprite.height(),
+                    PixelFormat.getIntArgbInstance(), sprite.pixels(), 0, sprite.width());
+        }
+        graphics.drawImage(cursorImage, sprite.x(), sprite.y());
     }
 
     /**

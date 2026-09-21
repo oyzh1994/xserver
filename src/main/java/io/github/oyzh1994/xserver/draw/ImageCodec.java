@@ -394,6 +394,10 @@ public final class ImageCodec {
         return switch (depth) {
             case 8 -> 0xFF000000 | (value & 0xFF);
             case 16 -> expand565(value);
+            // A depth 32 drawable with no visual is ARGB32 by convention here, and the top byte of
+            // the wire pixel is its alpha channel; keeping it is what makes an uploaded cursor image
+            // translucent instead of a solid block.
+            case 32 -> value;
             default -> 0xFF000000 | (value & 0xFFFFFF);
         };
     }
@@ -410,6 +414,9 @@ public final class ImageCodec {
         return switch (depth) {
             case 8 -> argb & 0xFF;
             case 16 -> ((argb >> 8) & 0xF800) | ((argb >> 5) & 0x07E0) | ((argb >> 3) & 0x001F);
+            // Mirrors the read path: a depth 32 drawable keeps its alpha, so a client can read a
+            // cursor image or a translucent surface back the way it wrote it.
+            case 32 -> argb;
             default -> argb & 0xFFFFFF;
         };
     }

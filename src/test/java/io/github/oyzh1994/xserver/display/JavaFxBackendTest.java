@@ -50,7 +50,7 @@ class JavaFxBackendTest {
         // Paint a recognisable pattern, then present the whole screen.
         framebuffer.fillRect(0, 0, WIDTH, HEIGHT, 0xFF102030);
         framebuffer.fillRect(10, 10, 8, 8, 0xFFEEDDCC);
-        backend.present(screen, new Rectangle(0, 0, WIDTH, HEIGHT));
+        backend.present(screen, new Rectangle(0, 0, WIDTH, HEIGHT), null);
 
         int sampled = readPixel(backend, 12, 12);
         assertEquals(0xFFEEDDCC, sampled,
