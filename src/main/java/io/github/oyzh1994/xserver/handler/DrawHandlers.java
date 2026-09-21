@@ -1,0 +1,545 @@
+package io.github.oyzh1994.xserver.handler;
+
+import com.github.moaxcp.x11.protocol.xproto.ClearArea;
+import com.github.moaxcp.x11.protocol.xproto.CopyArea;
+import com.github.moaxcp.x11.protocol.xproto.CopyPlane;
+import com.github.moaxcp.x11.protocol.xproto.FillPoly;
+import com.github.moaxcp.x11.protocol.xproto.GetImage;
+import com.github.moaxcp.x11.protocol.xproto.GetImageReply;
+import com.github.moaxcp.x11.protocol.xproto.ImageText16;
+import com.github.moaxcp.x11.protocol.xproto.ImageText8;
+import com.github.moaxcp.x11.protocol.xproto.NoExposureEvent;
+import com.github.moaxcp.x11.protocol.xproto.PolyArc;
+import com.github.moaxcp.x11.protocol.xproto.PolyFillArc;
+import com.github.moaxcp.x11.protocol.xproto.PolyFillRectangle;
+import com.github.moaxcp.x11.protocol.xproto.PolyLine;
+import com.github.moaxcp.x11.protocol.xproto.PolyPoint;
+import com.github.moaxcp.x11.protocol.xproto.PolyRectangle;
+import com.github.moaxcp.x11.protocol.xproto.PolySegment;
+import com.github.moaxcp.x11.protocol.xproto.PolyText16;
+import com.github.moaxcp.x11.protocol.xproto.PolyText8;
+import com.github.moaxcp.x11.protocol.xproto.PutImage;
+import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.display.VisualInfo;
+import io.github.oyzh1994.xserver.draw.ImageCodec;
+import io.github.oyzh1994.xserver.draw.PixelStore;
+import io.github.oyzh1994.xserver.draw.Rasterizer;
+import io.github.oyzh1994.xserver.event.EventMasks;
+import io.github.oyzh1994.xserver.resource.XFont;
+import io.github.oyzh1994.xserver.resource.XGC;
+import io.github.oyzh1994.xserver.resource.XPixmap;
+import io.github.oyzh1994.xserver.resource.XResource;
+import io.github.oyzh1994.xserver.resource.XWindow;
+import org.eclipse.collections.impl.factory.primitive.ByteLists;
+
+import java.awt.Rectangle;
+import java.util.List;
+
+/**
+ * Drawing requests.
+ *
+ * <p>Everything funnels through {@link Rasterizer}, which owns the X11 raster operation semantics.
+ * This class only has to resolve the drawable, the graphics context and the clip rectangle that the
+ * window hierarchy imposes, and translate the request's arguments into calls.
+ */
+public final class DrawHandlers {
+
+
+    /** Coordinate modes. */
+    private static final int COORD_MODE_ORIGIN = 0;
+    private static final int COORD_MODE_PREVIOUS = 1;
+
+    /** Shape values for {@code FillPoly}. */
+    private static final int SHAPE_COMPLEX = 0;
+    private static final int SHAPE_NONCONVEX = 1;
+    private static final int SHAPE_CONVEX = 2;
+
+    private final XServer server;
+
+    public DrawHandlers(XServer server) {
+        this.server = server;
+    }
+
+    // ------------------------------------------------------------------
+    // Area operations
+    // ------------------------------------------------------------------
+
+    public void clearArea(ClientConnection client, ClearArea r) {
+        XWindow window = window(client, r.getWindow());
+        if (!window.isViewable()) {
+            return;
+        }
+        int width = Short.toUnsignedInt(r.getWidth());
+        int height = Short.toUnsignedInt(r.getHeight());
+        if (width == 0) {
+            width = window.width() - r.getX();
+        }
+        if (height == 0) {
+            height = window.height() - r.getY();
+        }
+        Rectangle area = new Rectangle(window.absoluteX() + r.getX(),
+                window.absoluteY() + r.getY(), width, height);
+        if (window.isBackgroundPixmap()) {
+            // A tiled background is painted by the window painter, which knows the tiling origin.
+            server.windows().paintBackground(window, area);
+        } else {
+            Rectangle visible = area.intersection(window.clipRect());
+            if (!visible.isEmpty()) {
+                server.screen().framebuffer().fillRect(visible.x, visible.y, visible.width,
+                        visible.height, window.backgroundPixel());
+            }
+        }
+        if (r.isExposures()) {
+            server.windows().deliverExpose(window, area);
+        }
+        server.markScreenDirty();
+    }
+
+    public void copyArea(ClientConnection client, CopyArea r) {
+        XResource source = server.resources().requireDrawable(client, r.getSrcDrawable());
+        XResource destination = server.resources().requireDrawable(client, r.getDstDrawable());
+        XGC gc = gc(client, r.getGc());
+        Target target = target(destination, gc);
+        target.rasterizer().copyArea(storeOf(source), originXOf(source) + r.getSrcX(),
+                originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
+                Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()));
+        afterDrawing(client, gc, destination, r.getSrcDrawable());
+    }
+
+    public void copyPlane(ClientConnection client, CopyPlane r) {
+        XResource source = server.resources().requireDrawable(client, r.getSrcDrawable());
+        XResource destination = server.resources().requireDrawable(client, r.getDstDrawable());
+        XGC gc = gc(client, r.getGc());
+        Target target = target(destination, gc);
+        target.rasterizer().copyPlane(storeOf(source), originXOf(source) + r.getSrcX(),
+                originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
+                Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
+                r.getBitPlane());
+        afterDrawing(client, gc, destination, r.getSrcDrawable());
+    }
+
+    public void putImage(ClientConnection client, PutImage r) {
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        XGC gc = gc(client, r.getGc());
+        int format = Byte.toUnsignedInt(r.getFormat());
+        if (format > ImageCodec.ZPIXMAP) {
+            throw ProtocolException.badValue(format);
+        }
+        // A bitmap carries no depth of its own: its bits are painted in the GC's foreground and
+        // background, so it may be put into a drawable of any depth. Only real images have to
+        // match, which is how clients draw monochrome icons and cursor shapes into colour windows.
+        int depth = Byte.toUnsignedInt(r.getDepth());
+        if (format != ImageCodec.XY_BITMAP && depth != 0 && depth != depthOf(drawable)) {
+            throw ProtocolException.badMatch();
+        }
+        Target target = target(drawable, gc);
+        ImageCodec.putImage(target.store(), gc, target.x(r.getDstX()), target.y(r.getDstY()),
+                Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()), format,
+                Byte.toUnsignedInt(r.getLeftPad()), depthOf(drawable), r.getData().toArray(), 0,
+                client.isBigEndian());
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void getImage(ClientConnection client, GetImage r) {
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        int format = Byte.toUnsignedInt(r.getFormat());
+        if (format > ImageCodec.ZPIXMAP) {
+            throw ProtocolException.badValue(format);
+        }
+        int x = r.getX();
+        int y = r.getY();
+        int width = Short.toUnsignedInt(r.getWidth());
+        int height = Short.toUnsignedInt(r.getHeight());
+        // The rectangle is in the drawable's own coordinates and must lie inside it.
+        if (x + width > widthOf(drawable) || y + height > heightOf(drawable)
+                || width == 0 || height == 0) {
+            throw ProtocolException.badMatch();
+        }
+        VisualInfo visual = visualOf(drawable);
+        // Reading needs the surface but no graphics context: GetImage takes its own plane mask.
+        PixelStore store = storeOf(drawable);
+        byte[] data = ImageCodec.getImage(store, x + originXOf(drawable), y + originYOf(drawable),
+                width, height, format,
+                r.getPlaneMask(), depthOf(drawable), visual, client.isBigEndian());
+        client.sendReply(GetImageReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .depth((byte) depthOf(drawable))
+                .visual(visual == null ? 0 : visual.id())
+                .data(ByteLists.immutable.of(data))
+                .build());
+    }
+
+    // ------------------------------------------------------------------
+    // Primitives
+    // ------------------------------------------------------------------
+
+    public void polyPoint(ClientConnection client, PolyPoint r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
+        target.rasterizer().drawPoints(points);
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyLine(ClientConnection client, PolyLine r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
+        target.rasterizer().drawPolyline(points);
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polySegment(ClientConnection client, PolySegment r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        int[] points = new int[r.getSegments().size() * 4];
+        int i = 0;
+        for (var segment : r.getSegments()) {
+            points[i++] = segment.getX1();
+            points[i++] = segment.getY1();
+            points[i++] = segment.getX2();
+            points[i++] = segment.getY2();
+        }
+        target.rasterizer().drawSegments(target.points(points));
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyRectangle(ClientConnection client, PolyRectangle r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        for (var rectangle : r.getRectangles()) {
+            target.rasterizer().drawRect(target.x(rectangle.getX()), target.y(rectangle.getY()),
+                    Short.toUnsignedInt(rectangle.getWidth()),
+                    Short.toUnsignedInt(rectangle.getHeight()));
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyArc(ClientConnection client, PolyArc r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        for (var arc : r.getArcs()) {
+            target.rasterizer().drawArc(target.x(arc.getX()), target.y(arc.getY()),
+                    Short.toUnsignedInt(arc.getWidth()),
+                    Short.toUnsignedInt(arc.getHeight()), arc.getAngle1(), arc.getAngle2());
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyFillRectangle(ClientConnection client, PolyFillRectangle r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        for (var rectangle : r.getRectangles()) {
+            target.rasterizer().fillRect(target.x(rectangle.getX()), target.y(rectangle.getY()),
+                    Short.toUnsignedInt(rectangle.getWidth()),
+                    Short.toUnsignedInt(rectangle.getHeight()));
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyFillArc(ClientConnection client, PolyFillArc r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        for (var arc : r.getArcs()) {
+            target.rasterizer().fillArc(target.x(arc.getX()), target.y(arc.getY()),
+                    Short.toUnsignedInt(arc.getWidth()),
+                    Short.toUnsignedInt(arc.getHeight()), arc.getAngle1(), arc.getAngle2());
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void fillPoly(ClientConnection client, FillPoly r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
+        boolean winding = gc.fillRule() == XGC.FILL_WINDING;
+        target.rasterizer().fillPolygon(points, winding);
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Text
+    // ------------------------------------------------------------------
+
+    public void polyText8(ClientConnection client, PolyText8 r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        byte[] items = r.getItems().toArray();
+        int x = r.getX();
+        int y = r.getY();
+        XFont font = gc.font() != null ? gc.font() : defaultFont(client);
+        int index = 0;
+        while (index < items.length) {
+            int length = items[index] & 0xFF;
+            index++;
+            if (length == 0) {
+                break;
+            }
+            if (length == 255) {
+                // Font change item: the next four bytes name the font to use from here on.
+                if (index + 4 > items.length) {
+                    throw ProtocolException.badLength();
+                }
+                int fontId = readCard32(items, index, client.isBigEndian());
+                index += 4;
+                font = (XFont) server.resources().require(client, fontId, XResource.CLASS_FONT,
+                        false);
+                continue;
+            }
+            // A text element is [length][delta][characters], in that order: the delta is read and
+            // applied before the string it belongs to. Reading the characters straight after the
+            // length - the obvious mistake - shifts every string by one byte, which shows up as a
+            // missing first character and a dropped last one.
+            if (index + 1 + length > items.length) {
+                throw ProtocolException.badLength();
+            }
+            x += items[index];
+            index++;
+            target.rasterizer().drawText8(font, target.x(x), target.y(y), items, index, length);
+            x += font.stringWidth8(items, index, length);
+            index += length;
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void polyText16(ClientConnection client, PolyText16 r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        byte[] items = r.getItems().toArray();
+        int x = r.getX();
+        int y = r.getY();
+        XFont font = gc.font() != null ? gc.font() : defaultFont(client);
+        int index = 0;
+        while (index < items.length) {
+            int length = items[index] & 0xFF;
+            index++;
+            if (length == 0) {
+                break;
+            }
+            if (length == 255) {
+                if (index + 4 > items.length) {
+                    throw ProtocolException.badLength();
+                }
+                int fontId = readCard32(items, index, client.isBigEndian());
+                index += 4;
+                font = (XFont) server.resources().require(client, fontId, XResource.CLASS_FONT,
+                        false);
+                continue;
+            }
+            // Each character is two bytes and the length field counts characters; the delta comes
+            // before them, exactly as in PolyText8.
+            int bytes = length * 2;
+            if (index + 1 + bytes > items.length) {
+                throw ProtocolException.badLength();
+            }
+            x += items[index];
+            index++;
+            char[] chars = new char[length];
+            for (int i = 0; i < length; i++) {
+                int high = items[index + i * 2] & 0xFF;
+                int low = items[index + i * 2 + 1] & 0xFF;
+                chars[i] = (char) ((high << 8) | low);
+            }
+            target.rasterizer().drawText16(font, target.x(x), target.y(y), chars, 0, length);
+            x += font.stringWidth16(chars, 0, length);
+            index += bytes;
+        }
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void imageText8(ClientConnection client, ImageText8 r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        byte[] chars = r.getString().toArray();
+        XFont font = gc.font() != null ? gc.font() : defaultFont(client);
+        target.rasterizer().drawText8(font, target.x(r.getX()), target.y(r.getY()), chars, 0,
+                chars.length);
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    public void imageText16(ClientConnection client, ImageText16 r) {
+        XGC gc = gc(client, r.getGc());
+        XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        Target target = target(drawable, gc);
+        org.eclipse.collections.api.list.ImmutableList<com.github.moaxcp.x11.protocol.xproto.Char2b> source = r.getString();
+        char[] chars = new char[source.size()];
+        for (int i = 0; i < chars.length; i++) {
+            chars[i] = (char) (((source.get(i).getByte1() & 0xFF) << 8)
+                    | (source.get(i).getByte2() & 0xFF));
+        }
+        XFont font = gc.font() != null ? gc.font() : defaultFont(client);
+        target.rasterizer().drawText16(font, target.x(r.getX()), target.y(r.getY()), chars, 0,
+                chars.length);
+        afterDrawing(client, gc, drawable, 0);
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private XWindow window(ClientConnection client, int id) {
+        return (XWindow) server.resources().require(client, id, XResource.CLASS_WINDOW, false);
+    }
+
+    private XGC gc(ClientConnection client, int id) {
+        return (XGC) server.resources().require(client, id, XResource.CLASS_GC, false);
+    }
+
+    private XFont defaultFont(ClientConnection client) {
+        XResource font = server.resources().get(server.defaultFontId());
+        if (font instanceof XFont xFont) {
+            return xFont;
+        }
+        throw ProtocolException.badFont(0);
+    }
+
+    private PixelStore storeOf(XResource drawable) {
+        if (drawable instanceof XWindow) {
+            return server.screen().framebuffer();
+        }
+        return (XPixmap) drawable;
+    }
+
+    private VisualInfo visualOf(XResource drawable) {
+        if (drawable instanceof XWindow window) {
+            return window.visual();
+        }
+        return ((XPixmap) drawable).visual();
+    }
+
+    private static int widthOf(XResource drawable) {
+        return drawable instanceof XWindow window ? window.width()
+                : ((XPixmap) drawable).width();
+    }
+
+    private static int heightOf(XResource drawable) {
+        return drawable instanceof XWindow window ? window.height()
+                : ((XPixmap) drawable).height();
+    }
+
+    private int depthOf(XResource drawable) {
+        if (drawable instanceof XWindow window) {
+            return window.depth();
+        }
+        return ((XPixmap) drawable).depth();
+    }
+
+    /**
+     * Builds a rasterizer for a drawable. Windows draw into the screen framebuffer clipped to the
+     * part of themselves that is actually visible, which is what makes obscuring behave the way X
+     * clients expect.
+     */
+    /**
+     * The surface a request draws on, with the translation between the request's coordinates and
+     * the surface's own.
+     *
+     * <p>A window's coordinates are relative to its parent, but a window draws straight into the
+     * screen framebuffer, so every coordinate has to be moved by the window's absolute position.
+     * Pixmaps are their own origin. Without this a window's contents land wherever its coordinates
+     * point on the screen - which is only correct for the root window, and is why the bug survived
+     * until a real application was run.
+     */
+    private record Target(PixelStore store, Rasterizer rasterizer, int originX, int originY) {
+        int x(int local) {
+            return local + originX;
+        }
+
+        int y(int local) {
+            return local + originY;
+        }
+
+        /** Translates a flat x,y,x,y... point array in place. */
+        int[] points(int[] local) {
+            for (int i = 0; i < local.length; i += 2) {
+                local[i] += originX;
+                local[i + 1] += originY;
+            }
+            return local;
+        }
+    }
+
+    private Target target(XResource drawable, XGC gc) {
+        if (drawable instanceof XWindow window) {
+            PixelStore store = server.screen().framebuffer();
+            return new Target(store, new Rasterizer(store, gc, window.clipRect()),
+                    window.absoluteX(), window.absoluteY());
+        }
+        XPixmap pixmap = (XPixmap) drawable;
+        return new Target(pixmap, new Rasterizer(pixmap, gc), 0, 0);
+    }
+
+    /** Origin of a drawable in screen coordinates, for requests that name two drawables. */
+    private static int originXOf(XResource drawable) {
+        return drawable instanceof XWindow window ? window.absoluteX() : 0;
+    }
+
+    private static int originYOf(XResource drawable) {
+        return drawable instanceof XWindow window ? window.absoluteY() : 0;
+    }
+
+    /**
+     * Finishes a drawing request: marks the screen dirty and reports graphics exposures when the
+     * client asked for them.
+     *
+     * <p>The server always has the source pixels available, so a copy either succeeds completely or
+     * is clipped away; a {@code NoExpose} tells the client there is nothing else coming, which is
+     * what clients that set {@code graphics-exposures} on their GC are waiting to hear.
+     */
+    private void afterDrawing(ClientConnection client, XGC gc, XResource drawable,
+                              int sourceDrawable) {
+        server.markScreenDirty();
+        if (gc.graphicsExposures() && drawable instanceof XWindow window) {
+            server.events().send(window.owner() == null ? client : window.owner(),
+                    NoExposureEvent.builder()
+                            .firstEventOffset((byte) 0)
+                            .sentEvent(false)
+                            .sequenceNumber(client.sequenceNumber())
+                            .drawable(window.id())
+                            .minorOpcode((short) 0)
+                            .majorOpcode((byte) 0)
+                            .build());
+        }
+    }
+
+    /** Flattens the point list, resolving relative coordinates when the mode asks for it. */
+    private int[] flattenPoints(org.eclipse.collections.api.list.ImmutableList<com.github.moaxcp.x11.protocol.xproto.Point> points, int mode) {
+        int[] result = new int[points.size() * 2];
+        int lastX = 0;
+        int lastY = 0;
+        for (int i = 0; i < points.size(); i++) {
+            var point = points.get(i);
+            if (mode == COORD_MODE_PREVIOUS && i > 0) {
+                lastX += point.getX();
+                lastY += point.getY();
+            } else {
+                lastX = point.getX();
+                lastY = point.getY();
+            }
+            result[i * 2] = lastX;
+            result[i * 2 + 1] = lastY;
+        }
+        return result;
+    }
+
+    private static int readCard32(byte[] bytes, int offset, boolean bigEndian) {
+        if (bigEndian) {
+            return ((bytes[offset] & 0xFF) << 24) | ((bytes[offset + 1] & 0xFF) << 16)
+                    | ((bytes[offset + 2] & 0xFF) << 8) | (bytes[offset + 3] & 0xFF);
+        }
+        return ((bytes[offset + 3] & 0xFF) << 24) | ((bytes[offset + 2] & 0xFF) << 16)
+                | ((bytes[offset + 1] & 0xFF) << 8) | (bytes[offset] & 0xFF);
+    }
+}

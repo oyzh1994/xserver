@@ -1,0 +1,633 @@
+package io.github.oyzh1994.xserver.handler;
+
+import com.github.moaxcp.x11.protocol.xproto.ChangeProperty;
+import com.github.moaxcp.x11.protocol.xproto.ConvertSelection;
+import com.github.moaxcp.x11.protocol.xproto.DeleteProperty;
+import com.github.moaxcp.x11.protocol.xproto.GetAtomName;
+import com.github.moaxcp.x11.protocol.xproto.GetAtomNameReply;
+import com.github.moaxcp.x11.protocol.xproto.GetProperty;
+import com.github.moaxcp.x11.protocol.xproto.GetPropertyReply;
+import com.github.moaxcp.x11.protocol.xproto.GetSelectionOwner;
+import com.github.moaxcp.x11.protocol.xproto.GetSelectionOwnerReply;
+import com.github.moaxcp.x11.protocol.xproto.InternAtom;
+import com.github.moaxcp.x11.protocol.xproto.InternAtomReply;
+import com.github.moaxcp.x11.protocol.xproto.ListProperties;
+import com.github.moaxcp.x11.protocol.xproto.ListPropertiesReply;
+import com.github.moaxcp.x11.protocol.xproto.PropertyNotifyEvent;
+import com.github.moaxcp.x11.protocol.xproto.RotateProperties;
+import com.github.moaxcp.x11.protocol.xproto.SendEvent;
+import com.github.moaxcp.x11.protocol.xproto.SelectionClearEvent;
+import com.github.moaxcp.x11.protocol.xproto.SelectionRequestEvent;
+import com.github.moaxcp.x11.protocol.xproto.SetSelectionOwner;
+import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.event.EventMasks;
+import io.github.oyzh1994.xserver.resource.AtomTable;
+import io.github.oyzh1994.xserver.resource.XProperty;
+import io.github.oyzh1994.xserver.resource.XResource;
+import io.github.oyzh1994.xserver.resource.XWindow;
+import org.eclipse.collections.impl.factory.primitive.ByteLists;
+import org.eclipse.collections.impl.factory.primitive.IntLists;
+
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Atoms, window properties, selections and {@code SendEvent}.
+ *
+ * <p>These four are grouped because they are the inter-client communication channel: a client
+ * publishes state as a property, names it with an atom, hands a selection to another client, and
+ * the notification reaches the peer either as a property notify or as an explicitly sent event.
+ */
+public final class AtomHandlers {
+
+    /** Property notify states. */
+    private static final byte NEW_VALUE = 0;
+    private static final byte DELETED = 1;
+
+    /** ChangeProperty modes. */
+    private static final int MODE_REPLACE = 0;
+    private static final int MODE_PREPEND = 1;
+    private static final int MODE_APPEND = 2;
+
+    /** {@code longLength} values above this mean "read the whole property". */
+    private static final int LONG_LENGTH_ALL = Integer.MAX_VALUE >> 2;
+
+    private final XServer server;
+
+    public AtomHandlers(XServer server) {
+        this.server = server;
+    }
+
+    // ------------------------------------------------------------------
+    // Atoms
+    // ------------------------------------------------------------------
+
+    public void internAtom(ClientConnection client, InternAtom r) {
+        String name = ascii(r.getName());
+        if (name.isEmpty()) {
+            throw ProtocolException.badValue(0);
+        }
+        int atom = server.atoms().intern(name, r.isOnlyIfExists());
+        client.sendReply(InternAtomReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .atom(atom)
+                .build());
+    }
+
+    public void getAtomName(ClientConnection client, GetAtomName r) {
+        String name = server.atoms().name(r.getAtom());
+        if (name == null) {
+            throw ProtocolException.badAtom(r.getAtom());
+        }
+        client.sendReply(GetAtomNameReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .name(ByteLists.immutable.of(name.getBytes(StandardCharsets.ISO_8859_1)))
+                .build());
+    }
+
+    // ------------------------------------------------------------------
+    // Properties
+    // ------------------------------------------------------------------
+
+    public void changeProperty(ClientConnection client, ChangeProperty r) {
+        XWindow window = window(client, r.getWindow());
+        int property = r.getProperty();
+        if (property == AtomTable.NONE) {
+            throw ProtocolException.badAtom(property);
+        }
+        int type = r.getType();
+        int format = Byte.toUnsignedInt(r.getFormat());
+        if (format != 8 && format != 16 && format != 32) {
+            throw ProtocolException.badValue(format);
+        }
+        if (r.getMode() < MODE_REPLACE || r.getMode() > MODE_APPEND) {
+            throw ProtocolException.badValue(r.getMode());
+        }
+
+        byte[] incoming = normalize(r.getData().toArray(), format, client.isBigEndian());
+        // X requires the data to be a whole number of items; anything trailing is ignored.
+        int unit = format / 8;
+        int usable = incoming.length - incoming.length % unit;
+        if (usable != incoming.length) {
+            incoming = java.util.Arrays.copyOf(incoming, usable);
+        }
+
+        XProperty existing = window.properties().get(property);
+        if (r.getMode() == MODE_REPLACE || existing == null) {
+            window.properties().put(property, new XProperty(property, type, format, incoming));
+        } else {
+            if (existing.typeAtom() != type || existing.format() != format) {
+                throw ProtocolException.badMatch();
+            }
+            byte[] old = existing.data();
+            byte[] combined;
+            if (r.getMode() == MODE_PREPEND) {
+                combined = new byte[incoming.length + old.length];
+                System.arraycopy(incoming, 0, combined, 0, incoming.length);
+                System.arraycopy(old, 0, combined, incoming.length, old.length);
+            } else {
+                combined = new byte[old.length + incoming.length];
+                System.arraycopy(old, 0, combined, 0, old.length);
+                System.arraycopy(incoming, 0, combined, old.length, incoming.length);
+            }
+            existing.setData(combined);
+        }
+        notifyProperty(window, property, NEW_VALUE);
+    }
+
+    public void deleteProperty(ClientConnection client, DeleteProperty r) {
+        XWindow window = window(client, r.getWindow());
+        if (window.properties().remove(r.getProperty()) != null) {
+            notifyProperty(window, r.getProperty(), DELETED);
+        }
+    }
+
+    public void getProperty(ClientConnection client, GetProperty r) {
+        XWindow window = window(client, r.getWindow());
+        XProperty property = window.properties().get(r.getProperty());
+        if (property == null) {
+            // A missing property is not an error: the reply carries type None and no data.
+            client.sendReply(GetPropertyReply.builder()
+                    .sequenceNumber(client.sequenceNumber())
+                    .format((byte) 0)
+                    .type(AtomTable.NONE)
+                    .bytesAfter(0)
+                    .valueLen(0)
+                    .value(ByteLists.immutable.empty())
+                    .build());
+            return;
+        }
+        if (r.getType() != AtomTable.NONE && r.getType() != property.typeAtom()) {
+            // Reading with the wrong type behaves like a missing property.
+            client.sendReply(GetPropertyReply.builder()
+                    .sequenceNumber(client.sequenceNumber())
+                    .format((byte) 0)
+                    .type(property.typeAtom())
+                    .bytesAfter(property.data().length)
+                    .valueLen(0)
+                    .value(ByteLists.immutable.empty())
+                    .build());
+            return;
+        }
+
+        int unit = property.format() / 8;
+        byte[] data = property.data();
+        int offsetBytes = r.getLongOffset() * 4;
+        if (offsetBytes < 0 || offsetBytes > data.length) {
+            throw ProtocolException.badValue(r.getLongOffset());
+        }
+        // longLength is in 4 byte units; values above LONG_LENGTH_ALL mean "everything".
+        int available = data.length - offsetBytes;
+        int requestedBytes;
+        if (r.getLongLength() == 0) {
+            requestedBytes = 0;
+        } else if (r.getLongLength() > LONG_LENGTH_ALL) {
+            requestedBytes = available;
+        } else {
+            requestedBytes = (int) Math.min((long) r.getLongLength() * 4, (long) available);
+        }
+        // The slice must end on an item boundary.
+        requestedBytes -= requestedBytes % unit;
+
+        byte[] slice = java.util.Arrays.copyOfRange(data, offsetBytes,
+                offsetBytes + requestedBytes);
+        int bytesAfter = data.length - offsetBytes - requestedBytes;
+
+        if (r.isDelete() && bytesAfter == 0) {
+            window.properties().remove(r.getProperty());
+            notifyProperty(window, r.getProperty(), DELETED);
+        }
+
+        client.sendReply(GetPropertyReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .format((byte) property.format())
+                .type(property.typeAtom())
+                .bytesAfter(bytesAfter)
+                .valueLen(requestedBytes / unit)
+                .value(ByteLists.immutable.of(normalize(slice, property.format(),
+                        client.isBigEndian())))
+                .build());
+    }
+
+    public void listProperties(ClientConnection client, ListProperties r) {
+        XWindow window = window(client, r.getWindow());
+        List<Integer> atoms = new ArrayList<>(window.properties().keySet());
+        java.util.Collections.sort(atoms);
+        client.sendReply(ListPropertiesReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .atoms(IntLists.immutable.ofAll(atoms))
+                .build());
+    }
+
+    public void rotateProperties(ClientConnection client, RotateProperties r) {
+        XWindow window = window(client, r.getWindow());
+        List<Integer> atoms = new ArrayList<>();
+        for (int atom : r.getAtoms().toArray()) {
+            if (!window.properties().containsKey(atom)) {
+                throw ProtocolException.badAtom(atom);
+            }
+            atoms.add(atom);
+        }
+        if (atoms.isEmpty()) {
+            return;
+        }
+        int count = atoms.size();
+        int delta = ((r.getDelta() % count) + count) % count;
+        if (delta == 0) {
+            return;
+        }
+        List<XProperty> rotated = new ArrayList<>(java.util.Collections.nCopies(count, null));
+        for (int i = 0; i < count; i++) {
+            rotated.set((i + delta) % count, window.properties().get(atoms.get(i)));
+        }
+        for (int i = 0; i < count; i++) {
+            window.properties().put(atoms.get(i), rotated.get(i));
+            notifyProperty(window, atoms.get(i), NEW_VALUE);
+        }
+    }
+
+    private void notifyProperty(XWindow window, int atom, byte state) {
+        server.events().deliverToWindow(window, EventMasks.PROPERTY_CHANGE,
+                (recipient, w, child, x, y) -> PropertyNotifyEvent.builder()
+                        .firstEventOffset((byte) 0)
+                        .sentEvent(false)
+                        .sequenceNumber(recipient.sequenceNumber())
+                        .window(w.id())
+                        .atom(atom)
+                        .time(server.events().time())
+                        .state(state)
+                        .build());
+    }
+
+    // ------------------------------------------------------------------
+    // Selections
+    // ------------------------------------------------------------------
+
+    public void setSelectionOwner(ClientConnection client, SetSelectionOwner r) {
+        String name = selectionName(r.getSelection());
+        XWindow owner = r.getOwner() == 0 ? null : window(client, r.getOwner());
+        if (r.getTime() != 0 && !isNewerThanCurrent(r.getTime())) {
+            return;
+        }
+        Integer previous = server.selectionOwners().put(name, owner == null ? 0 : owner.id());
+        if (previous == null || previous == 0 || (owner != null && previous == owner.id())) {
+            return;
+        }
+        // The outgoing owner is told it lost the selection.
+        XResource previousResource = server.resources().get(previous);
+        if (previousResource instanceof XWindow previousWindow
+                && previousWindow.owner() != null) {
+            ClientConnection previousOwner = previousWindow.owner();
+            server.events().send(previousOwner, SelectionClearEvent.builder()
+                    .firstEventOffset((byte) 0)
+                    .sentEvent(false)
+                    .sequenceNumber(previousOwner.sequenceNumber())
+                    .time(server.events().time())
+                    .owner(previous)
+                    .selection(r.getSelection())
+                    .build());
+        }
+    }
+
+    public void getSelectionOwner(ClientConnection client, GetSelectionOwner r) {
+        Integer owner = server.selectionOwners().get(selectionName(r.getSelection()));
+        client.sendReply(GetSelectionOwnerReply.builder()
+                .sequenceNumber(client.sequenceNumber())
+                .owner(owner == null ? 0 : owner)
+                .build());
+    }
+
+    /**
+     * Forwards a selection request to the current owner.
+     *
+     * <p>The server does not mediate the data transfer: it hands the request to the owner, which
+     * answers the requestor directly with a {@code SelectionNotify}. That is how X works, and it
+     * is what lets a clipboard manager own the selection without the server holding any data.
+     */
+    public void convertSelection(ClientConnection client, ConvertSelection r) {
+        XWindow requestor = window(client, r.getRequestor());
+        Integer ownerId = server.selectionOwners().get(selectionName(r.getSelection()));
+        if (ownerId == null || ownerId == 0) {
+            server.events().send(requestor.owner(), com.github.moaxcp.x11.protocol.xproto
+                    .SelectionNotifyEvent.builder()
+                    .firstEventOffset((byte) 0)
+                    .sentEvent(false)
+                    .sequenceNumber(requestor.owner().sequenceNumber())
+                    .time(r.getTime())
+                    .requestor(r.getRequestor())
+                    .selection(r.getSelection())
+                    .target(r.getTarget())
+                    .property(AtomTable.NONE)
+                    .build());
+            return;
+        }
+        XResource ownerResource = server.resources().get(ownerId);
+        if (!(ownerResource instanceof XWindow owner)) {
+            return;
+        }
+        server.events().send(owner.owner(), SelectionRequestEvent.builder()
+                .firstEventOffset((byte) 0)
+                .sentEvent(false)
+                .sequenceNumber(owner.owner().sequenceNumber())
+                .time(r.getTime())
+                .owner(ownerId)
+                .requestor(r.getRequestor())
+                .selection(r.getSelection())
+                .target(r.getTarget())
+                .property(r.getProperty())
+                .build());
+    }
+
+    private String selectionName(int atom) {
+        String name = server.atoms().name(atom);
+        if (name == null) {
+            throw ProtocolException.badAtom(atom);
+        }
+        return name;
+    }
+
+    private boolean isNewerThanCurrent(int time) {
+        // Timestamps are only compared to reject clearly stale requests; without a global
+        // ordering of client times the current owner always loses a tie.
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // SendEvent
+    // ------------------------------------------------------------------
+
+    /**
+     * Field layout of every core event, as pairs of {@code offset, size}. Events are the one place
+     * the protocol cannot be re-encoded generically: the sender produced raw bytes in its own byte
+     * order and the server has to hand them on in the recipient's, so the multi byte fields have to
+     * be located exactly. Single byte fields and padding are deliberately absent.
+     */
+    private static final int[][] EVENT_FIELDS = buildEventFieldTable();
+
+    /** Offset of the window the event is reported against, or -1 when the event has none. */
+    private static final int[] EVENT_WINDOW_OFFSET = buildEventWindowOffsets();
+
+    private static final int KEYMAP_NOTIFY = 11;
+    private static final int CLIENT_MESSAGE = 33;
+
+    public void sendEvent(ClientConnection client, SendEvent r) {
+        XWindow destination;
+        if (r.getDestination() == 0) {
+            destination = server.input().windowAtPointer();
+        } else if (r.getDestination() == 1) {
+            destination = server.input().inputFocus();
+        } else {
+            destination = window(client, r.getDestination());
+        }
+        byte[] bytes = r.getEvent().toArray();
+        if (bytes.length < 32) {
+            throw ProtocolException.badValue(bytes.length);
+        }
+        int eventCode = bytes[0] & 0x7F;
+        boolean senderBigEndian = client.isBigEndian();
+
+        // The server stamps the event as synthetic and fills in the reporting window; neither is
+        // something the sending client gets to decide.
+        bytes[0] = (byte) (bytes[0] | 0x80);
+        int windowOffset = eventCode < EVENT_WINDOW_OFFSET.length
+                ? EVENT_WINDOW_OFFSET[eventCode] : -1;
+        if (windowOffset >= 0) {
+            putCard32(bytes, windowOffset, destination.id(), senderBigEndian);
+        }
+
+        int mask = r.getEventMask();
+        if (r.isPropagate()) {
+            server.events().deliverPropagating(destination, mask, server.input().pointerX(),
+                    server.input().pointerY(),
+                    (recipient, w, child, x, y) -> rawEvent(recipient, bytes, senderBigEndian));
+            return;
+        }
+        server.events().deliverToWindow(destination, mask,
+                (recipient, w, child, x, y) -> rawEvent(recipient, bytes, senderBigEndian));
+    }
+
+    private com.github.moaxcp.x11.protocol.XEvent rawEvent(ClientConnection recipient, byte[] bytes,
+                                                           boolean senderBigEndian) {
+        boolean recipientBigEndian = recipient.isBigEndian();
+        byte[] translated = senderBigEndian == recipientBigEndian
+                ? bytes.clone()
+                : translateEvent(bytes);
+        putCard16(translated, 2, recipient.sequenceNumber(), recipientBigEndian);
+        return new RawEvent(translated, recipient.sequenceNumber(), recipientBigEndian);
+    }
+
+    /** Swaps every multi byte field of a core event into the opposite byte order. */
+    private static byte[] translateEvent(byte[] bytes) {
+        byte[] out = bytes.clone();
+        int eventCode = out[0] & 0x7F;
+        int[] fields = eventCode < EVENT_FIELDS.length ? EVENT_FIELDS[eventCode] : null;
+        if (fields != null) {
+            for (int i = 0; i + 1 < fields.length; i += 2) {
+                int offset = fields[i];
+                int size = fields[i + 1];
+                if (offset + size > out.length) {
+                    continue;
+                }
+                for (int j = 0; j < size / 2; j++) {
+                    byte tmp = out[offset + j];
+                    out[offset + j] = out[offset + size - 1 - j];
+                    out[offset + size - 1 - j] = tmp;
+                }
+            }
+        }
+        if (eventCode == CLIENT_MESSAGE) {
+            // The data union is 5 CARD32s, 10 CARD16s or 20 bytes depending on the format field.
+            int format = out[1];
+            int size = format == 32 ? 4 : format == 16 ? 2 : 0;
+            if (size != 0) {
+                for (int offset = 12; offset + size <= 32; offset += size) {
+                    for (int j = 0; j < size / 2; j++) {
+                        byte tmp = out[offset + j];
+                        out[offset + j] = out[offset + size - 1 - j];
+                        out[offset + size - 1 - j] = tmp;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    private static int[][] buildEventFieldTable() {
+        int[][] table = new int[35][];
+        int[] keyLike = {2, 2, 4, 4, 8, 4, 12, 4, 16, 4, 20, 2, 22, 2, 24, 2, 26, 2, 28, 2};
+        for (int code : new int[] {2, 3, 4, 5, 6}) {
+            table[code] = keyLike;
+        }
+        int[] enterLike = {2, 2, 4, 4, 8, 4, 12, 4, 16, 4, 20, 2, 22, 2, 24, 2, 26, 2, 28, 2};
+        table[7] = enterLike;
+        table[8] = enterLike;
+        table[9] = new int[] {2, 2, 4, 4};
+        table[10] = new int[] {2, 2, 4, 4};
+        table[11] = new int[0];
+        table[12] = new int[] {2, 2, 4, 4, 8, 2, 10, 2, 12, 2, 14, 2, 16, 2};
+        table[13] = new int[] {2, 2, 4, 4, 8, 2, 10, 2, 12, 2, 14, 2, 16, 2, 18, 2};
+        table[14] = new int[] {2, 2, 4, 4, 8, 2};
+        table[15] = new int[] {2, 2, 4, 4};
+        table[16] = new int[] {2, 2, 4, 4, 8, 4, 12, 2, 14, 2, 16, 2, 18, 2, 20, 2};
+        table[17] = new int[] {2, 2, 4, 4, 8, 4};
+        table[18] = new int[] {2, 2, 4, 4, 8, 4};
+        table[19] = new int[] {2, 2, 4, 4, 8, 4};
+        table[20] = new int[] {2, 2, 4, 4, 8, 4};
+        table[21] = new int[] {2, 2, 4, 4, 8, 4, 12, 4, 16, 2, 18, 2};
+        table[22] = new int[] {2, 2, 4, 4, 8, 4, 12, 4, 16, 2, 18, 2, 20, 2, 22, 2, 24, 2};
+        table[23] = new int[] {2, 2, 4, 4, 8, 4, 12, 4, 16, 2, 18, 2, 20, 2, 22, 2, 24, 2, 26, 2};
+        table[24] = new int[] {2, 2, 4, 4, 8, 4, 12, 2, 14, 2};
+        table[25] = new int[] {2, 2, 4, 4, 8, 2, 10, 2};
+        table[26] = new int[] {2, 2, 4, 4, 8, 4};
+        table[27] = new int[] {2, 2, 4, 4, 8, 4};
+        table[28] = new int[] {2, 2, 4, 4, 8, 4, 12, 4};
+        table[29] = new int[] {2, 2, 4, 4, 8, 4, 12, 4};
+        table[30] = new int[] {2, 2, 4, 4, 8, 4, 12, 4, 16, 4, 20, 4, 24, 4};
+        table[31] = new int[] {2, 2, 4, 4, 8, 4, 12, 4, 16, 4, 20, 4};
+        table[32] = new int[] {2, 2, 4, 4, 8, 4};
+        table[33] = new int[] {2, 2, 4, 4, 8, 4};
+        table[34] = new int[] {2, 2};
+        return table;
+    }
+
+    private static int[] buildEventWindowOffsets() {
+        int[] offsets = new int[35];
+        java.util.Arrays.fill(offsets, -1);
+        for (int code : new int[] {2, 3, 4, 5, 6, 7, 8, 9, 10}) {
+            offsets[code] = 12;             // event
+        }
+        offsets[12] = 4;                    // window
+        offsets[13] = 4;                    // drawable
+        offsets[14] = 4;                    // drawable
+        offsets[15] = 4;                    // window
+        offsets[16] = 4;                    // parent
+        for (int code : new int[] {17, 18, 19, 21, 22, 24, 26, 27}) {
+            offsets[code] = 4;              // event
+        }
+        offsets[20] = 4;                    // parent
+        offsets[23] = 4;                    // parent
+        offsets[25] = 4;                    // window
+        offsets[28] = 4;                    // window
+        offsets[29] = 8;                    // owner
+        offsets[33] = 4;                    // window
+        return offsets;
+    }
+
+    private static void putCard16(byte[] bytes, int offset, short value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 8);
+            bytes[offset + 1] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+        }
+    }
+
+    private static void putCard32(byte[] bytes, int offset, int value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 24);
+            bytes[offset + 1] = (byte) (value >> 16);
+            bytes[offset + 2] = (byte) (value >> 8);
+            bytes[offset + 3] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+            bytes[offset + 2] = (byte) (value >> 16);
+            bytes[offset + 3] = (byte) (value >> 24);
+        }
+    }
+
+    /** An event whose bytes are already in the recipient's byte order. */
+    private record RawEvent(byte[] bytes, short sequenceNumber, boolean bigEndian)
+            implements com.github.moaxcp.x11.protocol.XEvent {
+
+        @Override
+        public byte getNumber() {
+            return (byte) (bytes[0] & 0x7F);
+        }
+
+        @Override
+        public byte getResponseCode() {
+            return getNumber();
+        }
+
+        @Override
+        public short getSequenceNumber() {
+            return sequenceNumber;
+        }
+
+        @Override
+        public byte getFirstEventOffset() {
+            return 0;
+        }
+
+        @Override
+        public void write(com.github.moaxcp.x11.protocol.X11Output out) throws java.io.IOException {
+            byte[] copy = bytes.clone();
+            // The output stream writes in the recipient's order, so patch the sequence number in
+            // that same order before handing the bytes over.
+            if (bigEndian) {
+                copy[2] = (byte) (sequenceNumber >> 8);
+                copy[3] = (byte) sequenceNumber;
+            } else {
+                copy[2] = (byte) sequenceNumber;
+                copy[3] = (byte) (sequenceNumber >> 8);
+            }
+            for (int i = 0; i < 32; i++) {
+                out.writeByte(copy[i]);
+            }
+        }
+
+        @Override
+        public int getSize() {
+            return 32;
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xproto";
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private XWindow window(ClientConnection client, int id) {
+        return (XWindow) server.resources().require(client, id, XResource.CLASS_WINDOW, false);
+    }
+
+    /**
+     * Converts a property value between the client's byte order and the canonical big-endian
+     * storage order. Swapping is its own inverse, so the same call works in both directions.
+     */
+    private static byte[] normalize(byte[] data, int format, boolean alreadyBigEndian) {
+        if (format == 8 || alreadyBigEndian) {
+            return data;
+        }
+        byte[] out = data.clone();
+        int unit = format / 8;
+        for (int offset = 0; offset + unit <= out.length; offset += unit) {
+            for (int i = 0; i < unit / 2; i++) {
+                byte tmp = out[offset + i];
+                out[offset + i] = out[offset + unit - 1 - i];
+                out[offset + unit - 1 - i] = tmp;
+            }
+        }
+        return out;
+    }
+
+    private static String ascii(org.eclipse.collections.api.list.primitive.ByteList bytes) {
+        return new String(bytes.toArray(), StandardCharsets.ISO_8859_1);
+    }
+
+    /** True when a property exists on the window; used by diagnostics. */
+    public boolean hasProperty(XWindow window, int atom) {
+        Map<Integer, XProperty> properties = window.properties();
+        return properties.containsKey(atom);
+    }
+}
