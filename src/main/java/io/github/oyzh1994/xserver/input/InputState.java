@@ -58,6 +58,17 @@ public final class InputState implements DisplayBackend.InputSink {
     private Grab pointerGrab;
     private Grab keyboardGrab;
 
+    /**
+     * X11's implicit grab: the window the last button press landed on.
+     *
+     * <p>While any button is down, every pointer event is reported against that window even once the
+     * pointer has moved off it. A client relies on this to drag: the window it is moving follows the
+     * pointer, so the pointer is regularly outside it for a moment, and a client that stops being
+     * told about motion in the middle of a drag never sees the drag end - it stays in its "moving"
+     * state and quietly ignores every later click.
+     */
+    private XWindow implicitGrabWindow;
+
     /** The current cursor's pixels, copied once per cursor because the backend asks every frame. */
     private int[] cursorPixels;
     private XCursor cursorPixelsFor;
@@ -171,6 +182,14 @@ public final class InputState implements DisplayBackend.InputSink {
         if (keyboardGrab != null && keyboardGrab.client() == client) {
             keyboardGrab = null;
         }
+        if (implicitGrabWindow != null && implicitGrabWindow.owner() == client) {
+            implicitGrabWindow = null;
+        }
+    }
+
+    /** The window the implicit grab is holding the pointer on, or null when there is none. */
+    public XWindow implicitGrabWindow() {
+        return implicitGrabWindow;
     }
 
     /** Moves the pointer without generating events, used by {@code WarpPointer}. */
@@ -219,9 +238,11 @@ public final class InputState implements DisplayBackend.InputSink {
                 buttons &= ~mask;
             }
             if (log.isDebugEnabled()) {
-                // Which window a click lands on is otherwise invisible from the server side, and it
-                // is the first thing to check when a client behaves as if it was never clicked.
-                XWindow target = windowAtPointer();
+                // Which window a click is *reported against* is otherwise invisible from the server
+                // side, and it is the first thing to check when a client behaves as if it was never
+                // clicked: while a button is down that is the window the press landed on, not the one
+                // under the pointer.
+                XWindow target = grabbedWindow();
                 log.debug("button {} {} at ({},{}) -> {}", button, pressed ? "down" : "up", x, y,
                         target == null ? "no window" : "0x" + Integer.toHexString(target.id()));
             }
@@ -282,8 +303,46 @@ public final class InputState implements DisplayBackend.InputSink {
             deliverToGrab(grab, EventMasks.POINTER_MOTION, motionFactory());
             return;
         }
-        server.events().deliverPropagating(pointerWindow, EventMasks.POINTER_MOTION, pointerX,
+        server.events().deliverPropagating(grabbedWindow(), EventMasks.POINTER_MOTION, pointerX,
                 pointerY, motionFactory());
+    }
+
+    /**
+     * The window pointer events are reported against: the one a button press pinned the pointer to
+     * while the implicit grab lasts, otherwise the one under the pointer.
+     */
+    private XWindow grabbedWindow() {
+        return implicitGrabWindow != null ? implicitGrabWindow : pointerWindow;
+    }
+
+    /**
+     * Releases every grab held on a window that is going away.
+     *
+     * <p>X11 releases an active grab when its grab window is destroyed, and clients rely on it: one
+     * that grabs the pointer for a modal dialog and then lets the dialog be destroyed never sends
+     * {@code UngrabPointer}, so the grab has to end here. A grab left pointing at a window that no
+     * longer exists is worse than a stuck one - every pointer event is reported against nothing, and
+     * the pointer goes dead for every client while the keyboard, which follows the focus instead,
+     * keeps working.
+     */
+    public void forgetGrabWindow(XWindow window) {
+        if (implicitGrabWindow == window) {
+            implicitGrabWindow = null;
+        }
+        if (pointerGrab != null && pointerGrab.window() == window) {
+            pointerGrab = null;
+            if (log.isDebugEnabled()) {
+                log.debug("released the pointer grab held on 0x{}: the window went away",
+                        Integer.toHexString(window.id()));
+            }
+        }
+        if (keyboardGrab != null && keyboardGrab.window() == window) {
+            keyboardGrab = null;
+            if (log.isDebugEnabled()) {
+                log.debug("released the keyboard grab held on 0x{}: the window went away",
+                        Integer.toHexString(window.id()));
+            }
+        }
     }
 
     private EventFactory motionFactory() {
@@ -355,9 +414,25 @@ public final class InputState implements DisplayBackend.InputSink {
         Grab grab = pointerGrab;
         if (grab != null && !grab.ownerEvents()) {
             deliverToGrab(grab, eventMask, factory);
+            updateImplicitGrab(pressed);
             return;
         }
-        server.events().deliverPropagating(pointerWindow, eventMask, pointerX, pointerY, factory);
+        server.events().deliverPropagating(grabbedWindow(), eventMask, pointerX, pointerY, factory);
+        updateImplicitGrab(pressed);
+    }
+
+    /**
+     * Starts the implicit grab when a press lands with no button yet down, and ends it when the last
+     * button comes up - the two moments X11 pins the pointer to a window and lets it go again.
+     */
+    private void updateImplicitGrab(boolean pressed) {
+        if (pressed) {
+            if (implicitGrabWindow == null && pointerGrab == null) {
+                implicitGrabWindow = pointerWindow;
+            }
+        } else if (buttons == 0) {
+            implicitGrabWindow = null;
+        }
     }
 
     // ------------------------------------------------------------------

@@ -339,6 +339,10 @@ public final class WindowHandlers {
         if (parent != null) {
             parent.removeChild(window);
         }
+        // A window that is gone cannot be the window a grab is held on: X11 releases the grab with
+        // the window, and a client that grabs for a dialog and destroys the dialog instead of
+        // ungrabbing depends on it.
+        server.input().forgetGrabWindow(window);
         server.events().deliverToWindow(window, EventMasks.STRUCTURE_NOTIFY,
                 (recipient, w, child, x, y) -> DestroyNotifyEvent.builder()
                         .firstEventOffset((byte) 0)
@@ -519,6 +523,9 @@ public final class WindowHandlers {
         // not reported, because a destroyed window's area has to be restored just the same.
         List<Rectangle> before = visibleRegionOf(window);
         window.setMapped(false);
+        // A window that is no longer on screen cannot be holding the pointer's implicit grab: pinning
+        // events to it would leave every client without input until another button press.
+        server.input().forgetGrabWindow(window);
         repaintUnder(before, window);
         if (!notify) {
             return;
@@ -603,7 +610,7 @@ public final class WindowHandlers {
             // A restack changes who is visible where just as a move does, so it is reported and
             // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
-            visibilityChanged(window, before, visibleRegionOf(window));
+            visibilityChanged(window, before, visibleRegionOf(window), moved);
             server.markScreenDirty();
         }
     }
@@ -1012,7 +1019,19 @@ public final class WindowHandlers {
      * lower window's background and letting its client repaint the content.
      */
     private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after) {
-        for (Rectangle gained : ShapeState.subtract(after, before)) {
+        visibilityChanged(window, before, after, false);
+    }
+
+    /**
+     * @param moved true when the window itself moved rather than something about its stacking: a
+     *     move leaves the window's own pixels behind - nothing here copies them along - so the whole
+     *     of its new area has to be drawn again, not just the strip it gained. Without that a moved
+     *     window shows a mix of its old content and whatever it used to be covering, which is what
+     *     makes a dragged window look like it stopped working.
+     */
+    private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after,
+                                   boolean moved) {
+        for (Rectangle gained : moved ? after : ShapeState.subtract(after, before)) {
             paintBackground(window, gained);
             paintBorder(window, gained);
             deliverExpose(window, gained);

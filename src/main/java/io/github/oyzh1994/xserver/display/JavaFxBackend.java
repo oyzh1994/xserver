@@ -45,7 +45,7 @@ public final class JavaFxBackend implements DisplayBackend {
     private static final Logger log = LoggerFactory.getLogger(JavaFxBackend.class);
 
     /** How long the toolkit gets to run a task before it counts as unusable. */
-    private static final long STARTUP_TIMEOUT_SECONDS = 10;
+    private static final long STARTUP_TIMEOUT_SECONDS = 3;
 
     /** True once the toolkit has been started and has run a task for us. */
     private static boolean toolkitStarted;
