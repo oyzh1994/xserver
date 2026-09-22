@@ -138,6 +138,34 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
+    public void setWindowTitle(String title) {
+        JFrame window = frame;
+        if (window == null) {
+            return;
+        }
+        runOnEdtAndWait(() -> window.setTitle(
+                title == null || title.isEmpty() ? this.title : title));
+    }
+
+    @Override
+    public void setWindowIcon(int[] argb, int width, int height) {
+        JFrame window = frame;
+        if (window == null) {
+            return;
+        }
+        if (argb == null || width <= 0 || height <= 0) {
+            runOnEdtAndWait(() -> window.setIconImage(null));
+            return;
+        }
+        // TYPE_INT_ARGB is a copy: setIconImage keeps the image, and the array the server handed
+        // over belongs to a window property that the next write there replaces.
+        java.awt.image.BufferedImage icon = new java.awt.image.BufferedImage(width, height,
+                java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        icon.setRGB(0, 0, width, height, argb, 0, width);
+        runOnEdtAndWait(() -> window.setIconImage(icon));
+    }
+
+    @Override
     public boolean isClosed() {
         return closed;
     }

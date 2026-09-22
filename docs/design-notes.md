@@ -33,6 +33,95 @@ before.
 `--single-window` keeps the older shape - one shared screen, every client on it - which is also the
 mode the in-process tests build on.
 
+## The host window is the client's window frame
+
+Three things make a forwarded application look like a window rather than a picture of one, and all
+three are work a window manager would do: the frame's title, its icon, and letting the user resize
+the window by dragging the frame.
+
+**The title and icon are the client's own.** `WindowIdentity` reads `_NET_WM_NAME` (UTF-8) or
+`WM_NAME` off the client's top-level window, and `_NET_WM_ICON` for the icon; `AtomHandlers` reports
+every property write to `XServer.windowPropertyChanged`, which rebuilds the identity only for those
+three properties - a toolkit writes properties constantly, and rebuilding the identity for each of
+those would copy a 128x128 icon every time. Everything else is the display tick's usual pattern: the
+session holds the new identity, the tick notices it is not the one it already applied and calls
+`DisplayBackend.setWindowTitle`/`setWindowIcon`. The identity is compared **by reference**, so "a new
+value" and "the same value" are told apart without comparing pixel arrays.
+
+Which window is the one the frame is named after: the **largest mapped top-level window**, not the
+first. A toolkit's first window is often a 1x1 one it keeps for itself, and override-redirect windows
+are left out entirely - a menu has no title of its own, and an application that retitles itself does
+not retitle its menus. Measured against EasyShell: `_NET_WM_NAME` arrives as UTF-8 and the Chinese
+title survives, and GTK publishes several icon sizes of which the largest under 256 pixels is used.
+
+**Dragging the frame resizes the client's window.** The JavaFX window is resizable, and a change of
+its content area that the client has not already been told about is a resize the user made
+(`JavaFxBackend.isUserResize`). The backend only records it - it runs on the toolkit's thread, where
+taking the server lock would deadlock against the tick waiting on the toolkit - and the tick applies
+it: the client's top-level window is resized through the ordinary configure path
+(`WindowHandlers.resizeWindow` into `applyConfigure`), so the client gets the same `ConfigureNotify`
+a window manager sends, and the area the window stops covering is handed back to what is under it.
+
+**A drag is measured in what the frame can show, not in how big the client's window is.** The two are
+not the same number, and both differences were reported as bugs before they were fixed:
+
+- A window that hangs off the screen is showing less than its own size. EasyShell's own window, measured,
+  is `1300x700+-50+20` on a 1280x800 root: 1250x700 of it is visible. Dragging the frame *taller* used to
+  set the window's width to the number the drag reported, which shrank it from 1300 to 1250 and changed
+  the width of a window whose height was the only thing dragged - so the frame came out 1200 wide. The
+  window size that shows `wanted` pixels is `wanted` plus the part hanging off the start of the screen,
+  capped at the screen's far edge (`XServer.windowExtent`), and a dimension whose visible size did not
+  change is left alone entirely.
+- A drag past what the screen can show must stop at the most there is, and not overshoot and be pulled
+  back: a window twenty pixels down the screen can be 780 pixels tall where the screen is 800, and
+  asking for more than that lands at 780 rather than at the screen's 800 - which would otherwise be a
+  frame that grew past what it could draw and snapped back to a size it had already left.
+
+**The window is told how large it may be dragged** (`DisplayBackend.setMaxClientArea`, the server pushing
+the screen less where the content starts on it). Without it the platform happily lets the user drag the
+window past what the client's windows can fill, and the two failure modes are both visible: the frame is
+left larger than its content, so the part it grew into shows the scene's black, and the next time the
+server says how big the content really is the window is pulled back to it - away from the pointer that is
+still dragging. This is what `WM_NORMAL_HINTS`'s maximum size does for a window manager, and it is applied
+at the backend because the toolkit is what owns the window. Two details are worth keeping:
+
+- The limit applies to the **window**, and the window carries the platform's decoration, so the
+  decoration is measured and added back. Measured where the window is known to fit its content - just
+  after `sizeToScene`, and once on show - rather than when the limit is applied: a window that has
+  already been dragged too large reads as decoration that does not exist. On macOS it comes out as
+  `0.0 x 28.0`, which is the title bar and no side borders; a wrong value here is not cosmetic, since a
+  limit that is too small cannot be resized out of.
+- It is pushed only when it changes, which is when the viewport's **origin** moves - the size the window
+  may reach does not depend on how big the client's windows are, only on where they start.
+
+**A menu does not size the frame it is opened in.** A context menu is an override-redirect top-level
+window, and the frame is the union of the client's top-level windows, so counting menus as content
+made the frame grow the moment one opened and shrink back the moment it closed: measured, the frame
+went 700 to 740 and back for a menu that reached the bottom of the screen. A window manager sizes the
+frame to the client's *window* and lets a popup be clipped by the screen; this server is the same rule
+with the frame standing in for the screen (`XServer.contentBounds`). The cost is real and worth
+knowing: a popup that extends past the client's window **is** clipped at the frame's edge now, where
+before the frame grew to show it. Stretching the frame to fill the screen removes it - a popup inside
+the screen then fits inside the frame - which is also the gesture that made the popups reach the edge
+in the first place. A client that has mapped *nothing but* popups is still sized to them, or it would
+have no size at all.
+
+Two platform details were forced by measurement rather than design:
+
+- **The scene root is a `Pane` and the canvas is unmanaged.** A `StackPane` centres what it holds,
+  which is invisible while the canvas is exactly the size of the scene - and wrong the moment the
+  user drags the window, because centring shifts the canvas by half the difference and every
+  coordinate this backend reports is measured from the canvas's top-left. A managed canvas also
+  imposes its size as the window's minimum: a 1200 pixel canvas stops the window ever being made
+  narrower, so shrinking would simply not work.
+- **A resize the backend makes itself is not reported back.** The backend sizes the window to the
+  client's window whenever the viewport changes, and that also changes the content area; without
+  `adjustingWindow` and the "already told" test, each of those would come back as a request to resize
+  the client to the size it already has, for ever.
+
+The client is free to refuse - a window with a fixed size keeps its size - and the frame is then
+simply larger than what it frames.
+
 ## The display tick owns the windows
 
 `XServer.eventLoop` runs on its own non-daemon thread and is the only thread that opens or presents
@@ -207,6 +296,20 @@ Two deliberate deviations, both measured rather than reasoned:
   scripted gesture on this server without them; with them left out the menu behaves as it does
   against Xorg and the submenu works. Since the pointer's next move reports the same information,
   the pairs are the part that can be given up.
+  **Measured again on 2026-09-23**, by accident: an uncommitted change had re-added the pairs, and
+  the menu was then torn down 3 runs out of 3 where the committed server kept it up in 3 out of 3
+  (the signal is the client's own `UnmapWindow` and `DestroyWindow` after the menu's `MapWindow`).
+  The message that produced it is still in `InputHandlers.ungrabPointer`'s history: a pair was sent
+  on **every** ungrab, and a menu grabs and ungrabs repeatedly while it is open, so the client was
+  told "you left your main window and entered the popup" several times while the pointer sat still.
+  A grab that ends without changing which window the pointer is in has nothing to report.
+- **A popup is closed by an `EnterNotify` on it if the pointer has not moved.** This is the same
+  measurement from the client's side, and it is what the leave-and-re-enter dismissal is made of:
+  the server log shows the client sending `UngrabPointer` and unmapping the popup **one millisecond**
+  after the `EnterNotify` that reports the pointer back inside the menu, with no request in between -
+  it is reacting to the crossing itself. So the two deviations above are not timidity: every crossing
+  that reports a window "entered" without the pointer having moved was measured to cost the menu,
+  whether it is sent at the map, at the release of the button, or at the end of a grab.
 - **A window that appears under a stationary pointer is reported as entered by the move that
   follows, not by the map that put it there.** Xorg sends the crossing at the map; doing that here
   tore the menu down as it was mapped in three runs out of three. A window that *goes away* under
@@ -222,7 +325,9 @@ Two deliberate deviations, both measured rather than reasoned:
 - **`XCursor.fromGlyph` approximates a font cursor as a filled cell**, so a client that uses
   `XCreateFontCursor` gets a solid rectangle under the pointer instead of an arrow. Fixing it means
   embedding the cursor font's glyphs.
-- **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it.
+- **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it. The host
+  window is resizable, but a resize is therefore capped at the screen rather than growing it, and a
+  client's window larger than `--geometry` is still clipped.
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`; its generator ignores the
   `number` on an `eventcopy`, which is why `ClientOutput.EVENT_NUMBERS` rewrites five event type
   bytes. The real fix belongs in the generator.

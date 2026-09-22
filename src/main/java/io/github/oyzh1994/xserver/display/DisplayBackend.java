@@ -29,6 +29,17 @@ public interface DisplayBackend {
 
         /** The window gained or lost focus; the server tracks this for the input focus. */
         void focusChanged(boolean focused);
+
+        /**
+         * The user resized the host window: the client's own window should become this size.
+         *
+         * <p>This is a request, not an application. The backend calls it from the toolkit's thread,
+         * where taking the server lock and resizing a client's window would deadlock against the
+         * display tick waiting on the toolkit; the server applies it from the tick instead, which is
+         * also what keeps the framebuffer and the window from ever disagreeing about their size.
+         */
+        default void windowResized(int width, int height) {
+        }
     }
 
     /** Human readable name, used in logs. */
@@ -80,6 +91,40 @@ public interface DisplayBackend {
      * client's cursor, and with no client there is nothing to draw in its place.
      */
     default void setIdle(boolean idle) {
+    }
+
+    /**
+     * Sets the title the window shows, taken from the client's own window title. The server's
+     * configured title is the fallback for a client that publishes none.
+     *
+     * <p>Called from the display tick only, never from a request thread.
+     */
+    default void setWindowTitle(String title) {
+    }
+
+    /**
+     * Sets the icon the window shows, as non-premultiplied ARGB pixels, or clears it when
+     * {@code argb} is null.
+     *
+     * <p>Called from the display tick only, never from a request thread.
+     */
+    default void setWindowIcon(int[] argb, int width, int height) {
+    }
+
+    /**
+     * The largest client area this window can be given, which the user must not be able to drag it
+     * past.
+     *
+     * <p>The screen is what it is: a window stretched beyond the area the client's windows can fill
+     * leaves the part it grew into showing nothing, and the frame is pulled back to the content the
+     * moment the server next says how big that is - a window that jumps away from the pointer that
+     * is still dragging it. A window manager states the limit in {@code WM_NORMAL_HINTS} and the
+     * platform enforces it; the backend is where that limit has to be applied here, because the
+     * toolkit is what owns the window.
+     *
+     * <p>Called from the display tick only, never from a request thread.
+     */
+    default void setMaxClientArea(int width, int height) {
     }
 
     /** Tears the window down. */

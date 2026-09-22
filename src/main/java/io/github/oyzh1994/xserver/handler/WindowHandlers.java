@@ -587,7 +587,36 @@ public final class WindowHandlers {
     // ------------------------------------------------------------------
 
     public void configure(ClientConnection client, ConfigureWindow r) {
-        XWindow window = window(client, r.getWindow());
+        applyConfigure(window(client, r.getWindow()), r, client);
+    }
+
+    /**
+     * Resizes a window on the user's behalf, as the frame the host window draws around it.
+     *
+     * <p>This is the one configure the server owes a client rather than the other way round: the
+     * user dragged the host window's edge, so the client's window becomes that size, and the client
+     * is told with the same ConfigureNotify it would get from a window manager. Everything else
+     * about the change - the area it stops covering, the repaint, the request a client that
+     * redirects its children's configures would get - is the same work as any other configure, which
+     * is why this goes through the same path rather than resizing the window behind its back.
+     */
+    public void resizeWindow(XWindow window, int width, int height) {
+        if (width <= 0 || height <= 0 || window.isRoot()) {
+            return;
+        }
+        applyConfigure(window, ConfigureWindow.builder()
+                .window(window.id())
+                .width(width)
+                .height(height)
+                .build(), null);
+    }
+
+    /**
+     * @param client the connection a rejected change is reported to, or null when the server is the
+     *     one making it. Only the stacking path ever needs it, and no server-initiated change
+     *     restacks anything.
+     */
+    private void applyConfigure(XWindow window, ConfigureWindow r, ClientConnection client) {
         int mask = Short.toUnsignedInt(r.getValueMask());
         int oldX = window.x();
         int oldY = window.y();

@@ -119,6 +119,11 @@ operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
 the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
 their text with.
 
+The host window follows the client it shows: its title and icon are the ones that client publishes
+on its top-level window (`_NET_WM_NAME` or `WM_NAME`, and `_NET_WM_ICON`), and dragging its edge
+resizes the client's window, which is told with a `ConfigureNotify`. A resize is capped at the
+screen, since the framebuffer is not resized with it.
+
 Verified against real clients: `xdpyinfo`, `xwininfo`, `xprop`, `xlsclients`, `xwd`, `xeyes`,
 `xlogo`, `xclock`, `xcalc`, `xmessage`, `xterm` with core fonts and with Xft (`-fa`, which needs
 RENDER), and `twm` as a window manager.
@@ -208,7 +213,18 @@ order (only the glyphset-switch item is always most-significant-byte first), and
   mapped. See the design notes for the measurement.
 - **A menu that is left and re-entered is dismissed** by EasyShell, where it stays up against a real
   X server. The crossings involved match the reference server event for event, so the cause is not in
-  them; the design notes record what has been ruled out.
+  them; the design notes record what has been ruled out - and, since then, that the client closes the
+  popup within a millisecond of an `EnterNotify` on it, which is why every crossing that reports a
+  popup "entered" without the pointer moving has had to be left out.
+- **A resize cannot grow past the screen.** The host window is resizable and resizes the client's
+  window, but the framebuffer behind it is fixed at `--geometry`: the window is told the largest area
+  it may be given, so the platform stops the drag at the screen rather than leaving it larger than
+  anything that can fill it. Growing the screen with the window is the deferred work the design notes
+  describe.
+- **A popup that extends past the client's window is clipped by the host window.** The window is
+  sized to the client's own windows - a menu is transient and does not resize the frame it opens in,
+  which it used to, growing the window and shrinking it back every time one was opened. Stretching the
+  window to fill the screen is what makes room for a menu near its bottom edge.
 
 ## Tests
 

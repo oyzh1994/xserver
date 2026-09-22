@@ -160,6 +160,29 @@ class JavaFxBackendTest {
                 "the offset is applied before the clamp, as the Swing backend has always done");
     }
 
+    /**
+     * Dragging the window's edge is the only size change of the content area that is the user's
+     * doing; the backend's own resizes must not come back as requests to resize the client.
+     *
+     * <p>Nothing else distinguishes them: the content area changes size for both, and a request that
+     * echoed one of the backend's own would be answered by resizing the client to the size it already
+     * has, which never settles.
+     */
+    @Test
+    void onlyASizeTheClientHasNotBeenToldIsAUserResize() {
+        Rectangle viewport = new Rectangle(0, 0, 800, 600);
+        assertTrue(JavaFxBackend.isUserResize(false, 900, 600, viewport),
+                "a wider content area than the client's window is a drag of the edge");
+        assertTrue(JavaFxBackend.isUserResize(false, 800, 500, viewport),
+                "shrinking is a resize too, and the one a StackPane's centring used to break");
+        assertTrue(!JavaFxBackend.isUserResize(true, 900, 600, viewport),
+                "the backend sizing the window to the client is not the user resizing it");
+        assertTrue(!JavaFxBackend.isUserResize(false, 800, 600, viewport),
+                "the size the client has already been given is not a new one");
+        assertTrue(!JavaFxBackend.isUserResize(false, 0, 600, viewport),
+                "a window with no area yet is not a resize either");
+    }
+
     /** The server only calls back into this when the pointer moves, which the test never does. */
     private static final class NoopInput implements DisplayBackend.InputSink {
         @Override

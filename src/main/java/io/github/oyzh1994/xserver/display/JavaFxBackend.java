@@ -15,7 +15,7 @@ import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.input.ScrollEvent;
-import javafx.scene.layout.StackPane;
+import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import org.slf4j.Logger;
@@ -94,6 +94,11 @@ public final class JavaFxBackend implements DisplayBackend {
      * True while no client is connected, so the window has no pointer of its own to show.
      */
     private boolean idle;
+    /**
+     * True while the backend is resizing the window itself, so the size listener does not report
+     * the change back as a resize the user made.
+     */
+    private boolean adjustingWindow;
     /**
      * The part of the screen this window shows, in framebuffer coordinates. Zero-sized until the
      * server sets it, which covers the whole screen: that is what single-window mode wants.
@@ -209,14 +214,130 @@ public final class JavaFxBackend implements DisplayBackend {
                 // Called before the window exists: openWindow will size itself from the rectangle.
                 return;
             }
-            Canvas canvas = (Canvas) ((StackPane) open.getScene().getRoot()).getChildren().get(0);
-            canvas.setWidth(viewport.width);
-            canvas.setHeight(viewport.height);
-            graphics = canvas.getGraphicsContext2D();
-            drawViewport();
-            open.sizeToScene();
-            keepOnScreen();
+            Canvas canvas = canvasOf(open.getScene());
+            // Sizing the window to the content is the backend's own doing, and the size listener
+            // would otherwise read it as the user dragging the edge and ask for that size again.
+            adjustingWindow = true;
+            try {
+                canvas.setWidth(viewport.width);
+                canvas.setHeight(viewport.height);
+                graphics = canvas.getGraphicsContext2D();
+                drawViewport();
+                open.sizeToScene();
+                keepOnScreen();
+                // The window fits its content exactly here, which is the one moment the platform's
+                // decoration can be measured rather than guessed at.
+                rememberDecoration();
+            } finally {
+                adjustingWindow = false;
+            }
         });
+    }
+
+    @Override
+    public void setWindowTitle(String title) {
+        runOnFxThreadAndWait(() -> {
+            if (stage != null) {
+                // Null means the client publishes no title: the server's own name is the fallback.
+                stage.setTitle(title == null || title.isEmpty() ? this.title : title);
+            }
+        });
+    }
+
+    @Override
+    public void setWindowIcon(int[] argb, int width, int height) {
+        runOnFxThreadAndWait(() -> {
+            if (stage == null) {
+                return;
+            }
+            if (argb == null || width <= 0 || height <= 0) {
+                stage.getIcons().clear();
+                return;
+            }
+            WritableImage icon = new WritableImage(width, height);
+            icon.getPixelWriter().setPixels(0, 0, width, height,
+                    PixelFormat.getIntArgbInstance(), argb, 0, width);
+            stage.getIcons().setAll(icon);
+        });
+    }
+
+    @Override
+    public void setMaxClientArea(int width, int height) {
+        runOnFxThreadAndWait(() -> {
+            if (stage == null || width <= 0 || height <= 0) {
+                return;
+            }
+            stage.setMaxWidth(width + decorationWidth);
+            stage.setMaxHeight(height + decorationHeight);
+            if (log.isDebugEnabled()) {
+                // How far the window may be dragged is otherwise only visible by dragging it, and a
+                // limit that is somehow too small cannot be resized out of.
+                log.debug("window may be dragged up to {}x{} of content, plus {}x{} of decoration",
+                        width, height, decorationWidth, decorationHeight);
+            }
+        });
+    }
+
+    /**
+     * What the platform adds around the content - a title bar, and borders where the platform has
+     * any - measured while the window fits the content exactly.
+     *
+     * <p>Measured there rather than when the limit is applied, because by then the window may have
+     * been dragged larger than its content, and the difference would read as decoration that does
+     * not exist. {@link #setMaxClientArea} limits a window, not the area the client is drawn in, so
+     * the decoration has to be given back to it.
+     */
+    private void rememberDecoration() {
+        if (stage == null || scene == null) {
+            return;
+        }
+        decorationWidth = Math.max(0, stage.getWidth() - scene.getWidth());
+        decorationHeight = Math.max(0, stage.getHeight() - scene.getHeight());
+    }
+
+    private double decorationWidth;
+    private double decorationHeight;
+
+    /**
+     * The window's content area changed size. Most such changes are the backend's own, sizing the
+     * window to the client's window; {@link #isUserResize} tells the user's apart from those, and
+     * only the user's are reported.
+     *
+     * <p>What the client's window should become is the size of the area the client is drawn in, not
+     * the size of the window: the window carries a title bar and borders, and a client resized to
+     * include those would be a title bar too tall.
+     */
+    private void clientAreaChanged() {
+        if (scene == null || input == null || stage == null) {
+            return;
+        }
+        int width = (int) Math.round(scene.getWidth());
+        int height = (int) Math.round(scene.getHeight());
+        if (!isUserResize(adjustingWindow, width, height, viewport)) {
+            return;
+        }
+        input.windowResized(width, height);
+    }
+
+    /**
+     * Whether the size the content area has taken is a resize the user made.
+     *
+     * <p>Most changes of that size are not: the backend sizes the window to the client's window
+     * itself, and every one of those would otherwise be reported back as a resize, which the display
+     * tick would answer by resizing the client to the size it already has - for ever. The two that
+     * are not the backend's own are told apart by {@code adjusting} while it is working and by the
+     * size being one the client has not already been told.
+     */
+    static boolean isUserResize(boolean adjusting, int width, int height, Rectangle viewport) {
+        if (adjusting || width <= 0 || height <= 0) {
+            return false;
+        }
+        return width != viewport.width || height != viewport.height;
+    }
+
+    /** The canvas a scene is drawing the screen into. */
+    private static Canvas canvasOf(Scene scene) {
+        return (Canvas) ((Pane) scene.getRoot()).getChildren().get(0);
     }
 
     /**
@@ -315,8 +436,15 @@ public final class JavaFxBackend implements DisplayBackend {
         graphics = canvas.getGraphicsContext2D();
         drawViewport();
 
-        Scene scene = new Scene(new StackPane(canvas), viewport.width, viewport.height,
-                Color.BLACK);
+        // A Pane rather than a StackPane, and the canvas left unmanaged: a StackPane centres what it
+        // holds, and the canvas is only ever the same size as the scene until the user drags the
+        // window - at which point centring it would shift every coordinate this backend reports by
+        // half the difference. Unmanaged, too, so the canvas cannot set a minimum size on the
+        // window: a canvas is not resizable, and one that is 1200 wide would stop the user from
+        // ever shrinking the window below that.
+        Pane root = new Pane(canvas);
+        canvas.setManaged(false);
+        Scene scene = new Scene(root, viewport.width, viewport.height, Color.BLACK);
         this.scene = scene;
         // The platform would otherwise draw its own arrow over the window, on top of the sprite the
         // server renders from the client's cursor: two pointers, and the host one always wins.
@@ -349,7 +477,13 @@ public final class JavaFxBackend implements DisplayBackend {
         stage = new Stage();
         stage.setTitle(title);
         stage.setScene(scene);
-        stage.setResizable(false);
+        // The window is the frame around the client's window, so pulling its edge is the gesture a
+        // window manager's frame has always had: the client's window is resized to match. A scene
+        // listener rather than a stage one, because the content area is the client's size and the
+        // stage's includes the decoration the platform adds.
+        stage.setResizable(true);
+        scene.widthProperty().addListener((observable, was, is) -> clientAreaChanged());
+        scene.heightProperty().addListener((observable, was, is) -> clientAreaChanged());
         stage.sizeToScene();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
@@ -363,6 +497,7 @@ public final class JavaFxBackend implements DisplayBackend {
             releaseHostCursor();
         });
         stage.show();
+        rememberDecoration();
         startPulseProbe();
         // The scene coordinates must stay equal to screen coordinates for the pointer mapping to be
         // right, so the window is placed inside the usable area rather than left to the platform,

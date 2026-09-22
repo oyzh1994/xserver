@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.input.InputState;
+import io.github.oyzh1994.xserver.resource.XWindow;
 
 import java.awt.Rectangle;
 
@@ -42,6 +43,17 @@ public final class ScreenSession {
     /** A rectangle the client's windows have moved to, waiting to hold still before it is applied. */
     private Rectangle pendingViewport;
     private long pendingSince;
+    /**
+     * The title and icon the client publishes for its own window, waiting to be put on the host
+     * window, and the one it was last told about. Compared by identity: a new value is only built
+     * when a property actually changed, so an equal-looking one is the same object.
+     */
+    private volatile WindowIdentity identity = WindowIdentity.NONE;
+    private WindowIdentity appliedIdentity = WindowIdentity.NONE;
+    /** The client window the identity above was read from, or null before one is mapped. */
+    private XWindow identitySource;
+    /** The largest client area the window was last told it may be, or null before it was told. */
+    private java.awt.Dimension maxClientArea;
 
     public ScreenSession(Screen screen, InputState input, ClientConnection client) {
         this.screen = screen;
@@ -123,6 +135,38 @@ public final class ScreenSession {
 
     public void setPendingSince(long pendingSince) {
         this.pendingSince = pendingSince;
+    }
+
+    public WindowIdentity identity() {
+        return identity;
+    }
+
+    public void setIdentity(WindowIdentity identity) {
+        this.identity = identity;
+    }
+
+    public XWindow identitySource() {
+        return identitySource;
+    }
+
+    public void setIdentitySource(XWindow identitySource) {
+        this.identitySource = identitySource;
+    }
+
+    public java.awt.Dimension maxClientArea() {
+        return maxClientArea;
+    }
+
+    public void setMaxClientArea(java.awt.Dimension maxClientArea) {
+        this.maxClientArea = maxClientArea;
+    }
+
+    public WindowIdentity appliedIdentity() {
+        return appliedIdentity;
+    }
+
+    public void setAppliedIdentity(WindowIdentity appliedIdentity) {
+        this.appliedIdentity = appliedIdentity;
     }
 
     public long closeDeadline() {

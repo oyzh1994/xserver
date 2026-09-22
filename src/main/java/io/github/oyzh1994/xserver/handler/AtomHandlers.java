@@ -251,6 +251,9 @@ public final class AtomHandlers {
     }
 
     private void notifyProperty(XWindow window, int atom, byte state) {
+        // A title or an icon is an ordinary property, and the host window shows them, so whoever
+        // listens has to hear about the write as well as the clients that selected for it.
+        server.windowPropertyChanged(window, atom);
         server.events().deliverToWindow(window, EventMasks.PROPERTY_CHANGE,
                 (recipient, w, child, x, y) -> PropertyNotifyEvent.builder()
                         .firstEventOffset((byte) 0)

@@ -324,6 +324,24 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    public void unmapWindow(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 10;                            // UnmapWindow
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+    }
+
+    /** Makes a window override-redirect, which is what a menu or a tooltip is. */
+    public void setOverrideRedirect(int window) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = 2;                             // ChangeWindowAttributes
+        request[2] = 3;
+        writeInt(request, 4, window);
+        writeInt(request, 8, 0x200);                // CWOverrideRedirect
+        send(request);
+    }
+
     /** Interns a name and returns the atom, since the reply is the only place it is reported. */
     public int internAtom(String name) throws IOException {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
@@ -353,6 +371,41 @@ public final class RawXClient implements AutoCloseable {
         writeInt(request, 20, atoms.length);
         for (int i = 0; i < atoms.length; i++) {
             writeInt(request, 24 + i * 4, atoms[i]);
+        }
+        send(request);
+    }
+
+    /** ChangeProperty in replace mode, with 8 bit items: how a window title is published. */
+    public void setStringProperty(int window, int property, int type, String value)
+            throws IOException {
+        byte[] bytes = value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] request = new byte[(24 + bytes.length + 3) & ~3];
+        request[0] = 18;                            // ChangeProperty
+        request[1] = 0;                             // replace
+        request[2] = (byte) (request.length / 4);
+        writeInt(request, 4, window);
+        writeInt(request, 8, property);
+        writeInt(request, 12, type);
+        request[16] = 8;                            // format
+        writeInt(request, 20, bytes.length);
+        System.arraycopy(bytes, 0, request, 24, bytes.length);
+        send(request);
+    }
+
+    /** ChangeProperty in replace mode, with 32 bit items: how an icon is published. */
+    public void setCardinalProperty(int window, int property, int type, int... values)
+            throws IOException {
+        byte[] request = new byte[(24 + values.length * 4 + 3) & ~3];
+        request[0] = 18;                            // ChangeProperty
+        request[1] = 0;                             // replace
+        request[2] = (byte) (request.length / 4);
+        writeInt(request, 4, window);
+        writeInt(request, 8, property);
+        writeInt(request, 12, type);
+        request[16] = 32;                           // format
+        writeInt(request, 20, values.length);
+        for (int i = 0; i < values.length; i++) {
+            writeInt(request, 24 + i * 4, values[i]);
         }
         send(request);
     }

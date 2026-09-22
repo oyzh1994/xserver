@@ -305,6 +305,30 @@ public final class InputState implements DisplayBackend.InputSink {
         // Losing the host window's focus does not change the X input focus: clients keep theirs.
     }
 
+    /**
+     * A size the user asked for by dragging the host window's edge, waiting for the display tick to
+     * apply it.
+     *
+     * <p>Recorded rather than applied: this arrives on the toolkit's thread, and resizing a client's
+     * window means taking the server lock and walking the window tree, which the tick is doing at
+     * the same time. The tick picks it up and resizes the client's window itself.
+     */
+    private volatile java.awt.Dimension requestedSize;
+
+    @Override
+    public void windowResized(int width, int height) {
+        if (width > 0 && height > 0) {
+            requestedSize = new java.awt.Dimension(width, height);
+        }
+    }
+
+    /** The size the user last dragged the host window to, clearing it. Null when there is none. */
+    public java.awt.Dimension takeRequestedSize() {
+        java.awt.Dimension requested = requestedSize;
+        requestedSize = null;
+        return requested;
+    }
+
     // ------------------------------------------------------------------
     // Pointer
     // ------------------------------------------------------------------

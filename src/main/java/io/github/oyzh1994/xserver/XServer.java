@@ -570,6 +570,19 @@ public final class XServer {
         boolean viewportChanged = false;
         serverLock.lock();
         try {
+            // A resize the user asked for goes first: it changes the windows the rectangle below is
+            // the union of, so doing it after would put the window and the frame one tick apart.
+            applyRequestedSize(session);
+            XWindow source = identitySource(session.screen());
+            if (source != session.identitySource()) {
+                // The window the host window is named after, which is the largest one the client has
+                // mapped - so it arrives with the first window the client maps and follows along if
+                // the client replaces it.
+                session.setIdentitySource(source);
+                session.setIdentity(source == null
+                        ? WindowIdentity.NONE
+                        : WindowIdentity.of(atoms, source));
+            }
             // The master screen shows all of itself; a client's screen shows the part of it that
             // client's windows occupy, which is what keeps a small application out of a full-screen
             // window.
@@ -603,9 +616,14 @@ public final class XServer {
                     Rectangle settled = session.pendingViewport();
                     session.setPendingViewport(null);
                     session.setPendingSince(0);
+                    Rectangle was = session.viewport();
                     session.setViewport(settled);
                     session.screen().framebuffer().markAllDirty();
                     viewportChanged = true;
+                    // The window following its content is otherwise invisible from the server side,
+                    // and a window that jumps or shrinks is exactly what this line accounts for.
+                    log.debug("display :{} window now shows {}, was {}", options.displayNumber(),
+                            settled, was);
                 }
             }
             cursor = session.idle() ? null : session.input().cursorSprite();
@@ -641,6 +659,30 @@ public final class XServer {
         if (window == null) {
             return;
         }
+        // How large the window may be dragged, which is the screen less where the content starts on
+        // it: a window twenty pixels down the screen has twenty pixels less of itself that can ever
+        // be shown, and the frame is pulled back to the content the moment it is dragged past that.
+        java.awt.Dimension maxArea = new java.awt.Dimension(
+                session.screen().width() - session.viewport().x,
+                session.screen().height() - session.viewport().y);
+        if (maxArea.width > 0 && maxArea.height > 0 && !maxArea.equals(session.maxClientArea())) {
+            session.setMaxClientArea(maxArea);
+            window.setMaxClientArea(maxArea.width, maxArea.height);
+        }
+        if (session.identity() != session.appliedIdentity()) {
+            // Only when it is a new value: a session whose client is not retitling itself produces
+            // one identity object, and this is a reference comparison against it.
+            WindowIdentity identity = session.identity();
+            session.setAppliedIdentity(identity);
+            window.setWindowTitle(identity.title());
+            window.setWindowIcon(identity.iconArgb(), identity.iconWidth(), identity.iconHeight());
+            // Which window a client's title ends up on is otherwise only visible in the host
+            // window's title bar, which nobody looking at a log has.
+            log.debug("display :{} window is now \"{}\"{}", options.displayNumber(),
+                    identity.title(), identity.iconArgb() == null ? ""
+                            : " with a " + identity.iconWidth() + "x" + identity.iconHeight()
+                                    + " icon");
+        }
         if (session.idle() != session.idleApplied()) {
             session.setIdleApplied(session.idle());
             window.setIdle(session.idle());
@@ -669,20 +711,157 @@ public final class XServer {
     /**
      * The part of a screen the client's windows occupy: the union of its mapped top level windows.
      *
-     * <p>Their children are inside them, and override-redirect windows - menus, tooltips - are top
-     * level too, so a menu that hangs off the side of its parent still lands inside the window.
+     * <p>Their children are inside them without being counted, and so are override-redirect windows -
+     * menus, tooltips, drag icons. Those are transient overlays, and a window whose size followed
+     * them would grow the moment a context menu opened and shrink back the moment it closed, which
+     * is a window that jumps every time the user right-clicks. A window manager sizes the frame to
+     * the client's window and lets a popup be clipped by the screen; this is the same rule with the
+     * frame standing in for the screen.
+     *
+     * <p>The exception is a client that has mapped <em>nothing but</em> popups, which would otherwise
+     * have no size at all: those are counted after all, so whatever it is showing is shown.
      */
     private static Rectangle contentBounds(Screen screen) {
-        Rectangle union = null;
+        Rectangle windows = null;
+        Rectangle popups = null;
         for (XWindow child : screen.root().children()) {
             if (!child.isMapped() || child.isInputOnly()) {
                 continue;
             }
             Rectangle bounds = child.absoluteBoundsWithBorder();
-            union = union == null ? bounds : union.union(bounds);
+            if (child.isOverrideRedirect()) {
+                popups = popups == null ? bounds : popups.union(bounds);
+            } else {
+                windows = windows == null ? bounds : windows.union(bounds);
+            }
         }
-        return union == null ? null
-                : union.intersection(new Rectangle(0, 0, screen.width(), screen.height()));
+        Rectangle content = windows != null ? windows : popups;
+        return content == null ? null
+                : content.intersection(new Rectangle(0, 0, screen.width(), screen.height()));
+    }
+
+    /**
+     * A window's properties changed. A host window takes its title and icon from one client window,
+     * so if that is the one that changed, the host window has to be renamed.
+     *
+     * <p>Called from the request thread while the property is being written, which is what makes a
+     * retitle show up as promptly as the client made it.
+     */
+    public void windowPropertyChanged(XWindow window, int property) {
+        if (!WindowIdentity.isIdentityProperty(atoms.name(property))) {
+            // A toolkit writes properties constantly - normal hints, the state, the class - and
+            // rebuilding the identity for each of those would copy the icon of a large one for
+            // nothing.
+            return;
+        }
+        serverLock.lock();
+        try {
+            for (ScreenSession session : sessions) {
+                if (session.identitySource() == window) {
+                    session.setIdentity(WindowIdentity.of(atoms, window));
+                }
+            }
+        } finally {
+            serverLock.unlock();
+        }
+    }
+
+    /**
+     * The window a session shows in its title bar: the largest top level window its client has
+     * mapped.
+     *
+     * <p>Largest rather than first, because the first is often a hidden 1x1 window a toolkit keeps
+     * for its own use, and override-redirect windows are left out entirely - a menu has no title of
+     * its own, and an application that retitles itself does not retitle its menus.
+     */
+    private static XWindow identitySource(Screen screen) {
+        XWindow best = null;
+        long bestArea = 0;
+        for (XWindow child : screen.root().children()) {
+            if (!child.isMapped() || child.isInputOnly() || child.isOverrideRedirect()) {
+                continue;
+            }
+            long area = (long) child.width() * child.height();
+            if (best == null || area > bestArea) {
+                best = child;
+                bestArea = area;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Resizes the client's windows to the size the user dragged the host window to.
+     *
+     * <p>The host window is the frame around the client's window, so stretching it is the gesture a
+     * window manager's frame has always had: the client's window becomes that size and is told so
+     * with a ConfigureNotify. A client that refuses - one whose window has a fixed size - keeps its
+     * own size instead, and the frame is then simply larger than what it frames.
+     *
+     * <p>The size is capped at the screen: the framebuffer behind it is not resized, so a window
+     * stretched past the screen would have nothing to show in the extra area.
+     */
+    private void applyRequestedSize(ScreenSession session) {
+        java.awt.Dimension requested = session.input().takeRequestedSize();
+        if (requested == null) {
+            return;
+        }
+        Screen screen = session.screen();
+        boolean resized = false;
+        boolean capped = false;
+        for (XWindow window : screen.root().children()) {
+            if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
+                continue;
+            }
+            // A dimension the drag did not change is left alone rather than set to the same number
+            // arrived at differently: a window that hangs off the left of the screen and one that
+            // starts inside it need different widths to show the same amount, and rewriting the one
+            // the user did not touch would resize the client's window for nothing - which its own
+            // layout then reacts to.
+            int width = visibleExtent(window.x(), window.width(), screen.width())
+                    == requested.width
+                    ? window.width()
+                    : windowExtent(requested.width, window.x(), screen.width());
+            int height = visibleExtent(window.y(), window.height(), screen.height())
+                    == requested.height
+                    ? window.height()
+                    : windowExtent(requested.height, window.y(), screen.height());
+            capped |= requested.width != visibleExtent(window.x(), width, screen.width())
+                    || requested.height != visibleExtent(window.y(), height, screen.height());
+            if (width == window.width() && height == window.height()) {
+                continue;
+            }
+            windows().resizeWindow(window, width, height);
+            resized = true;
+        }
+        if (capped) {
+            // Debug rather than info: a drag delivers a resize a frame at a time, so holding the
+            // pointer past the edge would write this line sixty times a second.
+            log.debug("a window on display :{} was dragged to {}x{}, which the {}x{} screen cannot "
+                            + "show all of", options.displayNumber(), requested.width,
+                    requested.height, screen.width(), screen.height());
+        }
+        if (resized) {
+            screen.framebuffer().markAllDirty();
+        }
+    }
+
+    /** How much of a window of {@code size} at {@code origin} lies on a screen of {@code screenSize}. */
+    private static int visibleExtent(int origin, int size, int screenSize) {
+        return Math.max(0, Math.min(screenSize, origin + size) - Math.max(0, origin));
+    }
+
+    /**
+     * The window size that puts {@code wanted} pixels of a window at {@code origin} on the screen.
+     *
+     * <p>Not the same number: the part of the window that hangs off the start of the screen is not
+     * visible and has to be added back for the visible part to be what was asked for, and the window
+     * cannot run past the far edge either. A window twenty pixels down the screen can therefore be
+     * made 780 pixels tall where the screen is 800 - the other twenty are under the window's own top
+     * edge, which no resize can bring back.
+     */
+    private static int windowExtent(int wanted, int origin, int screenSize) {
+        return Math.min(wanted + Math.max(0, -origin), screenSize - Math.max(0, origin));
     }
 
     /**
