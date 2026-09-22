@@ -9,9 +9,12 @@ import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 import javax.swing.WindowConstants;
 import java.awt.Color;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Graphics;
+import java.awt.Point;
 import java.awt.Rectangle;
+import java.awt.Toolkit;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
@@ -125,6 +128,7 @@ public final class SwingBackend implements DisplayBackend {
         pointerY = screenHeight / 2;
 
         ScreenPanel view = new ScreenPanel(framebuffer);
+        view.setCursor(blankCursor());
         view.addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent event) {
@@ -191,6 +195,24 @@ public final class SwingBackend implements DisplayBackend {
         frame = window;
         window.setVisible(true);
         view.requestFocusInWindow();
+    }
+
+    /**
+     * The pointer the host draws, made invisible.
+     *
+     * <p>AWT has no "no cursor" constant, so this is the usual trick: a one pixel image with nothing
+     * in it, hotspotted at its corner. The pointer the user sees is then the sprite the server
+     * renders from the client's cursor, as on any X display; without this the host arrow sits on
+     * top of it and the client's cursor shape never shows.
+     */
+    private static Cursor blankCursor() {
+        try {
+            return Toolkit.getDefaultToolkit().createCustomCursor(
+                    new BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB), new Point(0, 0), "blank");
+        } catch (RuntimeException e) {
+            // No toolkit to make one with: leaving the host pointer alone is better than failing.
+            return Cursor.getDefaultCursor();
+        }
     }
 
     /**

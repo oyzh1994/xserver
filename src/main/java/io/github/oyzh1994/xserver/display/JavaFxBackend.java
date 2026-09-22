@@ -3,6 +3,7 @@ package io.github.oyzh1994.xserver.display;
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import javafx.application.Platform;
 import javafx.geometry.Rectangle2D;
+import javafx.scene.Cursor;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
@@ -210,6 +211,11 @@ public final class JavaFxBackend implements DisplayBackend {
         graphics.drawImage(image, 0, 0);
 
         Scene scene = new Scene(new StackPane(canvas), width, height, Color.BLACK);
+        // The platform would otherwise draw its own arrow over the window, on top of the sprite the
+        // server renders from the client's cursor: two pointers, and the host one always wins.
+        // Leaving the pointer to the X client is also what makes a text cursor, a resize arrow or
+        // an application that hides the pointer while it types show up as the client intended.
+        scene.setCursor(Cursor.NONE);
         scene.setOnMouseMoved(this::pointerMoved);
         scene.setOnMouseDragged(this::pointerMoved);
         scene.setOnMousePressed(event -> mouseButton(event, true));
