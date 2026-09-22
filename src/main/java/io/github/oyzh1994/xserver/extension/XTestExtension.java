@@ -36,12 +36,16 @@ public final class XTestExtension implements Extension {
     private static final byte MAJOR_VERSION = 2;
     private static final short MINOR_VERSION = 2;
 
-    /** FakeInput event types, numbered as the protocol numbers them. */
-    private static final int KEY_PRESS = 1;
-    private static final int KEY_RELEASE = 2;
-    private static final int BUTTON_PRESS = 3;
-    private static final int BUTTON_RELEASE = 4;
-    private static final int MOTION_NOTIFY = 5;
+    /**
+     * FakeInput event types. These are the core protocol's own event codes - KeyPress is 2 and
+     * MotionNotify is 6 - not a numbering of XTEST's own, so a client's button press arrives as a
+     * press rather than as whatever the next type along would have been.
+     */
+    private static final int KEY_PRESS = 2;
+    private static final int KEY_RELEASE = 3;
+    private static final int BUTTON_PRESS = 4;
+    private static final int BUTTON_RELEASE = 5;
+    private static final int MOTION_NOTIFY = 6;
 
     /** FakeInput detail for motion: absolute means "x and y are screen coordinates". */
     private static final int MOTION_ABSOLUTE = 0;

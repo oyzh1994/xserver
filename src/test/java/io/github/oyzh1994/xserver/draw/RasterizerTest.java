@@ -108,6 +108,26 @@ class RasterizerTest {
         assertEquals(0xFF000000, target.pixel(2, 3));
     }
 
+    /**
+     * A window that is partly covered is drawn only where it shows: the pixels under the window on
+     * top belong to that window, and painting over them is what makes a dialog disappear when the
+     * window underneath it repaints.
+     */
+    @Test
+    void aCoveredRegionKeepsDrawingOutOfTheCoveredPart() {
+        XPixmap target = pixmap(10, 10, 0xFF000000);
+        // Visible: the left column and the right two columns of a window that spans the pixmap.
+        List<Rectangle> region = List.of(new Rectangle(0, 0, 4, 10), new Rectangle(8, 0, 2, 10));
+
+        new Rasterizer(target, gc(), new Rectangle(0, 0, 10, 10), region).fillRect(0, 0, 10, 10);
+
+        assertEquals(0xFFFFFFFF, target.pixel(3, 5), "a visible piece is painted");
+        assertEquals(0xFFFFFFFF, target.pixel(9, 5));
+        assertEquals(0xFF000000, target.pixel(5, 5), "the covered piece is left alone");
+        assertEquals(0xFF000000, target.pixel(7, 5));
+        assertEquals(6 * 10, lit(target));
+    }
+
     @Test
     void clipRectanglesAreRelativeToTheClipOrigin() {
         XPixmap target = pixmap(12, 12, 0xFF000000);

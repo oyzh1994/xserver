@@ -11,6 +11,7 @@ import com.github.moaxcp.x11.protocol.XReply;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,8 +113,41 @@ public final class ClientOutput {
      */
     public synchronized void writeEvent(XEvent event) throws IOException {
         byte[] bytes = serialize(out -> event.write(out));
+        correctEventType(bytes, event);
         write(padTo(bytes, EVENT_SIZE));
         flush();
+    }
+
+    /**
+     * The event numbers the generated classes get wrong, and what they should be.
+     *
+     * <p>{@code xproto.xml} declares these five with {@code <eventcopy ...>} - a release is a press
+     * with another number, a leave is an enter, and so on - and the generator ignores the number on
+     * a copy, so each generated class carries the number of the event it copies. On the wire a
+     * release then looks like a second press and a leave looks like an enter, with the effect that a
+     * client never sees a click completed (buttons never fire), gets every keystroke twice, and
+     * tracks hover and focus backwards.
+     */
+    private static final Map<Class<?>, Byte> EVENT_NUMBERS = Map.of(
+            com.github.moaxcp.x11.protocol.xproto.ButtonReleaseEvent.class, (byte) 5,
+            com.github.moaxcp.x11.protocol.xproto.KeyReleaseEvent.class, (byte) 3,
+            com.github.moaxcp.x11.protocol.xproto.LeaveNotifyEvent.class, (byte) 8,
+            com.github.moaxcp.x11.protocol.xproto.FocusOutEvent.class, (byte) 10,
+            com.github.moaxcp.x11.protocol.xproto.CirculateRequestEvent.class, (byte) 27);
+
+    /**
+     * Rewrites the type byte of an event the generated protocol numbers wrongly.
+     *
+     * <p>Done here because every generated class's output already passes through this method, and
+     * because the fault is in a dependency: the real fix is for the generator to honour the number
+     * on an {@code eventcopy}.
+     */
+    private static void correctEventType(byte[] bytes, XEvent event) {
+        Byte number = EVENT_NUMBERS.get(event.getClass());
+        if (number != null) {
+            // Bit 7 is the synthetic flag, which the type byte also carries.
+            bytes[0] = (byte) ((bytes[0] & 0x80) | number);
+        }
     }
 
     /**

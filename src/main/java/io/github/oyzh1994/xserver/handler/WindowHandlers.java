@@ -49,6 +49,7 @@ import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.event.RawEvent;
 import io.github.oyzh1994.xserver.resource.ResourceTable;
+import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XColormap;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XPixmap;
@@ -58,7 +59,9 @@ import org.eclipse.collections.impl.factory.primitive.IntLists;
 
 import java.awt.Rectangle;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Window requests: creating, mapping, stacking, resizing and destroying windows, plus the queries
@@ -438,6 +441,9 @@ public final class WindowHandlers {
      * Also used internally when a parent is remapped.
      */
     public void mapWindow(XWindow window) {
+        // Nothing of it showed before it was mapped, so everything it is about to cover is
+        // repainted from the windows underneath and the window itself is drawn and exposed.
+        List<Rectangle> before = visibleRegionOf(window);
         window.setMapped(true);
         boolean viewable = window.isViewable();
 
@@ -475,10 +481,9 @@ public final class WindowHandlers {
         }
 
         if (viewable) {
-            window.markNeedsFullExpose();
-            paintWindow(window);
-            deliverExpose(window, window.absoluteBounds());
-            deliverVisibilityNotify(window, Visibility.UNOBSCURED.getValue());
+            // Painting and exposing is what visibilityChanged does, region by region: the parts of
+            // the window a window on top already owns are left to it.
+            visibilityChanged(window, before, visibleRegionOf(window));
             for (XWindow child : window.children()) {
                 if (child.isMapped()) {
                     mapWindow(child);
@@ -509,7 +514,12 @@ public final class WindowHandlers {
 
     /** Unmaps a window, optionally reporting it to the clients that selected for it. */
     public void unmapWindow(XWindow window, boolean notify) {
+        // The area it covered goes back to the windows below, which have to draw it again: their
+        // pixels there are the ones this window painted over. This happens even when the unmap is
+        // not reported, because a destroyed window's area has to be restored just the same.
+        List<Rectangle> before = visibleRegionOf(window);
         window.setMapped(false);
+        repaintUnder(before, window);
         if (!notify) {
             return;
         }
@@ -553,6 +563,9 @@ public final class WindowHandlers {
         int oldWidth = window.width();
         int oldHeight = window.height();
         int oldBorder = window.borderWidth();
+        // Where it showed before the change, so the parts it stops covering can be handed back to
+        // the windows underneath and the parts it starts covering can be drawn.
+        List<Rectangle> before = visibleRegionOf(window);
 
         if (ConfigWindow.X.isEnabled(mask)) {
             window.setPosition(r.getX(), window.y());
@@ -584,19 +597,32 @@ public final class WindowHandlers {
         boolean moved = window.x() != oldX || window.y() != oldY;
         boolean resized = window.width() != oldWidth || window.height() != oldHeight
                 || window.borderWidth() != oldBorder;
+        boolean restacked = ConfigWindow.STACK_MODE.isEnabled(mask);
 
-        if (moved || resized) {
+        if (moved || resized || restacked) {
+            // A restack changes who is visible where just as a move does, so it is reported and
+            // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
-            if (window.isViewable()) {
-                paintWindow(window);
-                deliverExpose(window, window.absoluteBounds());
-            }
+            visibilityChanged(window, before, visibleRegionOf(window));
             server.markScreenDirty();
         }
     }
 
     private void notifyConfigure(XWindow window, ConfigureWindow r, int mask, boolean moved,
                                  boolean resized) {
+        // The sibling directly above it now, which is how a client follows the stacking order; 0
+        // (None) means it is the topmost.
+        int sibling = 0;
+        XWindow parent = window.parent();
+        if (parent != null) {
+            List<XWindow> siblings = parent.children();
+            int index = siblings.indexOf(window);
+            if (index >= 0 && index + 1 < siblings.size()) {
+                sibling = siblings.get(index + 1).id();
+            }
+        }
+        // Copied so the event factories can capture it.
+        final int aboveSibling = sibling;
         server.events().deliverToWindow(window, EventMasks.STRUCTURE_NOTIFY,
                 (recipient, w, child, x, y) -> ConfigureNotifyEvent.builder()
                         .firstEventOffset((byte) 0)
@@ -604,7 +630,7 @@ public final class WindowHandlers {
                         .sequenceNumber(recipient.sequenceNumber())
                         .event(w.id())
                         .window(window.id())
-                        .aboveSibling(0)
+                        .aboveSibling(aboveSibling)
                         .x((short) window.x())
                         .y((short) window.y())
                         .width((short) window.width())
@@ -612,7 +638,6 @@ public final class WindowHandlers {
                         .borderWidth((short) window.borderWidth())
                         .overrideRedirect(window.isOverrideRedirect())
                         .build());
-        XWindow parent = window.parent();
         if (parent != null) {
             server.events().deliverToWindow(parent, EventMasks.SUBSTRUCTURE_NOTIFY,
                     (recipient, w, child, x, y) -> ConfigureNotifyEvent.builder()
@@ -621,7 +646,7 @@ public final class WindowHandlers {
                             .sequenceNumber(recipient.sequenceNumber())
                             .event(w.id())
                             .window(window.id())
-                            .aboveSibling(0)
+                            .aboveSibling(aboveSibling)
                             .x((short) window.x())
                             .y((short) window.y())
                             .width((short) window.width())
@@ -715,6 +740,13 @@ public final class WindowHandlers {
         if (mapped.size() < 2) {
             return;
         }
+        // Circulating is a restack of every mapped child, so what each of them shows changes: their
+        // regions are captured before the order moves and compared after, which is what gets the
+        // newly covered windows told to stop and the newly revealed ones told to draw.
+        Map<XWindow, List<Rectangle>> before = new LinkedHashMap<>();
+        for (XWindow child : mapped) {
+            before.put(child, visibleRegionOf(child));
+        }
         for (XWindow child : mapped) {
             int index = parent.children().indexOf(child);
             parent.children().remove(index);
@@ -733,6 +765,9 @@ public final class WindowHandlers {
                             .place((byte) (direction == Circulate.RAISE_LOWEST.getValue()
                                     ? Place.ON_TOP.getValue() : Place.ON_BOTTOM.getValue()))
                             .build());
+        }
+        for (XWindow child : mapped) {
+            visibilityChanged(child, before.get(child), visibleRegionOf(child));
         }
         server.markScreenDirty();
     }
@@ -815,31 +850,39 @@ public final class WindowHandlers {
         if (window.isInputOnly() || !window.isViewable()) {
             return;
         }
-        Rectangle clip = window.clipRect();
-        if (clip.isEmpty()) {
-            return;
-        }
-        paintBackground(window, clip);
+        paintBackground(window, window.absoluteBounds());
         // The border is clipped only by the ancestors: using the content clip here would remove
         // the border entirely, which is exactly what happened until a client with bordered child
         // windows - xcalc's buttons - was run against the server.
-        paintBorder(window, window.outerClipRect());
+        for (Rectangle piece : window.outerVisibleRegion()) {
+            paintBorder(window, piece);
+        }
     }
 
-    /** Fills the window's inner rectangle with its background, clipped. */
+    /**
+     * Fills the window's inner rectangle with its background, clipped to the part of it that is
+     * visible.
+     *
+     * <p>The visible region is applied here rather than left to the caller: a window's background
+     * painted over the area a window on top of it occupies is exactly the way a dialog gets erased,
+     * and every caller - a map, a configure, a clear, a resize - would have to remember not to.
+     */
     public void paintBackground(XWindow window, Rectangle clip) {
         if (window.isInputOnly()) {
             return;
         }
-        Rectangle area = window.absoluteBounds().intersection(clip);
-        if (area.isEmpty()) {
-            return;
-        }
         Framebuffer framebuffer = server.screen().framebuffer();
-        if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
-            tileInto(framebuffer, tile, area, window.absoluteX(), window.absoluteY());
-        } else {
-            framebuffer.fillRect(area.x, area.y, area.width, area.height, window.backgroundPixel());
+        for (Rectangle piece : window.visibleRegion()) {
+            Rectangle area = window.absoluteBounds().intersection(clip).intersection(piece);
+            if (area.isEmpty()) {
+                continue;
+            }
+            if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
+                tileInto(framebuffer, tile, area, window.absoluteX(), window.absoluteY());
+            } else {
+                framebuffer.fillRect(area.x, area.y, area.width, area.height,
+                        window.backgroundPixel());
+            }
         }
     }
 
@@ -934,24 +977,117 @@ public final class WindowHandlers {
         if (!window.isViewable()) {
             return;
         }
-        Rectangle visible = rect.intersection(window.clipRect());
-        if (visible.isEmpty()) {
+        // A window that is partly covered is told about the visible pieces only, and the count field
+        // tells it how many more exposes are on the way.
+        List<Rectangle> pieces = ShapeState.intersect(List.of(rect), window.visibleRegion());
+        for (int i = 0; i < pieces.size(); i++) {
+            Rectangle visible = pieces.get(i);
+            int x = visible.x - window.absoluteX();
+            int y = visible.y - window.absoluteY();
+            short remaining = (short) (pieces.size() - 1 - i);
+            server.events().deliverToWindow(window, EventMasks.EXPOSURE,
+                    (recipient, w, child, eventX, eventY) -> ExposeEvent.builder()
+                            .firstEventOffset((byte) 0)
+                            .sentEvent(false)
+                            .sequenceNumber(recipient.sequenceNumber())
+                            .window(w.id())
+                            .x((short) x)
+                            .y((short) y)
+                            .width((short) visible.width)
+                            .height((short) visible.height)
+                            .count(remaining)
+                            .build());
+        }
+    }
+
+    /**
+     * Repaints and notifies after a window's visibility changed.
+     *
+     * <p>{@code before} and {@code after} are the window's visible regions, in screen coordinates,
+     * captured around whatever changed its geometry or its place in the stacking order.
+     *
+     * <p>The parts it gained have to be drawn again: their pixels are whatever was on top of it
+     * until now. The parts it lost belong to the windows underneath, which have to be asked to draw
+     * as well - nothing of theirs is kept anywhere, so a revealed area is restored by painting the
+     * lower window's background and letting its client repaint the content.
+     */
+    private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after) {
+        for (Rectangle gained : ShapeState.subtract(after, before)) {
+            paintBackground(window, gained);
+            paintBorder(window, gained);
+            deliverExpose(window, gained);
+        }
+        if (window.isViewable()) {
+            deliverVisibilityNotify(window, visibilityStateOf(window));
+        }
+        // The windows below keep what they have where this window still covers them, so only the
+        // area it stopped covering is redrawn.
+        repaintUnder(ShapeState.subtract(before, after), window);
+    }
+
+    /** The visible region of a window, or nothing when it is not on screen at all. */
+    private List<Rectangle> visibleRegionOf(XWindow window) {
+        return window != null && window.isViewable() && !window.isInputOnly()
+                ? window.visibleRegion() : List.of();
+    }
+
+    /**
+     * Repaints the parts of the windows under {@code window} that {@code areas} uncovered.
+     *
+     * <p>Walked bottom to top so the topmost window of the ones below is painted last, and clipped
+     * to each window's own visible region, which is what keeps a window that is itself covered from
+     * painting where it does not show.
+     */
+    private void repaintUnder(List<Rectangle> areas, XWindow window) {
+        if (areas.isEmpty()) {
             return;
         }
-        int x = visible.x - window.absoluteX();
-        int y = visible.y - window.absoluteY();
-        server.events().deliverToWindow(window, EventMasks.EXPOSURE,
-                (recipient, w, child, eventX, eventY) -> ExposeEvent.builder()
-                        .firstEventOffset((byte) 0)
-                        .sentEvent(false)
-                        .sequenceNumber(recipient.sequenceNumber())
-                        .window(w.id())
-                        .x((short) x)
-                        .y((short) y)
-                        .width((short) visible.width)
-                        .height((short) visible.height)
-                        .count((short) 0)
-                        .build());
+        for (XWindow candidate : stackingOrder()) {
+            if (candidate == window || candidate.isInputOnly() || !candidate.isViewable()
+                    || candidate.isAbove(window)) {
+                // A window above the one that changed was never covered by it.
+                continue;
+            }
+            List<Rectangle> visible = candidate.visibleRegion();
+            for (Rectangle area : areas) {
+                for (Rectangle piece : visible) {
+                    Rectangle part = area.intersection(piece);
+                    if (!part.isEmpty()) {
+                        paintBackground(candidate, part);
+                        paintBorder(candidate, part);
+                        deliverExpose(candidate, part);
+                    }
+                }
+            }
+        }
+    }
+
+    /** The windows of the tree, a parent before its children and siblings bottom to top. */
+    private List<XWindow> stackingOrder() {
+        List<XWindow> order = new ArrayList<>();
+        collectStackingOrder(server.rootWindow(), order);
+        return order;
+    }
+
+    private static void collectStackingOrder(XWindow window, List<XWindow> order) {
+        order.add(window);
+        for (XWindow child : window.children()) {
+            collectStackingOrder(child, order);
+        }
+    }
+
+    /**
+     * How much of a window is visible, for {@code VisibilityNotify}: invisible when nothing of it
+     * shows, partially obscured when something covers part of it, unobscured otherwise.
+     */
+    private int visibilityStateOf(XWindow window) {
+        List<Rectangle> visible = window.visibleRegion();
+        if (visible.isEmpty()) {
+            return Visibility.FULLY_OBSCURED.getValue();
+        }
+        return ShapeState.extents(visible).equals(window.clipRect())
+                ? Visibility.UNOBSCURED.getValue()
+                : Visibility.PARTIALLY_OBSCURED.getValue();
     }
 
     // ------------------------------------------------------------------

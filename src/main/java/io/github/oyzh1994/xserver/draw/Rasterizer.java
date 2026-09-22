@@ -94,6 +94,12 @@ public final class Rasterizer {
     private final int clipY0;
     private final int clipX1;
     private final int clipY1;
+    /**
+     * The writable region as x0,y0,x1,y1 groups, when the drawable is partly covered by other
+     * windows: the visible parts of a window, which are the only places its pixels really show.
+     * Null when the clip box is the whole story.
+     */
+    private final int[] regionRects;
     private final int[] clipRects;
     private final PixelStore clipMask;
     private final int clipOriginX;
@@ -102,9 +108,15 @@ public final class Rasterizer {
     private final boolean simpleClip;
 
     /**
-     * True when a whole rectangle can go through {@link PixelStore#fillRect}: no clip mask or
-     * rectangle list, no stipple or tile to consult, and a function that ignores the destination.
-     * That path also keeps damage tracking of a {@link Framebuffer} intact.
+     * True when a filled rectangle can be handed to {@link PixelStore#fillRect} as a block: the
+     * function ignores the destination and the fill style is a solid colour, so no per pixel work
+     * is needed. That path also keeps damage tracking of a {@link Framebuffer} intact.
+     */
+    private final boolean solidCopy;
+
+    /**
+     * {@link #solidCopy} plus "the clip box is the whole story", which is what allows a fill to go
+     * through as one block without consulting the clip at all.
      */
     private final boolean fastFill;
 
@@ -117,6 +129,16 @@ public final class Rasterizer {
      *     server passes the window and ancestor clip here.
      */
     public Rasterizer(PixelStore store, XGC gc, Rectangle clip) {
+        this(store, gc, clip, null);
+    }
+
+    /**
+     * @param region the parts of a window that are actually visible, in screen coordinates, when
+     *     windows are stacked on it. Drawing outside them would paint over the window on top, so
+     *     every write is confined to this region; {@code clip} is its bounding box (or the window's
+     *     clip when there is no region).
+     */
+    public Rasterizer(PixelStore store, XGC gc, Rectangle clip, List<Rectangle> region) {
         this.store = store;
         this.gc = gc;
         this.function = gc.function();
@@ -158,6 +180,35 @@ public final class Rasterizer {
             y0 = Math.max(y0, clip.y);
             x1 = Math.min(x1, clip.x + clip.width);
             y1 = Math.min(y1, clip.y + clip.height);
+        }
+
+        int[] pieces = null;
+        if (region != null) {
+            pieces = new int[region.size() * 4];
+            int n = 0;
+            int regionX0 = x0;
+            int regionY0 = y0;
+            int regionX1 = x1;
+            int regionY1 = y1;
+            if (region.isEmpty()) {
+                // Nothing of the window is visible: the clip box collapses and no pixel is writable.
+                regionX0 = regionY0 = 0;
+                regionX1 = regionY1 = 0;
+            }
+            for (Rectangle piece : region) {
+                pieces[n++] = piece.x;
+                pieces[n++] = piece.y;
+                pieces[n++] = piece.x + piece.width;
+                pieces[n++] = piece.y + piece.height;
+                regionX0 = Math.min(regionX0, piece.x);
+                regionY0 = Math.min(regionY0, piece.y);
+                regionX1 = Math.max(regionX1, piece.x + piece.width);
+                regionY1 = Math.max(regionY1, piece.y + piece.height);
+            }
+            x0 = Math.max(x0, regionX0);
+            y0 = Math.max(y0, regionY0);
+            x1 = Math.min(x1, regionX1);
+            y1 = Math.min(y1, regionY1);
         }
 
         PixelStore mask = null;
@@ -210,10 +261,19 @@ public final class Rasterizer {
         this.clipY0 = y0;
         this.clipX1 = Math.max(x0, x1);
         this.clipY1 = Math.max(y0, y1);
+        this.regionRects = pieces == null || coversBox(pieces, clipX0, clipY0, clipX1, clipY1)
+                ? null : pieces;
         this.clipRects = rects;
         this.clipMask = mask;
-        this.simpleClip = rects == null && mask == null;
-        this.fastFill = directCopy && simpleClip && fillStyle == XGC.FILL_SOLID;
+        this.simpleClip = regionRects == null && rects == null && mask == null;
+        this.solidCopy = directCopy && fillStyle == XGC.FILL_SOLID;
+        this.fastFill = solidCopy && simpleClip;
+    }
+
+    /** True when a single rectangle of the region spans the whole clip box. */
+    private static boolean coversBox(int[] pieces, int x0, int y0, int x1, int y1) {
+        return pieces.length == 4 && pieces[0] <= x0 && pieces[1] <= y0 && pieces[2] >= x1
+                && pieces[3] >= y1;
     }
 
     // ---------------------------------------------------------------- raster ops
@@ -285,6 +345,20 @@ public final class Rasterizer {
         if (x < clipX0 || x >= clipX1 || y < clipY0 || y >= clipY1) {
             return false;
         }
+        if (regionRects != null) {
+            boolean visible = false;
+            for (int i = 0; i < regionRects.length; i += 4) {
+                if (x >= regionRects[i] && x < regionRects[i + 2] && y >= regionRects[i + 1]
+                        && y < regionRects[i + 3]) {
+                    visible = true;
+                    break;
+                }
+            }
+            if (!visible) {
+                // A window on top owns this pixel; writing it would paint over that window.
+                return false;
+            }
+        }
         if (clipRects != null) {
             for (int i = 0; i < clipRects.length; i += 4) {
                 if (x >= clipRects[i] && x < clipRects[i + 2] && y >= clipRects[i + 1]
@@ -318,6 +392,27 @@ public final class Rasterizer {
         }
         long right = (long) x + w;
         long bottom = (long) y + h;
+        if (regionRects != null && clipRects == null && clipMask == null) {
+            // Partly covered by a window on top: fill the visible pieces of the rectangle one block
+            // at a time, so a fill stays a block fill instead of a per pixel loop.
+            for (int i = 0; i < regionRects.length; i += 4) {
+                int px0 = Math.max(x, regionRects[i]);
+                int py0 = Math.max(y, regionRects[i + 1]);
+                long px1 = Math.min(right, regionRects[i + 2]);
+                long py1 = Math.min(bottom, regionRects[i + 3]);
+                if (px0 < px1 && py0 < py1) {
+                    // The piece is already inside the region and there is no GC clip or mask here,
+                    // so it can go through as a block.
+                    fillRectClipped(px0, py0, px1, py1, solidCopy);
+                }
+            }
+            return;
+        }
+        fillRectClipped(x, y, right, bottom, fastFill);
+    }
+
+    /** The clipping itself, once the caller has settled which pieces are writable. */
+    private void fillRectClipped(int x, int y, long right, long bottom, boolean asBlock) {
         int x0 = Math.max(clipX0, x);
         int y0 = Math.max(clipY0, y);
         int x1 = (int) Math.min(clipX1, right);
@@ -325,7 +420,7 @@ public final class Rasterizer {
         if (x0 >= x1 || y0 >= y1) {
             return;
         }
-        if (fastFill) {
+        if (asBlock) {
             store.fillRect(x0, y0, x1 - x0, y1 - y0, foreground);
             return;
         }
@@ -341,12 +436,29 @@ public final class Rasterizer {
         if (x0 > x1 || y < clipY0 || y >= clipY1) {
             return;
         }
+        if (regionRects != null && clipRects == null && clipMask == null) {
+            for (int i = 0; i < regionRects.length; i += 4) {
+                if (y < regionRects[i + 1] || y >= regionRects[i + 3]) {
+                    continue;
+                }
+                int px0 = Math.max(x0, regionRects[i]);
+                int px1 = Math.min(x1, regionRects[i + 2] - 1);
+                if (px0 <= px1) {
+                    fillSpanClipped(y, px0, px1, solidCopy);
+                }
+            }
+            return;
+        }
+        fillSpanClipped(y, x0, x1, fastFill);
+    }
+
+    private void fillSpanClipped(int y, int x0, int x1, boolean asBlock) {
         int px0 = Math.max(clipX0, x0);
         int px1 = Math.min(clipX1 - 1, x1);
         if (px0 > px1) {
             return;
         }
-        if (fastFill) {
+        if (asBlock) {
             store.fillRect(px0, y, px1 - px0 + 1, 1, foreground);
             return;
         }

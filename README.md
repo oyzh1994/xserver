@@ -73,6 +73,15 @@ obscured content is not preserved. That is X's model, and it is what makes `Expo
 what clients expect. Coordinates are relative to the parent, so every draw request is translated by
 the window's absolute position on the way in.
 
+**Obscuring is tracked.** A window's visible region is its rectangle minus everything stacked above
+it - the siblings above it at every level of the tree, and its own children, which draw inside it -
+and drawing is clipped to that region, in the core rasteriser and through RENDER alike. So a window
+does not paint over the dialog on top of it, which is what makes a popup stay on screen instead of
+being wiped by the next repaint of the window underneath. When a window is unmapped, destroyed,
+moved or restacked, the area it stops covering is handed back: the windows underneath are painted
+with their own background and sent `Expose`, because nothing of theirs was kept anywhere.
+`VisibilityNotify` reports unobscured, partially obscured and fully obscured as that changes.
+
 **Replies are serialised to memory before they reach the socket.** The generated writer for a reply
 computes its length field from the wrong base, and short replies are emitted without their trailing
 padding; both would desynchronise a real client. `ClientOutput` rewrites the length from the bytes
@@ -164,9 +173,10 @@ order (only the glyphset-switch item is always most-significant-byte first), and
   `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
 - **A bounding shape does not clip drawing.** SHAPE's input shape is honoured for hit testing; the
   bounding shape only affects `QueryExtents` and `GetRectangles`, so a shaped window's corners are
-  still painted.
-- **Content revealed by unmapping a window is not repainted.** Expose events are generated for a
-  window that becomes visible, but not for the windows underneath it.
+  still painted. The visible region that obscuring computes does not consult it either.
+- **A revealed window is restored by asking it to draw.** Nothing of a window's content is kept, so
+  the area under a window that goes away is repainted with the lower window's background and an
+  `Expose` - a client that ignores the expose shows its background there.
 - **Writing to a client that has stopped reading blocks the server**, because events are sent while
   holding the server lock. A real server buffers per client and drops the connection.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and

@@ -28,6 +28,8 @@ import java.util.List;
  */
 public final class InputState implements DisplayBackend.InputSink {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(InputState.class);
+
     /** X button state occupies bits 8..12 of the event state field. */
     private static final int BUTTON_MASK_SHIFT = 8;
 
@@ -215,6 +217,13 @@ public final class InputState implements DisplayBackend.InputSink {
                 buttons |= mask;
             } else {
                 buttons &= ~mask;
+            }
+            if (log.isDebugEnabled()) {
+                // Which window a click lands on is otherwise invisible from the server side, and it
+                // is the first thing to check when a client behaves as if it was never clicked.
+                XWindow target = windowAtPointer();
+                log.debug("button {} {} at ({},{}) -> {}", button, pressed ? "down" : "up", x, y,
+                        target == null ? "no window" : "0x" + Integer.toHexString(target.id()));
             }
             deliverButton(button, pressed, mask);
         } finally {

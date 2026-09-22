@@ -10,7 +10,7 @@ import io.github.oyzh1994.xserver.Main;
 public class XServerTest {
 
     static void main() {
-        String[] args = new String[]{"--display", "10", "--geometry", "1280x800", "--log-requests"};
+        String[] args = new String[]{"--display", "10", "--geometry", "1300x800", "--log-requests"};
         Main.main(args);
     }
 }

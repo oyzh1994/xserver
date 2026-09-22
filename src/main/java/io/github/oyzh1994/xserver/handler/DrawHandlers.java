@@ -27,6 +27,7 @@ import io.github.oyzh1994.xserver.draw.ImageCodec;
 import io.github.oyzh1994.xserver.draw.PixelStore;
 import io.github.oyzh1994.xserver.draw.Rasterizer;
 import io.github.oyzh1994.xserver.event.EventMasks;
+import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XFont;
 import io.github.oyzh1994.xserver.resource.XGC;
 import io.github.oyzh1994.xserver.resource.XPixmap;
@@ -35,6 +36,7 @@ import io.github.oyzh1994.xserver.resource.XWindow;
 import org.eclipse.collections.impl.factory.primitive.ByteLists;
 
 import java.awt.Rectangle;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -88,10 +90,14 @@ public final class DrawHandlers {
             // A tiled background is painted by the window painter, which knows the tiling origin.
             server.windows().paintBackground(window, area);
         } else {
-            Rectangle visible = area.intersection(window.clipRect());
-            if (!visible.isEmpty()) {
-                server.screen().framebuffer().fillRect(visible.x, visible.y, visible.width,
-                        visible.height, window.backgroundPixel());
+            // Only the visible pieces of the area belong to this window; the rest is covered by
+            // whatever is stacked above it and must be left alone.
+            for (Rectangle piece : window.visibleRegion()) {
+                Rectangle visible = area.intersection(piece);
+                if (!visible.isEmpty()) {
+                    server.screen().framebuffer().fillRect(visible.x, visible.y, visible.width,
+                            visible.height, window.backgroundPixel());
+                }
             }
         }
         if (r.isExposures()) {
@@ -513,10 +519,34 @@ public final class DrawHandlers {
         }
     }
 
+    /**
+     * The parts of a window a request may draw into: the window's visible region - its own
+     * rectangle minus whatever is stacked above it - narrowed by the GC's own clip rectangles.
+     *
+     * <p>The rasterizer enforces the GC clip too, but only through its bounding box, so the exact
+     * intersection of the two rectangle lists is taken here, where both are available. A clip mask
+     * is left to the rasterizer, which tests it per pixel.
+     */
+    private List<Rectangle> clipRegion(XWindow window, XGC gc) {
+        List<Rectangle> region = window.visibleRegion();
+        if (gc.isClipByRectangles()) {
+            List<XGC.Rectangle2> list = gc.clipRectangles();
+            List<Rectangle> clip = new ArrayList<>(list.size());
+            for (XGC.Rectangle2 r : list) {
+                // Rectangle coordinates are relative to the clip origin.
+                clip.add(new Rectangle(r.x() + gc.clipOriginX(), r.y() + gc.clipOriginY(),
+                        r.width(), r.height()));
+            }
+            region = ShapeState.intersect(region, clip);
+        }
+        return region;
+    }
+
     private Target target(XResource drawable, XGC gc) {
         if (drawable instanceof XWindow window) {
             PixelStore store = server.screen().framebuffer();
-            return new Target(store, new Rasterizer(store, gc, window.clipRect()),
+            List<Rectangle> region = clipRegion(window, gc);
+            return new Target(store, new Rasterizer(store, gc, ShapeState.extents(region), region),
                     window.absoluteX(), window.absoluteY());
         }
         XPixmap pixmap = (XPixmap) drawable;

@@ -111,12 +111,12 @@ public final class Picture extends XResource {
     private Gradient gradient;
 
     /**
-     * The window's visible rectangle, cached because it is consulted once per pixel and computing
-     * it walks the ancestor chain allocating a rectangle at every step. {@link #refreshClip()}
-     * renews it at the start of a drawing request; the lazy fallback means a picture that was never
-     * refreshed still clips correctly rather than not at all.
+     * The parts of the window that are visible - its rectangle minus whatever is stacked above it -
+     * cached because they are consulted once per pixel. {@link #refreshClip()} renews them at the
+     * start of a drawing request; the lazy fallback means a picture that was never refreshed still
+     * clips correctly rather than not at all.
      */
-    private Rectangle windowClip;
+    private List<Rectangle> windowClip;
 
     public Picture(int id, ClientConnection owner, XResource drawable, PictFormat format,
                    Screen screen, PixelStore store, int originX, int originY, XWindow window) {
@@ -398,13 +398,14 @@ public final class Picture extends XResource {
      * window tree cannot change underneath it - the server holds its lock for the whole request.
      */
     public void refreshClip() {
-        windowClip = window == null ? null : window.clipRect();
+        windowClip = window == null ? null : window.visibleRegion();
     }
 
     /**
      * Whether the drawable has pixels this server can reach at a picture coordinate. For a window
      * that means inside its rectangle and not obscured: the contents of obscured pixels are
-     * undefined, and reading them anyway would let a source picture sample a sibling's pixels.
+     * undefined, and reading them anyway would let a source picture sample a sibling's pixels - and
+     * writing them would paint over the window on top.
      */
     private boolean hasContent(int x, int y) {
         if (x < 0 || y < 0 || x >= width() || y >= height()) {
@@ -413,12 +414,12 @@ public final class Picture extends XResource {
         if (window == null) {
             return true;
         }
-        Rectangle clip = windowClip;
+        List<Rectangle> clip = windowClip;
         if (clip == null) {
-            clip = window.clipRect();
+            clip = window.visibleRegion();
             windowClip = clip;
         }
-        return clip.contains(originX + x, originY + y);
+        return ShapeState.containsPoint(clip, originX + x, originY + y);
     }
 
     private static int clamp(int value, int size) {

@@ -1321,6 +1321,9 @@ public final class RenderExtension implements Extension {
             // rather than a cursor. Real servers bound this too.
             throw ProtocolException.badMatch();
         }
+        // The picture's clip is renewed per drawing request; reading its pixels here is not one, so
+        // it is renewed explicitly or a stale clip from an earlier request would be used.
+        source.refreshClip();
         int[] pixels = new int[width * height];
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {

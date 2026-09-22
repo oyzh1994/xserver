@@ -442,6 +442,110 @@ public final class XWindow extends XResource {
         return clip.intersection(new Rectangle(0, 0, screen.width(), screen.height()));
     }
 
+    /**
+     * The part of this window that is really visible: {@link #clipRect()} minus everything stacked
+     * above it.
+     *
+     * <p>{@code clipRect()} stops at the ancestors, so a window that is covered by a sibling still
+     * reports the covered part as its own. Drawing into it there would paint over the window on top,
+     * and the covered window would never learn to draw again - which is what makes a dialog
+     * disappear the moment the window underneath it repaints. This is the region drawing is clipped
+     * to, and the region a revealed window has to be told to repaint.
+     *
+     * <p>Only the rectangles of the windows above are subtracted, never their subtrees: a child is
+     * clipped by its parent, so a covering sibling's own rectangle already covers everything it can
+     * put on screen. The result is a list of non-overlapping rectangles in screen coordinates.
+     */
+    public List<Rectangle> visibleRegion() {
+        return visibleRegion(clipRect());
+    }
+
+    /** {@link #visibleRegion()} for the border, which lives outside the window's inner rectangle. */
+    public List<Rectangle> outerVisibleRegion() {
+        return visibleRegion(outerClipRect());
+    }
+
+    private List<Rectangle> visibleRegion(Rectangle clip) {
+        if (clip.isEmpty()) {
+            return List.of();
+        }
+        List<Rectangle> region = List.of(clip);
+        // Walk this window and then each ancestor: at every level, the siblings stacked above the
+        // one we came through are the ones that can cover it - and this window's own children,
+        // which are drawn inside it, are above its own content just as surely.
+        for (XWindow window = this; window != null && !region.isEmpty(); window = window.parent()) {
+            if (window == this) {
+                region = subtractMappedChildren(this, region);
+            }
+            XWindow parent = window.parent();
+            if (parent == null) {
+                break;
+            }
+            List<XWindow> siblings = parent.children();
+            for (int i = siblings.indexOf(window) + 1; i < siblings.size(); i++) {
+                region = subtractWindow(region, siblings.get(i));
+                if (region.isEmpty()) {
+                    return region;
+                }
+            }
+        }
+        return region;
+    }
+
+    /** A window's children are drawn inside it, so they take their rectangles out of its own. */
+    private static List<Rectangle> subtractMappedChildren(XWindow window, List<Rectangle> region) {
+        for (XWindow child : window.children()) {
+            region = subtractWindow(region, child);
+            if (region.isEmpty()) {
+                return region;
+            }
+        }
+        return region;
+    }
+
+    private static List<Rectangle> subtractWindow(List<Rectangle> region, XWindow above) {
+        if (!above.isMapped() || above.isInputOnly()) {
+            return region;
+        }
+        // Only the child's own rectangle: a child is clipped by its parent, so its whole subtree is
+        // inside it and needs no separate subtraction.
+        return ShapeState.subtract(region, List.of(above.absoluteBoundsWithBorder()));
+    }
+
+    /**
+     * Whether this window is stacked above {@code other}, which decides whose pixels are really on
+     * screen where the two overlap.
+     *
+     * <p>Windows in different trees are unrelated: the root is above nothing.
+     */
+    public boolean isAbove(XWindow other) {
+        if (other == null || other == this) {
+            return false;
+        }
+        if (this.isAncestorOf(other)) {
+            // A child is drawn inside and therefore on top of its parent.
+            return false;
+        }
+        if (other.isAncestorOf(this)) {
+            return true;
+        }
+        // Unrelated branches: the first common ancestor is where the two chains meet, and the
+        // sibling that comes later in its children list is the one on top.
+        for (XWindow mine = this; mine != null; mine = mine.parent()) {
+            XWindow parent = mine.parent();
+            if (parent == null) {
+                return false;
+            }
+            List<XWindow> siblings = parent.children();
+            for (XWindow theirs = other; theirs != null; theirs = theirs.parent()) {
+                if (theirs.parent() == parent) {
+                    return siblings.indexOf(mine) > siblings.indexOf(theirs);
+                }
+            }
+        }
+        return false;
+    }
+
     /** True when the window and all of its ancestors are mapped. */
     public boolean isViewable() {
         if (!mapped) {
