@@ -46,7 +46,7 @@ public final class JavaFxBackend implements DisplayBackend {
     private static final Logger log = LoggerFactory.getLogger(JavaFxBackend.class);
 
     /** How long the toolkit gets to run a task before it counts as unusable. */
-    private static final long STARTUP_TIMEOUT_SECONDS = 3;
+    private static final long STARTUP_TIMEOUT_SECONDS = 1;
 
     /** True once the toolkit has been started and has run a task for us. */
     private static boolean toolkitStarted;
@@ -72,6 +72,9 @@ public final class JavaFxBackend implements DisplayBackend {
 
     // Everything below is only ever touched on the JavaFX Application Thread.
     private Stage stage;
+    private Scene scene;
+    /** True while the platform pointer is over the window, so {@link #hostCursor} can decide. */
+    private boolean pointerOverWindow;
     private GraphicsContext graphics;
     private WritableImage image;
     private PixelBuffer<IntBuffer> pixelBuffer;
@@ -170,6 +173,7 @@ public final class JavaFxBackend implements DisplayBackend {
         }
         try {
             runOnFxThreadAndWait(() -> {
+                releaseHostCursor();
                 if (stage != null) {
                     stage.close();
                     stage = null;
@@ -212,11 +216,21 @@ public final class JavaFxBackend implements DisplayBackend {
         graphics.drawImage(image, 0, 0);
 
         Scene scene = new Scene(new StackPane(canvas), width, height, Color.BLACK);
+        this.scene = scene;
         // The platform would otherwise draw its own arrow over the window, on top of the sprite the
         // server renders from the client's cursor: two pointers, and the host one always wins.
         // Leaving the pointer to the X client is also what makes a text cursor, a resize arrow or
         // an application that hides the pointer while it types show up as the client intended.
-        scene.setCursor(Cursor.NONE);
+        // Every change of pointer or focus re-decides it, because the pointer being hidden is only
+        // ever a loan: see hostCursor.
+        scene.setOnMouseEntered(event -> {
+            pointerOverWindow = true;
+            applyHostCursor();
+        });
+        scene.setOnMouseExited(event -> {
+            pointerOverWindow = false;
+            applyHostCursor();
+        });
         scene.setOnMouseMoved(this::pointerMoved);
         scene.setOnMouseDragged(this::pointerMoved);
         scene.setOnMousePressed(event -> mouseButton(event, true));
@@ -231,13 +245,62 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.setResizable(false);
         stage.sizeToScene();
         // Scene has no focus property of its own, so focus comes from the window.
-        stage.focusedProperty().addListener((observable, wasFocused, focused) -> input.focusChanged(focused));
-        stage.setOnCloseRequest(event -> closed = true);
+        stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
+            input.focusChanged(focused);
+            applyHostCursor();
+        });
+        stage.setOnCloseRequest(event -> {
+            closed = true;
+            // The window is going away with the pointer possibly hidden; the platform would keep it
+            // hidden for the whole process, and a server whose display loop has exited may live on.
+            releaseHostCursor();
+        });
         stage.show();
         // The scene coordinates must stay equal to screen coordinates for the pointer mapping to be
         // right, so the window is placed inside the usable area rather than left to the platform,
         // which will happily put a large window under the menu bar or off the edge of the display.
         placeOnScreen(width, height);
+        applyHostCursor();
+    }
+
+    /**
+     * The cursor installed on the window. Exposed so a test can prove that opening the window leaves
+     * the platform pointer alone - at that moment the pointer is not over it, and a test cannot put
+     * it there, since there is no pointer to move.
+     */
+    public Cursor windowCursor() {
+        return scene == null ? null : scene.getCursor();
+    }
+
+    /**
+     * What the platform pointer should be: hidden while it is over the window and the window is the
+     * active one, the platform's own arrow everywhere else.
+     *
+     * <p>Hiding it means {@link Cursor#NONE}, which on macOS is not an empty cursor but a
+     * process-wide {@code [NSCursor hide]} ({@code MacCursor.setVisible_impl}), undone only when the
+     * window's cursor changes away from NONE. Leaving it in place is what took the pointer off the
+     * desktop and every other application, so handing the arrow back is as much a part of the policy
+     * as hiding it - and is why the pointer and the focus both re-decide it.
+     *
+     * <p>A transparent {@code ImageCursor} is not the way out: the API has no empty image, and a
+     * fully transparent one is drawn as an opaque white square over the window.
+     */
+    static Cursor hostCursor(boolean pointerOverWindow, boolean windowFocused) {
+        return pointerOverWindow && windowFocused ? Cursor.NONE : Cursor.DEFAULT;
+    }
+
+    /** Applies {@link #hostCursor} to the window. Runs on the FX thread. */
+    private void applyHostCursor() {
+        if (scene != null && stage != null) {
+            scene.setCursor(hostCursor(pointerOverWindow, stage.isFocused()));
+        }
+    }
+
+    /** Hands the platform pointer back, whatever state the window is in. Runs on the FX thread. */
+    private void releaseHostCursor() {
+        if (scene != null) {
+            scene.setCursor(Cursor.DEFAULT);
+        }
     }
 
     /** Moves and resizes the window so all of it lands inside the usable part of the display. */
