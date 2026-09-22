@@ -21,7 +21,8 @@ public class WindowObscuringTest {
 
     private static final int LOWER = 0xFF203040;
     private static final int UPPER = 0xFF807060;
-    private static final int ROOT_COLOUR = 0xFF000000;
+    /** Where nothing is drawn the screen's own default shows: what a revealed area falls back to. */
+    private static final int ROOT_COLOUR = Screen.DEFAULT_BACKGROUND_ARGB;
 
     private static XWindow window(Screen screen, XWindow parent, int id, int x, int y, int w,
                                   int h, int colour) {
@@ -30,6 +31,32 @@ public class WindowObscuringTest {
         window.setBackgroundArgb(colour);
         window.setBorderArgb(colour);
         return window;
+    }
+
+    @Test
+    void aWindowThatNamesNoColoursOfItsOwnGetsTheDefaultOnes() {
+        XServer server = new XServer(ServerOptions.parse(
+                new String[]{"--display", "95", "--backend", "headless"}));
+        Screen screen = server.screen();
+        Framebuffer framebuffer = screen.framebuffer();
+
+        // A window that names neither a background nor a border colour, and a bordered one: this is
+        // what a client that paints nothing of its own - xeyes is one - ends up looking like.
+        XWindow plain = new XWindow(0x400001, null, screen, server.rootWindow(), 24,
+                XWindow.INPUT_OUTPUT, screen.rootVisual(), 10, 10, 40, 30, 0);
+        server.resources().add(plain);
+        server.windows().mapWindow(plain);
+        XWindow bordered = new XWindow(0x400002, null, screen, server.rootWindow(), 24,
+                XWindow.INPUT_OUTPUT, screen.rootVisual(), 60, 10, 40, 30, 2);
+        server.resources().add(bordered);
+        server.windows().mapWindow(bordered);
+
+        assertEquals(Screen.DEFAULT_BACKGROUND_ARGB, framebuffer.pixel(20, 20),
+                "a window with no background of its own shows the screen's default");
+        // The x,y a CreateWindow names is the inside of the border, so the window at (60,10) with a
+        // 2 pixel border keeps that border in the ring (60,10)..(61,11).
+        assertEquals(Screen.DEFAULT_BORDER_ARGB, framebuffer.pixel(60, 10),
+                "and its border the colour that gives it an edge");
     }
 
     @Test

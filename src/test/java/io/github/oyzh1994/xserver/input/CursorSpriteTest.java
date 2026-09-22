@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -27,6 +28,11 @@ public class CursorSpriteTest {
                 new String[]{"--display", "98", "--backend", "headless"}));
         Framebuffer framebuffer = server.screen().framebuffer();
         int before = framebuffer.pixel(40, 40);
+
+        // Until something says where the pointer is there is no sprite to draw: a window that opens
+        // under a pointer which never moves would otherwise show one in its corner, next to the
+        // platform's own arrow.
+        assertNull(server.input().cursorSprite(), "no position means no sprite");
 
         server.input().pointerMoved(40, 40);
         CursorSprite sprite = server.input().cursorSprite();

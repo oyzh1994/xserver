@@ -68,25 +68,23 @@ class JavaFxBackendTest {
      * <p>On macOS {@link Cursor#NONE} is a process-wide {@code [NSCursor hide]}, undone only when the
      * window's cursor changes away from NONE - so a window that hides the pointer without a way back
      * takes it off the desktop and every other application with it. The pointer is only the server's
-     * while it is over the window and the window is the active one; anywhere else - outside the
-     * window, or with another application in front - the platform's arrow stays.
+     * while it is over the window; anywhere else - outside it, or on a window it no longer shows -
+     * the platform's arrow stays. Whether the window is the active one is deliberately not part of
+     * it: a freshly opened window is usually not active, and leaving the arrow on top of the
+     * client's cursor until the user clicks shows two pointers at once.
      *
      * <p>An image cursor would sidestep the global hide and does not work on this platform: an
      * opaque red 32x32 cursor was measured drawing the standard arrow over the window, so the choice
      * here is not a matter of taste.
      */
     @Test
-    void hostCursorHidesThePlatformPointerOnlyOverAnActiveWindow() {
+    void hostCursorHidesThePlatformPointerWheneverItIsOverTheWindow() {
         skipWithoutJavaFx();
 
-        assertSame(Cursor.NONE, JavaFxBackend.hostCursor(true, true),
-                "the sprite the server draws is the only pointer over an active window");
-        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(true, false),
-                "an inactive window has no claim on the pointer");
-        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(false, true),
+        assertSame(Cursor.NONE, JavaFxBackend.hostCursor(true),
+                "the sprite the server draws is the only pointer over the window");
+        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(false),
                 "the pointer outside the window belongs to the platform");
-        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(false, false),
-                "nothing is hidden when the pointer is elsewhere and the window is inactive");
     }
 
     /**

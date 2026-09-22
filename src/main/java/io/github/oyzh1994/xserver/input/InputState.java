@@ -52,6 +52,13 @@ public final class InputState implements DisplayBackend.InputSink {
     private int pointerX;
     private int pointerY;
     private XWindow pointerWindow;
+    /**
+     * False until something has said where the pointer is. A window that opens under a stationary
+     * pointer gets no mouse event until that pointer moves, and until then the server has no
+     * position to draw a sprite at - drawing one anyway puts a second pointer in the window's
+     * corner, next to the platform's own arrow.
+     */
+    private boolean pointerKnown;
 
     private int buttons;
     private int modifiers;
@@ -298,6 +305,7 @@ public final class InputState implements DisplayBackend.InputSink {
     // ------------------------------------------------------------------
 
     private void movePointer(int x, int y, boolean generateMotion) {
+        pointerKnown = true;
         int clampedX = Math.max(0, Math.min(x, screen.width() - 1));
         int clampedY = Math.max(0, Math.min(y, screen.height() - 1));
         boolean moved = clampedX != pointerX || clampedY != pointerY;
@@ -597,6 +605,9 @@ public final class InputState implements DisplayBackend.InputSink {
      * only changes when a client replaces it.
      */
     public CursorSprite cursorSprite() {
+        if (!pointerKnown) {
+            return null;
+        }
         XCursor cursor = cursorFor();
         if (cursor == null) {
             return null;

@@ -25,6 +25,25 @@ public final class Screen {
     /** Size of the root window's border, always zero by convention. */
     public static final int ROOT_BORDER = 0;
 
+    /**
+     * What the screen shows where nobody has drawn: the desktop behind every window, and the colour
+     * a window starts with before its client paints or sets a background of its own.
+     *
+     * <p>A real X server paints its root window with a light grey weave, so a client that never sets
+     * a background - xeyes is one - comes up looking light rather than black. The same colour here
+     * keeps that look: a window that paints nothing shows the screen's default, not a black hole in
+     * the middle of the desktop.
+     */
+    public static final int DEFAULT_BACKGROUND_ARGB = 0xFFE8E8E8;
+
+    /**
+     * The colour a window's border starts with, a shade darker than the screen behind it.
+     *
+     * <p>A border is there to give a window an edge: the same light grey the screen uses would leave
+     * a window's own background running straight into the desktop.
+     */
+    public static final int DEFAULT_BORDER_ARGB = 0xFFA0A0A0;
+
     private final int number;
     private final int width;
     private final int height;
@@ -59,7 +78,7 @@ public final class Screen {
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("no visual 0x"
                         + Integer.toHexString(rootVisualId)));
-        this.framebuffer = new Framebuffer(width, height, 0xFF000000);
+        this.framebuffer = new Framebuffer(width, height, DEFAULT_BACKGROUND_ARGB);
     }
 
     private static List<DepthInfo> groupByDepth(List<VisualInfo> visuals) {

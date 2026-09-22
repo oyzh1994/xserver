@@ -61,11 +61,16 @@ public final class XWindow extends XResource {
     private int winGravity = 0;
 
     /** Background: either a pixel or a pixmap; {@code backgroundIsPixmap} says which. */
-    private int backgroundPixel;
+    /**
+     * The colours a window starts with: the screen showing through where it has nothing of its own,
+     * and a border a shade darker so the window has an edge. A client overrides either by naming a
+     * background or border in its {@code CreateWindow} or {@code ChangeWindowAttributes}.
+     */
+    private int backgroundPixel = Screen.DEFAULT_BACKGROUND_ARGB;
     private XResource backgroundPixmap;
     private boolean backgroundIsPixmap;
 
-    private int borderPixel;
+    private int borderPixel = Screen.DEFAULT_BORDER_ARGB;
     private XResource borderPixmap;
     private boolean borderIsPixmap;
 

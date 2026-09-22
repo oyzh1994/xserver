@@ -178,8 +178,8 @@ public final class XServer {
         XWindow root = new XWindow(resourceIdCounter++, null, created, null, ROOT_DEPTH,
                 XWindow.INPUT_OUTPUT, rootVisual, 0, 0, options.width(), options.height(), 0);
         root.setMapped(true);
-        root.setBackgroundPixel(rootVisual.fromArgb(0xFF000000));
-        root.setBorderPixel(rootVisual.fromArgb(0xFF000000));
+        root.setBackgroundPixel(rootVisual.fromArgb(Screen.DEFAULT_BACKGROUND_ARGB));
+        root.setBorderPixel(rootVisual.fromArgb(Screen.DEFAULT_BACKGROUND_ARGB));
         root.setColormap(colormap);
         root.takeNeedsFullExpose();
         resources.add(root);

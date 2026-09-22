@@ -141,8 +141,9 @@ public final class WindowHandlers {
         XWindow window = new XWindow(wid, client, parent.screen(), parent, depth, windowClass,
                 visual, r.getX(), r.getY(), Short.toUnsignedInt(r.getWidth()),
                 Short.toUnsignedInt(r.getHeight()), borderWidth);
-        window.setBackgroundArgb(0xFF000000);
-        window.setBorderArgb(0xFFFFFFFF);
+        // The colours the window starts with are the ones XWindow gives every window: the screen's
+        // own default behind it, and a distinct border. A client that names its own in this request
+        // overrides them below.
 
         applyAttributes(client, window, r.getValueMask(), r.getBackgroundPixmap(),
                 r.getBackgroundPixel(), r.getBorderPixmap(), r.getBorderPixel(), r.getBitGravity(),
@@ -200,7 +201,9 @@ public final class WindowHandlers {
                 throw ProtocolException.badMatch();
             }
             if (pixmap == null) {
-                window.setBackgroundArgb(0xFF000000);
+                // Background None: the window shows what is behind it, which is the screen's own
+                // default colour - the same thing a real server's root shows through.
+                window.setBackgroundArgb(Screen.DEFAULT_BACKGROUND_ARGB);
             } else {
                 window.setBackgroundPixmap(pixmap);
             }
@@ -217,7 +220,9 @@ public final class WindowHandlers {
                     throw ProtocolException.badMatch();
                 }
                 if (pixmap == null) {
-                    window.setBorderArgb(0xFF000000);
+                    // Border None: nothing was named to draw it with, so it falls back to the colour
+                    // a border starts with.
+                    window.setBorderArgb(Screen.DEFAULT_BORDER_ARGB);
                 } else {
                     window.setBorderPixmap(pixmap);
                 }
@@ -1048,7 +1053,6 @@ public final class WindowHandlers {
                                    boolean moved) {
         for (Rectangle gained : moved ? after : ShapeState.subtract(after, before)) {
             paintBackground(window, gained);
-            paintBorder(window, gained);
             deliverExpose(window, gained);
         }
         if (window.isViewable()) {
@@ -1057,6 +1061,13 @@ public final class WindowHandlers {
         // The windows below keep what they have where this window still covers them, so only the
         // area it stopped covering is redrawn.
         repaintUnder(ShapeState.subtract(before, after), window);
+        // The border comes last: it sits outside the window's content, on top of whatever is below
+        // it, so painting it with the content only let the windows underneath - the root included -
+        // cover it again. Its own visible region is its clip, because the content region stops at
+        // the content rectangle and would leave all four bands zero wide.
+        for (Rectangle edge : window.outerVisibleRegion()) {
+            paintBorder(window, edge);
+        }
     }
 
     /** The visible region of a window, or nothing when it is not on screen at all. */
@@ -1088,7 +1099,14 @@ public final class WindowHandlers {
                     Rectangle part = area.intersection(piece);
                     if (!part.isEmpty()) {
                         paintBackground(candidate, part);
-                        paintBorder(candidate, part);
+                        // The border ring is outside the candidate's content, so it is the area this
+                        // repaint is about that says whether any of it needs drawing - and the ring
+                        // already excludes the windows above, which have just been painted.
+                        for (Rectangle edge : candidate.outerVisibleRegion()) {
+                            if (!edge.intersection(area).isEmpty()) {
+                                paintBorder(candidate, edge);
+                            }
+                        }
                         deliverExpose(candidate, part);
                     }
                 }

@@ -21,7 +21,7 @@ import javafx.stage.Stage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.Rectangle;
+import java.awt.*;
 import java.nio.IntBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -46,21 +46,31 @@ public final class JavaFxBackend implements DisplayBackend {
 
     private static final Logger log = LoggerFactory.getLogger(JavaFxBackend.class);
 
-    /** How long the toolkit gets to run a task before it counts as unusable. */
+    /**
+     * How long the toolkit gets to run a task before it counts as unusable.
+     */
     private static final long STARTUP_TIMEOUT_SECONDS = 1;
 
-    /** True once the toolkit has been started and has run a task for us. */
+    /**
+     * True once the toolkit has been started and has run a task for us.
+     */
     private static boolean toolkitStarted;
 
     private final String title;
     private final AtomicBoolean stopped = new AtomicBoolean();
 
-    /** Guards {@link #pendingDamage} and {@link #flushScheduled}. */
+    /**
+     * Guards {@link #pendingDamage} and {@link #flushScheduled}.
+     */
     private final Object damageLock = new Object();
 
-    /** The damage waiting to be flushed, grown by every {@link #present} until the FX thread runs. */
+    /**
+     * The damage waiting to be flushed, grown by every {@link #present} until the FX thread runs.
+     */
     private Rectangle pendingDamage;
-    /** The sprite that goes with that damage; the latest one wins, since only it is on screen. */
+    /**
+     * The sprite that goes with that damage; the latest one wins, since only it is on screen.
+     */
     private CursorSprite pendingCursor;
     private boolean flushScheduled;
 
@@ -68,29 +78,39 @@ public final class JavaFxBackend implements DisplayBackend {
 
     private InputSink input;
 
-    /** The screen's framebuffer, used by the diagnostic dump and nothing else. */
+    /**
+     * The screen's framebuffer, used by the diagnostic dump and nothing else.
+     */
     private Framebuffer framebuffer;
 
     // Everything below is only ever touched on the JavaFX Application Thread.
     private Stage stage;
     private Scene scene;
-    /** True while the platform pointer is over the window, so {@link #hostCursor} can decide. */
+    /**
+     * True while the platform pointer is over the window, so {@link #hostCursor} can decide.
+     */
     private boolean pointerOverWindow;
-    /** True while no client is connected, so the window has no pointer of its own to show. */
+    /**
+     * True while no client is connected, so the window has no pointer of its own to show.
+     */
     private boolean idle;
     /**
      * The part of the screen this window shows, in framebuffer coordinates. Zero-sized until the
      * server sets it, which covers the whole screen: that is what single-window mode wants.
      */
     private Rectangle viewport = new Rectangle();
-    /** How many windows are open, so each new one can be placed beside the last. */
+    /**
+     * How many windows are open, so each new one can be placed beside the last.
+     */
     private static final java.util.concurrent.atomic.AtomicInteger LIVE_WINDOWS =
             new java.util.concurrent.atomic.AtomicInteger();
     private GraphicsContext graphics;
     private WritableImage image;
     private PixelBuffer<IntBuffer> pixelBuffer;
 
-    /** The pointer sprite as a JavaFX image, rebuilt when a client replaces the cursor. */
+    /**
+     * The pointer sprite as a JavaFX image, rebuilt when a client replaces the cursor.
+     */
     private WritableImage cursorImage;
     private int[] cursorPixels;
 
@@ -101,6 +121,7 @@ public final class JavaFxBackend implements DisplayBackend {
     public WritableImage image() {
         return image;
     }
+
     private int screenWidth;
     private int screenHeight;
     private int pointerX;
@@ -198,7 +219,9 @@ public final class JavaFxBackend implements DisplayBackend {
         });
     }
 
-    /** Paints the whole window from the framebuffer. Runs on the FX thread. */
+    /**
+     * Paints the whole window from the framebuffer. Runs on the FX thread.
+     */
     private void drawViewport() {
         if (graphics == null || image == null) {
             return;
@@ -267,7 +290,9 @@ public final class JavaFxBackend implements DisplayBackend {
     // Window
     // ------------------------------------------------------------------
 
-    /** Runs on the FX thread. */
+    /**
+     * Runs on the FX thread.
+     */
     private void openWindow(int width, int height, IntBuffer pixels) {
         screenWidth = width;
         screenHeight = height;
@@ -300,16 +325,22 @@ public final class JavaFxBackend implements DisplayBackend {
         // Every change of pointer or focus re-decides it, because hiding the platform pointer is
         // only ever a loan - see hostCursor for what that costs.
         scene.setOnMouseEntered(event -> {
-            pointerOverWindow = true;
-            applyHostCursor();
+            enterWindow();
         });
         scene.setOnMouseExited(event -> {
             pointerOverWindow = false;
             applyHostCursor();
         });
-        scene.setOnMouseMoved(this::pointerMoved);
+        scene.setOnMouseMoved(event -> {
+            enterWindow();
+            pointerMoved(event);
+            mouseButton(event, true);
+        });
         scene.setOnMouseDragged(this::pointerMoved);
-        scene.setOnMousePressed(event -> mouseButton(event, true));
+        scene.setOnMousePressed(event -> {
+            enterWindow();
+            mouseButton(event, true);
+        });
         scene.setOnMouseReleased(event -> mouseButton(event, false));
         scene.setOnScroll(this::scrolled);
         scene.setOnKeyPressed(event -> keyChanged(event.getCode(), true));
@@ -357,8 +388,8 @@ public final class JavaFxBackend implements DisplayBackend {
      * true of a fully opaque image as much as a transparent one, so no choice of pixels fixes it:
      * an opaque red 32x32 cursor was measured drawing the standard arrow.
      */
-    static Cursor hostCursor(boolean pointerOverWindow, boolean windowFocused) {
-        return pointerOverWindow && windowFocused ? Cursor.NONE : Cursor.DEFAULT;
+    static Cursor hostCursor(boolean pointerOverWindow) {
+        return pointerOverWindow ? Cursor.NONE : Cursor.DEFAULT;
     }
 
     /**
@@ -369,12 +400,14 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private static final AtomicReference<JavaFxBackend> CURSOR_OWNER = new AtomicReference<>();
 
-    /** Applies {@link #hostCursor} to the window. Runs on the FX thread. */
+    /**
+     * Applies {@link #hostCursor} to the window. Runs on the FX thread.
+     */
     private void applyHostCursor() {
         if (scene == null || stage == null) {
             return;
         }
-        boolean wantHidden = !idle && hostCursor(pointerOverWindow, stage.isFocused()) == Cursor.NONE;
+        boolean wantHidden = !idle && hostCursor(pointerOverWindow) == Cursor.NONE;
         if (wantHidden) {
             CURSOR_OWNER.set(this);
         }
@@ -389,7 +422,9 @@ public final class JavaFxBackend implements DisplayBackend {
         }
     }
 
-    /** Hands the platform pointer back, whatever state the window is in. Runs on the FX thread. */
+    /**
+     * Hands the platform pointer back, whatever state the window is in. Runs on the FX thread.
+     */
     private void releaseHostCursor() {
         if (scene != null) {
             scene.setCursor(Cursor.DEFAULT);
@@ -404,7 +439,9 @@ public final class JavaFxBackend implements DisplayBackend {
         });
     }
 
-    /** The cursor installed on the window, for a test that has no pointer to check it with. */
+    /**
+     * The cursor installed on the window, for a test that has no pointer to check it with.
+     */
     public Cursor windowCursor() {
         return scene == null ? null : scene.getCursor();
     }
@@ -431,7 +468,22 @@ public final class JavaFxBackend implements DisplayBackend {
         }.start();
     }
 
-    /** Moves and resizes the window so all of it lands inside the usable part of the display. */
+    /**
+     * Notes that the pointer is over the window, and hides the platform's arrow if that is new.
+     *
+     * <p>Not left to the enter event alone: a window that opens under a pointer which never moves
+     * never gets one, and the arrow would sit on top of the client's cursor until it does.
+     */
+    private void enterWindow() {
+        if (!pointerOverWindow) {
+            pointerOverWindow = true;
+            applyHostCursor();
+        }
+    }
+
+    /**
+     * Moves and resizes the window so all of it lands inside the usable part of the display.
+     */
     private void placeOnScreen(int width, int height) {
         // Fully qualified: this class is in the same package as the server's own Screen.
         Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
@@ -452,7 +504,9 @@ public final class JavaFxBackend implements DisplayBackend {
     private static final java.util.concurrent.atomic.AtomicLong BLIT_NANOS =
             new java.util.concurrent.atomic.AtomicLong();
 
-    /** Runs on the FX thread. */
+    /**
+     * Runs on the FX thread.
+     */
     private void flushDamage() {
         Rectangle region;
         CursorSprite cursor;
@@ -567,7 +621,9 @@ public final class JavaFxBackend implements DisplayBackend {
 
     private final AtomicBoolean dumpScheduled = new AtomicBoolean();
 
-    /** Runs on the JavaFX thread. */
+    /**
+     * Runs on the JavaFX thread.
+     */
     private void dumpImage(String path) {
         if (image == null) {
             return;
@@ -613,7 +669,9 @@ public final class JavaFxBackend implements DisplayBackend {
         write(out, path);
     }
 
-    /** Runs on the JavaFX thread; reads the framebuffer array, not the shared IntBuffer. */
+    /**
+     * Runs on the JavaFX thread; reads the framebuffer array, not the shared IntBuffer.
+     */
     private void dumpFramebuffer(String path) {
         int[] source = framebuffer == null ? null : framebuffer.pixels();
         if (source == null) {
@@ -702,7 +760,9 @@ public final class JavaFxBackend implements DisplayBackend {
         input.keyChanged(keycode, pressed, pointerX, pointerY);
     }
 
-    /** Clamps a scene coordinate to the screen; a drag can leave it by a pixel or two. */
+    /**
+     * Clamps a scene coordinate to the screen; a drag can leave it by a pixel or two.
+     */
     private static int clamp(double value, int limit) {
         return Math.max(0, Math.min(limit - 1, (int) value));
     }
@@ -837,17 +897,21 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         try {
-            Platform.startup(() -> { });
+            Platform.startup(() -> {
+            });
         } catch (IllegalStateException alreadyRunning) {
             // Someone else started the runtime first, which is the state we wanted anyway.
         }
         // The server decides when the process is done, not the last window being closed.
         Platform.setImplicitExit(false);
-        runOnFxThreadAndWait(() -> { });
+        runOnFxThreadAndWait(() -> {
+        });
         toolkitStarted = true;
     }
 
-    /** Runs the action on the FX thread and waits for it, rethrowing whatever it threw. */
+    /**
+     * Runs the action on the FX thread and waits for it, rethrowing whatever it threw.
+     */
     private static void runOnFxThreadAndWait(Runnable action) {
         if (Platform.isFxApplicationThread()) {
             action.run();
