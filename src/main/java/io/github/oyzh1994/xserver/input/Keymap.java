@@ -5,8 +5,10 @@ package io.github.oyzh1994.xserver.input;
  * modifiers.
  *
  * <p>A US layout is used, which is the same mapping the display backends translate physical keys
- * into. Clients read it back with {@code GetKeyboardMapping} and {@code GetModifierMapping}, so
- * the two tables below are the single source of truth for keyboard behaviour.
+ * into: they ask {@link #keycodeForLetter} for a letter's keycode rather than carrying a copy of
+ * the table, so the keysym a client reads back and the keycode the host sends cannot disagree.
+ * Clients read the mapping with {@code GetKeyboardMapping} and {@code GetModifierMapping}, so the
+ * two tables below are the single source of truth for keyboard behaviour.
  */
 public final class Keymap {
 
@@ -27,11 +29,10 @@ public final class Keymap {
     private static final int[][] MODIFIERS = new int[MODIFIER_COUNT][];
 
     static {
-        // Letters: keycode 38 is 'a', running through to 52 for 'z'.
-        for (int i = 0; i < 26; i++) {
-            int keycode = 38 + i;
-            int lower = 'a' + i;
-            KEYSYMS[keycode] = new int[] {lower, lower - 32};
+        // Letters. Their keycodes are not in alphabet order, so each one names its own keycode
+        // through keycodeForLetter instead of being counted off from 'a'.
+        for (char letter = 'a'; letter <= 'z'; letter++) {
+            KEYSYMS[keycodeForLetter(letter)] = new int[] {letter, letter - 32};
         }
         // Digits 1..9 then 0.
         int[] digitKeys = {10, 11, 12, 13, 14, 15, 16, 17, 18, 19};
@@ -45,33 +46,17 @@ public final class Keymap {
         KEYSYMS[21] = pair('=', '+');
         KEYSYMS[22] = pair(Keysyms.BACK_SPACE);
         KEYSYMS[23] = pair(Keysyms.TAB);
-        KEYSYMS[24] = pair('q', 'Q');
-        KEYSYMS[25] = pair('w', 'W');
-        KEYSYMS[26] = pair('e', 'E');
-        KEYSYMS[27] = pair('r', 'R');
-        KEYSYMS[28] = pair('t', 'T');
-        KEYSYMS[29] = pair('y', 'Y');
-        KEYSYMS[30] = pair('u', 'U');
-        KEYSYMS[31] = pair('i', 'I');
-        KEYSYMS[32] = pair('o', 'O');
-        KEYSYMS[33] = pair('p', 'P');
+        // The letters below are already filled in, at 24..33, 38..46 and 52..58; the gaps between
+        // them are the punctuation of the home row.
         KEYSYMS[34] = pair('[', '{');
         KEYSYMS[35] = pair(']', '}');
         KEYSYMS[36] = pair(Keysyms.RETURN);
         KEYSYMS[37] = pair(Keysyms.CONTROL_L);
-        KEYSYMS[46] = pair('l', 'L');
         KEYSYMS[47] = pair(';', ':');
         KEYSYMS[48] = pair('\'', '"');
         KEYSYMS[49] = pair('`', '~');
         KEYSYMS[50] = pair(Keysyms.SHIFT_L);
         KEYSYMS[51] = pair('\\', '|');
-        KEYSYMS[52] = pair('z', 'Z');
-        KEYSYMS[53] = pair('x', 'X');
-        KEYSYMS[54] = pair('c', 'C');
-        KEYSYMS[55] = pair('v', 'V');
-        KEYSYMS[56] = pair('b', 'B');
-        KEYSYMS[57] = pair('n', 'N');
-        KEYSYMS[58] = pair('m', 'M');
         KEYSYMS[59] = pair(',', '<');
         KEYSYMS[60] = pair('.', '>');
         KEYSYMS[61] = pair('/', '?');
@@ -167,6 +152,47 @@ public final class Keymap {
             level = 0;
         }
         return level < row.length ? row[level] : row[row.length - 1];
+    }
+
+    /**
+     * The keycode of a US layout letter, or 0 when the character is not one.
+     *
+     * <p>The keycodes are not in alphabet order: they are numbered by the physical key's position,
+     * and the home row's punctuation (47..51) sits between the letters, so {@code a} is 38 while
+     * {@code b} is 56. Counting off from {@code a} therefore puts seven letters on the wrong
+     * keycode - the ones from {@code s} to {@code k} - and a client, which resolves keycodes
+     * through {@code GetKeyboardMapping}, then types the letter that keycode really carries.
+     */
+    public static int keycodeForLetter(char letter) {
+        return switch (Character.toLowerCase(letter)) {
+            case 'a' -> 38;
+            case 'b' -> 56;
+            case 'c' -> 54;
+            case 'd' -> 40;
+            case 'e' -> 26;
+            case 'f' -> 41;
+            case 'g' -> 42;
+            case 'h' -> 43;
+            case 'i' -> 31;
+            case 'j' -> 44;
+            case 'k' -> 45;
+            case 'l' -> 46;
+            case 'm' -> 58;
+            case 'n' -> 57;
+            case 'o' -> 32;
+            case 'p' -> 33;
+            case 'q' -> 24;
+            case 'r' -> 27;
+            case 's' -> 39;
+            case 't' -> 28;
+            case 'u' -> 30;
+            case 'v' -> 55;
+            case 'w' -> 25;
+            case 'x' -> 53;
+            case 'y' -> 29;
+            case 'z' -> 52;
+            default -> 0;
+        };
     }
 
     /** All keysyms for a keycode, exactly {@link #KEYSYMS_PER_KEYCODE} entries. */

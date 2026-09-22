@@ -1,6 +1,7 @@
 package io.github.oyzh1994.xserver.display;
 
 import io.github.oyzh1994.xserver.draw.Framebuffer;
+import io.github.oyzh1994.xserver.input.Keymap;
 import javafx.application.Platform;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Cursor;
@@ -604,40 +605,7 @@ public final class JavaFxBackend implements DisplayBackend {
         if (value >= '0' && value <= '9') {
             return value == '0' ? 19 : 9 + (value - '0');
         }
-        return letterKeycode(value);
-    }
-
-    /** The keycode of a US layout letter, or 0 when the character is not one. */
-    static int letterKeycode(char letter) {
-        return switch (Character.toLowerCase(letter)) {
-            case 'q' -> 24;
-            case 'w' -> 25;
-            case 'e' -> 26;
-            case 'r' -> 27;
-            case 't' -> 28;
-            case 'y' -> 29;
-            case 'u' -> 30;
-            case 'i' -> 31;
-            case 'o' -> 32;
-            case 'p' -> 33;
-            case 'a' -> 38;
-            case 's' -> 39;
-            case 'd' -> 40;
-            case 'f' -> 41;
-            case 'g' -> 42;
-            case 'h' -> 43;
-            case 'j' -> 44;
-            case 'k' -> 45;
-            case 'l' -> 46;
-            case 'z' -> 52;
-            case 'x' -> 53;
-            case 'c' -> 54;
-            case 'v' -> 55;
-            case 'b' -> 56;
-            case 'n' -> 57;
-            case 'm' -> 58;
-            default -> 0;
-        };
+        return Keymap.keycodeForLetter(value);
     }
 
     // ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package io.github.oyzh1994.xserver.display;
 
 import io.github.oyzh1994.xserver.draw.Framebuffer;
+import io.github.oyzh1994.xserver.input.Keymap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -378,14 +379,14 @@ public final class SwingBackend implements DisplayBackend {
      * The X keycode an AWT key event produces, or 0 when it has none.
      *
      * <p>The values are the standard X11 keycodes for a US layout, which is the mapping the
-     * server's {@code Keymap} describes. Letters are not contiguous there - {@code a} is 38 and
+     * server's {@link Keymap} describes. Letters are not contiguous there - {@code a} is 38 and
      * {@code z} is 52, with the punctuation keys of the home row in between - so they are looked
      * up by character rather than by their position in the alphabet.
      */
     static int xKeycode(KeyEvent event) {
         int code = event.getKeyCode();
         if (code >= KeyEvent.VK_A && code <= KeyEvent.VK_Z) {
-            return letterKeycode((char) ('a' + code - KeyEvent.VK_A));
+            return Keymap.keycodeForLetter((char) ('a' + code - KeyEvent.VK_A));
         }
         if (code >= KeyEvent.VK_0 && code <= KeyEvent.VK_9) {
             int digit = code - KeyEvent.VK_0;
@@ -464,39 +465,6 @@ public final class SwingBackend implements DisplayBackend {
 
     private static boolean isRight(KeyEvent event) {
         return event.getKeyLocation() == KeyEvent.KEY_LOCATION_RIGHT;
-    }
-
-    /** The keycode of a US layout letter, or 0 when the character is not one. */
-    static int letterKeycode(char letter) {
-        return switch (Character.toLowerCase(letter)) {
-            case 'q' -> 24;
-            case 'w' -> 25;
-            case 'e' -> 26;
-            case 'r' -> 27;
-            case 't' -> 28;
-            case 'y' -> 29;
-            case 'u' -> 30;
-            case 'i' -> 31;
-            case 'o' -> 32;
-            case 'p' -> 33;
-            case 'a' -> 38;
-            case 's' -> 39;
-            case 'd' -> 40;
-            case 'f' -> 41;
-            case 'g' -> 42;
-            case 'h' -> 43;
-            case 'j' -> 44;
-            case 'k' -> 45;
-            case 'l' -> 46;
-            case 'z' -> 52;
-            case 'x' -> 53;
-            case 'c' -> 54;
-            case 'v' -> 55;
-            case 'b' -> 56;
-            case 'n' -> 57;
-            case 'm' -> 58;
-            default -> 0;
-        };
     }
 
     // ------------------------------------------------------------------
