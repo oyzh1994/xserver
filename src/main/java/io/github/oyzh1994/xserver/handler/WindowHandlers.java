@@ -872,20 +872,6 @@ public final class WindowHandlers {
     // Painting
     // ------------------------------------------------------------------
 
-    /** Paints a window's background and border into the framebuffer, honouring its clip. */
-    public void paintWindow(XWindow window) {
-        if (window.isInputOnly() || !window.isViewable()) {
-            return;
-        }
-        paintBackground(window, window.absoluteBounds());
-        // The border is clipped only by the ancestors: using the content clip here would remove
-        // the border entirely, which is exactly what happened until a client with bordered child
-        // windows - xcalc's buttons - was run against the server.
-        for (Rectangle piece : window.outerVisibleRegion()) {
-            paintBorder(window, piece);
-        }
-    }
-
     /**
      * Fills the window's inner rectangle with its background, clipped to the part of it that is
      * visible.

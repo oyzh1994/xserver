@@ -46,6 +46,10 @@ the server with no window at all — useful for tests and for driving clients wi
 
 ## Architecture
 
+Why the code looks the way it does - the decisions behind the per-client screens, the display tick,
+the pointer sprite and the host pointer, the default colours, and what is deliberately not done - is
+in [docs/design-notes.md](docs/design-notes.md).
+
 ```
 io.github.oyzh1994.xserver
 ├── net/          sockets: accepting clients, and encoding replies/events/errors
