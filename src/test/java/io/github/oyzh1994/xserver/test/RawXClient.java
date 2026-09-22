@@ -76,10 +76,17 @@ public final class RawXClient implements AutoCloseable {
 
     public void createWindow(int window, int parent, int x, int y, int width, int height)
             throws IOException {
-        byte[] request = new byte[32];
+        createWindow(window, parent, x, y, width, height, -1);
+    }
+
+    /** Creates a window, optionally with a background pixel - which a ClearArea then paints it in. */
+    public void createWindow(int window, int parent, int x, int y, int width, int height,
+                             int backgroundPixel) throws IOException {
+        boolean withBackground = backgroundPixel >= 0;
+        byte[] request = new byte[withBackground ? 36 : 32];
         request[0] = 1;                             // CreateWindow
         request[1] = 0;                             // depth: copy from the parent
-        request[2] = 8;                             // length in four byte units, no values
+        request[2] = (byte) (request.length / 4);
         writeInt(request, 4, window);
         writeInt(request, 8, parent);
         writeShort(request, 12, x);
@@ -89,8 +96,178 @@ public final class RawXClient implements AutoCloseable {
         writeShort(request, 20, 0);                 // border width
         writeShort(request, 22, 1);                 // InputOutput
         writeInt(request, 24, 0);                   // visual: copy from the parent
-        writeInt(request, 28, 0);                   // value mask: nothing to set
+        writeInt(request, 28, withBackground ? 0x2 : 0);        // CWBackPixel
+        if (withBackground) {
+            writeInt(request, 32, backgroundPixel);
+        }
         send(request);
+    }
+
+    /** Fills a rectangle of a window with its background pixel. */
+    public void clearArea(int window, int x, int y, int width, int height) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 61;                            // ClearArea
+        request[1] = 0;                             // no exposures
+        request[2] = 4;
+        writeInt(request, 4, window);
+        writeShort(request, 8, x);
+        writeShort(request, 10, y);
+        writeShort(request, 12, width);
+        writeShort(request, 14, height);
+        send(request);
+    }
+
+    public void configureWindow(int window, int x, int y, int width, int height)
+            throws IOException {
+        byte[] request = new byte[28];
+        request[0] = 12;                            // ConfigureWindow
+        request[2] = 7;
+        writeInt(request, 4, window);
+        writeInt(request, 8, 0xF);                  // x, y, width, height
+        writeInt(request, 12, x);                   // every ConfigureWindow value is 32 bit
+        writeInt(request, 16, y);
+        writeInt(request, 20, width);
+        writeInt(request, 24, height);
+        send(request);
+    }
+
+    public void destroyWindow(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 4;                             // DestroyWindow
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+    }
+
+    /** The root a window belongs to, which is how a test tells two screens apart. */
+    public int rootOf(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 14;                            // GetGeometry
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+        return readInt(readReply(), 8);
+    }
+
+    /** Looks up an extension's major opcode, or 0 when the server does not have it. */
+    public int queryExtension(String name) throws IOException {
+        byte[] request = new byte[(8 + name.length() + 3) & ~3];
+        request[0] = 98;                            // QueryExtension
+        request[2] = (byte) (request.length / 4);
+        writeShort(request, 4, name.length());
+        for (int i = 0; i < name.length(); i++) {
+            request[8 + i] = (byte) name.charAt(i);
+        }
+        send(request);
+        byte[] reply = readReply();
+        return reply[8] == 0 ? 0 : reply[9] & 0xFF;
+    }
+
+    /** Moves the pointer through XTEST, which is how a test plays the part of the user. */
+    public void fakeMotion(int opcode, int x, int y) throws IOException {
+        byte[] request = new byte[36];
+        request[0] = (byte) opcode;
+        request[1] = 2;                             // X_XTestFakeInput
+        request[2] = 9;
+        request[4] = 6;                             // MotionNotify
+        request[5] = 0;                             // absolute
+        writeShort(request, 24, x);
+        writeShort(request, 26, y);
+        send(request);
+    }
+
+    /** Creates a graphics context on a screen with the given foreground pixel. */
+    public int createGC(int gc, int screenRoot, int foreground) throws IOException {
+        byte[] request = new byte[20];
+        request[0] = 55;                            // CreateGC
+        request[2] = 5;
+        writeInt(request, 4, gc);
+        writeInt(request, 8, screenRoot);           // the GC takes its screen from this drawable
+        writeInt(request, 12, 0x4);                 // GCForeground
+        writeInt(request, 16, foreground);
+        send(request);
+        return gc;
+    }
+
+    /** Fills a rectangle of a drawable with the GC's foreground. */
+    public void fillRectangle(int window, int gc, int x, int y, int width, int height)
+            throws IOException {
+        // One request, rectangles included: the length field has to cover them or the server reads
+        // the request as truncated.
+        byte[] request = new byte[20];
+        request[0] = 70;                            // PolyFillRectangle
+        request[2] = 5;
+        writeInt(request, 4, window);
+        writeInt(request, 8, gc);
+        writeShort(request, 12, x);
+        writeShort(request, 14, y);
+        writeShort(request, 16, width);
+        writeShort(request, 18, height);
+        send(request);
+    }
+
+    /**
+     * Sends a whole ZPixmap image, which is what a toolkit's software renderer uploads each frame.
+     * The data is BGRA, one int per pixel, as the server's image byte order expects.
+     */
+    public void putImage(int drawable, int gc, int x, int y, int width, int height, byte[] bgra)
+            throws IOException {
+        int dataLength = width * height * 4;
+        byte[] request = new byte[24 + ((dataLength + 3) & ~3)];
+        request[0] = 72;                            // PutImage
+        request[1] = 2;                             // ZPixmap
+        // The length field is 16 bit, so the image has to fit one request unless the client goes
+        // through BIG-REQUESTS; tests keep theirs small enough not to need it.
+        int units = request.length / 4;
+        if (units > 65535) {
+            throw new IllegalArgumentException("image too large for a single request: " + units
+                    + " units");
+        }
+        writeShort(request, 2, units);
+        writeInt(request, 4, drawable);
+        writeInt(request, 8, gc);
+        writeShort(request, 12, width);
+        writeShort(request, 14, height);
+        writeShort(request, 16, x);
+        writeShort(request, 18, y);
+        request[20] = 0;                            // left pad
+        request[21] = 24;                           // depth
+        System.arraycopy(bgra, 0, request, 24, Math.min(bgra.length, dataLength));
+        out.write(request);
+        out.flush();
+    }
+
+    /** The children of a window, which for a root is every window the client has made. */
+    public int[] queryTree(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 15;                            // QueryTree
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+        byte[] reply = readReply();
+        int count = readShort(reply, 16);
+        int[] children = new int[count];
+        for (int i = 0; i < count; i++) {
+            children[i] = readInt(reply, 32 + i * 4);
+        }
+        return children;
+    }
+
+    /** Reads pixels back from a drawable, as ZPixmap bytes. */
+    public byte[] getImage(int drawable, int x, int y, int width, int height) throws IOException {
+        byte[] request = new byte[20];
+        request[0] = 73;                            // GetImage
+        request[1] = 2;                             // ZPixmap
+        request[2] = 5;
+        writeInt(request, 4, drawable);
+        writeShort(request, 8, x);
+        writeShort(request, 10, y);
+        writeShort(request, 12, width);
+        writeShort(request, 14, height);
+        writeInt(request, 16, 0xFFFFFFFF);           // plane mask: all of them
+        send(request);
+
+        return readReply();
     }
 
     /** ChangeWindowAttributes with an event mask, which is how a client says what it wants to hear. */
@@ -178,9 +355,20 @@ public final class RawXClient implements AutoCloseable {
      * fit in the fixed part.
      */
     public byte[] readReply() throws IOException {
-        byte[] reply = readFully(32);
-        if ((reply[0] & 0xFF) != 1) {
-            throw new IOException("expected a reply, got " + (reply[0] & 0xFF));
+        byte[] reply;
+        while (true) {
+            reply = readFully(32);
+            int type = reply[0] & 0xFF;
+            if (type == 1) {
+                break;                              // the reply
+            }
+            if (type == 0) {
+                throw new IOException("the server refused the request: error "
+                        + (reply[1] & 0xFF) + " value 0x" + Integer.toHexString(readInt(reply, 4)));
+            }
+            // Anything else is an event the client never asked to read separately - a NoExposure
+            // arrives after every drawing request, for one - so it is dropped rather than mistaken
+            // for the answer.
         }
         int extra = readInt(reply, 4) * 4;
         if (extra > 0) {

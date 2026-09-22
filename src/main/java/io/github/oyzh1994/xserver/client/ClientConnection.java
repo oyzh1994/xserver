@@ -5,6 +5,7 @@ import com.github.moaxcp.x11.protocol.X11Input;
 import com.github.moaxcp.x11.protocol.X11LittleEndianInputStream;
 import com.github.moaxcp.x11.protocol.XProtocolPlugin;
 import com.github.moaxcp.x11.protocol.xproto.SetupRequest;
+import io.github.oyzh1994.xserver.ScreenSession;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.net.ClientOutput;
 import org.slf4j.Logger;
@@ -86,6 +87,9 @@ public final class ClientConnection implements Runnable {
         this(server, null, channel, index);
     }
 
+    /** The screen and window this connection owns, or null when every client shares the master one. */
+    private ScreenSession session;
+
     private ClientConnection(XServer server, Socket socket, SocketChannel channel, int index)
             throws IOException {
         this.server = server;
@@ -112,6 +116,14 @@ public final class ClientConnection implements Runnable {
             return socket.getInputStream();
         }
         return java.nio.channels.Channels.newInputStream(channel);
+    }
+
+    public ScreenSession session() {
+        return session;
+    }
+
+    public void setSession(ScreenSession session) {
+        this.session = session;
     }
 
     public int index() {

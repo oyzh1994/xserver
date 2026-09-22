@@ -426,7 +426,7 @@ public final class ShapeExtension implements Extension {
 
     /** A shape changed: repaint, and notify the clients that asked for shape events. */
     private void changed(XServer server, XWindow window, int kind) {
-        server.markScreenDirty();
+        server.markScreenDirty(window);
         Set<ClientConnection> clients;
         synchronized (notifyClients) {
             Set<ClientConnection> registered = notifyClients.get(window);

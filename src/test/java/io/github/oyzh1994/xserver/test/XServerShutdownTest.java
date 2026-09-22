@@ -125,8 +125,11 @@ class XServerShutdownTest {
 
         TestServer(int display) throws Exception {
             this.display = display;
+            // Single window mode: these tests are about the semantics of the one shared window -
+            // closing it ends the session, and idleness stops the frames.
             this.xserver = new XServer(ServerOptions.parse(new String[]{"--display", ":" + display,
-                    "--backend", "headless", "--no-unix", "--close-grace-ms", String.valueOf(GRACE_MILLIS)}));
+                    "--backend", "headless", "--no-unix", "--single-window",
+                    "--close-grace-ms", String.valueOf(GRACE_MILLIS)}));
             xserver.setBackend(backend);
             xserver.start();
             xserver.startEventLoop();

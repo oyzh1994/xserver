@@ -124,7 +124,7 @@ public final class WindowHandlers {
         if (r.getVisual() == 0 || r.getVisual() == 0xFFFFFFFF) {
             visual = parent.visual();
         } else {
-            visual = server.screen().visualById(r.getVisual());
+            visual = parent.screen().visualById(r.getVisual());
             if (visual == null) {
                 throw ProtocolException.badMatch();
             }
@@ -138,7 +138,7 @@ public final class WindowHandlers {
             throw ProtocolException.badMatch();
         }
 
-        XWindow window = new XWindow(wid, client, server.screen(), parent, depth, windowClass,
+        XWindow window = new XWindow(wid, client, parent.screen(), parent, depth, windowClass,
                 visual, r.getX(), r.getY(), Short.toUnsignedInt(r.getWidth()),
                 Short.toUnsignedInt(r.getHeight()), borderWidth);
         window.setBackgroundArgb(0xFF000000);
@@ -290,7 +290,7 @@ public final class WindowHandlers {
         client.sendReply(GetWindowAttributesReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .backingStore((byte) window.backingStore())
-                .visual(window.visual() == null ? server.screen().rootVisual().id()
+                .visual(window.visual() == null ? window.screen().rootVisual().id()
                         : window.visual().id())
                 .clazz((short) window.windowClass())
                 .bitGravity((byte) window.bitGravity())
@@ -343,8 +343,8 @@ public final class WindowHandlers {
         // input focus: X11 releases the one and reverts the other with the window, and a client that
         // grabs for a dialog or focuses one and then destroys it instead of putting things back
         // depends on both.
-        server.input().forgetGrabWindow(window);
-        server.input().forgetFocusWindow(window);
+        server.inputFor(window.screen()).forgetGrabWindow(window);
+        server.inputFor(window.screen()).forgetFocusWindow(window);
         server.events().deliverToWindow(window, EventMasks.STRUCTURE_NOTIFY,
                 (recipient, w, child, x, y) -> DestroyNotifyEvent.builder()
                         .firstEventOffset((byte) 0)
@@ -364,7 +364,7 @@ public final class WindowHandlers {
                             .build());
         }
         server.resources().free(window.id());
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     public void changeSaveSet(ClientConnection client, ChangeSaveSet r) {
@@ -411,7 +411,7 @@ public final class WindowHandlers {
         if (wasMapped || window.isMapped()) {
             mapWindow(window);
         }
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     // ------------------------------------------------------------------
@@ -509,7 +509,7 @@ public final class WindowHandlers {
                 }
             }
         }
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     public void unmap(ClientConnection client, UnmapWindow r) {
@@ -518,7 +518,7 @@ public final class WindowHandlers {
             return;
         }
         unmapWindow(window, true);
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     public void unmapSubwindows(ClientConnection client, UnmapSubwindows r) {
@@ -528,7 +528,7 @@ public final class WindowHandlers {
                 unmapWindow(child, true);
             }
         }
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     /** Unmaps a window, optionally reporting it to the clients that selected for it. */
@@ -540,7 +540,7 @@ public final class WindowHandlers {
         window.setMapped(false);
         // A window that is no longer on screen cannot be holding the pointer's implicit grab: pinning
         // events to it would leave every client without input until another button press.
-        server.input().forgetGrabWindow(window);
+        server.inputFor(window.screen()).forgetGrabWindow(window);
         repaintUnder(before, window);
         if (!notify) {
             return;
@@ -626,7 +626,7 @@ public final class WindowHandlers {
             // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
             visibilityChanged(window, before, visibleRegionOf(window), moved);
-            server.markScreenDirty();
+            server.markScreenDirty(window);
         }
     }
 
@@ -791,7 +791,7 @@ public final class WindowHandlers {
         for (XWindow child : mapped) {
             visibilityChanged(child, before.get(child), visibleRegionOf(child));
         }
-        server.markScreenDirty();
+        server.markScreenDirty(parent);
     }
 
     public void getGeometry(ClientConnection client, GetGeometry r) {
@@ -800,7 +800,7 @@ public final class WindowHandlers {
             client.sendReply(GetGeometryReply.builder()
                     .sequenceNumber(client.sequenceNumber())
                     .depth((byte) window.depth())
-                    .root(server.rootWindow().id())
+                    .root(window.root().id())
                     .x((short) window.x())
                     .y((short) window.y())
                     .width((short) window.width())
@@ -812,7 +812,7 @@ public final class WindowHandlers {
             client.sendReply(GetGeometryReply.builder()
                     .sequenceNumber(client.sequenceNumber())
                     .depth((byte) pixmap.depth())
-                    .root(server.rootWindow().id())
+                    .root(pixmap.screen().root().id())
                     .x((short) 0)
                     .y((short) 0)
                     .width((short) pixmap.width())
@@ -830,7 +830,7 @@ public final class WindowHandlers {
         }
         client.sendReply(QueryTreeReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .root(server.rootWindow().id())
+                .root(window.root().id())
                 .parent(window.parent() == null ? 0 : window.parent().id())
                 .children(IntLists.immutable.ofAll(children))
                 .build());
@@ -893,7 +893,7 @@ public final class WindowHandlers {
         if (window.isInputOnly()) {
             return;
         }
-        Framebuffer framebuffer = server.screen().framebuffer();
+        Framebuffer framebuffer = window.screen().framebuffer();
         for (Rectangle piece : window.visibleRegion()) {
             Rectangle area = window.absoluteBounds().intersection(clip).intersection(piece);
             if (area.isEmpty()) {
@@ -918,7 +918,7 @@ public final class WindowHandlers {
             return;
         }
         Rectangle inner = window.absoluteBounds();
-        Framebuffer framebuffer = server.screen().framebuffer();
+        Framebuffer framebuffer = window.screen().framebuffer();
         XPixmap tile = tileOf(window);
         int colour = window.borderPixel();
         // Four bands around the inner rectangle.
@@ -1076,7 +1076,7 @@ public final class WindowHandlers {
         if (areas.isEmpty()) {
             return;
         }
-        for (XWindow candidate : stackingOrder()) {
+        for (XWindow candidate : stackingOrder(window)) {
             if (candidate == window || candidate.isInputOnly() || !candidate.isViewable()
                     || candidate.isAbove(window)) {
                 // A window above the one that changed was never covered by it.
@@ -1097,9 +1097,9 @@ public final class WindowHandlers {
     }
 
     /** The windows of the tree, a parent before its children and siblings bottom to top. */
-    private List<XWindow> stackingOrder() {
+    private List<XWindow> stackingOrder(XWindow below) {
         List<XWindow> order = new ArrayList<>();
-        collectStackingOrder(server.rootWindow(), order);
+        collectStackingOrder(below.root(), order);
         return order;
     }
 

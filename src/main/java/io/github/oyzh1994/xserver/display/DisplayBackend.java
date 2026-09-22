@@ -51,6 +51,28 @@ public interface DisplayBackend {
     void present(Screen screen, Rectangle damage, CursorSprite cursor);
 
     /**
+     * Restricts the window to this rectangle of the screen, in framebuffer coordinates.
+     *
+     * <p>A window that shows one client's own screen only has to show the part of it that client's
+     * windows occupy, which is what keeps a small application from arriving in a screen-sized window
+     * with black around it. May be called before {@link #start}: the rectangle is remembered and the
+     * window opens at that size.
+     *
+     * <p>Called from the display tick only, never from a request thread.
+     */
+    default void setViewport(Rectangle viewport) {
+    }
+
+    /**
+     * Releases whatever the backend holds open for the whole process, once no window is left. The
+     * JavaFX toolkit is the reason this exists: it keeps a non-daemon thread alive, so something has
+     * to end it, but ending it on the first window that closes would take every other window with
+     * it.
+     */
+    default void releaseToolkit() {
+    }
+
+    /**
      * Tells the window whether any client is connected.
      *
      * <p>With no client the server stops sending frames and the window holds the last one, and the

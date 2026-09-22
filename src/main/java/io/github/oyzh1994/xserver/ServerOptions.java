@@ -47,6 +47,8 @@ public final class ServerOptions {
     private boolean logRequests;
     private boolean noResetOnLastClose = true;
     private int tickRate = 60;
+    /** True when every client shares one window instead of getting one of its own. */
+    private boolean singleWindow;
     /** How long clients get to close themselves after the host window is closed. */
     private int closeGraceMillis = 2000;
 
@@ -80,6 +82,7 @@ public final class ServerOptions {
                 case "--tick-rate" -> options.tickRate = Integer.parseInt(next(args, ++i));
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
+                case "--single-window" -> options.singleWindow = true;
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
                     i += 2;
@@ -156,6 +159,8 @@ public final class ServerOptions {
                   --tick-rate N         screen refresh rate (default 60)
                   --close-grace-ms N    time clients get to close themselves once the window is
                                         closed, before the server disconnects them (default 2000)
+                  --single-window       render every client into one window, as a plain X screen
+                                        (default: one window per client connection)
 
                 The display is also reported through DISPLAY, so clients can be started with
                   DISPLAY=:1 xeyes
@@ -258,6 +263,14 @@ public final class ServerOptions {
 
     public int tickRate() {
         return tickRate;
+    }
+
+    /**
+     * True when every client connection gets a screen and a window of its own, which is the default:
+     * a forwarded application then appears as its own window, sized to what it draws.
+     */
+    public boolean perClientWindows() {
+        return !singleWindow;
     }
 
     /** How long a client has to close its windows itself once the host window has closed. */

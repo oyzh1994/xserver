@@ -42,6 +42,12 @@ public final class InputState implements DisplayBackend.InputSink {
     };
 
     private final XServer server;
+    /**
+     * The screen this input state belongs to. Pointer position, focus, grabs and the sprite are all
+     * per screen: two clients drawing on two screens have two pointers, and neither can move the
+     * other's.
+     */
+    private final Screen screen;
 
     private int pointerX;
     private int pointerY;
@@ -79,8 +85,18 @@ public final class InputState implements DisplayBackend.InputSink {
     private XCursor cursorPixelsFor;
 
     public InputState(XServer server) {
+        this(server, server.screen());
+    }
+
+    public InputState(XServer server, Screen screen) {
         this.server = server;
-        this.inputFocus = server.rootWindow();
+        this.screen = screen;
+        this.inputFocus = screen.root();
+    }
+
+    /** The screen whose pointer, focus and grabs this is. */
+    public Screen screen() {
+        return screen;
     }
 
     /** An active pointer or keyboard grab. */
@@ -112,7 +128,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * to whatever is behind it, which is the whole point of the extension.
      */
     public XWindow windowAtPointer() {
-        XWindow window = server.rootWindow();
+        XWindow window = screen.root();
         while (true) {
             XWindow child = null;
             List<XWindow> children = window.children();
@@ -137,7 +153,7 @@ public final class InputState implements DisplayBackend.InputSink {
     }
 
     public void setInputFocus(XWindow window, int revertTo) {
-        this.inputFocus = window == null ? server.rootWindow() : window;
+        this.inputFocus = window == null ? screen.root() : window;
         this.focusRevertTo = revertTo;
         this.focusSet = true;
     }
@@ -282,8 +298,8 @@ public final class InputState implements DisplayBackend.InputSink {
     // ------------------------------------------------------------------
 
     private void movePointer(int x, int y, boolean generateMotion) {
-        int clampedX = Math.max(0, Math.min(x, server.screen().width() - 1));
-        int clampedY = Math.max(0, Math.min(y, server.screen().height() - 1));
+        int clampedX = Math.max(0, Math.min(x, screen.width() - 1));
+        int clampedY = Math.max(0, Math.min(y, screen.height() - 1));
         boolean moved = clampedX != pointerX || clampedY != pointerY;
         pointerX = clampedX;
         pointerY = clampedY;
@@ -357,7 +373,7 @@ public final class InputState implements DisplayBackend.InputSink {
                 .sequenceNumber(client.sequenceNumber())
                 .detail((byte) 0)                       // Normal
                 .time(server.events().time())
-                .root(server.rootWindow().id())
+                .root(screen.root().id())
                 .event(w.id())
                 .child(child == null ? 0 : child.id())
                 .rootX((short) pointerX)
@@ -386,7 +402,7 @@ public final class InputState implements DisplayBackend.InputSink {
                         .sequenceNumber(client.sequenceNumber())
                         .detail((byte) button)
                         .time(time)
-                        .root(server.rootWindow().id())
+                        .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
                         .rootX((short) pointerX)
@@ -403,7 +419,7 @@ public final class InputState implements DisplayBackend.InputSink {
                         .sequenceNumber(client.sequenceNumber())
                         .detail((byte) button)
                         .time(time)
-                        .root(server.rootWindow().id())
+                        .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
                         .rootX((short) pointerX)
@@ -482,7 +498,7 @@ public final class InputState implements DisplayBackend.InputSink {
                         .sequenceNumber(client.sequenceNumber())
                         .detail((byte) keycode)
                         .time(time)
-                        .root(server.rootWindow().id())
+                        .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
                         .rootX((short) pointerX)
@@ -499,7 +515,7 @@ public final class InputState implements DisplayBackend.InputSink {
                     .sequenceNumber(client.sequenceNumber())
                     .detail((byte) keycode)
                     .time(time)
-                    .root(server.rootWindow().id())
+                    .root(screen.root().id())
                     .event(w.id())
                     .child(childId)
                     .rootX((short) pointerX)
@@ -529,7 +545,7 @@ public final class InputState implements DisplayBackend.InputSink {
      */
     XWindow focusWindow() {
         if (inputFocus == null || inputFocus.isRoot()) {
-            return pointerWindow == null ? server.rootWindow() : pointerWindow;
+            return pointerWindow == null ? screen.root() : pointerWindow;
         }
         return inputFocus;
     }
@@ -547,7 +563,7 @@ public final class InputState implements DisplayBackend.InputSink {
             return;
         }
         XWindow reverted = focusRevertTo == REVERT_TO_PARENT ? window.parent() : null;
-        inputFocus = reverted == null || reverted.isDestroyed() ? server.rootWindow() : reverted;
+        inputFocus = reverted == null || reverted.isDestroyed() ? screen.root() : reverted;
         if (log.isDebugEnabled()) {
             log.debug("focus reverted to 0x{}: 0x{} was destroyed", Integer.toHexString(
                     inputFocus.id()), Integer.toHexString(window.id()));
@@ -608,6 +624,6 @@ public final class InputState implements DisplayBackend.InputSink {
                 return cursor;
             }
         }
-        return server.rootCursor();
+        return screen.rootCursor();
     }
 }

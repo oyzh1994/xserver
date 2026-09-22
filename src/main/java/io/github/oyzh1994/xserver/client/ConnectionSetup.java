@@ -66,6 +66,16 @@ public final class ConnectionSetup {
             sendFailed(client, "Protocol version not supported");
             return;
         }
+        if (server.options().perClientWindows()) {
+            // Under the server lock: the display tick walks the screens and the window tree, and it
+            // must never see a half-built one.
+            server.lockServer();
+            try {
+                server.openClientScreen(client);
+            } finally {
+                server.unlockServer();
+            }
+        }
         sendSetup(client);
     }
 
@@ -132,11 +142,13 @@ public final class ConnectionSetup {
     }
 
     private void sendSetup(ClientConnection client) throws IOException {
-        Screen screen = server.screen();
+        // A connection with a screen of its own is told about that one only: it is the only screen
+        // that client can see, and its root is the one it builds its windows in.
+        Screen screen = server.screenOf(client);
         int vendorPadded = (VENDOR.length() + 3) & ~3;
 
         var formats = screen.pixmapFormats();
-        var root = screen.toProtocolScreen(server.rootWindow().id(), server.rootColormap().id());
+        var root = screen.toProtocolScreen(screen.root().id(), screen.defaultColormap().id());
 
         // The length field counts everything after the 8 byte prefix (status, unused, and the two
         // version words): the rest of the 40 byte header plus all the variable data. Verified

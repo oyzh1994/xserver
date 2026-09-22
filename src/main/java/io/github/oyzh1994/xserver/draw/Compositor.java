@@ -840,7 +840,7 @@ public final class Compositor {
      */
     private void finish(Picture dst) {
         if (dst.window() != null && server != null) {
-            server.markScreenDirty();
+            server.markScreenDirty(dst.window());
         }
     }
 

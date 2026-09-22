@@ -48,6 +48,8 @@ public final class SwingBackend implements DisplayBackend {
     private volatile ScreenPanel panel;
     /** The pointer sprite that goes with the last presented frame. */
     private volatile CursorSprite cursor;
+    /** The part of the screen this window shows, in framebuffer coordinates. */
+    private volatile Rectangle viewport = new Rectangle();
 
     private InputSink input;
 
@@ -109,6 +111,17 @@ public final class SwingBackend implements DisplayBackend {
         runOnEdtAndWait(() -> {
             window.setVisible(false);
             window.dispose();
+        });
+    }
+
+    @Override
+    public void setViewport(Rectangle wanted) {
+        runOnEdtAndWait(() -> {
+            viewport = new Rectangle(wanted);
+            ScreenPanel target = panel;
+            if (target != null) {
+                target.applyViewport();
+            }
         });
     }
 
@@ -250,9 +263,20 @@ public final class SwingBackend implements DisplayBackend {
             this.image = new BufferedImage(framebuffer.width(), framebuffer.height(),
                     BufferedImage.TYPE_INT_ARGB);
             blit(0, 0, framebuffer.width(), framebuffer.height());
-            setPreferredSize(new Dimension(framebuffer.width(), framebuffer.height()));
+            applyViewport();
             setBackground(Color.BLACK);
             setFocusable(true);
+        }
+
+        /** Sizes the window to the rectangle of the screen it shows. Must run on the EDT. */
+        void applyViewport() {
+            Rectangle shown = viewport.isEmpty()
+                    ? new Rectangle(0, 0, image.getWidth(), image.getHeight()) : viewport;
+            setPreferredSize(new Dimension(shown.width, shown.height));
+            if (frame != null) {
+                frame.pack();
+            }
+            repaint();
         }
 
         /** Copies a rectangle out of the framebuffer image. Must run on the EDT. */
@@ -265,7 +289,9 @@ public final class SwingBackend implements DisplayBackend {
                 return;
             }
             image.setRGB(x0, y0, x1 - x0, y1 - y0, pixels, y0 * stride + x0, stride);
-            repaint(x0, y0, x1 - x0, y1 - y0);
+            // The panel shows a sub-rectangle of the image, so a repaint is asked for in window
+            // coordinates rather than image ones.
+            repaint(x0 - viewport.x, y0 - viewport.y, x1 - x0, y1 - y0);
         }
 
         @Override
@@ -276,12 +302,15 @@ public final class SwingBackend implements DisplayBackend {
             if (clip == null) {
                 return;
             }
-            int x0 = Math.max(0, clip.x);
-            int y0 = Math.max(0, clip.y);
-            int x1 = Math.min(image.getWidth(), clip.x + clip.width);
-            int y1 = Math.min(image.getHeight(), clip.y + clip.height);
+            Rectangle shown = viewport.isEmpty()
+                    ? new Rectangle(0, 0, image.getWidth(), image.getHeight()) : viewport;
+            int x0 = Math.max(shown.x, clip.x + shown.x);
+            int y0 = Math.max(shown.y, clip.y + shown.y);
+            int x1 = Math.min(shown.x + shown.width, clip.x + clip.width + shown.x);
+            int y1 = Math.min(shown.y + shown.height, clip.y + clip.height + shown.y);
             if (x0 < x1 && y0 < y1) {
-                g.drawImage(image, x0, y0, x1, y1, x0, y0, x1, y1, null);
+                g.drawImage(image, x0 - shown.x, y0 - shown.y, x1 - shown.x, y1 - shown.y,
+                        x0, y0, x1, y1, null);
             }
             // Over the frame, never in it: the sprite is what the framebuffer must not hold.
             drawCursor(g);
@@ -305,7 +334,12 @@ public final class SwingBackend implements DisplayBackend {
                 cursorImage.setRGB(0, 0, sprite.width(), sprite.height(), sprite.pixels(), 0,
                         sprite.width());
             }
-            g.drawImage(cursorImage, sprite.x(), sprite.y(), null);
+            Rectangle shown = viewport.isEmpty()
+                    ? new Rectangle(0, 0, image.getWidth(), image.getHeight()) : viewport;
+            if (shown.intersects(new Rectangle(sprite.x(), sprite.y(), sprite.width(),
+                    sprite.height()))) {
+                g.drawImage(cursorImage, sprite.x() - shown.x, sprite.y() - shown.y, null);
+            }
         }
     }
 
@@ -314,16 +348,16 @@ public final class SwingBackend implements DisplayBackend {
     // ------------------------------------------------------------------
 
     private void pointerMoved(MouseEvent event) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = clamp(event.getX() + viewport.x, screenWidth);
+        int y = clamp(event.getY() + viewport.y, screenHeight);
         pointerX = x;
         pointerY = y;
         input.pointerMoved(x, y);
     }
 
     private void mouseButton(MouseEvent event, boolean pressed) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = clamp(event.getX() + viewport.x, screenWidth);
+        int y = clamp(event.getY() + viewport.y, screenHeight);
         pointerX = x;
         pointerY = y;
         // AWT numbers its buttons the way X does: 1 left, 2 middle, 3 right.
@@ -352,8 +386,8 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     private void scrolled(MouseWheelEvent event) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = clamp(event.getX() + viewport.x, screenWidth);
+        int y = clamp(event.getY() + viewport.y, screenHeight);
         pointerX = x;
         pointerY = y;
         int rotation = event.getWheelRotation();

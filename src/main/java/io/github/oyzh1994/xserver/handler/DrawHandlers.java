@@ -95,7 +95,7 @@ public final class DrawHandlers {
             for (Rectangle piece : window.visibleRegion()) {
                 Rectangle visible = area.intersection(piece);
                 if (!visible.isEmpty()) {
-                    server.screen().framebuffer().fillRect(visible.x, visible.y, visible.width,
+                    window.screen().framebuffer().fillRect(visible.x, visible.y, visible.width,
                             visible.height, window.backgroundPixel());
                 }
             }
@@ -455,8 +455,8 @@ public final class DrawHandlers {
     }
 
     private PixelStore storeOf(XResource drawable) {
-        if (drawable instanceof XWindow) {
-            return server.screen().framebuffer();
+        if (drawable instanceof XWindow window) {
+            return window.screen().framebuffer();
         }
         return (XPixmap) drawable;
     }
@@ -544,7 +544,7 @@ public final class DrawHandlers {
 
     private Target target(XResource drawable, XGC gc) {
         if (drawable instanceof XWindow window) {
-            PixelStore store = server.screen().framebuffer();
+            PixelStore store = window.screen().framebuffer();
             List<Rectangle> region = clipRegion(window, gc);
             return new Target(store, new Rasterizer(store, gc, ShapeState.extents(region), region),
                     window.absoluteX(), window.absoluteY());
@@ -572,7 +572,14 @@ public final class DrawHandlers {
      */
     private void afterDrawing(ClientConnection client, XGC gc, XResource drawable,
                               int sourceDrawable) {
-        server.markScreenDirty();
+        // Only the screen the drawable belongs to can have changed. A pixmap is not on screen at
+        // all, so it is marked on its own screen for the same reason the single screen used to be
+        // marked for it: nothing that reads this knows better yet.
+        if (drawable instanceof XWindow window) {
+            server.markScreenDirty(window);
+        } else {
+            server.markScreenDirty(((XPixmap) drawable).screen());
+        }
         if (gc.graphicsExposures() && drawable instanceof XWindow window) {
             server.events().send(window.owner() == null ? client : window.owner(),
                     NoExposureEvent.builder()

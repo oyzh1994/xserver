@@ -11,6 +11,7 @@ import com.github.moaxcp.x11.protocol.xtest.GrabControl;
 import com.github.moaxcp.x11.protocol.xtest.XtestPlugin;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
@@ -131,21 +132,24 @@ public final class XTestExtension implements Extension {
         int detail = Byte.toUnsignedInt(request.getDetail());
         int x = request.getRootX();
         int y = request.getRootY();
+        // Synthetic input belongs to the screen of the client that asked for it, which is what makes
+        // it land on that client's own windows rather than on another connection's screen.
+        InputState input = server.inputFor(client);
         switch (type) {
             // Only a motion event carries a position: Xlib zeroes the coordinates for every other
             // type, and a real server delivers a key or button event without moving the pointer.
             // Passing the pointer's current position keeps it exactly where it is.
-            case KEY_PRESS, KEY_RELEASE -> server.input().keyChanged(detail, type == KEY_PRESS,
-                    server.input().pointerX(), server.input().pointerY());
-            case BUTTON_PRESS, BUTTON_RELEASE -> server.input().buttonChanged(detail,
-                    type == BUTTON_PRESS, server.input().pointerX(), server.input().pointerY());
+            case KEY_PRESS, KEY_RELEASE -> input.keyChanged(detail, type == KEY_PRESS,
+                    input.pointerX(), input.pointerY());
+            case BUTTON_PRESS, BUTTON_RELEASE -> input.buttonChanged(detail,
+                    type == BUTTON_PRESS, input.pointerX(), input.pointerY());
             case MOTION_NOTIFY -> {
                 if (detail == MOTION_RELATIVE) {
                     // A relative motion is an offset from wherever the pointer is now.
-                    server.input().pointerMoved(server.input().pointerX() + x,
-                            server.input().pointerY() + y);
+                    input.pointerMoved(input.pointerX() + x,
+                            input.pointerY() + y);
                 } else if (detail == MOTION_ABSOLUTE) {
-                    server.input().pointerMoved(x, y);
+                    input.pointerMoved(x, y);
                 } else {
                     log.debug("XTEST FakeInput: ignoring unknown motion detail {}", detail);
                 }

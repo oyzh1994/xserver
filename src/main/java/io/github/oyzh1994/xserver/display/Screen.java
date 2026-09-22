@@ -5,6 +5,7 @@ import com.github.moaxcp.x11.protocol.xproto.Format;
 import com.github.moaxcp.x11.protocol.xproto.Visualtype;
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.resource.XColormap;
+import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.eclipse.collections.impl.factory.Lists;
 
@@ -37,6 +38,8 @@ public final class Screen {
 
     private XWindow root;
     private XColormap defaultColormap;
+    /** The cursor a window on this screen gets when it has none of its own. */
+    private XCursor rootCursor;
     private int whitePixel;
     private int blackPixel;
 
@@ -140,6 +143,14 @@ public final class Screen {
 
     public void setRoot(XWindow root) {
         this.root = root;
+    }
+
+    public XCursor rootCursor() {
+        return rootCursor;
+    }
+
+    public void setRootCursor(XCursor rootCursor) {
+        this.rootCursor = rootCursor;
     }
 
     public XColormap defaultColormap() {

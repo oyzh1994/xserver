@@ -377,9 +377,9 @@ public final class AtomHandlers {
     public void sendEvent(ClientConnection client, SendEvent r) {
         XWindow destination;
         if (r.getDestination() == 0) {
-            destination = server.input().windowAtPointer();
+            destination = server.inputFor(client).windowAtPointer();
         } else if (r.getDestination() == 1) {
-            destination = server.input().inputFocus();
+            destination = server.inputFor(client).inputFocus();
         } else {
             destination = window(client, r.getDestination());
         }
@@ -401,8 +401,8 @@ public final class AtomHandlers {
 
         int mask = r.getEventMask();
         if (r.isPropagate()) {
-            server.events().deliverPropagating(destination, mask, server.input().pointerX(),
-                    server.input().pointerY(),
+            server.events().deliverPropagating(destination, mask, server.inputFor(client).pointerX(),
+                    server.inputFor(client).pointerY(),
                     (recipient, w, child, x, y) -> rawEvent(recipient, bytes, senderBigEndian));
             return;
         }

@@ -38,6 +38,8 @@ Options:
 | `--no-tcp` / `--no-unix` | restrict the transports |
 | `--log-requests` | log every request at debug level |
 | `--tick-rate N` | display refresh rate (default 60) |
+| `--single-window` | render every client into one shared window (default: one window per client) |
+| `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and `headless` runs
 the server with no window at all — useful for tests and for driving clients with `xwd`.
@@ -66,6 +68,13 @@ contain a reader and writer for every request, reply, event and error, produced 
 protocol descriptions. Decoding gives a typed object, so dispatch is a `switch` over request types
 rather than a table of byte offsets, and the wire format cannot drift from the server's idea of it.
 The exceptions are documented in `VariableLengthDecoders` (see below).
+
+**One screen per client connection, and one window per screen.** A connection is given a screen
+of its own - its own root window and framebuffer - so each forwarded application appears as a
+window sized to what it draws, and no client can draw over another's pixels. The window follows the
+client's top level windows: it is the union of their rectangles, so a dialog next to the parent
+stays inside it and a small application does not arrive in a screen-sized window with black around
+it. `--single-window` restores the older shape, one shared screen with every client on it.
 
 **One framebuffer per screen, and windows draw straight into it.** A window's contents are not
 kept in its own buffer: drawing is clipped to the part of the window that is actually visible, and

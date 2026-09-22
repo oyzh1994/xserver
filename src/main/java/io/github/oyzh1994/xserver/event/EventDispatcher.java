@@ -173,7 +173,11 @@ public final class EventDispatcher {
         }
         XWindow common = commonAncestor(previous, current);
         int time = time();
-        int state = server.input().pointerState();
+        // Crossing is reported against the window the pointer is on now, or the one it left when
+        // it left everything: that is whose screen's pointer state the event carries.
+        XWindow crossed = current != null ? current : previous;
+        int state = crossed == null ? server.input().pointerState()
+                : server.inputFor(crossed.screen()).pointerState();
 
         if (previous != null) {
             deliverCrossingWindow(previous, false, crossingDetail(previous, current), time,
@@ -200,7 +204,7 @@ public final class EventDispatcher {
     private void deliverCrossingWindow(XWindow window, boolean enter, byte detail, int time,
                                        int screenX, int screenY, int rootX, int rootY, int state) {
         int maskBit = enter ? EventMasks.ENTER_WINDOW : EventMasks.LEAVE_WINDOW;
-        boolean focused = server.input().inputFocus() == window;
+        boolean focused = server.inputFor(window.screen()).inputFocus() == window;
         deliverPropagating(window, maskBit, screenX, screenY, (client, w, child, x, y) -> {
             short sequence = client.sequenceNumber();
             int childId = child == null ? 0 : child.id();
@@ -211,7 +215,7 @@ public final class EventDispatcher {
                         .sequenceNumber(sequence)
                         .detail(detail)
                         .time(time)
-                        .root(server.rootWindow().id())
+                        .root(window.root().id())
                         .event(w.id())
                         .child(childId)
                         .rootX((short) rootX)
@@ -229,7 +233,7 @@ public final class EventDispatcher {
                     .sequenceNumber(sequence)
                     .detail(detail)
                     .time(time)
-                    .root(server.rootWindow().id())
+                    .root(window.root().id())
                     .event(w.id())
                     .child(childId)
                     .rootX((short) rootX)

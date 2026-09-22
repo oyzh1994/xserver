@@ -31,7 +31,7 @@ import io.github.oyzh1994.xserver.resource.XWindow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.awt.Rectangle;
+import java.awt.*;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.BitSet;
@@ -48,26 +48,39 @@ public final class XServer {
 
     private static final Logger log = LoggerFactory.getLogger(XServer.class);
 
-    /** Client index 0 is reserved for the server, which owns the root window and colormaps. */
+    /**
+     * Client index 0 is reserved for the server, which owns the root window and colormaps.
+     */
     public static final int SERVER_CLIENT_INDEX = 0;
 
     private final ServerOptions options;
     private final ResourceTable resources = new ResourceTable();
     private final AtomTable atoms = new AtomTable();
     private final List<ClientConnection> clients = new CopyOnWriteArrayList<>();
+    /**
+     * Every screen the server is showing, the master one included.
+     */
+    private final List<ScreenSession> sessions = new CopyOnWriteArrayList<>();
     private final BitSet usedClientIndices = new BitSet(ClientConnection.MAX_CLIENTS);
     private final Map<String, Integer> selectionOwners = new HashMap<>();
     private final List<io.github.oyzh1994.xserver.handler.InputHandlers.PassiveGrab> passiveGrabs =
             new ArrayList<>();
 
-    /** Held while a request executes; {@code GrabServer} holds it across requests. */
+    /**
+     * Held while a request executes; {@code GrabServer} holds it across requests.
+     */
     private final ReentrantLock serverLock = new ReentrantLock(true);
 
+    /**
+     * The master screen: the one single-window mode uses, and the one in-process tests build on.
+     */
     private final Screen screen;
     private final List<Screen> screens = new ArrayList<>();
-    private final XWindow rootWindow;
-    private final XColormap rootColormap;
-    private final XCursor rootCursor;
+    /**
+     * The visuals every screen offers. Shared, because a client compares them by id.
+     */
+    private final List<VisualInfo> visuals = new ArrayList<>();
+    private final VisualInfo rootVisual;
     private final int defaultFontId;
 
     private final ConnectionSetup connectionSetup = new ConnectionSetup(this);
@@ -81,13 +94,30 @@ public final class XServer {
     private final RequestDispatcher dispatcher = new RequestDispatcher(this, windowHandlers,
             drawHandlers, resourceHandlers, atomHandlers, inputHandlers, miscHandlers);
     private final EventDispatcher events = new EventDispatcher(this);
-    private final InputState input = new InputState(this);
+    /**
+     * Input for the master screen. Created in the constructor rather than here because it is bound to
+     * a screen, and the screen does not exist yet while the fields are being initialised.
+     */
+    private final InputState input;
 
-    private DisplayBackend backend;
+    /**
+     * How a window is made for a screen. One per screen, because each window shows one screen: the
+     * JavaFX toolkit itself is shared, but a stage is not.
+     */
+    private java.util.function.Supplier<DisplayBackend> backendFactory;
+
+    /**
+     * A backend chosen by an embedder or a test, used for the master screen.
+     */
+    private DisplayBackend sharedBackend;
+
+    private final ScreenSession masterSession;
     private ClientListener listener;
 
     private ClientConnection serverGrabHolder;
-    /** How many times the holder called GrabServer without a matching UngrabServer. */
+    /**
+     * How many times the holder called GrabServer without a matching UngrabServer.
+     */
     private int serverGrabDepth;
 
     private volatile boolean running;
@@ -107,54 +137,68 @@ public final class XServer {
 
         // A modern desktop is TrueColor first: 24 bit for the root, 32 bit ARGB for translucency,
         // plus the low depth visuals clients still probe for.
-        List<VisualInfo> visuals = new ArrayList<>();
         int nextVisualId = 0x0200;
         VisualInfo trueColor24 = VisualInfo.trueColor24(nextVisualId++);
-        VisualInfo argb32 = VisualInfo.argb32(nextVisualId++);
-        VisualInfo trueColor16 = VisualInfo.trueColor16(nextVisualId++);
-        VisualInfo trueColor8 = VisualInfo.trueColor8(nextVisualId++);
-        VisualInfo pseudoColor8 = VisualInfo.pseudoColor8(nextVisualId++);
-        VisualInfo staticGray8 = VisualInfo.staticGray8(nextVisualId++);
-        VisualInfo staticGray1 = VisualInfo.staticGray1(nextVisualId++);
         visuals.add(trueColor24);
-        visuals.add(argb32);
-        visuals.add(trueColor16);
-        visuals.add(trueColor8);
-        visuals.add(pseudoColor8);
-        visuals.add(staticGray8);
-        visuals.add(staticGray1);
+        visuals.add(VisualInfo.argb32(nextVisualId++));
+        visuals.add(VisualInfo.trueColor16(nextVisualId++));
+        visuals.add(VisualInfo.trueColor8(nextVisualId++));
+        visuals.add(VisualInfo.pseudoColor8(nextVisualId++));
+        visuals.add(VisualInfo.staticGray8(nextVisualId++));
+        visuals.add(VisualInfo.staticGray1(nextVisualId++));
+        this.rootVisual = trueColor24;
 
-        this.screen = new Screen(0, options.width(), options.height(), visuals, 24,
-                trueColor24.id());
-        this.screens.add(screen);
-
-        this.rootColormap = new XColormap(resourceIdCounter++, null, screen, trueColor24, true);
-        resources.add(rootColormap);
-
-        this.rootWindow = new XWindow(resourceIdCounter++, null, screen, null, 24,
-                XWindow.INPUT_OUTPUT, trueColor24, 0, 0, options.width(), options.height(), 0);
-        rootWindow.setMapped(true);
-        rootWindow.setBackgroundPixel(trueColor24.fromArgb(0xFF000000));
-        rootWindow.setBorderPixel(trueColor24.fromArgb(0xFF000000));
-        rootWindow.setColormap(rootColormap);
-        rootWindow.takeNeedsFullExpose();
-        resources.add(rootWindow);
-        screen.setRoot(rootWindow);
-        screen.setDefaultColormap(rootColormap);
-        screen.setBlackPixel(trueColor24.fromArgb(0xFF000000));
-        screen.setWhitePixel(trueColor24.fromArgb(0xFFFFFFFF));
-
-        this.rootCursor = XCursor.defaultCursor(resourceIdCounter++, null);
-        resources.add(rootCursor);
+        this.screen = createScreen(0);
 
         XFont defaultFont = new XFont(resourceIdCounter++, null, "fixed");
         resources.add(defaultFont);
         this.defaultFontId = defaultFont.id();
 
-        rootWindow.setCursor(rootCursor);
+        this.input = new InputState(this, screen);
+        screenInputs.put(screen, input);
+        this.masterSession = new ScreenSession(screen, input, null);
+        sessions.add(masterSession);
 
         registerExtensions();
     }
+
+    /**
+     * Builds a screen with its own framebuffer, root window, default colormap and root cursor, and
+     * registers it.
+     *
+     * <p>Screens share the visual table on purpose: a client compares visuals by id, and RENDER keys
+     * its formats by visual id, so two screens handing out different {@link VisualInfo} objects for
+     * the same depth would look like two different displays rather than two of the same.
+     */
+    private Screen createScreen(int number) {
+        Screen created = new Screen(number, options.width(), options.height(), visuals, ROOT_DEPTH,
+                rootVisual.id());
+        XColormap colormap = new XColormap(resourceIdCounter++, null, created, rootVisual, true);
+        resources.add(colormap);
+        XWindow root = new XWindow(resourceIdCounter++, null, created, null, ROOT_DEPTH,
+                XWindow.INPUT_OUTPUT, rootVisual, 0, 0, options.width(), options.height(), 0);
+        root.setMapped(true);
+        root.setBackgroundPixel(rootVisual.fromArgb(0xFF000000));
+        root.setBorderPixel(rootVisual.fromArgb(0xFF000000));
+        root.setColormap(colormap);
+        root.takeNeedsFullExpose();
+        resources.add(root);
+        created.setRoot(root);
+        created.setDefaultColormap(colormap);
+        created.setBlackPixel(rootVisual.fromArgb(0xFF000000));
+        created.setWhitePixel(rootVisual.fromArgb(0xFFFFFFFF));
+        XCursor cursor = XCursor.defaultCursor(resourceIdCounter++, null);
+        resources.add(cursor);
+        created.setRootCursor(cursor);
+        root.setCursor(cursor);
+        screens.add(created);
+        return created;
+    }
+
+    /**
+     * The root window's depth. The same on every screen, and what the setup reply advertises.
+     */
+    private static final int ROOT_DEPTH = 24;
 
     /**
      * Registers the extensions this server implements. Order matters: opcodes are handed out in
@@ -197,20 +241,89 @@ public final class XServer {
         return screen;
     }
 
+    public List<ScreenSession> sessions() {
+        return sessions;
+    }
+
+    /**
+     * The input state of every screen the server is showing, the master one included.
+     */
+    private final Map<Screen, InputState> screenInputs = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * The input state of a screen: its own pointer, focus and grabs.
+     *
+     * <p>Two screens have two pointers. A backend never reports a move against one screen and have
+     * it applied to another, which is what would happen if every screen shared the master's input.
+     */
+    public InputState inputFor(Screen screen) {
+        return screenInputs.getOrDefault(screen, input);
+    }
+
+    /**
+     * The input state a client's events belong to: its own screen's, or the master one.
+     */
+    public InputState inputFor(ClientConnection client) {
+        ScreenSession session = client == null ? null : client.session();
+        return session == null ? input : session.input();
+    }
+
+    /**
+     * The screen a client's windows live on: its own when it has one, the master screen otherwise.
+     * Everything that answers a client - the setup reply, its requests, its input - resolves the
+     * screen through here rather than assuming the shared one.
+     */
+    public Screen screenOf(ClientConnection client) {
+        ScreenSession session = client == null ? null : client.session();
+        return session == null ? screen : session.screen();
+    }
+
+    /**
+     * Gives a connection a screen of its own, with its own framebuffer, root window and input.
+     *
+     * <p>Called from the handshake, before the setup reply tells the client which root to use, so
+     * the client's very first request already lands on its own screen.
+     */
+    public ScreenSession openClientScreen(ClientConnection client) {
+        Screen privateScreen = createScreen(0);
+        InputState privateInput = new InputState(this, privateScreen);
+        ScreenSession session = new ScreenSession(privateScreen, privateInput, client);
+        screenInputs.put(privateScreen, privateInput);
+        sessions.add(session);
+        client.setSession(session);
+        return session;
+    }
+
+    /**
+     * Frees a client's screen once its connection is gone. The display tick closes the window.
+     */
+    private void closeClientScreen(ScreenSession session) {
+        if (session == null || session.closed()) {
+            return;
+        }
+        session.markClosed();
+        resources.free(session.screen().root().id());
+        resources.free(session.screen().defaultColormap().id());
+        resources.free(session.screen().rootCursor().id());
+        screens.remove(session.screen());
+        screenInputs.remove(session.screen());
+        log.info("screen of display :{} freed", options.displayNumber());
+    }
+
     public List<Screen> screens() {
         return screens;
     }
 
     public XWindow rootWindow() {
-        return rootWindow;
+        return screen.root();
     }
 
     public XColormap rootColormap() {
-        return rootColormap;
+        return screen.defaultColormap();
     }
 
     public XCursor rootCursor() {
-        return rootCursor;
+        return screen.rootCursor();
     }
 
     public int defaultFontId() {
@@ -233,7 +346,9 @@ public final class XServer {
         return input;
     }
 
-    /** Handlers are shared with the dispatcher so cross-cutting requests can call into them. */
+    /**
+     * Handlers are shared with the dispatcher so cross-cutting requests can call into them.
+     */
     public WindowHandlers windows() {
         return windowHandlers;
     }
@@ -259,19 +374,23 @@ public final class XServer {
     }
 
     public DisplayBackend backend() {
-        return backend;
+        return masterSession.backend();
     }
 
     public Map<String, Integer> selectionOwners() {
         return selectionOwners;
     }
 
-    /** Keyboard and pointer grabs waiting for a matching input event. */
+    /**
+     * Keyboard and pointer grabs waiting for a matching input event.
+     */
     public List<io.github.oyzh1994.xserver.handler.InputHandlers.PassiveGrab> passiveGrabs() {
         return passiveGrabs;
     }
 
-    /** Tells every client the keyboard mapping changed, which invalidates their cached keymaps. */
+    /**
+     * Tells every client the keyboard mapping changed, which invalidates their cached keymaps.
+     */
     public void broadcastMappingNotify(byte request, byte firstKeycode, byte count) {
         var event = com.github.moaxcp.x11.protocol.xproto.MappingNotifyEvent.builder()
                 .firstEventOffset((byte) 0)
@@ -284,7 +403,9 @@ public final class XServer {
         }
     }
 
-    /** Serializes request execution. Callers must pair with {@link #unlockServer()} in a finally. */
+    /**
+     * Serializes request execution. Callers must pair with {@link #unlockServer()} in a finally.
+     */
     public void lockServer() {
         serverLock.lock();
     }
@@ -295,7 +416,9 @@ public final class XServer {
         }
     }
 
-    /** The client currently holding a server grab, or null. */
+    /**
+     * The client currently holding a server grab, or null.
+     */
     public ClientConnection serverGrabHolder() {
         return serverGrabHolder;
     }
@@ -331,7 +454,9 @@ public final class XServer {
         return true;
     }
 
-    /** Forgets every grab a client held, used when its connection ends. */
+    /**
+     * Forgets every grab a client held, used when its connection ends.
+     */
     public void clearServerGrab(ClientConnection client) {
         if (serverGrabHolder == client) {
             serverGrabHolder = null;
@@ -359,18 +484,32 @@ public final class XServer {
      * {@link #start()}.
      */
     public void setBackend(DisplayBackend backend) {
-        this.backend = backend;
+        this.sharedBackend = backend;
+    }
+
+    /**
+     * How each screen's window is made, for a test that wants a window it can close without one
+     * existing. Replaces the backend the options name.
+     */
+    public void setBackendFactory(java.util.function.Supplier<DisplayBackend> backendFactory) {
+        this.backendFactory = backendFactory;
     }
 
     public void start() throws IOException {
         running = true;
         startTime = System.currentTimeMillis();
-        backend = backend != null ? backend : BackendFactory.create(options.backend());
-        backend.start(screen, options.displayNumber(), input);
+        if (backendFactory == null) {
+            backendFactory = () -> BackendFactory.create(options.backend());
+        }
+        if (!options.perClientWindows()) {
+            // One window for the whole screen, opened now and kept for the life of the server.
+            openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
+        }
         listener = new ClientListener(this);
         listener.start();
-        log.info("xserver listening on display :{} ({}x{}), backend {}",
-                options.displayNumber(), options.width(), options.height(), backend.name());
+        log.info("xserver listening on display :{} ({}x{}), {}", options.displayNumber(),
+                options.width(), options.height(),
+                options.perClientWindows() ? "one window per client" : "a single shared window");
         System.out.printf("xserver: display :%d ready, run clients with DISPLAY=:%d%n",
                 options.displayNumber(), options.displayNumber());
     }
@@ -391,18 +530,14 @@ public final class XServer {
     private void eventLoop() {
         long frameMillis = Math.max(1, 1000 / Math.max(1, options.tickRate()));
         while (running) {
-            if (backend == null) {
-                break;
+            for (ScreenSession session : sessions) {
+                tick(session);
             }
-            if (backend.isClosed()) {
-                // The window is gone, so there is nobody left to draw for: hand the session to the
-                // clients and give them the grace period to end it themselves.
-                askClientsToClose();
-                if (System.currentTimeMillis() >= shutdownDeadline) {
-                    break;
-                }
-            } else if (!idle) {
-                presentDamage();
+            if (!options.perClientWindows() && masterSession.closeDeadline() != 0
+                    && System.currentTimeMillis() >= masterSession.closeDeadline()) {
+                // Single-window mode: the one window was closed and the clients have had their
+                // grace period, so the session is over.
+                break;
             }
             try {
                 Thread.sleep(frameMillis);
@@ -415,41 +550,203 @@ public final class XServer {
     }
 
     /**
-     * Follows the client list into and out of the idle state.
+     * One frame for one screen: opens its window when there is something to show, keeps the window
+     * sized to what the client draws, and presents the damage.
      *
-     * <p>An idle server stops building frames: a client's windows are destroyed as it disconnects,
-     * which leaves the screen showing an empty root, and there is nothing after that to draw until
-     * something connects again. The window keeps that last frame and the platform pointer is handed
-     * back, because with no X client there is no pointer of the server's to show.
+     * <p>Everything the server owns is read under the server lock and the backend is called outside
+     * it, because those calls wait on the toolkit's own thread - and holding the lock there is what
+     * would freeze every other client.
      */
-    private void updateIdle(boolean nowIdle) {
-        if (nowIdle == idle) {
+    private void tick(ScreenSession session) {
+        if (session.closed()) {
+            closeSessionBackend(session);
+            sessions.remove(session);
             return;
         }
-        idle = nowIdle;
-        if (backend != null) {
-            backend.setIdle(idle);
+
+        Rectangle wanted;
+        Rectangle damage;
+        CursorSprite cursor;
+        boolean viewportChanged = false;
+        serverLock.lock();
+        try {
+            // The master screen shows all of itself; a client's screen shows the part of it that
+            // client's windows occupy, which is what keeps a small application out of a full-screen
+            // window.
+            wanted = session.client() == null
+                    ? new Rectangle(0, 0, session.screen().width(), session.screen().height())
+                    : contentBounds(session.screen());
+            boolean nowIdle = session.client() == null ? clients.isEmpty() : wanted == null;
+            if (nowIdle != session.idle()) {
+                session.setIdle(nowIdle);
+                if (nowIdle) {
+                    // The frame that takes the server's pointer off a window it will not touch again.
+                    markSpriteDamage(session, session.lastCursor());
+                    session.setLastCursor(null);
+                    log.info("nothing to show on display :{}: the window holds its last frame",
+                            options.displayNumber());
+                }
+            }
+            if (wanted == null || wanted.equals(session.viewport())) {
+                session.setPendingViewport(null);
+                session.setPendingSince(0);
+            } else if (session.pendingSince() == 0) {
+                // The rectangle moved: start the clock, and keep the latest version of it while the
+                // clock runs. A client dragging something moves it every frame, and following that
+                // frame by frame means resizing the host window through the platform's window server
+                // that often, which is what makes the drag stutter.
+                session.setPendingViewport(new Rectangle(wanted));
+                session.setPendingSince(System.currentTimeMillis());
+            } else {
+                session.setPendingViewport(new Rectangle(wanted));
+                if (System.currentTimeMillis() - session.pendingSince() >= VIEWPORT_SETTLE_MILLIS) {
+                    Rectangle settled = session.pendingViewport();
+                    session.setPendingViewport(null);
+                    session.setPendingSince(0);
+                    session.setViewport(settled);
+                    session.screen().framebuffer().markAllDirty();
+                    viewportChanged = true;
+                }
+            }
+            cursor = session.idle() ? null : session.input().cursorSprite();
+            // The sprite belongs to the frame, so its bookkeeping happens before the damage is
+            // taken: a pointer that moved has to be in the frame that goes out now rather than the
+            // next one, and - because a moved sprite marks damage of its own - a pointer moving
+            // over a window whose client is drawing nothing still gets a frame at all. Doing this
+            // after the damage was taken made the pointer advance only on the ticks where the
+            // client happened to repaint, which reads as a stuttering cursor.
+            if (!sameSprite(session.lastCursor(), cursor)) {
+                markSpriteDamage(session, session.lastCursor());
+                markSpriteDamage(session, cursor);
+                session.setLastCursor(cursor);
+            }
+            damage = session.screen().framebuffer().takeDamage();
+        } finally {
+            serverLock.unlock();
         }
-        if (idle) {
-            // One last frame, without the sprite: that is what removes the pointer the server was
-            // drawing from a window it will not touch again.
-            markSpriteDamage(lastCursor);
-            lastCursor = null;
-            presentDamage();
-            log.info("no clients left: the window holds its last frame until one connects");
-        } else {
-            log.info("client connected: rendering again");
+
+        if (session.backend() == null) {
+            // Nothing mapped yet: the window is opened by the first window a client maps, so a
+            // connection that only asks questions never opens one. The master screen has no window
+            // at all in per-client mode - it is not shown to anybody, it only exists so the
+            // in-process tests and single-window mode have a screen to build on.
+            if (wanted == null || (session.client() == null && options.perClientWindows())) {
+                return;
+            }
+            openSessionBackend(session, wanted);
+        } else if (viewportChanged) {
+            session.backend().setViewport(wanted);
+        }
+        DisplayBackend window = session.backend();
+        if (window == null) {
+            return;
+        }
+        if (session.idle() != session.idleApplied()) {
+            session.setIdleApplied(session.idle());
+            window.setIdle(session.idle());
+        }
+        if (window.isClosed()) {
+            onWindowClosed(session);
+            return;
+        }
+        if (!session.idle() && damage != null) {
+            window.present(session.screen(), damage, cursor);
         }
     }
 
-    /** Asks every client to close its windows, once, and starts the clock on the grace period. */
-    private void askClientsToClose() {
-        if (shutdownDeadline != 0) {
+
+    /**
+     * How long the rectangle a client's windows occupy has to hold still before the host window is
+     * resized to it.
+     *
+     * <p>Every resize goes through the platform's window server, which is far more expensive than
+     * painting a frame, and a client that is dragging something - a tooltip that follows the
+     * pointer, an animated resize - moves that rectangle every frame. Resizing on each of those
+     * makes the drag stutter, so the rectangle is applied once it settles.
+     */
+    private static final long VIEWPORT_SETTLE_MILLIS = 0;
+
+    /**
+     * The part of a screen the client's windows occupy: the union of its mapped top level windows.
+     *
+     * <p>Their children are inside them, and override-redirect windows - menus, tooltips - are top
+     * level too, so a menu that hangs off the side of its parent still lands inside the window.
+     */
+    private static Rectangle contentBounds(Screen screen) {
+        Rectangle union = null;
+        for (XWindow child : screen.root().children()) {
+            if (!child.isMapped() || child.isInputOnly()) {
+                continue;
+            }
+            Rectangle bounds = child.absoluteBoundsWithBorder();
+            union = union == null ? bounds : union.union(bounds);
+        }
+        return union == null ? null
+                : union.intersection(new Rectangle(0, 0, screen.width(), screen.height()));
+    }
+
+    /**
+     * Opens a screen's window, sized to show {@code viewport}. Never called with the lock held.
+     */
+    private void openSessionBackend(ScreenSession session, Rectangle viewport) {
+        DisplayBackend window = session.client() == null && sharedBackend != null
+                ? sharedBackend
+                : backendFactory.get();
+        window.setViewport(viewport);
+        window.start(session.screen(), options.displayNumber(), session.input());
+        session.setBackend(window);
+        session.setViewport(viewport);
+        log.info("opened a window for display :{} showing {}", options.displayNumber(), viewport);
+    }
+
+    /**
+     * Closes a screen's window. The screen itself was freed when the connection went.
+     */
+    private void closeSessionBackend(ScreenSession session) {
+        DisplayBackend window = session.backend();
+        if (window != null) {
+            session.setBackend(null);
+            window.stop();
+        }
+    }
+
+    /**
+     * The user closed a window.
+     *
+     * <p>In single-window mode that is the whole session ending, so every client is asked to quit. A
+     * client's own window closing ends that client: it is asked to close through
+     * {@code WM_DELETE_WINDOW} and cut off once the grace period is up, while the other clients keep
+     * their windows and the server keeps running.
+     */
+    private void onWindowClosed(ScreenSession session) {
+        if (session.client() == null) {
+            askClientsToClose();
             return;
         }
-        shutdownDeadline = System.currentTimeMillis() + options.closeGraceMillis();
+        if (session.closeDeadline() == 0) {
+            session.setCloseDeadline(System.currentTimeMillis() + options.closeGraceMillis());
+            closeClientWindows(session.screen(), session.client());
+            log.info("the window of {} was closed: asked it to quit, {} ms before it is cut off",
+                    session.client().peer(), options.closeGraceMillis());
+            return;
+        }
+        if (System.currentTimeMillis() >= session.closeDeadline()) {
+            // Closing the connection is what actually ends it: toolkits often ignore the message
+            // and hide instead of quitting.
+            session.client().close();
+        }
+    }
+
+    /**
+     * Asks every client to close its windows, once, and starts the clock on the grace period.
+     */
+    private void askClientsToClose() {
+        if (masterSession.closeDeadline() != 0) {
+            return;
+        }
+        masterSession.setCloseDeadline(System.currentTimeMillis() + options.closeGraceMillis());
         for (ClientConnection client : clients) {
-            closeClientWindows(client);
+            closeClientWindows(screen, client);
         }
         log.info("the window is closed: asked {} client(s) to close, {} ms before they are cut off",
                 clients.size(), options.closeGraceMillis());
@@ -464,13 +761,13 @@ public final class XServer {
      * the display it was drawing to has gone. A window that never listed the protocol is left out -
      * cutting its connection, which is what happens to it next, is the only notice there is.
      */
-    private void closeClientWindows(ClientConnection client) {
+    private void closeClientWindows(Screen screen, ClientConnection client) {
         int protocols = atoms.intern("WM_PROTOCOLS", true);
         int deleteWindow = atoms.intern("WM_DELETE_WINDOW", true);
         if (protocols == AtomTable.NONE || deleteWindow == AtomTable.NONE) {
             return;
         }
-        for (XWindow window : rootWindow.children()) {
+        for (XWindow window : screen.root().children()) {
             if (window.owner() == client && asksToClose(window, protocols, deleteWindow)) {
                 log.debug("asking 0x{} to close", Integer.toHexString(window.id()));
                 events.send(client, deleteWindowMessage(client, window, protocols, deleteWindow));
@@ -478,7 +775,9 @@ public final class XServer {
         }
     }
 
-    /** True when a window lists {@code WM_DELETE_WINDOW} in its {@code WM_PROTOCOLS}. */
+    /**
+     * True when a window lists {@code WM_DELETE_WINDOW} in its {@code WM_PROTOCOLS}.
+     */
     private static boolean asksToClose(XWindow window, int protocols, int deleteWindow) {
         XProperty property = window.properties().get(protocols);
         if (property == null || property.format() != XProperty.FORMAT_32) {
@@ -511,46 +810,10 @@ public final class XServer {
                 .build();
     }
 
-    /** The {@code ClientMessage} event code, the one thing about it that is not WM specific. */
-    private static final int CLIENT_MESSAGE = 33;
-
     /**
-     * How long a client gets to close itself before its connection is dropped. The countdown starts
-     * when the host window closes.
+     * The {@code ClientMessage} event code, the one thing about it that is not WM specific.
      */
-    private volatile long shutdownDeadline;
-
-    /** True while no client is connected: the window holds its last frame and draws nothing. */
-    private volatile boolean idle;
-
-    /** Flushes any framebuffer damage to the display backend, with the pointer sprite over it. */
-    public void presentDamage() {
-        // The sprite is drawn by the backend rather than into the framebuffer, so a pointer move
-        // changes what is on screen without changing a pixel of the framebuffer. The areas it left
-        // and arrived at are marked as damage instead, so the frame that showed the old position is
-        // painted again from underneath it.
-        CursorSprite cursor;
-        serverLock.lock();
-        try {
-            // With no client connected there is no X pointer to draw, and the frame that goes out
-            // is the one that takes the server's pointer off the window.
-            cursor = idle ? null : input.cursorSprite();
-        } finally {
-            serverLock.unlock();
-        }
-        if (!sameSprite(lastCursor, cursor)) {
-            markSpriteDamage(lastCursor);
-            markSpriteDamage(cursor);
-            lastCursor = cursor;
-        }
-        Rectangle damage = screen.framebuffer().takeDamage();
-        if (damage != null && backend != null) {
-            backend.present(screen, damage, cursor);
-        }
-    }
-
-    /** The sprite the last frame went out with, so a move can be turned into damage. */
-    private CursorSprite lastCursor;
+    private static final int CLIENT_MESSAGE = 33;
 
     /**
      * Marks the area a sprite covers as needing to be painted again.
@@ -559,14 +822,16 @@ public final class XServer {
      * backend - but reusing the damage rectangle is what keeps every backend down to one way of
      * being told what to repaint.
      */
-    private void markSpriteDamage(CursorSprite sprite) {
+    private static void markSpriteDamage(ScreenSession session, CursorSprite sprite) {
         if (sprite != null) {
-            screen.framebuffer().markDirty(sprite.x(), sprite.y(), sprite.x() + sprite.width(),
-                    sprite.y() + sprite.height());
+            session.screen().framebuffer().markDirty(sprite.x(), sprite.y(),
+                    sprite.x() + sprite.width(), sprite.y() + sprite.height());
         }
     }
 
-    /** Whether two sprites would draw the same picture in the same place. */
+    /**
+     * Whether two sprites would draw the same picture in the same place.
+     */
     private static boolean sameSprite(CursorSprite previous, CursorSprite current) {
         if (previous == null || current == null) {
             return previous == current;
@@ -576,7 +841,24 @@ public final class XServer {
     }
 
     public void markScreenDirty() {
+        markScreenDirty(screen);
+    }
+
+    /**
+     * Marks a whole screen dirty, for a change that cannot say which pixels moved.
+     *
+     * <p>Screens are independent: only the screen a window lives on has to be repainted when it
+     * changes, and marking the others would repaint windows that did not move.
+     */
+    public void markScreenDirty(Screen screen) {
         screen.framebuffer().markAllDirty();
+    }
+
+    /**
+     * Marks the screen a window lives on.
+     */
+    public void markScreenDirty(XWindow window) {
+        markScreenDirty(window.screen());
     }
 
     public void stop() {
@@ -587,8 +869,14 @@ public final class XServer {
         for (ClientConnection client : clients) {
             client.close();
         }
-        if (backend != null) {
-            backend.stop();
+        for (ScreenSession session : sessions) {
+            closeSessionBackend(session);
+        }
+        // The JavaFX toolkit holds a non-daemon thread, so something has to end it - but only once
+        // no window is left, which is now.
+        DisplayBackend window = sharedBackend;
+        if (window != null) {
+            window.releaseToolkit();
         }
     }
 
@@ -630,16 +918,17 @@ public final class XServer {
     public void registerClient(ClientConnection client) {
         clients.add(client);
         log.info("client {} connected", client.peer());
-        updateIdle(false);
     }
 
     public void removeClient(ClientConnection client) {
-        if (!clients.remove(client)) {
-            return;
-        }
+        boolean registered = clients.remove(client);
+        ScreenSession session = client.session();
         serverLock.lock();
         try {
             usedClientIndices.clear(client.index());
+            if (session != null) {
+                session.input().clientDisconnected(client);
+            }
             input.clientDisconnected(client);
             // Windows owned by this client get destroyed, which generates destroy notifications.
             dispatcher.destroyClientResources(client);
@@ -649,11 +938,17 @@ public final class XServer {
             clearServerGrab(client);
             releaseAllLocks();
         }
-        log.info("client {} disconnected", client.peer());
-        updateIdle(clients.isEmpty());
+        // A connection can end before it was ever registered - a handshake that failed after the
+        // screen was made - so the screen is freed whether or not the client was in the list.
+        closeClientScreen(session);
+        if (registered) {
+            log.info("client {} disconnected", client.peer());
+        }
     }
 
-    /** Reserves a client index, or -1 when the server is full. */
+    /**
+     * Reserves a client index, or -1 when the server is full.
+     */
     public synchronized int allocateClientIndex() {
         int index = usedClientIndices.nextClearBit(1);
         if (index >= ClientConnection.MAX_CLIENTS) {
@@ -669,7 +964,9 @@ public final class XServer {
         }
     }
 
-    /** Allocates a server owned resource id, used for predefined fonts and similar. */
+    /**
+     * Allocates a server owned resource id, used for predefined fonts and similar.
+     */
     public synchronized int nextServerResourceId() {
         return resourceIdCounter++;
     }

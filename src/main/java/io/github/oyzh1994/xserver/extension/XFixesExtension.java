@@ -250,8 +250,8 @@ public final class XFixesExtension implements Extension {
         XCursor cursor = server.rootCursor();
         client.sendReply(GetCursorImageReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .x((short) (server.input().pointerX() - cursor.hotspotX()))
-                .y((short) (server.input().pointerY() - cursor.hotspotY()))
+                .x((short) (server.inputFor(client).pointerX() - cursor.hotspotX()))
+                .y((short) (server.inputFor(client).pointerY() - cursor.hotspotY()))
                 .width((short) cursor.width())
                 .height((short) cursor.height())
                 .xhot((short) cursor.hotspotX())
@@ -266,8 +266,8 @@ public final class XFixesExtension implements Extension {
         XCursor cursor = server.rootCursor();
         client.sendReply(GetCursorImageAndNameReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .x((short) (server.input().pointerX() - cursor.hotspotX()))
-                .y((short) (server.input().pointerY() - cursor.hotspotY()))
+                .x((short) (server.inputFor(client).pointerX() - cursor.hotspotX()))
+                .y((short) (server.inputFor(client).pointerY() - cursor.hotspotY()))
                 .width((short) cursor.width())
                 .height((short) cursor.height())
                 .xhot((short) cursor.hotspotX())
@@ -327,17 +327,17 @@ public final class XFixesExtension implements Extension {
     }
 
     private void hideCursor(XServer server, ClientConnection client, HideCursor request) {
-        requireWindow(server, client, request.getWindow());
+        XWindow window = requireWindow(server, client, request.getWindow());
         hiddenCursors++;
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     private void showCursor(XServer server, ClientConnection client, ShowCursor request) {
-        requireWindow(server, client, request.getWindow());
+        XWindow window = requireWindow(server, client, request.getWindow());
         if (hiddenCursors > 0) {
             hiddenCursors--;
         }
-        server.markScreenDirty();
+        server.markScreenDirty(window);
     }
 
     /**

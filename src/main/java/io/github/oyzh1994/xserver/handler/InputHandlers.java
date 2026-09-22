@@ -106,13 +106,13 @@ public final class InputHandlers {
 
     public void queryPointer(ClientConnection client, QueryPointer r) {
         XWindow window = window(client, r.getWindow());
-        InputState input = server.input();
+        InputState input = server.inputFor(client);
         XWindow child = window.windowAt(input.pointerX(), input.pointerY());
         int childId = child == window ? 0 : child.id();
         client.sendReply(QueryPointerReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .sameScreen(true)
-                .root(server.rootWindow().id())
+                .root(input.screen().root().id())
                 .child(childId)
                 .rootX((short) input.pointerX())
                 .rootY((short) input.pointerY())
@@ -133,7 +133,7 @@ public final class InputHandlers {
     }
 
     public void warpPointer(ClientConnection client, WarpPointer r) {
-        InputState input = server.input();
+        InputState input = server.inputFor(client);
         int x;
         int y;
         if (r.getDstWindow() == 0) {
@@ -178,29 +178,29 @@ public final class InputHandlers {
             // None: the keyboard focus is nowhere.
             window = null;
         } else if (focus == 1) {
-            window = server.input().windowAtPointer();
+            window = server.inputFor(client).windowAtPointer();
         } else if (focus == 3) {
-            window = server.rootWindow();
+            window = server.inputFor(client).screen().root();
         } else {
             window = window(client, focus);
         }
-        server.input().setInputFocus(window, r.getRevertTo());
+        server.inputFor(client).setInputFocus(window, r.getRevertTo());
     }
 
     public void getInputFocus(ClientConnection client, GetInputFocus r) {
-        XWindow focus = server.input().inputFocus();
+        XWindow focus = server.inputFor(client).inputFocus();
         client.sendReply(GetInputFocusReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .revertTo((byte) server.input().focusRevertTo())
+                .revertTo((byte) server.inputFor(client).focusRevertTo())
                 .focus(focus == null ? 0
-                        : (focus == server.rootWindow() ? 1 : focus.id()))
+                        : (focus == server.inputFor(client).screen().root() ? 1 : focus.id()))
                 .build());
     }
 
     public void queryKeymap(ClientConnection client, QueryKeymap r) {
         byte[] keys = new byte[32];
         for (int row = 0; row < 8; row++) {
-            keys[row] = (byte) modifierRowMask(row);
+            keys[row] = (byte) modifierRowMask(client, row);
         }
         client.sendReply(QueryKeymapReply.builder()
                 .sequenceNumber(client.sequenceNumber())
@@ -208,8 +208,8 @@ public final class InputHandlers {
                 .build());
     }
 
-    private int modifierRowMask(int row) {
-        return (server.input().modifierState() & (1 << row)) != 0 ? 0xFF : 0;
+    private int modifierRowMask(ClientConnection client, int row) {
+        return (server.inputFor(client).modifierState() & (1 << row)) != 0 ? 0xFF : 0;
     }
 
     // ------------------------------------------------------------------
@@ -225,23 +225,23 @@ public final class InputHandlers {
         if (grabStatus(client, window) != GRAB_SUCCESS) {
             return;
         }
-        server.input().setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
+        server.inputFor(client).setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
                 Short.toUnsignedInt(r.getEventMask()), false));
     }
 
     public void ungrabPointer(ClientConnection client, UngrabPointer r) {
-        InputState.Grab grab = server.input().pointerGrab();
+        InputState.Grab grab = server.inputFor(client).pointerGrab();
         if (grab != null && grab.client() == client) {
-            server.input().setPointerGrab(null);
+            server.inputFor(client).setPointerGrab(null);
         }
     }
 
     public void changeActivePointerGrab(ClientConnection client, ChangeActivePointerGrab r) {
-        InputState.Grab grab = server.input().pointerGrab();
+        InputState.Grab grab = server.inputFor(client).pointerGrab();
         if (grab == null || grab.client() != client) {
             return;
         }
-        server.input().setPointerGrab(new InputState.Grab(grab.client(), grab.window(),
+        server.inputFor(client).setPointerGrab(new InputState.Grab(grab.client(), grab.window(),
                 grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false));
     }
 
@@ -276,14 +276,14 @@ public final class InputHandlers {
         if (status != GRAB_SUCCESS) {
             return;
         }
-        server.input().setKeyboardGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
+        server.inputFor(client).setKeyboardGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
                 EventMasks.KEYBOARD_GRAB, true));
     }
 
     public void ungrabKeyboard(ClientConnection client, UngrabKeyboard r) {
-        InputState.Grab grab = server.input().keyboardGrab();
+        InputState.Grab grab = server.inputFor(client).keyboardGrab();
         if (grab != null && grab.client() == client) {
-            server.input().setKeyboardGrab(null);
+            server.inputFor(client).setKeyboardGrab(null);
         }
     }
 
@@ -317,11 +317,11 @@ public final class InputHandlers {
         if (!window.isViewable()) {
             return GRAB_NOT_VIEWABLE;
         }
-        InputState.Grab pointer = server.input().pointerGrab();
+        InputState.Grab pointer = server.inputFor(client).pointerGrab();
         if (pointer != null && pointer.client() != client) {
             return GRAB_ALREADY_GRABBED;
         }
-        InputState.Grab keyboard = server.input().keyboardGrab();
+        InputState.Grab keyboard = server.inputFor(client).keyboardGrab();
         if (keyboard != null && keyboard.client() != client) {
             return GRAB_ALREADY_GRABBED;
         }
