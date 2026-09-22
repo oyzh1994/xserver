@@ -51,6 +51,11 @@ public final class InputState implements DisplayBackend.InputSink {
     private int modifiers;
     private int latched;
 
+    /** Focus revert modes, numbered as {@code SetInputFocus} numbers them. */
+    public static final int REVERT_TO_NONE = 0;
+    public static final int REVERT_TO_POINTER_ROOT = 1;
+    public static final int REVERT_TO_PARENT = 2;
+
     private XWindow inputFocus;
     private int focusRevertTo = 1;   // RevertToPointerRoot
     private boolean focusSet;
@@ -510,8 +515,43 @@ public final class InputState implements DisplayBackend.InputSink {
             deliverToGrab(grab, eventMask, factory);
             return;
         }
-        XWindow target = inputFocus == null ? server.rootWindow() : inputFocus;
-        server.events().deliverPropagating(target, eventMask, pointerX, pointerY, factory);
+        server.events().deliverPropagating(focusWindow(), eventMask, pointerX, pointerY, factory);
+    }
+
+    /**
+     * The window key events are reported against.
+     *
+     * <p>A focus of the root window means {@code PointerRoot}: the focus follows the pointer, so the
+     * keys belong to the window the pointer is in. That is the state a toolkit leaves behind when it
+     * hands the focus back to the desktop, and without it every keystroke is reported against the
+     * root - which no client owns - so the keys are dropped and text fields stop accepting input
+     * while everything driven by the pointer keeps working.
+     */
+    XWindow focusWindow() {
+        if (inputFocus == null || inputFocus.isRoot()) {
+            return pointerWindow == null ? server.rootWindow() : pointerWindow;
+        }
+        return inputFocus;
+    }
+
+    /**
+     * Reverts the input focus when the focused window is destroyed.
+     *
+     * <p>X11 reverts the focus the way the last {@code SetInputFocus} asked for - to the parent, to
+     * PointerRoot or to nothing - and clients rely on it: a toolkit moves the focus to a dialog when
+     * it opens one and lets the dialog be destroyed rather than putting the focus back itself. A
+     * focus left on a window that no longer exists swallows every keystroke it was meant to deliver.
+     */
+    public void forgetFocusWindow(XWindow window) {
+        if (inputFocus != window) {
+            return;
+        }
+        XWindow reverted = focusRevertTo == REVERT_TO_PARENT ? window.parent() : null;
+        inputFocus = reverted == null || reverted.isDestroyed() ? server.rootWindow() : reverted;
+        if (log.isDebugEnabled()) {
+            log.debug("focus reverted to 0x{}: 0x{} was destroyed", Integer.toHexString(
+                    inputFocus.id()), Integer.toHexString(window.id()));
+        }
     }
 
     /** Delivers straight to a grabbing client's window, bypassing normal window selection. */

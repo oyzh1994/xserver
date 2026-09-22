@@ -339,10 +339,12 @@ public final class WindowHandlers {
         if (parent != null) {
             parent.removeChild(window);
         }
-        // A window that is gone cannot be the window a grab is held on: X11 releases the grab with
-        // the window, and a client that grabs for a dialog and destroys the dialog instead of
-        // ungrabbing depends on it.
+        // A window that is gone cannot be the window a grab is held on, nor the window that has the
+        // input focus: X11 releases the one and reverts the other with the window, and a client that
+        // grabs for a dialog or focuses one and then destroys it instead of putting things back
+        // depends on both.
         server.input().forgetGrabWindow(window);
+        server.input().forgetFocusWindow(window);
         server.events().deliverToWindow(window, EventMasks.STRUCTURE_NOTIFY,
                 (recipient, w, child, x, y) -> DestroyNotifyEvent.builder()
                         .firstEventOffset((byte) 0)
