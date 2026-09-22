@@ -67,9 +67,13 @@ class JavaFxBackendTest {
      *
      * <p>On macOS {@link Cursor#NONE} is a process-wide {@code [NSCursor hide]}, undone only when the
      * window's cursor changes away from NONE - so a window that hides the pointer without a way back
-     * takes it off the desktop and every other application. The pointer is only the server's while
-     * it is over the window and the window is the active one; anywhere else the platform's arrow
-     * stays, which is what this pins down.
+     * takes it off the desktop and every other application with it. The pointer is only the server's
+     * while it is over the window and the window is the active one; anywhere else - outside the
+     * window, or with another application in front - the platform's arrow stays.
+     *
+     * <p>An image cursor would sidestep the global hide and does not work on this platform: an
+     * opaque red 32x32 cursor was measured drawing the standard arrow over the window, so the choice
+     * here is not a matter of taste.
      */
     @Test
     void hostCursorHidesThePlatformPointerOnlyOverAnActiveWindow() {
@@ -93,8 +97,7 @@ class JavaFxBackendTest {
      * pointer to move.
      */
     private static void assertWindowLeavesThePointerAlone(JavaFxBackend backend) throws Exception {
-        Cursor cursor = onFxThread(backend::windowCursor);
-        assertSame(Cursor.DEFAULT, cursor,
+        assertSame(Cursor.DEFAULT, onFxThread(backend::windowCursor),
                 "a freshly opened window must not hide the platform pointer");
     }
 

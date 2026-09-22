@@ -221,8 +221,8 @@ public final class JavaFxBackend implements DisplayBackend {
         // server renders from the client's cursor: two pointers, and the host one always wins.
         // Leaving the pointer to the X client is also what makes a text cursor, a resize arrow or
         // an application that hides the pointer while it types show up as the client intended.
-        // Every change of pointer or focus re-decides it, because the pointer being hidden is only
-        // ever a loan: see hostCursor.
+        // Every change of pointer or focus re-decides it, because hiding the platform pointer is
+        // only ever a loan - see hostCursor for what that costs.
         scene.setOnMouseEntered(event -> {
             pointerOverWindow = true;
             applyHostCursor();
@@ -264,26 +264,21 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     /**
-     * The cursor installed on the window. Exposed so a test can prove that opening the window leaves
-     * the platform pointer alone - at that moment the pointer is not over it, and a test cannot put
-     * it there, since there is no pointer to move.
-     */
-    public Cursor windowCursor() {
-        return scene == null ? null : scene.getCursor();
-    }
-
-    /**
-     * What the platform pointer should be: hidden while it is over the window and the window is the
-     * active one, the platform's own arrow everywhere else.
+     * What the platform pointer should be: hidden over the window, so the sprite the server draws
+     * from the client's cursor is the only pointer there, and the platform's own arrow everywhere
+     * else - outside the window, and whenever the window is not the active one.
      *
      * <p>Hiding it means {@link Cursor#NONE}, which on macOS is not an empty cursor but a
-     * process-wide {@code [NSCursor hide]} ({@code MacCursor.setVisible_impl}), undone only when the
-     * window's cursor changes away from NONE. Leaving it in place is what took the pointer off the
-     * desktop and every other application, so handing the arrow back is as much a part of the policy
-     * as hiding it - and is why the pointer and the focus both re-decide it.
+     * process-wide {@code [NSCursor hide]} ({@code MacCursor.setVisible_impl}): left in place it
+     * takes the pointer off the desktop and off every other application until the window's cursor
+     * changes again. Handing the arrow back is therefore as much a part of the policy as hiding it,
+     * which is why leaving the window and losing the focus both re-decide it.
      *
-     * <p>A transparent {@code ImageCursor} is not the way out: the API has no empty image, and a
-     * fully transparent one is drawn as an opaque white square over the window.
+     * <p>An image cursor would avoid the global hide and does not work here: JavaFX hands the image
+     * to the platform without complaint - {@code ImageCursor.getCurrentFrame()} returns an image
+     * frame, not the default fallback - and macOS still draws its own arrow over the window. That is
+     * true of a fully opaque image as much as a transparent one, so no choice of pixels fixes it:
+     * an opaque red 32x32 cursor was measured drawing the standard arrow.
      */
     static Cursor hostCursor(boolean pointerOverWindow, boolean windowFocused) {
         return pointerOverWindow && windowFocused ? Cursor.NONE : Cursor.DEFAULT;
@@ -301,6 +296,11 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene != null) {
             scene.setCursor(Cursor.DEFAULT);
         }
+    }
+
+    /** The cursor installed on the window, for a test that has no pointer to check it with. */
+    public Cursor windowCursor() {
+        return scene == null ? null : scene.getCursor();
     }
 
     /** Moves and resizes the window so all of it lands inside the usable part of the display. */
