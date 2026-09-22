@@ -546,6 +546,10 @@ public final class WindowHandlers {
         // A window that is no longer on screen cannot be holding the pointer's implicit grab: pinning
         // events to it would leave every client without input until another button press.
         server.inputFor(window.screen()).forgetGrabWindow(window);
+        // A window that goes away under the pointer takes the pointer out of itself and puts it in
+        // whatever was underneath, so the client has to be told rather than left reporting events
+        // against a window that no longer exists.
+        server.inputFor(window.screen()).refreshPointerWindow();
         repaintUnder(before, window);
         if (!notify) {
             return;

@@ -696,16 +696,16 @@ public final class JavaFxBackend implements DisplayBackend {
     // ------------------------------------------------------------------
 
     private void pointerMoved(MouseEvent event) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = screenX(event.getX());
+        int y = screenY(event.getY());
         pointerX = x;
         pointerY = y;
         input.pointerMoved(x, y);
     }
 
     private void mouseButton(MouseEvent event, boolean pressed) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = screenX(event.getX());
+        int y = screenY(event.getY());
         pointerX = x;
         pointerY = y;
         int button = xButton(event.getButton());
@@ -733,8 +733,8 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     private void scrolled(ScrollEvent event) {
-        int x = clamp(event.getX(), screenWidth);
-        int y = clamp(event.getY(), screenHeight);
+        int x = screenX(event.getX());
+        int y = screenY(event.getY());
         pointerX = x;
         pointerY = y;
         // X has no notion of a partial wheel: every notch is a press and release of 4/5, or of 6/7
@@ -758,6 +758,29 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         input.keyChanged(keycode, pressed, pointerX, pointerY);
+    }
+
+    /**
+     * Turns a coordinate in the window into one on the screen.
+     *
+     * <p>The window shows a sub-rectangle of the screen - the part the client's windows occupy - so
+     * the top left of the scene is the top left of that rectangle, not of the screen. Without the
+     * offset every pointer position is reported as far off as that corner is from the origin, which
+     * is nothing when the client's window reaches the origin and twenty pixels or more when it does
+     * not: a menu then stops recognising the pointer near its edges and closes as soon as the
+     * pointer is moved, because the position the client is told about has left the menu even though
+     * the pointer has not.
+     */
+    static int screenCoordinate(double sceneCoordinate, int viewportOrigin, int screenSize) {
+        return clamp(viewportOrigin + sceneCoordinate, screenSize);
+    }
+
+    private int screenX(double sceneX) {
+        return screenCoordinate(sceneX, viewport.x, screenWidth);
+    }
+
+    private int screenY(double sceneY) {
+        return screenCoordinate(sceneY, viewport.y, screenHeight);
     }
 
     /**

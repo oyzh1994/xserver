@@ -165,14 +165,49 @@ public final class RawXClient implements AutoCloseable {
 
     /** Moves the pointer through XTEST, which is how a test plays the part of the user. */
     public void fakeMotion(int opcode, int x, int y) throws IOException {
+        fakeInput(opcode, 6, 0, x, y);               // MotionNotify, absolute
+    }
+
+    /** Presses or releases a button through XTEST, at wherever the pointer already is. */
+    public void fakeButton(int opcode, int button, boolean pressed) throws IOException {
+        fakeInput(opcode, pressed ? 4 : 5, button, 0, 0);
+    }
+
+    private void fakeInput(int opcode, int type, int detail, int x, int y) throws IOException {
         byte[] request = new byte[36];
         request[0] = (byte) opcode;
         request[1] = 2;                             // X_XTestFakeInput
         request[2] = 9;
-        request[4] = 6;                             // MotionNotify
-        request[5] = 0;                             // absolute
+        request[4] = (byte) type;
+        request[5] = (byte) detail;
         writeShort(request, 24, x);
         writeShort(request, 26, y);
+        send(request);
+    }
+
+    /**
+     * Grabs the pointer, as a menu does while it is open.
+     *
+     * @param ownerEvents true when the client wants the crossings of its own windows rather than
+     *     every event reported against the grab window
+     */
+    public int grabPointer(int window, boolean ownerEvents, int eventMask) throws IOException {
+        byte[] request = new byte[24];
+        request[0] = 26;                            // GrabPointer
+        request[1] = (byte) (ownerEvents ? 1 : 0);
+        request[2] = 6;
+        writeInt(request, 4, window);
+        writeShort(request, 8, eventMask);
+        request[10] = 1;                            // pointer mode: Async
+        request[11] = 1;                            // keyboard mode: Async
+        send(request);
+        return readReply()[1] & 0xFF;               // the grab status
+    }
+
+    public void ungrabPointer() throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 27;                            // UngrabPointer
+        request[2] = 2;
         send(request);
     }
 

@@ -138,6 +138,28 @@ class JavaFxBackendTest {
         return result.get();
     }
 
+    /**
+     * The window shows a sub-rectangle of the screen, so a point in the window is not a point on the
+     * screen: the difference is the corner the rectangle starts at. Ignoring it reports every click
+     * as far above and left of where it happened as that corner is from the origin - twenty pixels
+     * for a client whose window sits at y=20 - and a menu whose items are thirty pixels tall then
+     * closes because the position it is told about has left the menu while the pointer has not.
+     *
+     * <p>No window is needed for this: the conversion is arithmetic, and it is the arithmetic the
+     * Swing backend has always done and this one did not.
+     */
+    @Test
+    void aPointInTheWindowIsOffsetByTheCornerOfTheRectangleItShows() {
+        assertEquals(120, JavaFxBackend.screenCoordinate(100, 20, 800),
+                "a point is measured from where the rectangle starts");
+        assertEquals(100, JavaFxBackend.screenCoordinate(100, 0, 800),
+                "a rectangle at the origin changes nothing");
+        assertEquals(799, JavaFxBackend.screenCoordinate(900, 0, 800),
+                "a drag can leave the screen, and is clamped back onto it");
+        assertEquals(799, JavaFxBackend.screenCoordinate(790, 20, 800),
+                "the offset is applied before the clamp, as the Swing backend has always done");
+    }
+
     /** The server only calls back into this when the pointer moves, which the test never does. */
     private static final class NoopInput implements DisplayBackend.InputSink {
         @Override

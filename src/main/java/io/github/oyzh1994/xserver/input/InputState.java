@@ -11,6 +11,7 @@ import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.event.EventDispatcher;
 import io.github.oyzh1994.xserver.event.EventDispatcher.EventFactory;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.extension.ShapeExtension;
@@ -269,10 +270,14 @@ public final class InputState implements DisplayBackend.InputSink {
                 // Which window a click is *reported against* is otherwise invisible from the server
                 // side, and it is the first thing to check when a client behaves as if it was never
                 // clicked: while a button is down that is the window the press landed on, not the one
-                // under the pointer.
-                XWindow target = grabbedWindow();
-                log.debug("button {} {} at ({},{}) -> {}", button, pressed ? "down" : "up", x, y,
-                        target == null ? "no window" : "0x" + Integer.toHexString(target.id()));
+                // under the pointer, and an active grab overrides both.
+                XWindow target = eventTarget();
+                log.debug("button {} {} at ({},{}) -> {}{}", button, pressed ? "down" : "up", x, y,
+                        target == null ? "no window" : "0x" + Integer.toHexString(target.id()),
+                        pointerGrab != null
+                                ? " (grab on 0x" + Integer.toHexString(pointerGrab.window().id())
+                                        + ", ownerEvents=" + pointerGrab.ownerEvents() + ")"
+                                : "");
             }
             deliverButton(button, pressed, mask);
         } finally {
@@ -316,14 +321,87 @@ public final class InputState implements DisplayBackend.InputSink {
         if (window != pointerWindow) {
             XWindow previous = pointerWindow;
             pointerWindow = window;
-            if (pointerGrab == null) {
+            if (moved) {
+                // Only a pointer that really moved reports a crossing. A button or key event
+                // recomputes the window under the pointer too - that is how a window that appeared
+                // underneath is noticed - and reporting the crossing there would tell a client its
+                // pointer had moved when it had not, in the middle of handling a button: a menu
+                // that is opening takes that for its popup being dismissed. The move that follows
+                // reports it instead.
                 server.events().deliverCrossing(previous, window, pointerX, pointerY, pointerX,
-                        pointerY);
+                        pointerY, confinedToGrab());
             }
         }
         if (generateMotion && moved) {
             deliverMotion();
         }
+    }
+
+    /**
+     * The crossing events for a window that appeared, moved, was raised or went away under a
+     * stationary pointer.
+     *
+     * <p>The pointer has not moved, but the window it is in has, and a client only ever learns
+     * which window the pointer is in from crossing events. A window that goes away under the
+     * pointer is the case this exists for: without it the pointer stays pinned to a window that no
+     * longer exists, and the next click is reported against nothing at all.
+     *
+     * <p>A window that <em>appears</em> under the pointer is deliberately not reported here. Its
+     * client is usually mid-gesture - a menu popping up as the pointer presses on the item that
+     * opens it - and the crossing that arrives out of the middle of that gesture is read as the
+     * pointer having left the window the gesture belongs to, which tears the menu down as fast as
+     * it went up. The change is picked up by the move that follows instead, which is where a
+     * client expects to learn where its pointer is.
+     */
+    public void refreshPointerWindow() {
+        if (!pointerKnown) {
+            // Nothing has said where the pointer is yet, and the origin is not a position that a
+            // window appeared under.
+            return;
+        }
+        XWindow window = windowAtPointer();
+        if (window == pointerWindow) {
+            return;
+        }
+        XWindow previous = pointerWindow;
+        pointerWindow = window;
+        if (log.isDebugEnabled()) {
+            log.debug("the window under the pointer is now 0x{}: the tree changed, not the pointer",
+                    window == null ? "none" : Integer.toHexString(window.id()));
+        }
+        server.events().deliverCrossing(previous, window, pointerX, pointerY, pointerX, pointerY,
+                confinedToGrab());
+    }
+
+    /**
+     * The window crossing events are confined to while the pointer is grabbed, or null when they go
+     * everywhere.
+     *
+     * <p>A grab that reports events to itself takes the pointer over: only the grab window and what
+     * is inside it hear where the pointer went. That covers the implicit grab a press starts as
+     * well, which is what keeps a window that merely appears under a dragged pointer from behaving
+     * as though the pointer entered it - and it is why a popup that a menu maps under the pointer
+     * while the button is still down is not entered until the button comes up.
+     *
+     * <p>A grab with owner_events confines nothing: the grabbing client goes on receiving the
+     * crossings of its own windows, and confining those would leave a menu that grabbed the pointer
+     * on its main window never learning that the pointer reached one of the menu's own popups,
+     * which is where it takes its highlight from.
+     */
+    private XWindow confinedToGrab() {
+        if (implicitGrabWindow != null) {
+            // A button is down: the press pinned the pointer to the window it landed on, and that is
+            // where the pointer stays until the button comes up. A menu whose popup is mapped under
+            // the pointer by the press that opened it is the case this is about - the reference
+            // server reports the leave from the window underneath and withholds the enter until the
+            // button is released, and a toolkit that is told the popup was entered in the middle of
+            // the gesture tears the menu down.
+            return implicitGrabWindow;
+        }
+        if (pointerGrab != null) {
+            return pointerGrab.ownerEvents() ? null : pointerGrab.window();
+        }
+        return null;
     }
 
     private void deliverMotion() {
@@ -332,16 +410,65 @@ public final class InputState implements DisplayBackend.InputSink {
             deliverToGrab(grab, EventMasks.POINTER_MOTION, motionFactory());
             return;
         }
+        if (grab != null && deliverToGrabbingClient(grab, EventMasks.POINTER_MOTION,
+                motionFactory())) {
+            return;
+        }
         server.events().deliverPropagating(grabbedWindow(), EventMasks.POINTER_MOTION, pointerX,
                 pointerY, motionFactory());
     }
 
     /**
+     * Delivers an event for a grab that reports the client's own windows, and says whether it was
+     * one of them: a motion, click or key that lands anywhere else - on the root, on another
+     * client's window - belongs to the grabbing client all the same, and is reported against the
+     * window it holds the grab on.
+     *
+     * <p>A menu with the pointer grabbed depends on it. Without this the motion that takes the
+     * pointer off the menu goes nowhere at all, so the menu hears that the pointer left and then
+     * nothing more, and a click outside it - which is how it learns to close - is never delivered
+     * either.
+     */
+    private boolean deliverToGrabbingClient(Grab grab, int maskBit, EventFactory factory) {
+        XWindow window = grabbedWindow();
+        if (window != null && window.owner() == grab.client()) {
+            return false;                       // the client's own window: the normal path applies
+        }
+        if ((grab.eventMask() & maskBit) != 0) {
+            deliverToGrab(grab, maskBit, factory);
+        }
+        return true;
+    }
+
+    /**
      * The window pointer events are reported against: the one a button press pinned the pointer to
      * while the implicit grab lasts, otherwise the one under the pointer.
+     *
+     * <p>An explicit grab that reports events to the client's own windows supersedes the implicit
+     * one. A popup that appears while a button is still held is exactly that case: the press pins
+     * the pointer to the window underneath, the client then grabs the pointer for the popup it just
+     * created, and the release has to be reported against the popup - reporting it against the
+     * window the press landed on is a release the menu reads as a click outside itself, which
+     * dismisses it.
      */
     private XWindow grabbedWindow() {
+        if (pointerGrab != null) {
+            return pointerWindow;
+        }
         return implicitGrabWindow != null ? implicitGrabWindow : pointerWindow;
+    }
+
+    /**
+     * The window a pointer event is reported against right now: the active grab's window when the
+     * grab reports events as though the client had selected them itself, otherwise the window the
+     * pointer is pinned to.
+     */
+    private XWindow eventTarget() {
+        Grab grab = pointerGrab;
+        if (grab != null && !grab.ownerEvents()) {
+            return grab.window();
+        }
+        return grabbedWindow();
     }
 
     /**
@@ -446,6 +573,10 @@ public final class InputState implements DisplayBackend.InputSink {
             updateImplicitGrab(pressed);
             return;
         }
+        if (grab != null && deliverToGrabbingClient(grab, eventMask, factory)) {
+            updateImplicitGrab(pressed);
+            return;
+        }
         server.events().deliverPropagating(grabbedWindow(), eventMask, pointerX, pointerY, factory);
         updateImplicitGrab(pressed);
     }
@@ -539,6 +670,14 @@ public final class InputState implements DisplayBackend.InputSink {
             deliverToGrab(grab, eventMask, factory);
             return;
         }
+        if (grab != null) {
+            XWindow focus = focusWindow();
+            if (focus != null && focus.owner() != grab.client()
+                    && (grab.eventMask() & eventMask) != 0) {
+                deliverToGrab(grab, eventMask, factory);
+                return;
+            }
+        }
         server.events().deliverPropagating(focusWindow(), eventMask, pointerX, pointerY, factory);
     }
 
@@ -551,7 +690,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * root - which no client owns - so the keys are dropped and text fields stop accepting input
      * while everything driven by the pointer keeps working.
      */
-    XWindow focusWindow() {
+    public XWindow focusWindow() {
         if (inputFocus == null || inputFocus.isRoot()) {
             return pointerWindow == null ? screen.root() : pointerWindow;
         }

@@ -105,11 +105,12 @@ actually produced and pads what needs padding, in one place.
 Core protocol: windows (create, map, configure, restack, reparent, circulate), the full drawing set
 (points, lines, segments, rectangles, arcs, polygons, both text requests, `PutImage`/`GetImage`,
 `CopyArea`/`CopyPlane`, `ClearArea`), GCs, pixmaps, fonts, cursors, colormaps, atoms, properties,
-selections, keyboard and pointer mapping, focus, active and passive grabs, and `SendEvent`.
+selections, keyboard and pointer mapping, focus, grabs (active ones, and the implicit grab a press
+starts; a passive grab is recorded but never matched), and `SendEvent`.
 
 Events: structure notifications, exposes, property and colormap notifications, crossing events with
-the full detail lattice, pointer and keyboard events with propagation and `doNotPropagateMask`, and
-`ClientMessage` in both directions.
+the full detail lattice and the grab modes, pointer and keyboard events with propagation and
+`doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
 operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
@@ -195,6 +196,19 @@ order (only the glyphset-switch item is always most-significant-byte first), and
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
 - **`GetMotionEvents` returns nothing** and pointer acceleration is accepted and ignored.
+- **Passive grabs are recorded but never matched.** `GrabButton` and `GrabKey` are stored and listed
+  by nobody: a client that arms one (a window manager, a toolkit's popup shortcut) never hears about
+  the button or key it asked for. Active grabs, including the implicit grab a press starts, are
+  honoured - see the crossing-event rules in `docs/design-notes.md`.
+- **`SetInputFocus` is silent.** No `FocusIn` or `FocusOut` is ever generated, so a client that waits
+  to be told it got the focus (a dialog, a menu opened by keyboard) is not told. Keyboard events are
+  delivered to the focused window, so typing works; the notification does not.
+- **A window that appears under a stationary pointer is entered by the move that follows**, not by
+  the map. Xorg reports it at the map; doing so here tears EasyShell's context menus down as they are
+  mapped. See the design notes for the measurement.
+- **A menu that is left and re-entered is dismissed** by EasyShell, where it stays up against a real
+  X server. The crossings involved match the reference server event for event, so the cause is not in
+  them; the design notes record what has been ruled out.
 
 ## Tests
 

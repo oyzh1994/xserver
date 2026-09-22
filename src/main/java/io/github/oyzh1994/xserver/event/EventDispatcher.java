@@ -32,9 +32,6 @@ public final class EventDispatcher {
     public static final byte NOTIFY_NONLINEAR = 3;
     public static final byte NOTIFY_NONLINEAR_VIRTUAL = 4;
 
-    /** Normal crossing mode; grabs use the Grab and Ungrab detail modes. */
-    public static final byte NOTIFY_MODE_NORMAL = 0;
-
     private final XServer server;
 
     public EventDispatcher(XServer server) {
@@ -168,6 +165,30 @@ public final class EventDispatcher {
      */
     public void deliverCrossing(XWindow previous, XWindow current, int screenX, int screenY,
                                 int rootX, int rootY) {
+        deliverCrossing(previous, current, screenX, screenY, rootX, rootY, null);
+    }
+
+    /**
+     * Crossing events for a move from {@code previous} to {@code current}.
+     *
+     * @param inside when non-null, only this window and its descendants are told. While a pointer
+     *     grab is active, only that subtree is where the pointer "is" as far as any client is
+     *     concerned: a menu that grabs the pointer must not have the window underneath it light up,
+     *     and - the reason this matters - the window the pointer really left still has to hear about
+     *     it, or a toolkit that tracks the pointer by crossing events never learns which of its own
+     *     windows the pointer moved to.
+     */
+    public void deliverCrossing(XWindow previous, XWindow current, int screenX, int screenY,
+                                int rootX, int rootY, XWindow inside) {
+        deliverCrossing(previous, current, screenX, screenY, rootX, rootY, inside, null);
+    }
+
+    /**
+     * @param detailGrab the window a grab is held on, whose crossings with the outside are reported
+     *     as moves inside the grabbing client's own tree; null when no such grab is held
+     */
+    public void deliverCrossing(XWindow previous, XWindow current, int screenX, int screenY,
+                                int rootX, int rootY, XWindow inside, XWindow detailGrab) {
         if (previous == current) {
             return;
         }
@@ -180,31 +201,55 @@ public final class EventDispatcher {
                 : server.inputFor(crossed.screen()).pointerState();
 
         if (previous != null) {
-            deliverCrossingWindow(previous, false, crossingDetail(previous, current), time,
-                    screenX, screenY, rootX, rootY, state);
+            deliverCrossingWindow(previous, false, crossingDetail(previous, current, detailGrab), time,
+                    screenX, screenY, rootX, rootY, state, inside);
             if (common != previous) {
                 for (XWindow w = previous.parent(); w != null && w != common; w = w.parent()) {
                     deliverCrossingWindow(w, false, NOTIFY_VIRTUAL, time, screenX, screenY,
-                            rootX, rootY, state);
+                            rootX, rootY, state, inside);
                 }
             }
         }
         if (current != null) {
-            deliverCrossingWindow(current, true, crossingDetail(current, previous), time,
-                    screenX, screenY, rootX, rootY, state);
+            deliverCrossingWindow(current, true, crossingDetail(current, previous, detailGrab), time,
+                    screenX, screenY, rootX, rootY, state, inside);
             if (common != current) {
                 for (XWindow w = current.parent(); w != null && w != common; w = w.parent()) {
                     deliverCrossingWindow(w, true, NOTIFY_VIRTUAL, time, screenX, screenY,
-                            rootX, rootY, state);
+                            rootX, rootY, state, inside);
                 }
             }
         }
     }
 
     private void deliverCrossingWindow(XWindow window, boolean enter, byte detail, int time,
-                                       int screenX, int screenY, int rootX, int rootY, int state) {
+                                       int screenX, int screenY, int rootX, int rootY, int state,
+                                       XWindow inside) {
+        if (inside != null && inside != window && !inside.isAncestorOf(window)) {
+            // A grab is held on another window: this one is outside the tree the pointer belongs to
+            // for as long as the grab lasts, so it is told nothing.
+            if (log.isDebugEnabled()) {
+                log.debug("{}Notify for 0x{} withheld: the grab on 0x{} does not cover it",
+                        enter ? "Enter" : "Leave", Integer.toHexString(window.id()),
+                        Integer.toHexString(inside.id()));
+            }
+            return;
+        }
+        if (log.isDebugEnabled()) {
+            // Which window a crossing is reported against, and whether a grab produced it, is what
+            // tells a client where its pointer is: the events are indistinguishable in the log
+            // otherwise, and this is the pair a menu's submenu lives or dies by.
+            log.debug("{}Notify on 0x{} detail={}", enter ? "Enter" : "Leave",
+                    Integer.toHexString(window.id()), detail);
+        }
         int maskBit = enter ? EventMasks.ENTER_WINDOW : EventMasks.LEAVE_WINDOW;
-        boolean focused = server.inputFor(window.screen()).inputFocus() == window;
+        // The focus bit of a crossing is set when the focus window is this window *or a window
+        // inside it*, not only when it is this one exactly, and the focus that counts is the one
+        // keys actually go to - so a focus of PointerRoot means the window under the pointer. Both
+        // are what a real server reports, and a toolkit reads the bit to decide whether the window
+        // it is tracking still has the focus.
+        XWindow focus = server.inputFor(window.screen()).inputFocus();
+        boolean focused = focus == null || focus.isRoot() || window.isAncestorOf(focus);
         deliverPropagating(window, maskBit, screenX, screenY, (client, w, child, x, y) -> {
             short sequence = client.sequenceNumber();
             int childId = child == null ? 0 : child.id();
@@ -223,7 +268,7 @@ public final class EventDispatcher {
                         .eventX((short) x)
                         .eventY((short) y)
                         .state((short) state)
-                        .mode(NOTIFY_MODE_NORMAL)
+                        .mode((byte) 0)
                         .sameScreenFocus((byte) (0x01 | (focused ? 0x02 : 0)))
                         .build();
             }
@@ -241,12 +286,28 @@ public final class EventDispatcher {
                     .eventX((short) x)
                     .eventY((short) y)
                     .state((short) state)
-                    .mode(NOTIFY_MODE_NORMAL)
+                    .mode((byte) 0)
                     .sameScreenFocus((byte) (0x01 | (focused ? 0x02 : 0)))
                     .build();
         });
     }
 
+    /**
+     * How the pointer moved between two windows, for the {@code detail} of a crossing.
+     *
+     * <p>While a grab that reports the client's own windows is held, a crossing between the grab
+     * window and a window outside it is reported as a move inside the grabbing client's tree -
+     * {@code NotifyAncestor} - rather than {@code NotifyNonlinear}, which is what the reference
+     * server was measured sending for the same gesture.
+     */
+    private byte crossingDetail(XWindow window, XWindow other, XWindow inside) {
+        if (inside != null && (other == inside || window == inside)) {
+            return NOTIFY_ANCESTOR;
+        }
+        return crossingDetail(window, other);
+    }
+
+    /** How the pointer moved between two windows, for the {@code detail} of a crossing. */
     private byte crossingDetail(XWindow window, XWindow other) {
         if (other == null) {
             return NOTIFY_NONLINEAR;

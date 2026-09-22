@@ -56,6 +56,9 @@ import java.util.Set;
  */
 public final class InputHandlers {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(InputHandlers.class);
+
     /** Grab status values reported to clients. */
     private static final byte GRAB_SUCCESS = 0;
     private static final byte GRAB_ALREADY_GRABBED = 1;
@@ -218,11 +221,22 @@ public final class InputHandlers {
 
     public void grabPointer(ClientConnection client, GrabPointer r) {
         XWindow window = window(client, r.getGrabWindow());
+        byte status = grabStatus(client, window);
         client.sendReply(GrabPointerReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .status(grabStatus(client, window))
+                .status(status)
                 .build());
-        if (grabStatus(client, window) != GRAB_SUCCESS) {
+        if (log.isDebugEnabled()) {
+            // A grab decides which window every later button and motion event is reported against,
+            // which is otherwise invisible from the client's side: a menu that ignores clicks looks
+            // exactly like a server that delivered them somewhere else.
+            log.debug("grab pointer on 0x{} ownerEvents={} mask=0x{} confining={} -> {}",
+                    Integer.toHexString(window.id()), r.isOwnerEvents(),
+                    Integer.toHexString(Short.toUnsignedInt(r.getEventMask())),
+                    r.getConfineTo() == 0 ? "no" : "0x" + Integer.toHexString(r.getConfineTo()),
+                    status == GRAB_SUCCESS ? "granted" : "refused (" + status + ")");
+        }
+        if (status != GRAB_SUCCESS) {
             return;
         }
         server.inputFor(client).setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
@@ -232,6 +246,9 @@ public final class InputHandlers {
     public void ungrabPointer(ClientConnection client, UngrabPointer r) {
         InputState.Grab grab = server.inputFor(client).pointerGrab();
         if (grab != null && grab.client() == client) {
+            if (log.isDebugEnabled()) {
+                log.debug("ungrab pointer held on 0x{}", Integer.toHexString(grab.window().id()));
+            }
             server.inputFor(client).setPointerGrab(null);
         }
     }
