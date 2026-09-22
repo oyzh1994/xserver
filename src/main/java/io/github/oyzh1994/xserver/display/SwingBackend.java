@@ -113,6 +113,18 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
+    public void setIdle(boolean idle) {
+        ScreenPanel target = panel;
+        if (target == null) {
+            return;
+        }
+        // Nothing on the screen is being drawn for anyone, so the host pointer is left to the
+        // platform instead of being blanked in favour of the pointer the server would draw.
+        runOnEdtAndWait(() -> target.setCursor(
+                idle ? Cursor.getDefaultCursor() : blankCursor()));
+    }
+
+    @Override
     public boolean isClosed() {
         return closed;
     }

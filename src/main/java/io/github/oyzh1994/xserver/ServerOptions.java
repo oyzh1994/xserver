@@ -47,6 +47,8 @@ public final class ServerOptions {
     private boolean logRequests;
     private boolean noResetOnLastClose = true;
     private int tickRate = 60;
+    /** How long clients get to close themselves after the host window is closed. */
+    private int closeGraceMillis = 2000;
 
     public static ServerOptions parse(String[] args) {
         ServerOptions options = new ServerOptions();
@@ -76,6 +78,8 @@ public final class ServerOptions {
                 case "--local" -> options.listenAll = false;
                 case "--log-requests" -> options.logRequests = true;
                 case "--tick-rate" -> options.tickRate = Integer.parseInt(next(args, ++i));
+                case "--close-grace-ms" -> options.closeGraceMillis =
+                        Integer.parseInt(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
                     i += 2;
@@ -150,6 +154,8 @@ public final class ServerOptions {
                   --local               only listen on loopback
                   --log-requests        log every request
                   --tick-rate N         screen refresh rate (default 60)
+                  --close-grace-ms N    time clients get to close themselves once the window is
+                                        closed, before the server disconnects them (default 2000)
 
                 The display is also reported through DISPLAY, so clients can be started with
                   DISPLAY=:1 xeyes
@@ -252,5 +258,10 @@ public final class ServerOptions {
 
     public int tickRate() {
         return tickRate;
+    }
+
+    /** How long a client has to close its windows itself once the host window has closed. */
+    public int closeGraceMillis() {
+        return closeGraceMillis;
     }
 }

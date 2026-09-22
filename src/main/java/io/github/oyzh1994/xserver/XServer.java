@@ -10,6 +10,7 @@ import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.display.VisualInfo;
 import io.github.oyzh1994.xserver.event.EventDispatcher;
+import io.github.oyzh1994.xserver.event.RawEvent;
 import io.github.oyzh1994.xserver.extension.Extension;
 import io.github.oyzh1994.xserver.extension.ExtensionRegistry;
 import io.github.oyzh1994.xserver.handler.AtomHandlers;
@@ -25,6 +26,7 @@ import io.github.oyzh1994.xserver.resource.ResourceTable;
 import io.github.oyzh1994.xserver.resource.XColormap;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XFont;
+import io.github.oyzh1994.xserver.resource.XProperty;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -351,10 +353,19 @@ public final class XServer {
     // Lifecycle
     // ------------------------------------------------------------------
 
+    /**
+     * Uses a backend chosen by the caller instead of the one the options name, for a test that needs
+     * a window it can close, or an embedder that drives a display of its own. Call it before
+     * {@link #start()}.
+     */
+    public void setBackend(DisplayBackend backend) {
+        this.backend = backend;
+    }
+
     public void start() throws IOException {
         running = true;
         startTime = System.currentTimeMillis();
-        backend = BackendFactory.create(options.backend());
+        backend = backend != null ? backend : BackendFactory.create(options.backend());
         backend.start(screen, options.displayNumber(), input);
         listener = new ClientListener(this);
         listener.start();
@@ -379,8 +390,20 @@ public final class XServer {
 
     private void eventLoop() {
         long frameMillis = Math.max(1, 1000 / Math.max(1, options.tickRate()));
-        while (running && backend != null && !backend.isClosed()) {
-            presentDamage();
+        while (running) {
+            if (backend == null) {
+                break;
+            }
+            if (backend.isClosed()) {
+                // The window is gone, so there is nobody left to draw for: hand the session to the
+                // clients and give them the grace period to end it themselves.
+                askClientsToClose();
+                if (System.currentTimeMillis() >= shutdownDeadline) {
+                    break;
+                }
+            } else if (!idle) {
+                presentDamage();
+            }
             try {
                 Thread.sleep(frameMillis);
             } catch (InterruptedException e) {
@@ -388,7 +411,117 @@ public final class XServer {
                 break;
             }
         }
+        stop();
     }
+
+    /**
+     * Follows the client list into and out of the idle state.
+     *
+     * <p>An idle server stops building frames: a client's windows are destroyed as it disconnects,
+     * which leaves the screen showing an empty root, and there is nothing after that to draw until
+     * something connects again. The window keeps that last frame and the platform pointer is handed
+     * back, because with no X client there is no pointer of the server's to show.
+     */
+    private void updateIdle(boolean nowIdle) {
+        if (nowIdle == idle) {
+            return;
+        }
+        idle = nowIdle;
+        if (backend != null) {
+            backend.setIdle(idle);
+        }
+        if (idle) {
+            // One last frame, without the sprite: that is what removes the pointer the server was
+            // drawing from a window it will not touch again.
+            markSpriteDamage(lastCursor);
+            lastCursor = null;
+            presentDamage();
+            log.info("no clients left: the window holds its last frame until one connects");
+        } else {
+            log.info("client connected: rendering again");
+        }
+    }
+
+    /** Asks every client to close its windows, once, and starts the clock on the grace period. */
+    private void askClientsToClose() {
+        if (shutdownDeadline != 0) {
+            return;
+        }
+        shutdownDeadline = System.currentTimeMillis() + options.closeGraceMillis();
+        for (ClientConnection client : clients) {
+            closeClientWindows(client);
+        }
+        log.info("the window is closed: asked {} client(s) to close, {} ms before they are cut off",
+                clients.size(), options.closeGraceMillis());
+    }
+
+    /**
+     * Sends {@code WM_DELETE_WINDOW} to a client's windows that asked to be told about it.
+     *
+     * <p>This is how a window manager asks an application to quit, and the only way one X client can
+     * tell another that the session is over: a toolkit repaints nothing and closes nothing unless it
+     * is told, so without this the program on the far end of a forwarded display keeps running while
+     * the display it was drawing to has gone. A window that never listed the protocol is left out -
+     * cutting its connection, which is what happens to it next, is the only notice there is.
+     */
+    private void closeClientWindows(ClientConnection client) {
+        int protocols = atoms.intern("WM_PROTOCOLS", true);
+        int deleteWindow = atoms.intern("WM_DELETE_WINDOW", true);
+        if (protocols == AtomTable.NONE || deleteWindow == AtomTable.NONE) {
+            return;
+        }
+        for (XWindow window : rootWindow.children()) {
+            if (window.owner() == client && asksToClose(window, protocols, deleteWindow)) {
+                log.debug("asking 0x{} to close", Integer.toHexString(window.id()));
+                events.send(client, deleteWindowMessage(client, window, protocols, deleteWindow));
+            }
+        }
+    }
+
+    /** True when a window lists {@code WM_DELETE_WINDOW} in its {@code WM_PROTOCOLS}. */
+    private static boolean asksToClose(XWindow window, int protocols, int deleteWindow) {
+        XProperty property = window.properties().get(protocols);
+        if (property == null || property.format() != XProperty.FORMAT_32) {
+            return false;
+        }
+        // Property data is stored in the protocol's canonical big endian order, whatever order the
+        // client that set it used.
+        byte[] data = property.data();
+        for (int offset = 0; offset + 4 <= data.length; offset += 4) {
+            int atom = ((data[offset] & 0xFF) << 24) | ((data[offset + 1] & 0xFF) << 16)
+                    | ((data[offset + 2] & 0xFF) << 8) | (data[offset + 3] & 0xFF);
+            if (atom == deleteWindow) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The {@code ClientMessage} a window manager sends to ask a window to close: the message type is
+     * {@code WM_PROTOCOLS} and its first data item is {@code WM_DELETE_WINDOW}.
+     */
+    private static RawEvent deleteWindowMessage(ClientConnection client, XWindow window, int protocols,
+                                                int deleteWindow) {
+        return RawEvent.builder(client, CLIENT_MESSAGE)
+                .byteAt(1, 32)
+                .card32(4, window.id())
+                .card32(8, protocols)
+                .card32(12, deleteWindow)
+                .build();
+    }
+
+    /** The {@code ClientMessage} event code, the one thing about it that is not WM specific. */
+    private static final int CLIENT_MESSAGE = 33;
+
+    /**
+     * How long a client gets to close itself before its connection is dropped. The countdown starts
+     * when the host window closes.
+     */
+    private volatile long shutdownDeadline;
+
+    /** True while no client is connected: the window holds its last frame and draws nothing. */
+    private volatile boolean idle;
 
     /** Flushes any framebuffer damage to the display backend, with the pointer sprite over it. */
     public void presentDamage() {
@@ -399,7 +532,9 @@ public final class XServer {
         CursorSprite cursor;
         serverLock.lock();
         try {
-            cursor = input.cursorSprite();
+            // With no client connected there is no X pointer to draw, and the frame that goes out
+            // is the one that takes the server's pointer off the window.
+            cursor = idle ? null : input.cursorSprite();
         } finally {
             serverLock.unlock();
         }
@@ -495,6 +630,7 @@ public final class XServer {
     public void registerClient(ClientConnection client) {
         clients.add(client);
         log.info("client {} connected", client.peer());
+        updateIdle(false);
     }
 
     public void removeClient(ClientConnection client) {
@@ -514,6 +650,7 @@ public final class XServer {
             releaseAllLocks();
         }
         log.info("client {} disconnected", client.peer());
+        updateIdle(clients.isEmpty());
     }
 
     /** Reserves a client index, or -1 when the server is full. */

@@ -50,6 +50,16 @@ public interface DisplayBackend {
      */
     void present(Screen screen, Rectangle damage, CursorSprite cursor);
 
+    /**
+     * Tells the window whether any client is connected.
+     *
+     * <p>With no client the server stops sending frames and the window holds the last one, and the
+     * host pointer is handed back: it was hidden in favour of the pointer the server draws from the
+     * client's cursor, and with no client there is nothing to draw in its place.
+     */
+    default void setIdle(boolean idle) {
+    }
+
     /** Tears the window down. */
     void stop();
 

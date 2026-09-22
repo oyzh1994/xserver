@@ -75,6 +75,8 @@ public final class JavaFxBackend implements DisplayBackend {
     private Scene scene;
     /** True while the platform pointer is over the window, so {@link #hostCursor} can decide. */
     private boolean pointerOverWindow;
+    /** True while no client is connected, so the window has no pointer of its own to show. */
+    private boolean idle;
     private GraphicsContext graphics;
     private WritableImage image;
     private PixelBuffer<IntBuffer> pixelBuffer;
@@ -287,7 +289,10 @@ public final class JavaFxBackend implements DisplayBackend {
     /** Applies {@link #hostCursor} to the window. Runs on the FX thread. */
     private void applyHostCursor() {
         if (scene != null && stage != null) {
-            scene.setCursor(hostCursor(pointerOverWindow, stage.isFocused()));
+            // An idle window draws no pointer of its own, so the platform's is left in place.
+            scene.setCursor(idle
+                    ? Cursor.DEFAULT
+                    : hostCursor(pointerOverWindow, stage.isFocused()));
         }
     }
 
@@ -296,6 +301,14 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene != null) {
             scene.setCursor(Cursor.DEFAULT);
         }
+    }
+
+    @Override
+    public void setIdle(boolean idle) {
+        runOnFxThreadAndWait(() -> {
+            this.idle = idle;
+            applyHostCursor();
+        });
     }
 
     /** The cursor installed on the window, for a test that has no pointer to check it with. */
