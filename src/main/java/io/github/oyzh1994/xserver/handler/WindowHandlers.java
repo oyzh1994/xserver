@@ -449,7 +449,20 @@ public final class WindowHandlers {
     public void mapWindow(XWindow window) {
         // Nothing of it showed before it was mapped, so everything it is about to cover is
         // repainted from the windows underneath and the window itself is drawn and exposed.
-        List<Rectangle> before = visibleRegionOf(window);
+        mapWindow(window, visibleRegionOf(window), true);
+    }
+
+    /**
+     * @param before the area the window showed before this call. For a window being mapped that is
+     *     nothing, and it is nothing for its children too however long they have been mapped: what
+     *     a window that has just become viewable shows is new at every depth below it.
+     * @param newlyVisible whether this map is what puts the window on screen. It has to be carried
+     *     down the subtree rather than re-read, because a descendant's own region looks unchanged
+     *     the moment the window above it is mapped - and a window that gained nothing is sent no
+     *     Expose. A toolkit maps its children before the window that holds them, so that is a
+     *     toolkit that never draws them: xclock, xeyes and xcalc come up black.
+     */
+    private void mapWindow(XWindow window, List<Rectangle> before, boolean newlyVisible) {
         window.setMapped(true);
         boolean viewable = window.isViewable();
 
@@ -492,7 +505,7 @@ public final class WindowHandlers {
             visibilityChanged(window, before, visibleRegionOf(window));
             for (XWindow child : window.children()) {
                 if (child.isMapped()) {
-                    mapWindow(child);
+                    mapWindow(child, newlyVisible ? List.of() : visibleRegionOf(child), newlyVisible);
                 }
             }
         }
