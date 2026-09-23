@@ -77,9 +77,20 @@ public final class Picture extends XResource {
     private final Screen screen;
     private final PixelStore store;
 
-    /** The drawable's origin inside {@link #store}, which is nonzero for a window. */
-    private final int originX;
-    private final int originY;
+    /**
+     * The origin as of the request being drawn.
+     *
+     * <p>A window's position in the framebuffer is not fixed: AWT creates a dialog at the origin of
+     * the screen, maps it and only then moves it where it belongs, and every client that centres a
+     * window does the same. A picture that kept the position it was created at addresses the wrong
+     * pixels for the rest of its life - and because the clip is consulted through the same origin,
+     * the writes do not land in the wrong place, they are refused altogether: a dialog that fills its
+     * background through {@code ClearArea} but never draws a word of its contents. The origin is
+     * therefore re-read per request by {@link #refreshClip()}, which is where the window's clip is
+     * renewed for the same reason.
+     */
+    private int drawableX;
+    private int drawableY;
 
     /** The window this picture draws on, or null when it draws on a pixmap. */
     private final XWindow window;
@@ -125,8 +136,8 @@ public final class Picture extends XResource {
         this.format = format;
         this.screen = screen;
         this.store = store;
-        this.originX = originX;
-        this.originY = originY;
+        this.drawableX = originX;
+        this.drawableY = originY;
         this.window = window;
     }
 
@@ -136,6 +147,15 @@ public final class Picture extends XResource {
 
     public XResource drawable() {
         return drawable;
+    }
+
+    /** The drawable's origin inside the pixel store, in screen coordinates for a window. */
+    public int originX() {
+        return drawableX;
+    }
+
+    public int originY() {
+        return drawableY;
     }
 
     public PictFormat format() {
@@ -405,16 +425,27 @@ public final class Picture extends XResource {
      * text was unaffected.
      */
     private int stored(int x, int y) {
-        int pixel = store.pixel(originX + x, originY + y);
+        int pixel = store.pixel(drawableX + x, drawableY + y);
         return format.isAlphaOnly() ? format.toArgb(pixel) : pixel;
     }
 
     /**
-     * Renews the cached window clip. Called once at the start of each drawing request, while the
-     * window tree cannot change underneath it - the server holds its lock for the whole request.
+     * Renews the cached window clip and puts the picture where its window now is. Called once at the
+     * start of each drawing request, while the window tree cannot change underneath it - the server
+     * holds its lock for the whole request.
+     *
+     * <p>A window that moved since the last request moves its picture with it: the position is read
+     * here rather than kept from the picture's creation, which is the only moment at which the two
+     * are known to agree.
      */
     public void refreshClip() {
-        windowClip = window == null ? null : window.visibleRegion();
+        if (window == null) {
+            windowClip = null;
+            return;
+        }
+        drawableX = window.absoluteX();
+        drawableY = window.absoluteY();
+        windowClip = window.visibleRegion();
     }
 
     /**
@@ -430,12 +461,12 @@ public final class Picture extends XResource {
         if (window == null) {
             return true;
         }
-        List<Rectangle> clip = windowClip;
-        if (clip == null) {
-            clip = window.visibleRegion();
-            windowClip = clip;
+        if (windowClip == null) {
+            // Never refreshed: reading through the same call a request would have made keeps the
+            // clip and the position consistent with each other.
+            refreshClip();
         }
-        return ShapeState.containsPoint(clip, originX + x, originY + y);
+        return ShapeState.containsPoint(windowClip, drawableX + x, drawableY + y);
     }
 
     private static int clamp(int value, int size) {
@@ -484,7 +515,7 @@ public final class Picture extends XResource {
         if (!isWritable(x, y)) {
             return;
         }
-        store.setPixel(originX + x, originY + y, argb);
+        store.setPixel(drawableX + x, drawableY + y, argb);
     }
 
     @Override

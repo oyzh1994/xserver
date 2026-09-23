@@ -222,10 +222,45 @@ window's own maximum size is converted back the other way.
 
 Why it is off by default: a client that ignores the resolution gets a screen twice the size and lays
 itself out exactly as before, which on a HiDPI display means a window in the corner at half the
-intended size. Measured with termora (Compose Desktop, so AWT): it kept its 1x interface on a 192 dpi
-screen until it was started with `-Dsun.java2d.uiScale=2`, and then its icons came out as sharp as
-they do running natively - the same application whose icons were blank blocks before the A8 mask
-below was fixed, so the two together are what makes it look right.
+intended size. Measured with termora (a Swing application, so AWT draws it): it kept its 1x interface
+on a 192 dpi screen until it was started with `-Dsun.java2d.uiScale=2`, and then its icons came out as
+sharp as they do running natively - the same application whose icons were blank blocks before the A8
+mask below was fixed, so the two together are what makes it look right.
+
+## A picture follows its window
+
+A RENDER picture over a window carries the translation from its own coordinates to the framebuffer,
+and for a window that translation *is* the window's position. Reading the position once, when
+`CreatePicture` builds the picture, is wrong for every window that is placed after it is created -
+which is how AWT opens a dialog: it creates the window at the origin of the screen and only then
+configures it where it belongs. The stale position is not only used to address the pixels; it is also
+the point the window's clip is tested against, and once the two disagree the writes are not misplaced
+so much as refused, all of them: the client composites a dialog onto its window and the framebuffer
+keeps whatever was there.
+
+Measured with termora, whose keymap settings put this on screen as "some dialogs are grey": the 消息
+message box is 305x130, created at (0,0) and configured to (497,335), and the composite of its
+contents reported
+
+```
+composite onto window 0x200071 at (0,0) 305x130: 0 pixels written, 39650 blocked;
+picture origin (0,0), window at (497,335), visible [Rectangle(497,335,305,130)]
+```
+
+- every pixel refused, which is why the dialog showed its background - painted by `ClearArea`, which
+  works in absolute coordinates - and none of its text, icon or button. `Picture.refreshClip()` now
+  re-reads the position along with the clip at the start of each request, the same place and for the
+  same reason the clip is renewed, and `PictureOriginTest` pins the two halves of it (a write and a
+  read after the window moved).
+
+The same log line stays in `Compositor` as the diagnostic for this class of problem: it is the only
+place that says a client's drawing was *seen* and yet went nowhere, and printing the picture's origin
+next to the window's position is what named the cause here. A composite over a window that is refused
+entirely is otherwise indistinguishable from a client that drew nothing.
+
+The core protocol never had the bug, because `DrawHandlers.Target` asks the window for its position
+per request; only the picture path cached it, which is why everything except a moved window's
+*contents* - its background, its border, its event handling - behaved.
 
 ## How close the picture is to a real server
 

@@ -3,6 +3,8 @@ package io.github.oyzh1994.xserver.draw;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.resource.GlyphSet;
 import io.github.oyzh1994.xserver.resource.Picture;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.AlphaComposite;
 import java.awt.Color;
@@ -51,6 +53,15 @@ import java.util.List;
  * coverage in their alpha channel and are used directly.
  */
 public final class Compositor {
+
+    private static final Logger log = LoggerFactory.getLogger(Compositor.class);
+
+    /**
+     * How many pixels the last rectangle drawn put down, and how many the destination's clip refused.
+     * A diagnostic: nothing in the server's behaviour depends on either.
+     */
+    private int written;
+    private int blocked;
 
     private static final int TRANSPARENT = 0;
     private static final int WHITE = 0xFFFFFFFF;
@@ -199,8 +210,33 @@ public final class Compositor {
                 ? null
                 : new PictureSampler(mask, maskX - dstX, maskY - dstY, dstX, dstY);
         boolean componentAlpha = mask != null && mask.componentAlpha();
+        written = 0;
+        blocked = 0;
         draw(op, source, maskSampler, componentAlpha, dst, dstX, dstY, width, height);
+        report(dst, dstX, dstY, width, height);
         finish(dst);
+    }
+
+    /**
+     * Reports a composite onto a window, with the two numbers that say whether the client's drawing
+     * was seen at all: how many pixels it put down and how many the window's clip refused.
+     *
+     * <p>A composite onto a window that is refused entirely is a client drawing something that never
+     * appears - a dialog with no contents, a menu that stays empty - and there is nothing else in the
+     * log to say so: the request is well formed, the pixels are in the source, and the reason is
+     * always outside the request. The window's clip and the picture's origin are printed with it
+     * because those are the two things that decide it, and the region is printed whenever anything
+     * was refused, which is the case worth reading.
+     */
+    private void report(Picture dst, int x, int y, int width, int height) {
+        if (dst.window() == null || !log.isDebugEnabled()) {
+            return;
+        }
+        log.debug("composite onto window 0x{} at ({},{}) {}x{}: {} pixels written, {} refused; "
+                        + "picture origin ({},{}), window at ({},{}), visible {}",
+                Integer.toHexString(dst.window().id()), x, y, width, height, written, blocked,
+                dst.originX(), dst.originY(), dst.window().absoluteX(), dst.window().absoluteY(),
+                blocked == 0 ? "all" : dst.window().visibleRegion());
     }
 
     // ------------------------------------------------------------------
@@ -422,11 +458,14 @@ public final class Compositor {
      */
     private void draw(int op, Sampler src, Sampler mask, boolean componentAlpha, Picture dst,
                       int regionX, int regionY, int width, int height) {
+        int written = 0;
+        int blocked = 0;
         for (int y = 0; y < height; y++) {
             int dy = regionY + y;
             for (int x = 0; x < width; x++) {
                 int dx = regionX + x;
                 if (!dst.isWritable(dx, dy)) {
+                    blocked++;
                     continue;
                 }
                 int maskArgb = mask == null ? WHITE : mask.argbAt(x, y);
@@ -438,8 +477,11 @@ public final class Compositor {
                 int dstArgb = dst.pixelAt(dx, dy);
                 int result = blend(op, srcArgb, dstArgb, maskArgb, maskAlpha, componentAlpha);
                 dst.writePixel(dx, dy, result);
+                written++;
             }
         }
+        this.written = written;
+        this.blocked = blocked;
     }
 
     /**

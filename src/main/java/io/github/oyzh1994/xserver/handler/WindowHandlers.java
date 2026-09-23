@@ -524,6 +524,12 @@ public final class WindowHandlers {
             }
         }
         server.markScreenDirty(window);
+        // A window that appears under a stationary pointer is entered by it, which is what a
+        // reference server reports at the map. Leaving it to the move that follows makes the client's
+        // first motion a crossing it has no reason to expect - and until it moves, a popup that
+        // appeared under the pointer is a window its client does not know the pointer is in: nothing
+        // in it highlights, and a click in it is read as a click outside.
+        server.inputFor(window.screen()).refreshPointerWindow();
     }
 
     public void unmap(ClientConnection client, UnmapWindow r) {

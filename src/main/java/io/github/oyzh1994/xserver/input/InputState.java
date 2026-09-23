@@ -54,6 +54,14 @@ public final class InputState implements DisplayBackend.InputSink {
     private int pointerY;
     private XWindow pointerWindow;
     /**
+     * The window the client was last <em>told</em> the pointer is in, by a crossing event. Not the
+     * same as {@link #pointerWindow}: that one is recomputed by every button or key event too, with
+     * no crossing to report it, so it runs ahead of what the client knows. Crossings have to be
+     * reported from here, or a client is handed a LeaveNotify for a window it was never told the
+     * pointer entered.
+     */
+    private XWindow announcedWindow;
+    /**
      * False until something has said where the pointer is. A window that opens under a stationary
      * pointer gets no mouse event until that pointer moves, and until then the server has no
      * position to draw a sprite at - drawing one anyway puts a second pointer in the window's
@@ -358,19 +366,15 @@ public final class InputState implements DisplayBackend.InputSink {
         pointerY = clampedY;
 
         XWindow window = windowAtPointer();
-        if (window != pointerWindow) {
-            XWindow previous = pointerWindow;
-            pointerWindow = window;
-            if (moved) {
-                // Only a pointer that really moved reports a crossing. A button or key event
-                // recomputes the window under the pointer too - that is how a window that appeared
-                // underneath is noticed - and reporting the crossing there would tell a client its
-                // pointer had moved when it had not, in the middle of handling a button: a menu
-                // that is opening takes that for its popup being dismissed. The move that follows
-                // reports it instead.
-                server.events().deliverCrossing(previous, window, pointerX, pointerY, pointerX,
-                        pointerY, confinedToGrab());
-            }
+        pointerWindow = window;
+        if (moved && window != announcedWindow) {
+            // Only a pointer that really moved reports a crossing. A button or key event recomputes
+            // the window under the pointer too - that is how a window that appeared underneath is
+            // noticed - and reporting the crossing there would tell a client its pointer had moved
+            // when it had not, in the middle of handling a button: a menu that is opening takes that
+            // for its popup being dismissed. What the client is owed is remembered instead, and
+            // reported when the gesture that pinned the pointer is over.
+            reportPointerWindow(window);
         }
         if (generateMotion && moved) {
             deliverMotion();
@@ -400,17 +404,53 @@ public final class InputState implements DisplayBackend.InputSink {
             return;
         }
         XWindow window = windowAtPointer();
-        if (window == pointerWindow) {
-            return;
-        }
-        XWindow previous = pointerWindow;
-        pointerWindow = window;
-        if (log.isDebugEnabled()) {
+        if (window != announcedWindow && log.isDebugEnabled()) {
             log.debug("the window under the pointer is now 0x{}: the tree changed, not the pointer",
                     window == null ? "none" : Integer.toHexString(window.id()));
         }
+        settlePointerWindow();
+    }
+
+    /**
+     * Reports the crossing a client is owed for a window change that happened without the pointer
+     * moving, if one is still outstanding.
+     *
+     * <p>Two things need this. A window that goes away under the pointer leaves the client pinning
+     * events to a window that no longer exists, so the change is reported at once. A window that
+     * appears under the pointer - the menu a press just opened - cannot be reported while the button
+     * that opened it is still down, because the implicit grab withholds the enter, and the crossing
+     * is owed until the button comes up; that is where a reference server reports it too.
+     */
+    public void settlePointerWindow() {
+        if (!pointerKnown) {
+            return;
+        }
+        XWindow window = windowAtPointer();
+        pointerWindow = window;
+        if (window == announcedWindow) {
+            return;
+        }
+        reportPointerWindow(window);
+    }
+
+    /**
+     * Delivers the crossing pair that says where the pointer is now, and remembers what the client
+     * was actually told.
+     *
+     * <p>Where the pointer is and what the client knows are not the same thing once a grab is
+     * involved: a grab can withhold the enter into the window the pointer reached (see
+     * {@link #confinedToGrab}), and a client that hears the leave but not the enter has been told the
+     * pointer is in none of its windows. That is remembered as such, so the enter is still owed and
+     * goes out when the grab lets go rather than being written off.
+     */
+    private void reportPointerWindow(XWindow window) {
+        XWindow inside = confinedToGrab();
+        boolean entered = window != null
+                && (inside == null || inside == window || inside.isAncestorOf(window));
+        XWindow previous = announcedWindow;
+        announcedWindow = entered ? window : null;
         server.events().deliverCrossing(previous, window, pointerX, pointerY, pointerX, pointerY,
-                confinedToGrab());
+                inside);
     }
 
     /**
@@ -632,6 +672,11 @@ public final class InputState implements DisplayBackend.InputSink {
             }
         } else if (buttons == 0) {
             implicitGrabWindow = null;
+            // The pointer is the client's to follow again. A window that appeared over it while the
+            // button was down - the menu the press opened - has been waiting for this moment to be
+            // reported, because a crossing out of the middle of a gesture is read as the pointer
+            // leaving the window the gesture belongs to.
+            settlePointerWindow();
         }
     }
 
