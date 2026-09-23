@@ -161,9 +161,25 @@ public final class InputState implements DisplayBackend.InputSink {
     }
 
     public void setInputFocus(XWindow window, int revertTo) {
-        this.inputFocus = window == null ? screen.root() : window;
+        XWindow previous = inputFocus;
+        // The three states are kept apart, because a client can tell them apart: null is None (the
+        // keyboard goes nowhere), the root is PointerRoot (it goes to whatever the pointer is in),
+        // and anything else is a window. Folding None into PointerRoot would report a focus the
+        // client did not ask for.
+        this.inputFocus = window;
         this.focusRevertTo = revertTo;
         this.focusSet = true;
+        if (log.isDebugEnabled()) {
+            log.debug("focus set to {}, was {}, reverting to {}", describe(inputFocus),
+                    describe(previous), revertTo);
+        }
+        // A client that asks for the focus is waiting to be told it got it, and this is the only
+        // thing that tells it.
+        server.events().deliverFocusChange(previous, inputFocus);
+    }
+
+    private static String describe(XWindow window) {
+        return window == null ? "nowhere" : "0x" + Integer.toHexString(window.id());
     }
 
     public int focusRevertTo() {
@@ -715,7 +731,12 @@ public final class InputState implements DisplayBackend.InputSink {
      * while everything driven by the pointer keeps working.
      */
     public XWindow focusWindow() {
-        if (inputFocus == null || inputFocus.isRoot()) {
+        if (inputFocus == null) {
+            // None: the keys belong to nobody and are dropped. Reporting them against the root would
+            // hand them to a client that never asked for them.
+            return null;
+        }
+        if (inputFocus.isRoot()) {
             return pointerWindow == null ? screen.root() : pointerWindow;
         }
         return inputFocus;
@@ -730,15 +751,52 @@ public final class InputState implements DisplayBackend.InputSink {
      * focus left on a window that no longer exists swallows every keystroke it was meant to deliver.
      */
     public void forgetFocusWindow(XWindow window) {
-        if (inputFocus != window) {
+        if (inputFocus == null || inputFocus.isRoot()) {
+            // PointerRoot follows the pointer and None is nowhere: neither is a window, so neither is
+            // touched by a window going away. Moving the focus as the pointer crosses into another
+            // window is the half of PointerRoot that is not implemented - see the design notes.
             return;
         }
-        XWindow reverted = focusRevertTo == REVERT_TO_PARENT ? window.parent() : null;
-        inputFocus = reverted == null || reverted.isDestroyed() ? screen.root() : reverted;
-        if (log.isDebugEnabled()) {
-            log.debug("focus reverted to 0x{}: 0x{} was destroyed", Integer.toHexString(
-                    inputFocus.id()), Integer.toHexString(window.id()));
+        // A window that goes away takes the focus with it even when the focus is on something inside
+        // it: the focused window stops being viewable then, and a client left sending keys to a
+        // window nobody can see is a client whose typing has quietly stopped working.
+        if (inputFocus != window && !window.isAncestorOf(inputFocus)) {
+            return;
         }
+        XWindow previous = inputFocus;
+        inputFocus = revertTarget(previous);
+        // The focus moved, so both sides of the move are told. The window that was holding it is
+        // named as it was even though it is on its way out: being told the focus left is the half
+        // its client can still act on.
+        server.events().deliverFocusChange(previous, inputFocus);
+        if (log.isDebugEnabled()) {
+            log.debug("focus reverted from {} to {}: 0x{} went away", describe(previous),
+                    describe(inputFocus), Integer.toHexString(window.id()));
+        }
+    }
+
+    /**
+     * Where the focus goes when the window holding it goes away, as the last {@code SetInputFocus}
+     * asked for.
+     *
+     * <p>{@code RevertToParent} means the nearest ancestor that is still <em>viewable</em> rather
+     * than the parent itself: a dialog and its parent are often on their way out together, and the
+     * focus has to land somewhere a client can be told about. When only the root is left the focus
+     * becomes PointerRoot, which is what the root window means throughout this class.
+     */
+    private XWindow revertTarget(XWindow focused) {
+        if (focusRevertTo == REVERT_TO_NONE) {
+            return null;
+        }
+        if (focusRevertTo != REVERT_TO_PARENT) {
+            return screen.root();
+        }
+        for (XWindow window = focused.parent(); window != null; window = window.parent()) {
+            if (window.isViewable()) {
+                return window;
+            }
+        }
+        return screen.root();
     }
 
     /** Delivers straight to a grabbing client's window, bypassing normal window selection. */

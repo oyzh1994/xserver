@@ -108,9 +108,9 @@ Core protocol: windows (create, map, configure, restack, reparent, circulate), t
 selections, keyboard and pointer mapping, focus, grabs (active ones, and the implicit grab a press
 starts; a passive grab is recorded but never matched), and `SendEvent`.
 
-Events: structure notifications, exposes, property and colormap notifications, crossing events with
-the full detail lattice and the grab modes, pointer and keyboard events with propagation and
-`doNotPropagateMask`, and `ClientMessage` in both directions.
+Events: structure notifications, exposes, property and colormap notifications, crossing and focus
+events with the full detail lattice and the grab modes, pointer and keyboard events with propagation
+and `doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
 operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
@@ -205,17 +205,22 @@ order (only the glyphset-switch item is always most-significant-byte first), and
   by nobody: a client that arms one (a window manager, a toolkit's popup shortcut) never hears about
   the button or key it asked for. Active grabs, including the implicit grab a press starts, are
   honoured - see the crossing-event rules in `docs/design-notes.md`.
-- **`SetInputFocus` is silent.** No `FocusIn` or `FocusOut` is ever generated, so a client that waits
-  to be told it got the focus (a dialog, a menu opened by keyboard) is not told. Keyboard events are
-  delivered to the focused window, so typing works; the notification does not.
+- **A focus change reports FocusIn and FocusOut, but nothing moves the focus on its own.** Every
+  window on the way in and out is told, with the relationship lattice in the detail, `None` is a state
+  of its own, and a window that stops being viewable gives the focus up the way the last
+  `SetInputFocus` asked for - all of it measured against a reference server. What is still missing is
+  the other half of X11's focus model: with the focus on PointerRoot, a server is supposed to move it
+  from window to window as the pointer moves and report each move. Here the keys follow the pointer
+  (which is what PointerRoot means for delivery) but no events are generated for it, and a focus
+  change made by a keyboard grab is reported as `NotifyNormal` rather than `NotifyGrab`/`NotifyUngrab`.
 - **A window that appears under a stationary pointer is entered by the move that follows**, not by
   the map. Xorg reports it at the map; doing so here tears EasyShell's context menus down as they are
   mapped. See the design notes for the measurement.
-- **A menu that is left and re-entered is dismissed** by EasyShell, where it stays up against a real
-  X server. The crossings involved match the reference server event for event, so the cause is not in
-  them; the design notes record what has been ruled out - and, since then, that the client closes the
-  popup within a millisecond of an `EnterNotify` on it, which is why every crossing that reports a
-  popup "entered" without the pointer moving has had to be left out.
+- **A menu that is left and re-entered used to be dismissed** by EasyShell, where it stays up against
+  a real X server. The crossings matched the reference event for event, which is what made it a
+  puzzle: the cause was not in them but under them - the client was never told it had the keyboard,
+  because `SetInputFocus` generated no focus events. With those delivered the scripted gesture leaves
+  the menu up 6 runs out of 6 where it closed 3 out of 3, and the design notes record what that took.
 - **A resize cannot grow past the screen.** The host window is resizable and resizes the client's
   window, but the framebuffer behind it is fixed at `--geometry`: the window is told the largest area
   it may be given, so the platform stops the drag at the screen rather than leaving it larger than

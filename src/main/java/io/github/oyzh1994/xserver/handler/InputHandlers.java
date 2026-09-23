@@ -180,9 +180,11 @@ public final class InputHandlers {
         if (focus == 0) {
             // None: the keyboard focus is nowhere.
             window = null;
-        } else if (focus == 1) {
-            window = server.inputFor(client).windowAtPointer();
-        } else if (focus == 3) {
+        } else if (focus == 1 || focus == 3) {
+            // PointerRoot - and FollowKeyboard, which is as close to it as this server comes. Kept as
+            // the root rather than resolved to the window the pointer is in right now: a client that
+            // asks for PointerRoot is asking for a focus that follows the pointer, and it can tell
+            // that apart from a focus it placed on a window of its own.
             window = server.inputFor(client).screen().root();
         } else {
             window = window(client, focus);

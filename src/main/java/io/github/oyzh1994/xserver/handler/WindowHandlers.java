@@ -74,6 +74,9 @@ import java.util.Map;
  */
 public final class WindowHandlers {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WindowHandlers.class);
+
     private final XServer server;
 
     public WindowHandlers(XServer server) {
@@ -260,6 +263,12 @@ public final class WindowHandlers {
         if (Cw.EVENT_MASK.isEnabled(valueMask)) {
             if ((eventMask & ~EventMasks.ALL) != 0) {
                 throw ProtocolException.badValue(eventMask);
+            }
+            if (log.isDebugEnabled()) {
+                // Which events a client asked for is the first thing to check when one it needs never
+                // arrives, and the request itself says nothing about it.
+                log.debug("{} selected 0x{} on 0x{}", client.peer(),
+                        Integer.toHexString(eventMask), Integer.toHexString(window.id()));
             }
             if (window.owner() == client) {
                 window.setEventMask(eventMask);
@@ -546,6 +555,11 @@ public final class WindowHandlers {
         // A window that is no longer on screen cannot be holding the pointer's implicit grab: pinning
         // events to it would leave every client without input until another button press.
         server.inputFor(window.screen()).forgetGrabWindow(window);
+        // Nor can it hold the input focus - a window nobody can see must not go on receiving keys -
+        // and X11 moves the focus out of a window that stops being viewable, or out of one whose
+        // ancestor does. A reference server was measured doing it, and it is what a toolkit that
+        // unmaps a dialog instead of putting the focus back itself is relying on.
+        server.inputFor(window.screen()).forgetFocusWindow(window);
         // A window that goes away under the pointer takes the pointer out of itself and puts it in
         // whatever was underneath, so the client has to be told rather than left reporting events
         // against a window that no longer exists.

@@ -35,8 +35,16 @@ public final class RawXClient implements AutoCloseable {
 
     /** Connects to a display's TCP port and completes the connection setup. */
     public static RawXClient connect(int display) throws IOException {
+        return connect("127.0.0.1", 6000 + display);
+    }
+
+    /**
+     * Connects to a server by host and port, for comparing this one against another - a reference
+     * server on a different machine answers the same questions, and the answers are the point.
+     */
+    public static RawXClient connect(String host, int port) throws IOException {
         Socket socket = new Socket();
-        socket.connect(new InetSocketAddress("127.0.0.1", 6000 + display), 5000);
+        socket.connect(new InetSocketAddress(host, port), 5000);
         socket.setSoTimeout(5000);
         DataInputStream in = new DataInputStream(socket.getInputStream());
         OutputStream out = socket.getOutputStream();
@@ -373,6 +381,45 @@ public final class RawXClient implements AutoCloseable {
             writeInt(request, 24 + i * 4, atoms[i]);
         }
         send(request);
+    }
+
+    /**
+     * SetInputFocus: {@code focus} is a window id, 0 for None or 1 for PointerRoot.
+     *
+     * <p>Twelve bytes, not sixteen: a reference server answers a request whose length disagrees with
+     * the protocol with {@code BadLength}, and this one does not check - it reads the length and hands
+     * the payload on - so an over-long request here passes against this server and is rejected by a
+     * real one. That is exactly the kind of difference the probes against a reference server exist to
+     * catch, and it caught this.
+     */
+    public void setInputFocus(int focus, int revertTo) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = 42;                            // SetInputFocus
+        request[1] = (byte) revertTo;
+        request[2] = 3;
+        writeInt(request, 4, focus);
+        writeInt(request, 8, 0);                    // time: CurrentTime
+        send(request);
+    }
+
+    /**
+     * How long a read waits for an event before giving up.
+     *
+     * <p>Five seconds by default, which is what a test that waits for an event wants. A test that
+     * has to prove nothing came, or that drains what a setup produced before reading its own, wants
+     * it much shorter - waiting out the default costs a test five seconds an assertion.
+     */
+    public void readTimeoutMillis(int millis) throws IOException {
+        socket.setSoTimeout(millis);
+    }
+
+    /** GetInputFocus: the focus window, 0 for None or 1 for PointerRoot. */
+    public int queryInputFocus() throws IOException {
+        byte[] request = new byte[4];
+        request[0] = 43;                            // GetInputFocus
+        request[2] = 1;
+        send(request);
+        return readInt(readReply(), 8);
     }
 
     /** ChangeProperty in replace mode, with 8 bit items: how a window title is published. */

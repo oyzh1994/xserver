@@ -65,10 +65,22 @@ public class InputFocusTest {
         XServer server = serverWithTwoWindows();
         XWindow outer = (XWindow) server.resources().get(0x400001);
         // The focus is the root, which means PointerRoot: the focus follows the pointer.
-        server.input().setInputFocus(null, InputState.REVERT_TO_POINTER_ROOT);
+        server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_POINTER_ROOT);
         // Inside the outer window but outside the child that covers its top left corner.
         server.input().pointerMoved(60, 60);
 
         assertEquals(outer, server.input().focusWindow(), "keys belong to the window under the pointer");
+    }
+
+    @Test
+    void aFocusOfNoneSendsKeysNowhere() {
+        XServer server = serverWithTwoWindows();
+        // A focus of null is None, which is a state of its own: no window has the keyboard, so the
+        // keys belong to none of them rather than to whichever one the pointer is in.
+        server.input().setInputFocus(null, InputState.REVERT_TO_POINTER_ROOT);
+        server.input().pointerMoved(60, 60);
+
+        assertEquals(null, server.input().focusWindow(), "a focus of None names no window");
+        assertEquals(null, server.input().inputFocus(), "and it is not PointerRoot either");
     }
 }

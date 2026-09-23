@@ -2,6 +2,8 @@ package io.github.oyzh1994.xserver.event;
 
 import com.github.moaxcp.x11.protocol.XEvent;
 import com.github.moaxcp.x11.protocol.xproto.EnterNotifyEvent;
+import com.github.moaxcp.x11.protocol.xproto.FocusInEvent;
+import com.github.moaxcp.x11.protocol.xproto.FocusOutEvent;
 import com.github.moaxcp.x11.protocol.xproto.LeaveNotifyEvent;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
@@ -25,12 +27,29 @@ public final class EventDispatcher {
 
     private static final Logger log = LoggerFactory.getLogger(EventDispatcher.class);
 
-    /** Detail codes for EnterNotify and LeaveNotify. */
+    /**
+     * Detail codes for EnterNotify, LeaveNotify, FocusIn and FocusOut: one lattice, shared.
+     *
+     * <p>The first five say how two windows are related, which is how a toolkit tells a move that
+     * stayed inside its own tree from one that left it. The last two say that one of the two is not
+     * a window at all, and only a focus change can produce them.
+     */
     public static final byte NOTIFY_ANCESTOR = 0;
     public static final byte NOTIFY_VIRTUAL = 1;
     public static final byte NOTIFY_INFERIOR = 2;
     public static final byte NOTIFY_NONLINEAR = 3;
     public static final byte NOTIFY_NONLINEAR_VIRTUAL = 4;
+    /**
+     * The focus is PointerRoot, so the window this is reported against is the one the pointer is in
+     * rather than one the focus moved to.
+     */
+    public static final byte NOTIFY_POINTER = 5;
+
+    /**
+     * Modes: what a grab did to a change. Only Normal is ever produced, because nothing here moves
+     * the focus on a grab's behalf.
+     */
+    public static final byte NOTIFY_MODE_NORMAL = 0;
 
     private final XServer server;
 
@@ -131,6 +150,135 @@ public final class EventDispatcher {
             window = window.parent();
         }
         return delivered;
+    }
+
+    /**
+     * Reports the input focus moving from one window to another: FocusOut to the window losing it
+     * and FocusIn to the window gaining it, to whichever clients asked for focus events on them.
+     *
+     * <p>This is the only way a client is told it has the keyboard. A toolkit moves the focus to a
+     * dialog and waits to be told the dialog got it; a window that is never told stays drawn but
+     * inert, with every keystroke going somewhere else and no way to tell. Both arguments may be
+     * null - the focus is nowhere - and the root window stands for PointerRoot here, which is how the
+     * rest of the server reads it (keys go to whatever the pointer is in), so the two states that
+     * are not an ordinary window have their own detail rather than being reported as a window.
+     */
+    public void deliverFocusChange(XWindow previous, XWindow current) {
+        if (previous == current) {
+            return;
+        }
+        // PointerRoot is reported against the window the pointer is in, with a detail that says so:
+        // a client cannot be told anything by a window called "the pointer", and the window under
+        // the pointer is the one that can act on it. None is reported against nothing at all - the
+        // side that is losing the focus simply loses it.
+        XWindow screenWindow = previous != null ? previous : current;
+        XWindow underPointer = screenWindow == null ? null
+                : server.inputFor(screenWindow.screen()).pointerWindow();
+        XWindow leaving = previous == null ? null
+                : previous.isRoot() ? underPointer : previous;
+        XWindow arriving = current == null ? null
+                : current.isRoot() ? underPointer : current;
+        // The two can be the same window - the focus moving from PointerRoot to the window the
+        // pointer is already in, which is what a click-to-focus does - and that is not a no-op: a
+        // reference server was measured sending the whole pair, the window leaving the pointer and
+        // arriving under the focus. Treating it as a no-op leaves the client that asked for the
+        // focus never told it got it.
+        XWindow common = commonAncestor(leaving, arriving);
+        if (previous != null && previous.isRoot()) {
+            // PointerRoot: the keyboard is leaving the pointer, and every window holding the window
+            // the pointer is in is told so, each with the detail that says this is about the pointer
+            // rather than about another window.
+            for (XWindow w = leaving; w != null; w = w.parent()) {
+                deliverFocusWindow(w, false, NOTIFY_POINTER);
+            }
+        } else if (leaving != null) {
+            // The window losing the focus, then its ancestors up to the one the two have in common:
+            // a toolkit wants to know the focus left its whole subtree, not only its leaf. Innermost
+            // first, so a menu hears about the leaf before the window that holds it.
+            deliverFocusWindow(leaving, false, focusDetail(leaving, arriving));
+            for (XWindow w = leaving.parent(); w != null && w != common; w = w.parent()) {
+                deliverFocusWindow(w, false, virtualDetail(w, arriving));
+            }
+        }
+        if (current != null && current.isRoot()) {
+            // And the reverse, the same chain: the windows holding the one the pointer is in have
+            // the keyboard again. There may be none at all, when nothing has said where the pointer
+            // is yet.
+            for (XWindow w = arriving; w != null; w = w.parent()) {
+                deliverFocusWindow(w, true, NOTIFY_POINTER);
+            }
+        } else if (arriving != null) {
+            // Outermost first on the way in, which is the other way round from the way out: a toolkit
+            // tracks focus by walking down into the window that gained it, and can only do that if
+            // the window holding the focus is named before the window inside it.
+            java.util.List<XWindow> chain = new java.util.ArrayList<>();
+            for (XWindow w = arriving.parent(); w != null && w != common; w = w.parent()) {
+                chain.add(w);
+            }
+            for (int i = chain.size() - 1; i >= 0; i--) {
+                deliverFocusWindow(chain.get(i), true, virtualDetail(chain.get(i), leaving));
+            }
+            deliverFocusWindow(arriving, true, focusDetail(arriving, leaving));
+        }
+    }
+
+    /**
+     * The detail for a window on the chain between the two focus windows: a plain virtual ancestor
+     * when the window on the other end is one of its descendants, and a nonlinear one otherwise -
+     * measured against a reference server, which relates the two ends rather than only the window.
+     */
+    private byte virtualDetail(XWindow window, XWindow other) {
+        return other != null && other.isAncestorOf(window)
+                ? NOTIFY_VIRTUAL
+                : NOTIFY_NONLINEAR_VIRTUAL;
+    }
+
+    /**
+     * The detail of a focus change as the window it is reported against sees it: what the window on
+     * the other side of the change is to this one, which is the same lattice a crossing uses.
+     *
+     * <p>A change to or from None has nothing to relate to, and reports Nonlinear - measured rather
+     * than assumed: a reference server sends exactly that.
+     */
+    private byte focusDetail(XWindow window, XWindow other) {
+        if (window == other) {
+            // The focus moved between the pointer and this very window, so there is no other window
+            // to relate it to. The lattice has no answer for that, and a reference server reports
+            // Nonlinear.
+            return NOTIFY_NONLINEAR;
+        }
+        return crossingDetail(window, other);
+    }
+
+    /**
+     * Sends one FocusIn or FocusOut to the clients interested in the window it names.
+     *
+     * <p>Both are selected by {@code FocusChangeMask} - there is one bit for the pair, not one each -
+     * and neither propagates here, because {@code FOCUS_CHANGE} is not in {@link EventMasks#PROPAGATE}.
+     * The mode is always Normal: the focus and grab modes belong together, and this server does not
+     * let a keyboard grab move the focus.
+     */
+    private void deliverFocusWindow(XWindow window, boolean gained, byte detail) {
+        deliverToWindow(window, EventMasks.FOCUS_CHANGE, (client, w, child, x, y) -> {
+            if (gained) {
+                return FocusInEvent.builder()
+                        .firstEventOffset((byte) 0)
+                        .sentEvent(false)
+                        .sequenceNumber(client.sequenceNumber())
+                        .event(w.id())
+                        .detail(detail)
+                        .mode(NOTIFY_MODE_NORMAL)
+                        .build();
+            }
+            return FocusOutEvent.builder()
+                    .firstEventOffset((byte) 0)
+                    .sentEvent(false)
+                    .sequenceNumber(client.sequenceNumber())
+                    .event(w.id())
+                    .detail(detail)
+                    .mode(NOTIFY_MODE_NORMAL)
+                    .build();
+        });
     }
 
     /**
@@ -249,7 +397,10 @@ public final class EventDispatcher {
         // are what a real server reports, and a toolkit reads the bit to decide whether the window
         // it is tracking still has the focus.
         XWindow focus = server.inputFor(window.screen()).inputFocus();
-        boolean focused = focus == null || focus.isRoot() || window.isAncestorOf(focus);
+        // A focus of null is None, and no window has it - which is the one case where the bit is
+        // clear for every window. A focus of the root is PointerRoot: the keys go to whatever the
+        // pointer is in, so the window being crossed is the one that has them.
+        boolean focused = focus != null && (focus.isRoot() || window.isAncestorOf(focus));
         deliverPropagating(window, maskBit, screenX, screenY, (client, w, child, x, y) -> {
             short sequence = client.sequenceNumber();
             int childId = child == null ? 0 : child.id();

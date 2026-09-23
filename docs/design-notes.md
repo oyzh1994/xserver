@@ -274,17 +274,30 @@ is implemented here:
   the popup it just created, and the release has to be reported against the popup. Reporting it
   against the window the press landed on is a release the menu reads as a click outside itself.
 
-Open issue, not explained: **a first-level menu that is left and re-entered is dismissed** by
-EasyShell, where it stays up against Xvfb. A scripted `right-click -> move out of the menu -> move
-back in` closes the menu every time on this server and never on Xvfb. The crossings involved match
-the reference byte for byte (window, detail, mode, state, coordinates and focus bit, in the same
-order), so the client is reacting to something that is not in the crossing itself. Narrowed down by
-trial: suppressing the enter-into-the-menu on re-entry keeps the menu up, but the same crossing is
-what makes a submenu active in the first place, so suppressing it puts the submenu back to being
-drawn but dead. What is left is that the client is told the pointer "entered" the window that holds
-its grab (the toplevel) as the pointer moves off the menu, and a later enter into the menu is then
-fatal - the reference server sends that enter too, which is why this is unexplained rather than
-fixed.
+**Was a first-level menu that is left and re-entered dismissed** by EasyShell, where it stayed up
+against Xvfb. A scripted `right-click -> move out of the menu -> move back in` closed the menu every
+time on this server and never on Xvfb, and the crossings involved matched the reference byte for byte
+(window, detail, mode, state, coordinates and focus bit, in the same order), so the client was
+reacting to something that was not in the crossing itself. Narrowed down by trial: suppressing the
+enter-into-the-menu on re-entry kept the menu up, but the same crossing is what makes a submenu
+active in the first place, so suppressing it left the submenu drawn but dead.
+
+**It was the focus, and it is the one thing the crossings could not show.** The client was never told
+it had the keyboard (see the next section), and every measurement in the paragraph above was taken on
+a server that changed the focus and said nothing. With `FocusIn`/`FocusOut` delivered, the same
+scripted gesture leaves the menu up **6 runs out of 6**, with the hovered item highlighting, where it
+was closed in 3 out of 3 before. Two things had to be true for that, and the first alone was not
+enough:
+
+- The client has to be told the focus at all, which is what makes its window "focused" and lets its
+  popup machinery run.
+- **The window the pointer is already inside must still be told**, which is the ordinary case: the
+  menu is opened under the pointer, and the window that takes the focus is the one the pointer is in.
+  An early version treated that as "nothing changed" and sent nothing, which put the menu straight
+  back to being dismissed; a reference server was measured sending the whole pair there.
+
+The gesture is a scripted one (`/tmp/menu-outin2.sh`); a hand on a real mouse moves differently, so
+the interactive case is worth re-checking rather than assuming.
 
 Two deliberate deviations, both measured rather than reasoned:
 
@@ -316,6 +329,86 @@ Two deliberate deviations, both measured rather than reasoned:
   the pointer is reported at once, because the alternative there is a pointer pinned to a window
   that no longer exists and a next click that is reported against nothing.
 
+## The focus is the client's to be told about
+
+`FocusIn` and `FocusOut` are the only way a client learns it has the keyboard, and a toolkit is built
+on being told: it moves the focus to a dialog and enables the dialog's fields when the dialog says it
+arrived. This server changed the focus on `SetInputFocus` and sent nothing at all, which was recorded
+here as a known gap for two sessions without a symptom attached to it. The symptom, when it finally
+came, was from JavaFX: a `ContextMenu` opened from a `Canvas` "could not get the focus and could not
+be clicked", where the same menu in the connection list worked.
+
+Measured on that client, and it is worth re-measuring rather than re-reasoning:
+
+- EasyShell **selects `FocusChangeMask`** (`0x6ba77f` on its main window - bit 21) and calls
+  `SetInputFocus` **once**, for its main window, as it is mapped at startup.
+- The server sent **zero** `FocusIn`/`FocusOut` for the whole session. The client asked to be told and
+  was never told.
+- The client worked around it app-side, and the workaround is the framework's own path: showing the
+  menu from `ContextMenuEvent.CONTEXT_MENU_REQUESTED` is exactly what `Control` does internally
+  (`Control.contextMenuHandler`: `c.getContextMenu().show(c, event.getScreenX(), event.getScreenY())`
+  then `event.consume()`), so a `Canvas` - which is not a `Control` - has to do it by hand to get the
+  same treatment. (Their remaining first-time-only failure was unrelated to any of this: the menu
+  object had not been initialised yet when the first event arrived.)
+
+What is implemented now, in `EventDispatcher.deliverFocusChange`, called from the only two places the
+focus moves - `InputState.setInputFocus` and the revert when the focused window is destroyed:
+
+- **The window losing the focus gets `FocusOut` and the window gaining it gets `FocusIn`**, each to
+  whoever selected `FocusChangeMask` on it. One mask bit covers both events, not one each.
+- **The detail is the crossing lattice**, the same helper (`crossingDetail`) rather than a second
+  copy: how the window on the other side of the change relates to this one, which is how a toolkit
+  tells a focus that moved inside its own tree from one that left it entirely. Two details exist only
+  for focus: `NotifyPointerRoot` (6) when the other side is the root, and `NotifyDetailNone` (7) when
+  it is nowhere at all.
+- **A change that is not a change is not reported**, and neither is a window reported as losing a
+  focus it did not have - which is what keeps a client from being told the same thing repeatedly.
+- **The mode is always `NotifyNormal`**, and `FOCUS_CHANGE` is not in `EventMasks.PROPAGATE`, so these
+  do not propagate. Both are deliberate and both are recorded below as the remaining gap.
+
+The rules were taken from a reference server, not from the specification's prose: `/tmp/FocusProbe.java`
+drives the same window tree and the same requests against Xvfb and against this server, prints every
+focus event with its detail and mode, and the two outputs are diffed. That is what settled the things
+prose does not: which windows are told, in what order, and with which detail.
+
+- **Every window on the way in and on the way out is told**, not only the two at the ends. The window
+  losing the focus hears first, then the windows holding it, innermost outwards; going the other way
+  the holding windows hear first, outermost inwards, and the window itself last - so a toolkit can
+  walk down into the window that gained the focus. The windows in between carry `NotifyVirtual` when
+  the two ends are related and `NotifyNonlinearVirtual` when they are not.
+- **A focus of the root is PointerRoot, and it is reported against the window the pointer is in**,
+  with `NotifyPointer` - that window and every window holding it, on both the gaining and the losing
+  side. It is the same window on both sides when the pointer is already in the window asking for the
+  focus, and that is not a no-op: a reference server sends the whole pair, and treating it as one
+  leaves the client that asked never told. That was the difference between a menu that is dismissed
+  and a menu that is not.
+- **`None` is a state of its own**, kept as null rather than folded into PointerRoot: nothing is told
+  it gained the keyboard, `GetInputFocus` answers None, and `focusWindow` returns null so the keys
+  have nowhere to go. Folding it into PointerRoot reports a focus the client did not ask for.
+- **A window that stops being viewable gives the focus up, and reverts it the way the last
+  `SetInputFocus` asked for** - to the nearest ancestor that is still viewable, to PointerRoot, or to
+  nothing - whether it is the focused window itself or one holding it. A toolkit that unmaps a dialog
+  instead of putting the focus back itself is relying on exactly this, and keyboard events aimed at a
+  window nobody can see are keyboard events nobody handles. Destroying a window does the same thing.
+- **`FocusOutEvent` is one of the five event classes the protocol generator numbers wrongly**, and
+  `ClientOutput` already rewrites it to 10. Focus events therefore have to go out through the ordinary
+  send path, not around it, or the client reads a `FocusOut` as something else entirely.
+
+Two traps the probe fell into, both worth an hour of somebody else's time:
+
+- **A request this server accepts may be one a real server rejects.** The first version of
+  `RawXClient.setInputFocus` sent sixteen bytes; `xSetInputFocusReq` is twelve, and Xvfb answered
+  every one of them with `BadLength` while this server read the length, handed the payload on and
+  accepted it. A probe that only ever runs against this server would have gone on passing. `BadLength`
+  is also what a probe should print rather than skip: the first version dropped errors silently and
+  looked exactly like a server that was sending no focus events at all.
+- **Known deviations from the reference, measured rather than assumed**: in the two transitions where
+  a revert lands on PointerRoot, this server relates the chain to the root where a reference server
+  relates it to the window the pointer is in (details `0/1` where it sends `3/4`, and the reverse in
+  one other place). Sixteen of the eighteen probe steps match exactly; those two are in the corner
+  where a `RevertToParent` fails and the focus falls through to PointerRoot, and no client has been
+  seen to care. Written down so the next person does not have to re-derive them.
+
 ## Deliberately not done
 
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
@@ -328,6 +421,13 @@ Two deliberate deviations, both measured rather than reasoned:
 - **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it. The host
   window is resizable, but a resize is therefore capped at the screen rather than growing it, and a
   client's window larger than `--geometry` is still clipped.
+- **The focus does not follow the pointer.** With the focus on `PointerRoot` a server is meant to move
+  it from window to window as the pointer moves and report each move; here the *keys* follow the
+  pointer (`InputState.focusWindow`) but no events are generated for it, so a client tracking focus by
+  event never sees it move. `SetInputFocus` is the only thing that produces `FocusIn`/`FocusOut`, and
+  it covers what a toolkit actually does at startup and for dialogs.
+- **A focus change made by a keyboard grab is reported as `NotifyNormal`.** The modes belong together
+  with grabs, and this server does not let a keyboard grab move the focus.
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`; its generator ignores the
   `number` on an `eventcopy`, which is why `ClientOutput.EVENT_NUMBERS` rewrites five event type
   bytes. The real fix belongs in the generator.
