@@ -18,6 +18,7 @@ class ImageCodecTest {
 
     private static final VisualInfo GRAY1 = VisualInfo.staticGray1(1);
     private static final VisualInfo TRUE_COLOR = VisualInfo.trueColor24(0x200);
+    private static final VisualInfo THREE_THREE_TWO = VisualInfo.trueColor8(0x203);
 
     private static XPixmap pixmap(int width, int height, int depth, VisualInfo visual) {
         return new XPixmap(1, null, null, width, height, depth, visual);
@@ -102,6 +103,34 @@ class ImageCodecTest {
         assertEquals((source.pixel(0, 0) & 0xFFFFFF) != 0, (target.pixel(0, 0) & 0xFFFFFF) != 0);
         assertEquals((source.pixel(19, 1) & 0xFFFFFF) != 0, (target.pixel(19, 1) & 0xFFFFFF) != 0);
         assertEquals((source.pixel(1, 0) & 0xFFFFFF) != 0, (target.pixel(1, 0) & 0xFFFFFF) != 0);
+    }
+
+    /**
+     * A depth eight drawable holds its client's bytes, not colours.
+     *
+     * <p>Most of what arrives in one is coverage: a toolkit rasterises its antialiased shapes and
+     * text into a depth eight pixmap and composites a colour through it. Reading those bytes through
+     * the depth eight visual - the usual 3-3-2 - keeps only the two bits that land in the blue field,
+     * so every antialiased edge in the application is drawn in four levels, which looks flat and bold
+     * where a real server draws it smoothly. Measured against termora: its toolbar icons came out as
+     * 0x00, 0x55, 0xaa and 0xff and nothing between.
+     */
+    @Test
+    void depthEightPixelsKeepAllEightBitsOfTheirValue() {
+        byte[] coverage = {(byte) 0x12, (byte) 0x49, (byte) 0x80, (byte) 0xFF};
+        XPixmap mask = pixmap(4, 1, 8, THREE_THREE_TWO);
+        ImageCodec.putImage(mask, plainGc(), 0, 0, 4, 1, ImageCodec.ZPIXMAP, 0, 8, coverage, 0,
+                false);
+
+        for (int x = 0; x < 4; x++) {
+            assertEquals(coverage[x] & 0xFF, mask.pixel(x, 0) & 0xFF,
+                    "the byte at " + x + " is stored as it arrived");
+        }
+        byte[] back = ImageCodec.getImage(mask, 0, 0, 4, 1, ImageCodec.ZPIXMAP, 0xFFFFFFFF, 8,
+                THREE_THREE_TWO, false);
+        for (int x = 0; x < 4; x++) {
+            assertEquals(coverage[x] & 0xFF, back[x] & 0xFF, "and comes back on a GetImage");
+        }
     }
 
     @Test

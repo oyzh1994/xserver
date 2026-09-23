@@ -177,13 +177,32 @@ public final class DrawHandlers {
             // the log, and that is exactly the difference between a drawn window and a black one.
             int x = target.x(r.getDstX());
             int y = target.y(r.getDstY());
-            LOG.debug("PutImage landed: tl={} tr={} bl={} br={}",
+            LOG.debug("PutImage landed: tl={} tr={} bl={} br={} values={}",
                     hex(target.store().pixel(x, y)),
                     hex(target.store().pixel(x + width - 1, y)),
                     hex(target.store().pixel(x, y + height - 1)),
-                    hex(target.store().pixel(x + width - 1, y + height - 1)));
+                    hex(target.store().pixel(x + width - 1, y + height - 1)),
+                    values(target.store(), x, y, width, height));
         }
         afterDrawing(client, gc, drawable, 0);
+    }
+
+    /**
+     * The distinct byte values of a small just-written image, low byte first, as a diagnostic: an
+     * image whose values are all the same tells a reader nothing, and one whose values are only ever
+     * 0x55, 0xaa and 0xff says the coverage arrived pre-quantised instead of smooth.
+     */
+    private static String values(PixelStore store, int x, int y, int width, int height) {
+        if (width * height > 64) {
+            return "(too big)";
+        }
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        for (int row = 0; row < height; row++) {
+            for (int column = 0; column < width; column++) {
+                seen.add(String.format("%02x", store.pixel(x + column, y + row) & 0xFF));
+            }
+        }
+        return String.join(",", seen);
     }
 
     public void getImage(ClientConnection client, GetImage r) {

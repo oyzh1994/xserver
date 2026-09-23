@@ -426,7 +426,19 @@ public final class Picture extends XResource {
      */
     private int stored(int x, int y) {
         int pixel = store.pixel(drawableX + x, drawableY + y);
-        return format.isAlphaOnly() ? format.toArgb(pixel) : pixel;
+        if (format.isAlphaOnly() || drawableDepth() == 8) {
+            // A depth 8 drawable holds the byte its client sent, and the format is what says whether
+            // that byte is coverage (alpha only, so the whole value is the alpha) or a colour in the
+            // visual's layout (3-3-2, whose fields the format's masks carry). Reading it any other
+            // way costs the antialiasing: see ImageCodec on why it is stored unconverted.
+            return format.toArgb(pixel);
+        }
+        return pixel;
+    }
+
+    /** The depth of the drawable this picture is on, which says how its pixels are stored. */
+    private int drawableDepth() {
+        return drawable instanceof XWindow window ? window.depth() : ((XPixmap) drawable).depth();
     }
 
     /**

@@ -382,17 +382,32 @@ public final class ImageCodec {
         out[at] |= (byte) (bigEndian ? 0x80 >>> (bit & 7) : 1 << (bit & 7));
     }
 
-    /** Converts a wire pixel value to the 0xAARRGGBB the stores use. */
+    /**
+     * Converts a wire pixel value to the 0xAARRGGBB the stores use.
+     *
+     * <p>A depth 8 drawable is kept as the byte the client sent, in the low eight bits, whether or
+     * not it has a visual. Eight bit pixels are mostly not colours at all - a toolkit rasterises its
+     * antialiased shapes and glyphs into a depth 8 pixmap whose bytes <em>are</em> coverage - and
+     * reading that byte as a colour through the visual destroys six of its eight bits: this server
+     * exposes a depth 8 visual of the usual 3-3-2 layout, so each byte came back as the blue channel
+     * of its own expansion, which is coverage modulo four. Measured against termora, whose icons then
+     * arrived quantised to four levels - the toolbar drew as flat, bold shapes where a real server
+     * shows smooth edges - and the same loss hit every antialiased glyph drawn beside it. A drawable
+     * with a colour visual still shows the right colours, because the picture's format carries the
+     * same masks and decodes the byte on the way out.
+     */
     private static int argb(int value, int depth, VisualInfo visual) {
         if (depth == 1) {
             // A one bit drawable has two pixel values, which X11 names black and white.
             return (value & 1) != 0 ? 0xFFFFFFFF : 0xFF000000;
         }
+        if (depth == 8) {
+            return 0xFF000000 | (value & 0xFF);
+        }
         if (visual != null) {
             return visual.toArgb(value);
         }
         return switch (depth) {
-            case 8 -> 0xFF000000 | (value & 0xFF);
             case 16 -> expand565(value);
             // A depth 32 drawable with no visual is ARGB32 by convention here, and the top byte of
             // the wire pixel is its alpha channel; keeping it is what makes an uploaded cursor image
@@ -407,12 +422,16 @@ public final class ImageCodec {
         if (depth == 1) {
             return (argb & 0x00FFFFFF) != 0 ? 1 : 0;
         }
+        if (depth == 8) {
+            // Mirrors the read path: what the client put in comes back out, so an antialiased mask
+            // survives a GetImage of the pixmap it was rasterised into.
+            return argb & 0xFF;
+        }
         if (visual != null) {
             int value = visual.fromArgb(argb);
             return depth == 32 ? value | (argb & 0xFF000000) : value;
         }
         return switch (depth) {
-            case 8 -> argb & 0xFF;
             case 16 -> ((argb >> 8) & 0xF800) | ((argb >> 5) & 0x07E0) | ((argb >> 3) & 0x001F);
             // Mirrors the read path: a depth 32 drawable keeps its alpha, so a client can read a
             // cursor image or a translucent surface back the way it wrote it.

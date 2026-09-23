@@ -262,6 +262,35 @@ The core protocol never had the bug, because `DrawHandlers.Target` asks the wind
 per request; only the picture path cached it, which is why everything except a moved window's
 *contents* - its background, its border, its event handling - behaved.
 
+## A depth 8 drawable holds bytes, not colours
+
+A depth 8 pixel is stored as the byte the client sent, unconverted, whether or not the drawable has a
+visual. Mostly it is not a colour: a toolkit rasterises its antialiased shapes and glyphs into a depth
+8 pixmap whose bytes *are* coverage, and composites a colour through it. Reading that byte as a colour
+through the visual destroys six of its eight bits. This server offers a depth 8 visual of the usual
+3-3-2 layout, so each byte came back as the blue field of its own expansion - coverage modulo four,
+which reaches the picture as 0x00, 0x55, 0xaa and 0xff and nothing in between.
+
+Measured against Xvfb on the same application (termora again): its toolbar icons drew with exactly
+three colours between the icon colour and the background, where Xvfb's - the same client, the same
+requests - drew twenty. On screen that is the difference between a flat, bold icon and the one the
+application is supposed to show, and the same loss hits every antialiased glyph beside it. It is
+invisible to `xdpyinfo`-level inspection: the mask *picture* is alpha-only on both servers, so the
+format is right and only what the pixmap holds is wrong.
+
+Why Xvfb is right by luck rather than by effort: its screen is 24 bit, so it has no depth 8 visual at
+all. A client that asks for a depth 8 pixmap there gets one with no visual attached, and the byte is
+simply kept. Matching that exactly would mean dropping the depth 8 visual from the screen, which also
+takes away depth 8 *windows*; keeping the byte and decoding it through the format on the way out
+(`Picture.stored`, whose alpha-only and depth 8 pictures go through their format's masks) leaves both
+working. `ImageCodecTest.depthEightPixelsKeepAllEightBitsOfTheirValue` pins the storage and the
+round trip.
+
+The core protocol's `PutImage` was the only path that converted, and `packed` on the read side was the
+only one that converted back; everything else already treated a depth 8 store as raw. The log line
+that found it is `DrawHandlers`' `PutImage landed: ... values=`, which prints the distinct bytes a
+small image put down: three values where a mask should have had a gradient is what named the cause.
+
 ## How close the picture is to a real server
 
 Measured against Xvfb on the same application, screenshotted from both and compared pixel for pixel
@@ -274,14 +303,18 @@ Measured against Xvfb on the same application, screenshotted from both and compa
   and 0x73 there. Nothing is more correct about being off by one in Xorg's direction, and it is
   invisible - but it is the reason a byte-for-byte comparison against a reference server will never
   be clean, and why the interesting question is where the *larger* differences are.
-- The **1415 larger ones are confined to the top fifty rows** of that application's window: the
-  title bar and its icons. They are small: a pixel here, a row of a glyph there, not a shift (a
-  whole-window scan over offsets of +/-2 pixels finds none that fits better). What was ruled out: the
-  composites that draw them are 1:1 masked `Over` with the nearest filter (logged, with the mask and
-  filter now in the log line), and the mask those composites read has its coverage in the low byte,
-  which the server's own `PutImage landed` diagnostic confirms. So the difference is downstream of
-  pixels this server can see, and nailing it would mean diffing the mask pixmap itself against a
-  reference render - which is where to start if anybody cares about those fifty rows.
+- The **larger differences that used to be confined to the top fifty rows** of that application's
+  window - the title bar and its icons - are **gone**: they were the depth 8 pixels being read as
+  3-3-2 colours, which is written up above. The toolbar strip now comes out with a worst channel delta
+  of **2**, 936 of its 9280 pixels differing by one unit and none by more, where before a fifth of them
+  differed by up to 232. What still differs inside the window's own rectangle is the one-unit class
+  plus, along its edge, the root colour this server paints and the border it draws - both deliberate.
+  The measurement only means anything with both applications in the same state: the first version of
+  this comparison had the pointer parked over the toolbar in one capture and not the other, which
+  lights up hover states and reads as a large, entirely imaginary difference.
+- **Scan for a shift before believing a rendering difference.** A whole-window scan over offsets of
+  +/-4 pixels is cheap and says whether the two renders disagree in place or are the same picture moved,
+  which are very different bugs.
 
 ## Default colours
 
