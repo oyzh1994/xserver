@@ -169,6 +169,30 @@ If a window is ever blank again, `-Dxserver.dumpFrame=<prefix>` writes the JavaF
 framebuffer behind it to PNG files once a second. Comparing the two says immediately whether the
 server failed to draw or the display failed to show it.
 
+## A sharp picture on a HiDPI display
+
+A client cannot draw more detail than the screen it is told about, and the host window can only
+show what the framebuffer holds. On a display that draws two device pixels per logical one - a
+Retina panel, or a 4K screen at 200% - a screen of the size the window *looks* is therefore shown
+enlarged, and everything in it is soft. `--scale N` fixes that by making the screen N times the
+pixels across for the same physical size:
+
+```
+xserver :1 --geometry 1200x800 --scale 2
+```
+
+`--geometry` stays the size the window looks; the screen, the framebuffer and the client's windows
+are twice that in pixels, the client is told about a screen of twice the resolution, and the host
+window shows that larger picture at the smaller logical size - one framebuffer pixel per device
+pixel. A client that sizes its interface by the reported resolution then draws at the display's real
+resolution, and the result is as sharp as it would be running natively.
+
+Off by default, because a client that ignores the resolution gets a screen twice the size and would
+otherwise just be laid out the way it was before. Clients that do ignore it can sometimes be told:
+Compose Desktop / AWT applications take `-Dsun.java2d.uiScale=2`, which is what made termora sharp
+in the measurement above. Either way the picture is only as detailed as the client draws it - this
+option gives it somewhere to draw, it does not enlarge anything.
+
 ## RENDER formats are matched by shape, not by identity
 
 A client does not look up a picture format by its id. It looks it up by the *shape* of the pixel
@@ -181,6 +205,14 @@ wire format gives it, says every channel is zero bits wide. Nothing errors: the 
 and Xft's per-display `solidFormat` - which it resolves once, as `ARGB32` - comes back null, so every
 `XftDrawString` returns without sending a request at all. The window keeps its background and its
 cursor and simply never draws text.
+
+The same distinction has to be honoured when a picture is *read*: a drawable's pixels are held as
+`0xAARRGGBB`, which is the right reading for a format with colour channels and the wrong one for a
+format that is nothing but coverage. An A8 mask's pixel value is its alpha, so reading it as a colour
+channel with an opaque alpha makes every pixel of the mask fully covered - and everything composited
+through it is drawn as a solid rectangle in the source's colour. That is what an application's icons
+and filled paths look like when it happens: blank blocks where the artwork should be. Text is
+unaffected, because the glyph path decodes through the format already; only pictures did not.
 
 Two smaller traps in the same area: the `CompositeGlyphs` command stream is in the connection's byte
 order (only the glyphset-switch item is always most-significant-byte first), and a glyph is drawn at

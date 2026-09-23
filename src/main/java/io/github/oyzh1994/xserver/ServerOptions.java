@@ -49,6 +49,17 @@ public final class ServerOptions {
     private int tickRate = 60;
     /** True when every client shares one window instead of getting one of its own. */
     private boolean singleWindow;
+    /**
+     * How many framebuffer pixels one logical pixel is worth.
+     *
+     * <p>A client cannot draw more detail than the screen it is told about, so asking for a sharp
+     * picture on a HiDPI display means telling it about a bigger screen: at 2, {@code --geometry}
+     * stays the size the window looks and the screen, the framebuffer and the client's own windows
+     * are all twice that in pixels, which is what a client that scales itself by the reported
+     * resolution will render into. A client that ignores the resolution simply gets a screen twice
+     * the size and is laid out the same way as before, so this is off by default.
+     */
+    private int scale = 1;
     /** How long clients get to close themselves after the host window is closed. */
     private int closeGraceMillis = 2000;
 
@@ -83,6 +94,7 @@ public final class ServerOptions {
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
+                case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
                     i += 2;
@@ -161,6 +173,13 @@ public final class ServerOptions {
                                         closed, before the server disconnects them (default 2000)
                   --single-window       render every client into one window, as a plain X screen
                                         (default: one window per client connection)
+                  --scale N             put N framebuffer pixels in each logical pixel, for a
+                                        sharp picture on a HiDPI display (default 1). --geometry
+                                        stays the size the window looks; the client is told about
+                                        a screen N times that in pixels and N times the
+                                        resolution, and draws at it if it scales itself by the
+                                        resolution. An application that ignores it (compose
+                                        desktop is one) can be told: -Dsun.java2d.uiScale=N
 
                 The display is also reported through DISPLAY, so clients can be started with
                   DISPLAY=:1 xeyes
@@ -271,6 +290,38 @@ public final class ServerOptions {
      */
     public boolean perClientWindows() {
         return !singleWindow;
+    }
+
+    /** How many framebuffer pixels a logical pixel is. */
+    public int scale() {
+        return scale;
+    }
+
+    /** Screen width in framebuffer pixels, which is what a client is told and draws into. */
+    public int pixelWidth() {
+        return width * scale;
+    }
+
+    public int pixelHeight() {
+        return height * scale;
+    }
+
+    /**
+     * Keeps the scale to whole numbers a display can actually be: a fractional one would leave the
+     * framebuffer and the window unable to line up pixel for pixel, which is the only thing this
+     * option is for.
+     */
+    private static int parseScale(String value) {
+        int scale;
+        try {
+            scale = Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("scale must be a whole number, not '" + value + "'");
+        }
+        if (scale < 1 || scale > 4) {
+            throw new IllegalArgumentException("scale must be between 1 and 4, not " + scale);
+        }
+        return scale;
     }
 
     /** How long a client has to close its windows itself once the host window has closed. */

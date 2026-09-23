@@ -150,14 +150,29 @@ class JavaFxBackendTest {
      */
     @Test
     void aPointInTheWindowIsOffsetByTheCornerOfTheRectangleItShows() {
-        assertEquals(120, JavaFxBackend.screenCoordinate(100, 20, 800),
+        assertEquals(120, JavaFxBackend.screenCoordinate(100, 20, 1, 800),
                 "a point is measured from where the rectangle starts");
-        assertEquals(100, JavaFxBackend.screenCoordinate(100, 0, 800),
+        assertEquals(100, JavaFxBackend.screenCoordinate(100, 0, 1, 800),
                 "a rectangle at the origin changes nothing");
-        assertEquals(799, JavaFxBackend.screenCoordinate(900, 0, 800),
+        assertEquals(799, JavaFxBackend.screenCoordinate(900, 0, 1, 800),
                 "a drag can leave the screen, and is clamped back onto it");
-        assertEquals(799, JavaFxBackend.screenCoordinate(790, 20, 800),
+        assertEquals(799, JavaFxBackend.screenCoordinate(790, 20, 1, 800),
                 "the offset is applied before the clamp, as the Swing backend has always done");
+    }
+
+    /**
+     * On a screen of twice the pixels the window is laid out at the size it looks, so a point in it
+     * is twice as far into the framebuffer. This is what keeps the pointer where the user put it on
+     * a HiDPI display - and what makes the screen worth having, since a client drawing at that
+     * resolution is drawn into pixels that reach the display one for one.
+     */
+    @Test
+    void aPointOnAScaledScreenCountsTwiceThePixels() {
+        assertEquals(220, JavaFxBackend.screenCoordinate(100, 20, 2, 1600),
+                "a logical point is scale framebuffer pixels from the viewport's corner");
+        assertEquals(0, JavaFxBackend.screenCoordinate(0, 0, 2, 1600));
+        assertEquals(1599, JavaFxBackend.screenCoordinate(900, 0, 2, 1600),
+                "and it is still clamped to the framebuffer it lands in");
     }
 
     /**

@@ -127,6 +127,13 @@ public final class JavaFxBackend implements DisplayBackend {
         return image;
     }
 
+    /**
+     * How many framebuffer pixels one logical one is worth, from the screen. A display that draws
+     * two device pixels per logical one needs a screen of twice the pixels to be sharp in the same
+     * space, and the window then shows that larger picture at the smaller logical size - one
+     * framebuffer pixel per device pixel, which is the whole point.
+     */
+    private int scale = 1;
     private int screenWidth;
     private int screenHeight;
     private int pointerX;
@@ -155,6 +162,7 @@ public final class JavaFxBackend implements DisplayBackend {
     public void start(Screen screen, int displayNumber, InputSink input) {
         startupToolkit();
         this.input = input;
+        this.scale = screen.scale();
         Framebuffer framebuffer = screen.framebuffer();
         this.framebuffer = framebuffer;
         int width = screen.width();
@@ -170,7 +178,10 @@ public final class JavaFxBackend implements DisplayBackend {
             Platform.exit();
             throw e;
         }
-        log.info("javafx window {}x{} for display :{}", width, height, displayNumber);
+        javafx.stage.Screen display = javafx.stage.Screen.getPrimary();
+        log.info("javafx window {}x{} for display :{}, on a {}x{} display at scale {}x{}",
+                width, height, displayNumber, display.getBounds().getWidth(),
+                display.getBounds().getHeight(), display.getOutputScaleX(), display.getOutputScaleY());
     }
 
     @Override
@@ -219,8 +230,8 @@ public final class JavaFxBackend implements DisplayBackend {
             // would otherwise read it as the user dragging the edge and ask for that size again.
             adjustingWindow = true;
             try {
-                canvas.setWidth(viewport.width);
-                canvas.setHeight(viewport.height);
+                canvas.setWidth(logical(viewport.width));
+                canvas.setHeight(logical(viewport.height));
                 graphics = canvas.getGraphicsContext2D();
                 drawViewport();
                 open.sizeToScene();
@@ -267,8 +278,8 @@ public final class JavaFxBackend implements DisplayBackend {
             if (stage == null || width <= 0 || height <= 0) {
                 return;
             }
-            stage.setMaxWidth(width + decorationWidth);
-            stage.setMaxHeight(height + decorationHeight);
+            stage.setMaxWidth(logical(width) + decorationWidth);
+            stage.setMaxHeight(logical(height) + decorationHeight);
             if (log.isDebugEnabled()) {
                 // How far the window may be dragged is otherwise only visible by dragging it, and a
                 // limit that is somehow too small cannot be resized out of.
@@ -311,8 +322,8 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene == null || input == null || stage == null) {
             return;
         }
-        int width = (int) Math.round(scene.getWidth());
-        int height = (int) Math.round(scene.getHeight());
+        int width = (int) Math.round(scene.getWidth() * scale);
+        int height = (int) Math.round(scene.getHeight() * scale);
         if (!isUserResize(adjustingWindow, width, height, viewport)) {
             return;
         }
@@ -348,7 +359,7 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         graphics.drawImage(image, viewport.x, viewport.y, viewport.width, viewport.height,
-                0, 0, viewport.width, viewport.height);
+                0, 0, logical(viewport.width), logical(viewport.height));
     }
 
     /**
@@ -432,7 +443,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // converted either way.
         pixelBuffer = new PixelBuffer<>(width, height, pixels, PixelFormat.getIntArgbPreInstance());
         image = new WritableImage(pixelBuffer);
-        Canvas canvas = new Canvas(viewport.width, viewport.height);
+        Canvas canvas = new Canvas(logical(viewport.width), logical(viewport.height));
         graphics = canvas.getGraphicsContext2D();
         drawViewport();
 
@@ -444,7 +455,8 @@ public final class JavaFxBackend implements DisplayBackend {
         // ever shrinking the window below that.
         Pane root = new Pane(canvas);
         canvas.setManaged(false);
-        Scene scene = new Scene(root, viewport.width, viewport.height, Color.BLACK);
+        Scene scene = new Scene(root, logical(viewport.width), logical(viewport.height),
+                Color.BLACK);
         this.scene = scene;
         // The platform would otherwise draw its own arrow over the window, on top of the sprite the
         // server renders from the client's cursor: two pointers, and the host one always wins.
@@ -622,8 +634,8 @@ public final class JavaFxBackend implements DisplayBackend {
     private void placeOnScreen(int width, int height) {
         // Fully qualified: this class is in the same package as the server's own Screen.
         Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
-        double w = Math.min(width, usable.getWidth());
-        double h = Math.min(height, usable.getHeight());
+        double w = Math.min(logical(width), usable.getWidth());
+        double h = Math.min(logical(height), usable.getHeight());
         double offset = (LIVE_WINDOWS.getAndIncrement() % 8) * 32.0;
         stage.setX(usable.getMinX() + Math.max(0, (usable.getWidth() - w) / 2) + offset);
         stage.setY(usable.getMinY() + Math.max(0, (usable.getHeight() - h) / 2) + offset);
@@ -675,7 +687,8 @@ public final class JavaFxBackend implements DisplayBackend {
         }
         long tempStart = System.nanoTime();
         graphics.drawImage(image, damage.x, damage.y, damage.width, damage.height,
-                damage.x - viewport.x, damage.y - viewport.y, damage.width, damage.height);
+                logical(damage.x - viewport.x), logical(damage.y - viewport.y),
+                logical(damage.width), logical(damage.height));
         drawCursor(cursor);
         BLIT_NANOS.addAndGet(System.nanoTime() - tempStart);
         long frames = FRAMES.incrementAndGet();
@@ -713,7 +726,9 @@ public final class JavaFxBackend implements DisplayBackend {
             // it here would paint it twice.
             return;
         }
-        graphics.drawImage(cursorImage, sprite.x() - viewport.x, sprite.y() - viewport.y);
+        graphics.drawImage(cursorImage, logical(sprite.x() - viewport.x),
+                logical(sprite.y() - viewport.y), logical(sprite.width()),
+                logical(sprite.height()));
     }
 
     /**
@@ -906,16 +921,22 @@ public final class JavaFxBackend implements DisplayBackend {
      * pointer is moved, because the position the client is told about has left the menu even though
      * the pointer has not.
      */
-    static int screenCoordinate(double sceneCoordinate, int viewportOrigin, int screenSize) {
-        return clamp(viewportOrigin + sceneCoordinate, screenSize);
+    static int screenCoordinate(double sceneCoordinate, int viewportOrigin, int scale,
+                                int screenSize) {
+        return clamp(viewportOrigin + sceneCoordinate * scale, screenSize);
+    }
+
+    /** A framebuffer measurement in the logical units the window is laid out in. */
+    private double logical(double framebufferPixels) {
+        return framebufferPixels / scale;
     }
 
     private int screenX(double sceneX) {
-        return screenCoordinate(sceneX, viewport.x, screenWidth);
+        return screenCoordinate(sceneX, viewport.x, scale, screenWidth);
     }
 
     private int screenY(double sceneY) {
-        return screenCoordinate(sceneY, viewport.y, screenHeight);
+        return screenCoordinate(sceneY, viewport.y, scale, screenHeight);
     }
 
     /**

@@ -812,6 +812,18 @@ public final class RenderExtension implements Extension {
     // ------------------------------------------------------------------
 
     /** One rectangle as text, for the diagnostics above. */
+    /**
+     * A picture's format in one word, because the request alone does not say it and the format is
+     * what decides how its pixels are read: an A8 mask is coverage, ARGB32 is colour.
+     */
+    private static String describe(io.github.oyzh1994.xserver.resource.PictFormat format) {
+        if (format == null) {
+            return "?";
+        }
+        String kind = format.isIndexed() ? "indexed" : format.isAlphaOnly() ? "alpha-only" : "colour";
+        return "depth " + format.depth() + " " + kind;
+    }
+
     private static String describe(com.github.moaxcp.x11.protocol.xproto.Rectangle r) {
         return r.getX() + "," + r.getY() + " " + Short.toUnsignedInt(r.getWidth()) + "x"
                 + Short.toUnsignedInt(r.getHeight());
@@ -824,10 +836,14 @@ public final class RenderExtension implements Extension {
         if (log.isDebugEnabled()) {
             // The arguments matter more than the request name here: a composite that reaches the
             // wrong drawable, or one whose source is empty, looks identical in a request log.
-            log.debug("Composite op={} src={} mask={} dst={} srcAt ({},{}) size {}x{} dstAt ({},{})",
-                    Byte.toUnsignedInt(request.getOp()), src.drawable(),
-                    mask == null ? "none" : mask.drawable(),
+            log.debug("Composite op={} src={}({},filter {}) mask={} dst={} "
+                            + "srcAt ({},{}) maskAt ({},{}) size {}x{} dstAt ({},{})",
+                    Byte.toUnsignedInt(request.getOp()), src.drawable(), describe(src.format()),
+                    src.filter(),
+                    mask == null ? "none" : mask.drawable() + "(" + describe(mask.format())
+                            + ",filter " + mask.filter() + ")",
                     dst.drawable(), request.getSrcX(), request.getSrcY(),
+                    request.getMaskX(), request.getMaskY(),
                     Short.toUnsignedInt(request.getWidth()),
                     Short.toUnsignedInt(request.getHeight()), request.getDstX(),
                     request.getDstY());

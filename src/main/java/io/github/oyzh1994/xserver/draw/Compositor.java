@@ -122,8 +122,15 @@ public final class Compositor {
             // then maps that already shifted point back into the source. Applying the transform
             // to the unshifted point and adding the registration afterwards puts the pattern one
             // registration's worth of source pixels out of place under every scale and rotation.
-            double dx = baseX + x + offsetX;
-            double dy = baseY + y + offsetY;
+            //
+            // The half pixel is the sample point: a pixel's centre is at (x + 0.5, y + 0.5), which
+            // is where the protocol says a composite reads, and what Picture.sample expects. Handing
+            // it the pixel's index instead lands halfway between two pixels, and a bilinear filter
+            // then averages them - a blur of half a pixel over everything drawn through a mask,
+            // which is most of a toolkit's output. At 1:1 the centre samples the source pixel
+            // exactly, which is the whole point: a copy has to be a copy.
+            double dx = baseX + x + offsetX + 0.5;
+            double dy = baseY + y + offsetY + 0.5;
             double sx = dx;
             double sy = dy;
             if (transform != null) {

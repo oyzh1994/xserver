@@ -47,6 +47,8 @@ public final class Screen {
     private final int number;
     private final int width;
     private final int height;
+    /** How many of this screen's pixels a client is expected to draw per logical pixel. */
+    private final int scale;
     private final int widthMillimeters;
     private final int heightMillimeters;
     private final Framebuffer framebuffer;
@@ -64,12 +66,25 @@ public final class Screen {
 
     public Screen(int number, int width, int height, List<VisualInfo> visuals, int rootDepth,
                   int rootVisualId) {
+        this(number, width, height, 1, visuals, rootDepth, rootVisualId);
+    }
+
+    /**
+     * @param scale how many of this screen's pixels a client should draw per logical pixel. The
+     *     physical size is reported from the logical size, so a screen that is twice as many pixels
+     *     across the same hand-span is reported as twice the resolution - which is how a client that
+     *     sizes its interface by the reported resolution ends up drawing at the screen's real
+     *     resolution instead of being enlarged to it.
+     */
+    public Screen(int number, int width, int height, int scale, List<VisualInfo> visuals,
+                  int rootDepth, int rootVisualId) {
         this.number = number;
         this.width = width;
         this.height = height;
+        this.scale = scale;
         // Report a plausible physical size at roughly 96 dpi so clients compute sane font sizes.
-        this.widthMillimeters = (int) Math.round(width * 25.4 / 96.0);
-        this.heightMillimeters = (int) Math.round(height * 25.4 / 96.0);
+        this.widthMillimeters = (int) Math.round(width * 25.4 / (96.0 * scale));
+        this.heightMillimeters = (int) Math.round(height * 25.4 / (96.0 * scale));
         this.visuals = List.copyOf(visuals);
         this.depths = groupByDepth(this.visuals);
         this.rootDepth = rootDepth;
@@ -95,6 +110,11 @@ public final class Screen {
 
     public int number() {
         return number;
+    }
+
+    /** How many framebuffer pixels a logical pixel is, which is what a backend draws at. */
+    public int scale() {
+        return scale;
     }
 
     public int width() {

@@ -377,7 +377,7 @@ public final class Picture extends XResource {
      */
     private int rawPixel(int x, int y) {
         if (hasContent(x, y)) {
-            return store.pixel(originX + x, originY + y);
+            return stored(x, y);
         }
         int width = width();
         int height = height();
@@ -390,7 +390,23 @@ public final class Picture extends XResource {
     }
 
     private int repeated(int x, int y) {
-        return hasContent(x, y) ? store.pixel(originX + x, originY + y) : 0;
+        return hasContent(x, y) ? stored(x, y) : 0;
+    }
+
+    /**
+     * A stored pixel as this picture's format means it.
+     *
+     * <p>Drawables hold their pixels as {@code 0xAARRGGBB}, which is the right reading for a format
+     * with colour channels and the wrong one for a format that is nothing but coverage: an A8 mask's
+     * pixel value <em>is</em> its alpha, so reading it as a colour channel with an opaque alpha
+     * makes every pixel of the mask fully opaque - and everything a client composites through that
+     * mask is drawn as a solid rectangle in the source's colour. A whole application's icons and
+     * filled paths arrive this way; the glyph path already decodes through the format, which is why
+     * text was unaffected.
+     */
+    private int stored(int x, int y) {
+        int pixel = store.pixel(originX + x, originY + y);
+        return format.isAlphaOnly() ? format.toArgb(pixel) : pixel;
     }
 
     /**

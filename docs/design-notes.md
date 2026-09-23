@@ -202,6 +202,52 @@ Both backends now add the viewport origin and clamp to the screen
 (`opened a window for display :N showing java.awt.Rectangle[...]`) at INFO, which is how to tell
 whether a given setup is affected.
 
+## A screen bigger than the window looks
+
+`--scale N` (default 1) tells clients about a screen N times the pixels across, for the same physical
+size, so that a client which scales itself by the reported resolution draws at the resolution of a
+HiDPI display instead of being enlarged to it. `--geometry` stays the size the window looks; the
+screen, the framebuffer and the root are `N` times that in pixels, and `Screen` reports the physical
+size from the *logical* size so the resolution comes out at `96N` - measured with `xdpyinfo`:
+`--geometry 760x480 --scale 2` gives `1520x960 pixels (201x127 millimeters)` and `192x192 dots per
+inch`.
+
+The host window then does the one thing that makes it worth anything: it lays its canvas out at the
+*logical* size and blits the framebuffer into it scaled by `1/N`, so one framebuffer pixel lands on
+exactly one device pixel. Everything that talks in framebuffer coordinates stays in them - the
+viewport, the damage rectangles, the sprite - and only the two edges convert: `logical()` on the way
+out to the window, and `screenCoordinate`'s multiplication by `N` on the way in from it. A drag is
+reported in framebuffer pixels, because that is what the client's window is resized in, and the
+window's own maximum size is converted back the other way.
+
+Why it is off by default: a client that ignores the resolution gets a screen twice the size and lays
+itself out exactly as before, which on a HiDPI display means a window in the corner at half the
+intended size. Measured with termora (Compose Desktop, so AWT): it kept its 1x interface on a 192 dpi
+screen until it was started with `-Dsun.java2d.uiScale=2`, and then its icons came out as sharp as
+they do running natively - the same application whose icons were blank blocks before the A8 mask
+below was fixed, so the two together are what makes it look right.
+
+## How close the picture is to a real server
+
+Measured against Xvfb on the same application, screenshotted from both and compared pixel for pixel
+(this is the only test of "does it look right" that does not depend on somebody's eye):
+
+- **99.5% of the window is identical** - 907497 of 912000 pixels. Of the rest, 2745 differ by one
+  unit in a channel, 343 by two to sixteen, and 1415 by more.
+- The **one-unit class is left alone on purpose**. It is the blend arithmetic: this server rounds,
+  and Xorg's fixed-point composition truncates, so a value that should be 0x74 can come out 0x74 here
+  and 0x73 there. Nothing is more correct about being off by one in Xorg's direction, and it is
+  invisible - but it is the reason a byte-for-byte comparison against a reference server will never
+  be clean, and why the interesting question is where the *larger* differences are.
+- The **1415 larger ones are confined to the top fifty rows** of that application's window: the
+  title bar and its icons. They are small: a pixel here, a row of a glyph there, not a shift (a
+  whole-window scan over offsets of +/-2 pixels finds none that fits better). What was ruled out: the
+  composites that draw them are 1:1 masked `Over` with the nearest filter (logged, with the mask and
+  filter now in the log line), and the mask those composites read has its coverage in the low byte,
+  which the server's own `PutImage landed` diagnostic confirms. So the difference is downstream of
+  pixels this server can see, and nailing it would mean diffing the mask pixmap itself against a
+  reference render - which is where to start if anybody cares about those fifty rows.
+
 ## Default colours
 
 `Screen.DEFAULT_BACKGROUND_ARGB` (#E8E8E8) is what a screen shows where nobody has drawn;

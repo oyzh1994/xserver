@@ -171,12 +171,16 @@ public final class XServer {
      * the same depth would look like two different displays rather than two of the same.
      */
     private Screen createScreen(int number) {
-        Screen created = new Screen(number, options.width(), options.height(), visuals, ROOT_DEPTH,
-                rootVisual.id());
+        // The screen is the pixel size, not the size the window looks: with --scale 2 a client is
+        // told about twice as many pixels and draws into them, and the host window shows that twice
+        // as large a picture at the same size on screen.
+        Screen created = new Screen(number, options.pixelWidth(), options.pixelHeight(),
+                options.scale(), visuals, ROOT_DEPTH, rootVisual.id());
         XColormap colormap = new XColormap(resourceIdCounter++, null, created, rootVisual, true);
         resources.add(colormap);
         XWindow root = new XWindow(resourceIdCounter++, null, created, null, ROOT_DEPTH,
-                XWindow.INPUT_OUTPUT, rootVisual, 0, 0, options.width(), options.height(), 0);
+                XWindow.INPUT_OUTPUT, rootVisual, 0, 0, options.pixelWidth(),
+                options.pixelHeight(), 0);
         root.setMapped(true);
         root.setBackgroundPixel(rootVisual.fromArgb(Screen.DEFAULT_BACKGROUND_ARGB));
         root.setBorderPixel(rootVisual.fromArgb(Screen.DEFAULT_BACKGROUND_ARGB));
