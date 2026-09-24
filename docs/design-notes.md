@@ -550,6 +550,10 @@ Two traps the probe fell into, both worth an hour of somebody else's time:
 
 ## Deliberately not done
 
+This is the list of things left out *on purpose*, with the measurement that settled them. The
+wider list of what is not implemented yet - including everything a stock server has and this one
+does not - is `backlog.md`, which is written to be worked through item by item.
+
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
 - **SHAPE's bounding shape does not clip drawing** - only the input shape is honoured - so a shaped

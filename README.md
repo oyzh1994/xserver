@@ -220,6 +220,9 @@ order (only the glyphset-switch item is always most-significant-byte first), and
 
 ## Known limitations
 
+The list below is what a user notices; the working list of everything still missing, item by
+item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog.md).
+
 - **No Composite, DAMAGE, RandR or XInput2.** `xeyes` prints a warning about the missing
   `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
 - **A bounding shape does not clip drawing.** SHAPE's input shape is honoured for hit testing; the
