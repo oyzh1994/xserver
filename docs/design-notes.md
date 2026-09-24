@@ -618,6 +618,85 @@ A real server refuses every XFixes request from a client that never called `XFix
 nothing to be told off for it, and every real client asks first anyway. It shows up in a hand-written
 probe, which is how this note exists.
 
+## The host clipboard, on the X selection
+
+Copying inside a forwarded application and pasting into a Mac application is the interaction a user
+notices most, and it is not a copy between two places that hold data: the X side is a *lazy* selection
+- the owner keeps the bytes and hands them over when a requestor asks - and the host side is a
+pasteboard that holds whatever was last put there. `ClipboardBridge` is the thing in the middle, and
+three of its four decisions are forced rather than chosen.
+
+**Reading the platform pasteboard never happens on a request path.** Every X request runs while the
+server lock is held, and a pasteboard read is a round trip to the platform's clipboard service that
+can block; a bridge that read it while serving a `ConvertSelection` would stall every other client
+whenever that service was slow. A poll thread (200 ms) keeps the text, and the request path reads the
+copy. The bridge's own state is guarded by the *server lock* and nothing else, which is what keeps the
+two threads from ever holding two locks in the opposite order - and the pasteboard calls happen
+outside it, deliberately.
+
+**The X-to-host direction has to be eager.** It is tempting to fetch from the client only when the
+pasteboard is read, as the backlog's plan first said; macOS does not tell anybody that a pasteboard
+was *read*, so there is no such moment to fetch on. When a client takes the selection the bridge asks
+it for the data straight away and puts it on the host. The consequence is visible and should be
+expected: copying inside a forwarded application replaces the Mac's clipboard, which is what every
+bridge on a platform without a read notification does.
+
+**The bridge owns the selection only while the host has something to serve.** With a picture on the
+Mac's clipboard there is nothing an X client could be given that it asked for, so the bridge gives the
+selection up rather than answer the paste with an empty string, and a client finds no owner - which
+leaves what the user had alone instead of wiping it. And a change to the pasteboard that the bridge
+did not make *does* take the selection over from a client that holds it, because otherwise the client
+would answer the next paste with what it copied before the user copied something else on the Mac.
+
+**What is not bridged, and why**: `PRIMARY`, because a pasteboard is not a three-button pointer and a
+second invisible clipboard nobody can reach is worse than none; images and files, because there is no
+X11 target for them that a forwarded application would have asked for; and `INCR` when *serving*,
+because the bridge is not a client and is not bound by a request size, so one write serves a property
+of any size. `INCR` is honoured when *receiving*, since whether to chunk is the source client's
+decision and not one this server gets to make for it.
+
+Two things this cost an hour each, both worth knowing. **A toolkit asks for `TARGETS` first and gives
+up if it is refused** - so an owner that serves `UTF8_STRING` and not `TARGETS` looks exactly like a
+bridge that does not work, and finding that means looking at which target the client asked for, which
+is why that is a debug line in `serve`. And **the shell's `pbcopy`/`pbpaste` were blocked in this
+environment's sandbox while AWT was not**, so the host end of a live check goes through Java; the
+verification that mattered was a real `java.awt` clipboard on the VM, which *is* the X selection and
+the same path a Swing application's clipboard takes.
+
+## Where a window was left
+
+A user who arranges their forwarded windows once expects them to come back there, and nothing in the X
+protocol carries that: the position belongs to the host window, which is the server's own. So it is
+remembered between runs, in `~/.xserver/host-windows.properties` - the first state this server keeps
+after it exits, and a plain properties file so that a user can read it and deleting it costs nothing
+but the remembered positions.
+
+**Keyed by `WM_CLASS`**, read off the same window the host window's title comes from. Not the title,
+which is what the user is looking at and changes with the document: the class is the application's own
+name for itself, and a client that publishes neither has nothing to be remembered by, so it is not
+remembered at all.
+
+**Written from the display tick, once the position has held still** (400 ms - the same settle the
+viewport uses). The move is reported by the backend, which runs on the toolkit's thread where writing
+a file is work done between the user's drag and the next frame, and a drag reports a position per
+frame.
+
+Two things this got wrong first, both worth knowing because both look like the feature not working:
+
+- **The position a window *opens* at arrives through the same report a drag does.** Writing it out
+  overwrites what was remembered with the very place the restore was about to change, so a client
+  would never come back to where it was - measured happening on the first live run, which is why the
+  first position of a session is adopted as a baseline rather than recorded.
+- **The clamp belongs to the backend, not to the store.** A position remembered on a display that is
+  no longer attached is a window the user cannot reach, so `setWindowPosition` keeps the window inside
+  the usable area - measured: a remembered `-194,195` came up at `0,195`, with the store still holding
+  what the user had left it at, so the intent survives the clamp.
+
+The **size** is deliberately not remembered, and the reason is that the server already works that way:
+the host window is sized to the client's windows and dragging its edge resizes the client's window, so
+a client that cares how big it is remembers that itself and asks for it next time. A window opened
+larger than its content is the failure mode the frame's maximum size exists to prevent.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

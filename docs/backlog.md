@@ -62,9 +62,9 @@ A prompt that starts a fresh session on this, verbatim:
 | A13 | `AllowEvents` freeze/thaw semantics | correctness | S |
 | C1 | screen auto-size (grow the screen with the window) | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
-| C4 | bridge the host clipboard to the X selections | host window | M |
+| ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
 | C6 | HiDPI automation (`--scale` without hand-editing the client's flags) | host window | S |
-| C7 | remember the host window's position and size per client | host window | S |
+| ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | C3 | fullscreen / maximize / urgency from the client | host window | S-M |
 | C5 | host ↔ X drag and drop (XDND) | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
@@ -130,6 +130,7 @@ The kit, and what each piece is for:
 | `AuthProbe` | sends a connection setup with chosen credentials and reports the answer: the setup's vendor and screen count, or the refusal's reason. No arguments means "offer nothing". |
 | `SelectionProbe` | subscribes to a selection through XFixes and prints every notification, while other connections take the selection, destroy its window and disconnect - the three subtypes A8 is about. Takes a selection name, so a client watching something other than CLIPBOARD can be checked. |
 | `CursorProbe` | the same for `SelectCursorInput`: two windows with different glyph cursors, the pointer warped between them, every `CursorNotify` printed. |
+| `ClipboardProbe` | plays one end of the clipboard bridge against a live server - `read` prints what a client would paste, `write <text>` takes the selection and serves it, `owner` prints who holds it - so the host's own pasteboard can be the other end of the check. |
 | `XProxy` | a byte-level X11 proxy: logs a client's request/event stream against a *real* server, which is the only way to compare what a client sends to Xvfb with what it sends here. |
 | `Crop`, `Pixel`, `Diff`, `Compare` | small image helpers (Crop magnifies a region around a point). |
 
@@ -849,37 +850,63 @@ own, and the sprite must be the only pointer.
 
 ---
 
-### [ ] C4. Bridge the host clipboard to the X selections. **M**
+### [x] C4. Bridge the host clipboard to the X selections. **M** - done 2026-09-24
 
-**Current.** Selections work *inside* the X server (`ConvertSelection` delivers `SelectionRequest` to
-the owner and `SelectionNotify` back), so copy/paste between two forwarded windows works. Nothing
-connects them to the macOS pasteboard: text copied in a forwarded application cannot be pasted into a
-Mac application, and the other way round.
+**What it was.** Selections worked *inside* the X server, so copy/paste between two forwarded windows
+worked, and nothing connected them to the macOS pasteboard: text copied in a forwarded application
+could not be pasted into a Mac application, and the other way round.
 
-**Why it matters.** Copy/paste is the single interaction a user notices most; without it a forwarded
-terminal is a read-only curiosity for anything you want to paste.
+**What changed.** `clipboard/ClipboardBridge`, a window of the server's own that owns `CLIPBOARD`
+whenever a client does not, plus `clipboard/HostClipboard` over the platform's. The design decisions
+that were not obvious, and the measurements behind them:
 
-**Plan.** A bridge that owns `CLIPBOARD` (and optionally `PRIMARY`) whenever no client owns it, and
-acts as a requestor when it does:
+- **The host-to-X half is a poll, not a request.** Every X request runs while the server lock is held,
+  and reading a platform pasteboard is a round trip that can block, so the poll thread (200 ms) keeps
+  the text and the request path only ever reads the copy. The bridge's state is guarded by the *server
+  lock* and nothing else, so the two threads cannot take two locks in opposite orders.
+- **The X-to-host half has to be eager**, which contradicts the plan above: macOS does not tell anybody
+  that a pasteboard was *read*, so there is no "someone is about to paste" moment to fetch on. When a
+  client takes the selection the bridge asks it for the data straight away and puts it on the host -
+  which is also why copying inside a forwarded application replaces the Mac's clipboard, the way every
+  bridge on a platform without a read notification behaves.
+- **The bridge owns the selection only while the host has text to serve**, and gives it up when it does
+  not, so a paste with a picture on the Mac finds no owner and leaves what the user had alone.
+- **A host copy wins over a client's**, or the client that copied before would answer the next paste
+  with its old text: a change to the pasteboard that this bridge did not make takes the selection over.
+- `PRIMARY` is not bridged (a pasteboard has no three-button pointer) and neither are images or files
+  (no X11 equivalent to offer). `INCR` is honoured when *receiving* from a client, whose choice it is;
+  the bridge serves a property in one write, because it is not a client and is not bound by a request
+  size.
 
-- On the X side, the bridge is an ordinary client: it takes ownership when the previous owner goes
-  away, subscribes to XFixes selection notifications (A8) to learn when a client takes it, and
-  answers `SelectionRequest` with `UTF8_STRING`/`STRING`/`TARGETS`.
-- On the host side, it reads/writes the macOS pasteboard (Java's `Clipboard` for text is enough to
-  start; a native path is needed for images and files later).
-- Fetch from a client only when the host pasteboard is read (X selections are lazy): `ConvertSelection`
-  with a property, wait for `SelectionNotify`, read the property, push it to the host.
-- Push from the host on host-pasteboard changes, or on `TARGETS` requests.
+**Measured 2026-09-24**, three ways:
 
-**Traps.** `INCR` (a transfer larger than the window property limit) must be handled or big pastes
-truncate silently; the property must be `UTF8_STRING` for anything non-ASCII; the timestamps must be
-the ones the client used, or a client that compares them refuses the transfer; and a client that owns
-the selection and *disappears* leaves the bridge as owner with nothing to serve. Test with Chinese
-text (the user's own use case).
+- `clipboard/ClipboardBridgeTest` (9 tests) against a clipboard the test owns: the bridge takes the
+  selection when no client does and gives it up when the host holds no text; a client pastes what the
+  host holds and is told `TARGETS`/`UTF8_STRING`/`STRING`/`TEXT`; a target it cannot serve is refused
+  with `property None`; a client's copy reaches the host and the client keeps the selection; both
+  directions in Chinese; a chunked (`INCR`) transfer arrives whole; and a Mac-side copy takes the
+  selection over. All nine fail when the bridge is neutered.
+- Live, against the **real macOS pasteboard**: both directions with `tools/ClipboardProbe`, and both
+  directions with a **real toolkit** (`java.awt`'s clipboard on the VM, which is the X selection - the
+  same path termora's Swing clipboard takes), Chinese included, each end checked with the platform's
+  own pasteboard. EasyShell was connected throughout and the round trip left it alone.
+- `mvn test` 158/158.
 
-**Verify.** Copy in `xterm` on the VM, paste into TextEdit on the Mac; copy in TextEdit, paste into
-`xterm` (Ctrl+Shift+V in termora, or the middle click for `PRIMARY`); both directions with CJK text and
-with a >100 KB paste (the `INCR` path).
+**Found on the way, and fixed**: `GetProperty` read `long_length` as a signed int, so the
+`0xFFFFFFFF` a client sends to mean "the whole property" was `-1` and came back as
+`BadImplementation` instead of data - which is what *every* client sends when it reads a clipboard
+property. `handler/GetPropertyTest` (4 tests) pins the read sizes.
+
+**Traps worth keeping.** A probe that holds the selection and does not answer `TARGETS` looks exactly
+like a broken bridge: a toolkit asks for `TARGETS` first and gives up if it is refused, and that hunt
+cost an hour (`tools/ClipboardProbe` did not answer it either until a real client pointed it out).
+`UTF8_STRING` is what carries anything but ASCII, and `STRING` is Latin-1 by the letter of the spec
+and UTF-8 in practice, so it is read as UTF-8 when it is valid UTF-8 - the only reading that gets both
+kinds of client right. The shell's `pbcopy`/`pbpaste` are blocked in this environment's sandbox while
+AWT is not, so the host end of a live check goes through Java.
+
+**Not covered here**: pasting into a real application's widget by hand (the last mile is a mouse and a
+keyboard, and a scripted gesture inside EasyShell has side effects); images and files; `PRIMARY`.
 
 ---
 
@@ -910,25 +937,42 @@ the resolution must still lay out identically.
 
 ---
 
-### [ ] C7. Remember the host window's position and size per client. **S**
+### [x] C7. Remember the host window's position per client. **S** - done 2026-09-24
 
-**Current.** Every session opens the host window at the platform's default position and at the size of
-the client's content.
+**What it was.** Every session opened the host window at the platform's default position.
 
-**Why it matters.** A user who arranges their forwarded windows once expects them to come back there.
-It is also how the window's *size* survives a client that maps nothing at startup.
+**What changed.** The position is remembered per client in `~/.xserver/host-windows.properties` and
+handed back to the backend when the window opens, clamped to the part of the display windows may
+occupy. `DisplayBackend` grew `setWindowPosition` and an `InputSink.windowMoved` report; the JavaFX
+and Swing backends implement both, and the record of a position is written from the display tick
+rather than from the toolkit's thread.
 
-**Plan.** A small per-client store (keyed by the client's `WM_CLASS` or by the command line reported
-through the host window's title), written when the host window is moved/resized and read when it is
-created. Keep it next to whatever configuration the server already has (`ServerOptions` is argument
-driven today - this is the first piece of *state* the server would persist, so decide where it lives).
+**Only the position, not the size.** The size half of the item is already how the server works: the
+host window is sized to the client's windows, and dragging its edge resizes the client's window - so a
+client that cares how big it is remembers that itself and asks for it next time. Opening a window
+larger than its content is the failure mode the design notes call out (the part it grew into shows
+nothing, and the next content change pulls it back), so remembering a *size* would fight the frame
+the server already keeps sized to what it shows.
 
-**Traps.** A remembered size larger than the screen (or than `--max-screen`) must be clamped. Restoring
-a position the display no longer has (an unplugged monitor) puts the window off-screen - clamp to the
-visible area.
+**Measured 2026-09-24**, two ways:
 
-**Verify.** Move and resize the host window, restart the server and the client, and check both are
-restored, including the clamped cases.
+- `HostWindowPositionTest` (4 tests, a recording backend) and `HostWindowStoreTest` (6): a window opens
+  where it was left; a second client's remembered position is not applied to another's; the position a
+  window *opens* at is not treated as a move; a client with no `WM_CLASS` is not remembered at all;
+  and remembered positions are clamped - off the right and bottom, off the left and top, and a window
+  larger than the display keeping its top-left. Neutering the write and the restore makes them fail.
+- Live, on the Mac with EasyShell from the VM: its real `WM_CLASS` is
+  `cn.oyzh.easyshell.EasyShellApp`; a synthesized title-bar drag (CGEvent) moved the window from
+  `106,81` to `-194,195` and the store followed it exactly. On restart the server logged
+  `opened a window for display :91 ... at -194,195` and the window came up at **`0,195`** - the
+  backend clamped the part that was off the left edge - while the store kept the user's own value.
+
+**Traps.** A window's *opening* position arrives through the same report a drag does, and writing it
+out overwrites what was remembered with the very place the restore was about to change: measured
+happening on the first live run, which is why the first position of a session is adopted as a baseline
+rather than recorded. A drag reports a position per frame, so the write waits for the position to hold
+still (400 ms) - the same settle the viewport uses. And the clamp belongs to the backend, not to the
+store: only the backend knows what the display has room for now.
 
 ---
 

@@ -52,6 +52,8 @@ public final class SwingBackend implements DisplayBackend {
     private volatile Rectangle viewport = new Rectangle();
 
     private InputSink input;
+    /** True while this backend is placing the window itself, so a move is not reported as the user's. */
+    private boolean placingWindow;
 
     // Only touched on the event dispatch thread.
     private int screenWidth;
@@ -121,6 +123,27 @@ public final class SwingBackend implements DisplayBackend {
             ScreenPanel target = panel;
             if (target != null) {
                 target.applyViewport();
+            }
+        });
+    }
+
+    @Override
+    public void setWindowPosition(int x, int y) {
+        runOnEdtAndWait(() -> {
+            if (frame == null) {
+                return;
+            }
+            // Clamped here: a remembered position from a display that is no longer attached would
+            // otherwise put the window where the user cannot reach it.
+            java.awt.Rectangle usable = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+                    .getMaximumWindowBounds();
+            java.awt.Point placed = io.github.oyzh1994.xserver.HostWindowStore.clamp(
+                    new java.awt.Point(x, y), frame.getWidth(), frame.getHeight(), usable);
+            placingWindow = true;
+            try {
+                frame.setLocation(placed.x, placed.y);
+            } finally {
+                placingWindow = false;
             }
         });
     }
@@ -236,6 +259,16 @@ public final class SwingBackend implements DisplayBackend {
             @Override
             public void windowLostFocus(WindowEvent event) {
                 input.focusChanged(false);
+            }
+        });
+        // Where the user drags the frame to is remembered per client, the same as on the JavaFX
+        // path; this backend's window cannot be resized, but it can be moved.
+        window.addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override
+            public void componentMoved(java.awt.event.ComponentEvent event) {
+                if (!placingWindow && input != null) {
+                    input.windowMoved(window.getX(), window.getY());
+                }
             }
         });
         window.addWindowListener(new WindowAdapter() {

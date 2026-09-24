@@ -65,9 +65,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   pointer warped between them, every `CursorNotify` printed. What it is for is the thing about the
   event that is easy to get wrong: the serial names the *cursor*, so it goes back down when the
   pointer returns to one it has shown before.
+- `ClipboardProbe` - one end of the clipboard bridge, for checking a live server against the
+  host's own pasteboard: `read` prints what a client would paste, `write <text>` takes the selection
+  and serves it, `owner` prints who holds it. `write` stays connected - an X selection is lazy, so the
+  data has to still be there when the host asks for it.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
 
-Both probes are how A8's rules were taken from a reference server. Their output against Xvfb and
+The two XFixes probes are how A8's rules were taken from a reference server. Their output against Xvfb and
 against this server is identical once the things a server assigns for itself are normalised away
 (opcodes, atom ids, cursor serials, and the absolute clock, which is a different epoch on each
 server) - compare the two runs by hand, or with a small normaliser, before believing any difference.

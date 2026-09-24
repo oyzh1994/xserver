@@ -4,6 +4,8 @@ import com.github.moaxcp.x11.protocol.X11Input;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ConnectionSetup;
 import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.clipboard.ClipboardBridge;
+import io.github.oyzh1994.xserver.clipboard.HostClipboard;
 import io.github.oyzh1994.xserver.client.RequestDispatcher;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
@@ -86,6 +88,16 @@ public final class XServer {
 
     private final ConnectionSetup connectionSetup = new ConnectionSetup(this);
     private final ExtensionRegistry extensions = new ExtensionRegistry();
+    /** The host clipboard bridge, or null when there is no host to bridge to. */
+    private ClipboardBridge clipboard;
+    /**
+     * Where the host window was per client, or null until the first window opens. Lazy because a
+     * server that never opens a window - every test, and a headless one - has nothing to remember
+     * and no reason to touch the user's home directory.
+     */
+    private HostWindowStore windows = null;
+    /** Set by {@link #setHostWindowStore}; the store actually used, once something needs one. */
+    private HostWindowStore hostWindowStore;
     private final WindowHandlers windowHandlers = new WindowHandlers(this);
     private final DrawHandlers drawHandlers = new DrawHandlers(this);
     private final ResourceHandlers resourceHandlers = new ResourceHandlers(this);
@@ -289,6 +301,50 @@ public final class XServer {
      * <p>Called from the handshake, before the setup reply tells the client which root to use, so
      * the client's very first request already lands on its own screen.
      */
+    /**
+     * The host clipboard bridge, or null when this server has none.
+     *
+     * <p>A server with no window has no host to bridge to, so it has no bridge; neither has one that
+     * was started with {@code --no-clipboard}. Callers must expect null: the bridge is a convenience
+     * for a user sitting in front of the machine, not something the protocol depends on.
+     */
+    public ClipboardBridge clipboard() {
+        return clipboard;
+    }
+
+    /**
+     * Starts the bridge if this server has somewhere to bridge to.
+     *
+     * <p>Only a server that presents a window does: a headless one is either a test or a display
+     * nobody is looking at, and taking the machine's clipboard in either case would be a side effect
+     * nobody asked for.
+     */
+    private void startClipboardBridge() {
+        if (options.noClipboard() || options.backend() == ServerOptions.Backend.HEADLESS) {
+            return;
+        }
+        HostClipboard host = HostClipboard.open();
+        if (host.isAvailable()) {
+            startClipboardBridge(host);
+        }
+    }
+
+    /**
+     * Starts the bridge over a host clipboard the caller supplies, and returns it.
+     *
+     * <p>Public for the same reason {@code --no-clipboard} exists: which clipboard a server bridges
+     * to is a decision about the machine it runs on, and a test that exercised the real one would be
+     * a test that rearranges whatever the person running it had copied.
+     */
+    public ClipboardBridge startClipboardBridge(HostClipboard host) {
+        if (clipboard != null) {
+            return clipboard;
+        }
+        clipboard = new ClipboardBridge(this, host);
+        clipboard.start();
+        return clipboard;
+    }
+
     public ScreenSession openClientScreen(ClientConnection client) {
         Screen privateScreen = createScreen(0);
         InputState privateInput = new InputState(this, privateScreen);
@@ -448,6 +504,11 @@ public final class XServer {
             int timestamp = subtype == XFixesExtension.SELECTION_SET_OWNER
                     ? selectionTime : events.time();
             XFixesExtension.notifySelection(this, atom, owner, timestamp, selectionTime, subtype);
+            if (clipboard != null && subtype == XFixesExtension.SELECTION_SET_OWNER) {
+                // The bridge watches the selection the same way a clipboard manager would, except
+                // that it is the one that takes over when it is left free.
+                clipboard.selectionOwnerChanged(name, owner);
+            }
         }
     }
 
@@ -603,6 +664,7 @@ public final class XServer {
             // One window for the whole screen, opened now and kept for the life of the server.
             openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
         }
+        startClipboardBridge();
         listener = new ClientListener(this);
         listener.start();
         log.info("xserver listening on display :{} ({}x{}), {}", options.displayNumber(),
@@ -754,6 +816,7 @@ public final class XServer {
                             events.time());
                 }
             }
+            rememberWindowPosition(session);
             damage = session.screen().framebuffer().takeDamage();
         } finally {
             serverLock.unlock();
@@ -823,6 +886,11 @@ public final class XServer {
      * makes the drag stutter, so the rectangle is applied once it settles.
      */
     private static final long VIEWPORT_SETTLE_MILLIS = 0;
+    /**
+     * How long the host window has to hold still before where it is gets written to the store. A
+     * drag reports a position every frame; only where it came to rest is worth keeping.
+     */
+    private static final long WINDOW_POSITION_SETTLE_MILLIS = 400;
 
     /**
      * The part of a screen the client's windows occupy: the union of its mapped top level windows.
@@ -987,11 +1055,72 @@ public final class XServer {
         DisplayBackend window = session.client() == null && sharedBackend != null
                 ? sharedBackend
                 : backendFactory.get();
+        session.setClientKey(clientKey(session));
+        java.awt.Point remembered = rememberedWindowPosition(session);
         window.setViewport(viewport);
         window.start(session.screen(), options.displayNumber(), session.input());
+        if (remembered != null) {
+            // After start, because a backend has no window to move before it has one. The backend
+            // clamps it: a position from a display that is no longer attached is not one this one
+            // can show.
+            window.setWindowPosition(remembered.x, remembered.y);
+        }
         session.setBackend(window);
         session.setViewport(viewport);
-        log.info("opened a window for display :{} showing {}", options.displayNumber(), viewport);
+        log.info("opened a window for display :{} showing {}{}", options.displayNumber(), viewport,
+                remembered == null ? "" : " at " + remembered.x + "," + remembered.y);
+    }
+
+    /**
+     * What a client is remembered by, or null when it publishes nothing to remember it by.
+     *
+     * <p>{@code WM_CLASS} and not the title: a title is what the user is looking at and changes with
+     * the document, while the class is the application's own name for itself. It is read off the same
+     * window the host window's title comes from - the largest mapped top level - and only at the
+     * moment the window opens, which is before any title can have changed it.
+     */
+    private String clientKey(ScreenSession session) {
+        XWindow source = session.identitySource();
+        if (source == null) {
+            return null;
+        }
+        int atom = atoms.intern("WM_CLASS", true);
+        if (atom == AtomTable.NONE) {
+            return null;
+        }
+        XProperty property = source.properties().get(atom);
+        if (property == null || property.data().length == 0) {
+            return null;
+        }
+        // Two NUL separated strings, instance then class, and it is the class that names the
+        // application: "navigator", "Navigator" for the same browser, and a second window of the
+        // same application is the same window as far as this is concerned.
+        String[] parts = new String(property.data(),
+                java.nio.charset.StandardCharsets.ISO_8859_1).split("\0");
+        for (int i = parts.length - 1; i >= 0; i--) {
+            if (!parts[i].isEmpty()) {
+                return parts[i];
+            }
+        }
+        return null;
+    }
+
+    /** Where this session's window was the last time, or null when it has not been seen before. */
+    private java.awt.Point rememberedWindowPosition(ScreenSession session) {
+        return session.clientKey() == null ? null : windowStore().position(session.clientKey());
+    }
+
+    private synchronized HostWindowStore windowStore() {
+        if (windows == null) {
+            windows = hostWindowStore != null ? hostWindowStore : HostWindowStore.open();
+        }
+        return windows;
+    }
+
+    /** The store to remember windows in, for a test or an embedder that wants its own. */
+    public void setHostWindowStore(HostWindowStore store) {
+        this.hostWindowStore = store;
+        this.windows = null;
     }
 
     /**
@@ -1003,6 +1132,46 @@ public final class XServer {
             session.setBackend(null);
             window.stop();
         }
+    }
+
+    /**
+     * Where the user is holding a client's window, written out once it has held still.
+     *
+     * <p>Written from the tick rather than from the backend that reported the move, for two reasons:
+     * the backend is on the toolkit's thread, where writing a file would be work done between the
+     * user's drag and the next frame, and a drag reports a position per frame - a file per frame is
+     * a file that is never read afterwards. The settle is the same trick the viewport uses.
+     */
+    private void rememberWindowPosition(ScreenSession session) {
+        java.awt.Point moved = session.input().hostWindowPosition();
+        if (moved == null || session.clientKey() == null) {
+            return;
+        }
+        if (session.windowPosition() == null) {
+            // The first position a session hears about is where the window opened, not a move: it is
+            // the platform choosing a spot, or this server putting the window back where it was last
+            // time. Recording it would overwrite what was remembered with the very place the restore
+            // was about to change - measured happening, on the first live run.
+            session.setWindowPosition(moved);
+            return;
+        }
+        if (!moved.equals(session.windowPosition())) {
+            // A position this server has not seen before, which is where a drag starts from.
+            session.setWindowPosition(moved);
+            session.setPositionHeldSince(System.currentTimeMillis());
+            return;
+        }
+        if (moved.equals(session.persistedWindowPosition()) || session.positionHeldSince() == 0
+                || System.currentTimeMillis() - session.positionHeldSince()
+                        < WINDOW_POSITION_SETTLE_MILLIS) {
+            return;
+        }
+        // The same position, and it has held still: this is where the user left the window.
+        session.setPersistedWindowPosition(moved);
+        session.setPositionHeldSince(0);
+        windowStore().rememberPosition(session.clientKey(), moved.x, moved.y);
+        log.debug("display :{} window for {} is at {},{}", options.displayNumber(),
+                session.clientKey(), moved.x, moved.y);
     }
 
     /**
@@ -1158,6 +1327,9 @@ public final class XServer {
 
     public void stop() {
         running = false;
+        if (clipboard != null) {
+            clipboard.stop();
+        }
         if (listener != null) {
             listener.stop();
         }

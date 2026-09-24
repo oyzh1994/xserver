@@ -39,6 +39,7 @@ Options:
 | `--log-requests` | log every request at debug level |
 | `--tick-rate N` | display refresh rate (default 60) |
 | `--single-window` | render every client into one shared window (default: one window per client) |
+| `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and `headless` runs
@@ -60,6 +61,7 @@ io.github.oyzh1994.xserver
 ├── resource/     windows, pixmaps, GCs, fonts, cursors, colormaps, atoms, properties
 ├── event/        event masks, propagation, crossing events, raw event assembly
 ├── input/        pointer/keyboard state, keymap, cursor sprite
+├── clipboard/    the bridge between the host's clipboard and the X selections
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES
 ```
@@ -127,6 +129,18 @@ before it heard nothing), and `RENDER` — pictures, formats, `Composite` with t
 `FillRectangles`, `Trapezoids`/`Triangles`/`TriStrip`/`TriFan`, the solid and gradient fills, and
 the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
 their text with.
+
+The host window comes back where it was left: where the user arranged it is remembered per client (by
+`WM_CLASS`) in `~/.xserver/host-windows.properties`, and the next session opens there - clamped to the
+part of the display windows may occupy, so a position remembered on a monitor that is no longer
+attached does not put the window out of reach. The window's *size* is not remembered: it follows the
+client's own windows, and a client that cares how big it is asks for that itself.
+
+The host's clipboard is bridged to the X `CLIPBOARD` selection, both ways: a client that pastes
+gets the host's text (served by the server itself, so no client has to be running), and a client that
+copies puts its text on the host's clipboard. Text only, `CLIPBOARD` only - a pasteboard has no
+primary selection, and there is no X target for the images and files a pasteboard can also hold.
+`--no-clipboard` turns it off; a server with no window (`--backend headless`) never has it.
 
 The host window follows the client it shows: its title and icon are the ones that client publishes
 on its top-level window (`_NET_WM_NAME` or `WM_NAME`, and `_NET_WM_ICON`), and dragging its edge
@@ -274,6 +288,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   it may be given, so the platform stops the drag at the screen rather than leaving it larger than
   anything that can fill it. Growing the screen with the window is the deferred work the design notes
   describe.
+- **The clipboard bridge is text only, and only `CLIPBOARD`.** Images and files on the host
+  pasteboard are not offered to clients (there is no X target for them that a forwarded application
+  would have asked for), `PRIMARY` is not bridged, and a client that copies a very large amount of
+  text has it delivered through `INCR`. Copying inside a forwarded application replaces the Mac's
+  clipboard - the host-to-X direction would otherwise have nothing to notice, since macOS does not
+  report that a pasteboard was read.
 - **A popup that extends past the client's window is clipped by the host window.** The window is
   sized to the client's own windows - a menu is transient and does not resize the frame it opens in,
   which it used to, growing the window and shrinking it back every time one was opened. Stretching the

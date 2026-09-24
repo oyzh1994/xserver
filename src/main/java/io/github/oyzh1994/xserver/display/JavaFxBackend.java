@@ -100,6 +100,11 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private boolean adjustingWindow;
     /**
+     * True while the backend is placing the window itself, so the move listeners do not report a
+     * remembered position back as a move the user made.
+     */
+    private boolean placingWindow;
+    /**
      * The part of the screen this window shows, in framebuffer coordinates. Zero-sized until the
      * server sets it, which covers the whole screen: that is what single-window mode wants.
      */
@@ -330,6 +335,40 @@ public final class JavaFxBackend implements DisplayBackend {
         input.windowResized(width, height);
     }
 
+    /** The window was moved by the user, unless this backend was the one moving it. */
+    private void windowMovedByUser() {
+        if (placingWindow || adjustingWindow || stage == null || input == null) {
+            return;
+        }
+        input.windowMoved((int) Math.round(stage.getX()), (int) Math.round(stage.getY()));
+    }
+
+    @Override
+    public void setWindowPosition(int x, int y) {
+        runOnFxThreadAndWait(() -> {
+            if (stage == null) {
+                return;
+            }
+            // Clamped here rather than where the position was remembered, because only the backend
+            // knows what the display has room for now: a remembered position from a monitor that is
+            // no longer plugged in would put the window somewhere the user cannot reach it.
+            javafx.geometry.Rectangle2D usable =
+                    javafx.stage.Screen.getPrimary().getVisualBounds();
+            java.awt.Point placed = io.github.oyzh1994.xserver.HostWindowStore.clamp(
+                    new java.awt.Point(x, y), (int) Math.round(stage.getWidth()),
+                    (int) Math.round(stage.getHeight()),
+                    new java.awt.Rectangle((int) usable.getMinX(), (int) usable.getMinY(),
+                            (int) usable.getWidth(), (int) usable.getHeight()));
+            placingWindow = true;
+            try {
+                stage.setX(placed.x);
+                stage.setY(placed.y);
+            } finally {
+                placingWindow = false;
+            }
+        });
+    }
+
     /**
      * Whether the size the content area has taken is a resize the user made.
      *
@@ -497,6 +536,10 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.setResizable(true);
         scene.widthProperty().addListener((observable, was, is) -> clientAreaChanged());
         scene.heightProperty().addListener((observable, was, is) -> clientAreaChanged());
+        // Where the user drags the frame to is the one thing about the host window that no client
+        // knows: it is remembered per client so the next session opens where this one was left.
+        stage.xProperty().addListener((observable, was, is) -> windowMovedByUser());
+        stage.yProperty().addListener((observable, was, is) -> windowMovedByUser());
         stage.sizeToScene();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {

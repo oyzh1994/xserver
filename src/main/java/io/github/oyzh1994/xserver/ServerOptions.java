@@ -49,6 +49,8 @@ public final class ServerOptions {
     private int tickRate = 60;
     /** True when every client shares one window instead of getting one of its own. */
     private boolean singleWindow;
+    /** Whether the host clipboard is bridged to the X CLIPBOARD selection. */
+    private boolean clipboard = true;
     /**
      * How many framebuffer pixels one logical pixel is worth.
      *
@@ -94,6 +96,7 @@ public final class ServerOptions {
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
+                case "--no-clipboard" -> options.clipboard = false;
                 case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
@@ -288,6 +291,11 @@ public final class ServerOptions {
      * True when every client connection gets a screen and a window of its own, which is the default:
      * a forwarded application then appears as its own window, sized to what it draws.
      */
+    /** Whether the host clipboard should be bridged to the X CLIPBOARD selection. */
+    public boolean noClipboard() {
+        return !clipboard;
+    }
+
     public boolean perClientWindows() {
         return !singleWindow;
     }

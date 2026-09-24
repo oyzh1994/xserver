@@ -40,6 +40,17 @@ public interface DisplayBackend {
          */
         default void windowResized(int width, int height) {
         }
+
+        /**
+         * The user moved the host window, in the platform's own screen coordinates.
+         *
+         * <p>Reported so that where a window was arranged can be remembered (see
+         * {@code HostWindowStore}) - the position belongs to the host window, so nothing else knows
+         * it. Like {@link #windowResized} this comes from the toolkit's thread and is only a
+         * notification: the server records it and writes it out from the display tick.
+         */
+        default void windowMoved(int x, int y) {
+        }
     }
 
     /** Human readable name, used in logs. */
@@ -125,6 +136,18 @@ public interface DisplayBackend {
      * <p>Called from the display tick only, never from a request thread.
      */
     default void setMaxClientArea(int width, int height) {
+    }
+
+    /**
+     * Opens the window at a remembered position, in the platform's own screen coordinates.
+     *
+     * <p>The backend is what clamps it - a position remembered on a display that is no longer there
+     * would otherwise put the window where the user cannot reach it - and a backend with nothing to
+     * move (a headless one) simply ignores this.
+     *
+     * <p>Called from the tick when the window opens, and never while the server lock is held.
+     */
+    default void setWindowPosition(int x, int y) {
     }
 
     /** Tears the window down. */

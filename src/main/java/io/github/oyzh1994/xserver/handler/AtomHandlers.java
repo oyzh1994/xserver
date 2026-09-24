@@ -22,6 +22,7 @@ import com.github.moaxcp.x11.protocol.xproto.SetSelectionOwner;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.clipboard.ClipboardBridge;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.resource.AtomTable;
@@ -45,9 +46,9 @@ import java.util.Map;
  */
 public final class AtomHandlers {
 
-    /** Property notify states. */
-    private static final byte NEW_VALUE = 0;
-    private static final byte DELETED = 1;
+    /** {@code PropertyNotify} states: the property was written, or it went away. */
+    public static final byte NEW_VALUE = 0;
+    public static final byte DELETED = 1;
 
     /** ChangeProperty modes. */
     private static final int MODE_REPLACE = 0;
@@ -55,7 +56,7 @@ public final class AtomHandlers {
     private static final int MODE_APPEND = 2;
 
     /** {@code longLength} values above this mean "read the whole property". */
-    private static final int LONG_LENGTH_ALL = Integer.MAX_VALUE >> 2;
+    private static final long LONG_LENGTH_ALL = Integer.MAX_VALUE >> 2;
 
     private final XServer server;
 
@@ -181,15 +182,20 @@ public final class AtomHandlers {
         if (offsetBytes < 0 || offsetBytes > data.length) {
             throw ProtocolException.badValue(r.getLongOffset());
         }
-        // longLength is in 4 byte units; values above LONG_LENGTH_ALL mean "everything".
+        // longLength is a CARD32 and counts 4 byte units; values above LONG_LENGTH_ALL mean
+        // "everything". It is read unsigned on purpose: the value a client sends to ask for the
+        // whole property is 0xFFFFFFFF, which as a signed int is -1 - not "everything" but a
+        // negative length, and one that used to reach the array copy below as an error the client
+        // was told was BadImplementation rather than answered.
+        long longLength = Integer.toUnsignedLong(r.getLongLength());
         int available = data.length - offsetBytes;
         int requestedBytes;
-        if (r.getLongLength() == 0) {
+        if (longLength == 0) {
             requestedBytes = 0;
-        } else if (r.getLongLength() > LONG_LENGTH_ALL) {
+        } else if (longLength > LONG_LENGTH_ALL) {
             requestedBytes = available;
         } else {
-            requestedBytes = (int) Math.min((long) r.getLongLength() * 4, (long) available);
+            requestedBytes = (int) Math.min(longLength * 4, (long) available);
         }
         // The slice must end on an item boundary.
         requestedBytes -= requestedBytes % unit;
@@ -251,7 +257,16 @@ public final class AtomHandlers {
         }
     }
 
-    private void notifyProperty(XWindow window, int atom, byte state) {
+    /**
+     * Announces a property write to whoever is watching the window - the clients that selected for
+     * {@code PropertyChange} and the server's own listeners, which is what keeps the host window's
+     * title and the clipboard bridge's {@code INCR} handshake in step with the property itself.
+     *
+     * <p>Public because the bridge writes properties on windows that are not its own clients': it is
+     * acting as a selection owner, and an owner that changes a property owes the window the same
+     * notification a client's {@code ChangeProperty} would produce.
+     */
+    public void notifyProperty(XWindow window, int atom, byte state) {
         // A title or an icon is an ordinary property, and the host window shows them, so whoever
         // listens has to hear about the write as well as the clients that selected for it.
         server.windowPropertyChanged(window, atom);
@@ -325,6 +340,15 @@ public final class AtomHandlers {
     public void convertSelection(ClientConnection client, ConvertSelection r) {
         XWindow requestor = window(client, r.getRequestor());
         int ownerId = server.selectionOwner(selectionName(r.getSelection()));
+        // The host clipboard bridge owns CLIPBOARD as a window of the server's own, so there is no
+        // client to forward the request to: it answers here, with the same two events any owner
+        // would send back.
+        ClipboardBridge bridge = server.clipboard();
+        if (bridge != null && ownerId != 0 && bridge.ownsWindow(ownerId)) {
+            bridge.serve(requestor.owner(), requestor, r.getSelection(), r.getTarget(),
+                    r.getProperty(), r.getTime());
+            return;
+        }
         if (ownerId == 0) {
             server.events().send(requestor.owner(), com.github.moaxcp.x11.protocol.xproto
                     .SelectionNotifyEvent.builder()
@@ -386,7 +410,11 @@ public final class AtomHandlers {
     private static final int[] EVENT_WINDOW_OFFSET = buildEventWindowOffsets();
 
     private static final int KEYMAP_NOTIFY = 11;
+    private static final int SELECTION_NOTIFY = 31;
     private static final int CLIENT_MESSAGE = 33;
+
+    /** Offset of {@code SelectionNotify}'s property field, which says where the data was put. */
+    private static final int SELECTION_NOTIFY_PROPERTY = 20;
 
     public void sendEvent(ClientConnection client, SendEvent r) {
         XWindow destination;
@@ -411,6 +439,16 @@ public final class AtomHandlers {
                 ? EVENT_WINDOW_OFFSET[eventCode] : -1;
         if (windowOffset >= 0) {
             putCard32(bytes, windowOffset, destination.id(), senderBigEndian);
+        }
+
+        // A SendEvent aimed at the bridge's window is a client answering a selection request:
+        // the bridge has no connection of its own, so the SelectionNotify the client sent is handed
+        // over rather than delivered - there is nobody on that window to deliver it to.
+        ClipboardBridge bridge = server.clipboard();
+        if (bridge != null && eventCode == SELECTION_NOTIFY
+                && bridge.ownsWindow(destination.id())) {
+            bridge.selectionAnswered(
+                    readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
         }
 
         int mask = r.getEventMask();
@@ -539,6 +577,15 @@ public final class AtomHandlers {
             bytes[offset] = (byte) value;
             bytes[offset + 1] = (byte) (value >> 8);
         }
+    }
+
+    private static int readCard32(byte[] bytes, int offset, boolean bigEndian) {
+        if (bigEndian) {
+            return ((bytes[offset] & 0xFF) << 24) | ((bytes[offset + 1] & 0xFF) << 16)
+                    | ((bytes[offset + 2] & 0xFF) << 8) | (bytes[offset + 3] & 0xFF);
+        }
+        return (bytes[offset] & 0xFF) | ((bytes[offset + 1] & 0xFF) << 8)
+                | ((bytes[offset + 2] & 0xFF) << 16) | ((bytes[offset + 3] & 0xFF) << 24);
     }
 
     private static void putCard32(byte[] bytes, int offset, int value, boolean bigEndian) {

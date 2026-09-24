@@ -66,6 +66,14 @@ public final class ScreenSession {
      */
     private XCursor notifiedCursor;
     private boolean cursorBaselineTaken;
+    /**
+     * What this client is remembered by between runs (its {@code WM_CLASS}), and where its window was
+     * left. Only the display tick touches these.
+     */
+    private String clientKey;
+    private java.awt.Point windowPosition;
+    private java.awt.Point persistedWindowPosition;
+    private long positionHeldSince;
 
     public ScreenSession(Screen screen, InputState input, ClientConnection client) {
         this.screen = screen;
@@ -171,6 +179,41 @@ public final class ScreenSession {
 
     public void setMaxClientArea(java.awt.Dimension maxClientArea) {
         this.maxClientArea = maxClientArea;
+    }
+
+    public String clientKey() {
+        return clientKey;
+    }
+
+    public void setClientKey(String clientKey) {
+        this.clientKey = clientKey;
+    }
+
+    /** Where the user has left the window, waiting to hold still long enough to be written out. */
+    public java.awt.Point windowPosition() {
+        return windowPosition;
+    }
+
+    public void setWindowPosition(java.awt.Point windowPosition) {
+        this.windowPosition = windowPosition;
+    }
+
+    /** Where the window was when it was last written to the store. */
+    public java.awt.Point persistedWindowPosition() {
+        return persistedWindowPosition;
+    }
+
+    public void setPersistedWindowPosition(java.awt.Point persistedWindowPosition) {
+        this.persistedWindowPosition = persistedWindowPosition;
+    }
+
+    /** When the position it is holding was first seen, for the settle. */
+    public long positionHeldSince() {
+        return positionHeldSince;
+    }
+
+    public void setPositionHeldSince(long positionHeldSince) {
+        this.positionHeldSince = positionHeldSince;
     }
 
     public XCursor notifiedCursor() {

@@ -399,6 +399,8 @@ public final class InputState implements DisplayBackend.InputSink {
      * the same time. The tick picks it up and resizes the client's window itself.
      */
     private volatile java.awt.Dimension requestedSize;
+    /** Where the user last dragged the host window, reported by the backend. */
+    private volatile java.awt.Point hostWindowPosition;
 
     @Override
     public void windowResized(int width, int height) {
@@ -412,6 +414,22 @@ public final class InputState implements DisplayBackend.InputSink {
         java.awt.Dimension requested = requestedSize;
         requestedSize = null;
         return requested;
+    }
+
+    /**
+     * The user moved the host window. Called from the toolkit's thread, like
+     * {@link #windowResized}, so it only records where the window is: the display tick is what
+     * remembers it, because that is where the server's own bookkeeping happens and where a write to
+     * a file is not holding anybody up.
+     */
+    @Override
+    public void windowMoved(int x, int y) {
+        hostWindowPosition = new java.awt.Point(x, y);
+    }
+
+    /** Where the host window is now, or null when it has not been moved since the server started. */
+    public java.awt.Point hostWindowPosition() {
+        return hostWindowPosition;
     }
 
     // ------------------------------------------------------------------

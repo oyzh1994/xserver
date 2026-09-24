@@ -96,7 +96,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[withBackground ? 36 : 32];
         request[0] = 1;                             // CreateWindow
         request[1] = 0;                             // depth: copy from the parent
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeInt(request, 4, window);
         writeInt(request, 8, parent);
         writeShort(request, 12, x);
@@ -163,7 +163,7 @@ public final class RawXClient implements AutoCloseable {
     public int queryExtension(String name) throws IOException {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
         request[0] = 98;                            // QueryExtension
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeShort(request, 4, name.length());
         for (int i = 0; i < name.length(); i++) {
             request[8 + i] = (byte) name.charAt(i);
@@ -184,7 +184,7 @@ public final class RawXClient implements AutoCloseable {
     public int[] queryExtensionInfo(String name) throws IOException {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
         request[0] = 98;                            // QueryExtension
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeShort(request, 4, name.length());
         for (int i = 0; i < name.length(); i++) {
             request[8 + i] = (byte) name.charAt(i);
@@ -229,7 +229,7 @@ public final class RawXClient implements AutoCloseable {
     public void openFont(int font, String name) throws IOException {
         byte[] request = new byte[(12 + name.length() + 3) & ~3];
         request[0] = 45;                            // OpenFont
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeInt(request, 4, font);
         writeShort(request, 8, name.length());
         for (int i = 0; i < name.length(); i++) {
@@ -305,6 +305,113 @@ public final class RawXClient implements AutoCloseable {
         writeInt(request, 8, selection);
         writeInt(request, 12, time);                // 0 is CurrentTime
         send(request);
+    }
+
+    /** GetSelectionOwner: the window id that owns a selection, or 0 when nobody does. */
+    public int getSelectionOwner(int selection) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 23;                            // GetSelectionOwner
+        request[2] = 2;
+        writeInt(request, 4, selection);
+        send(request);
+        return readInt(readReply(), 8);
+    }
+
+    /** ConvertSelection: asks the owner for a target, to be put in a property of the requestor. */
+    public void convertSelection(int requestor, int selection, int target, int property, int time)
+            throws IOException {
+        byte[] request = new byte[24];
+        request[0] = 24;                            // ConvertSelection
+        request[2] = 6;
+        writeInt(request, 4, requestor);
+        writeInt(request, 8, selection);
+        writeInt(request, 12, target);
+        writeInt(request, 16, property);
+        writeInt(request, 20, time);
+        send(request);
+    }
+
+    /**
+     * GetProperty for a whole property.
+     *
+     * @return the reply's bytes, with the format at offset 1, the type at 8, {@code bytesAfter} at
+     *     12, the item count at 16 and the value from offset 32 - the raw reply, because a test
+     *     usually wants more than one of those fields
+     */
+    public byte[] getProperty(int window, int property, int type, boolean delete)
+            throws IOException {
+        return getProperty(window, property, type, delete, 0, 0xFFFFFFFF);
+    }
+
+    /**
+     * GetProperty with the two fields that decide how much is read: {@code longOffset} and
+     * {@code longLength}, both in 4 byte units. {@code longLength} 0xFFFFFFFF is the conventional
+     * "as much as there is", and is what a client reading a clipboard property sends.
+     */
+    public byte[] getProperty(int window, int property, int type, boolean delete, int longOffset,
+                              int longLength) throws IOException {
+        byte[] request = new byte[24];
+        request[0] = 20;                            // GetProperty
+        request[1] = (byte) (delete ? 1 : 0);
+        writeShort(request, 2, 6);
+        writeInt(request, 4, window);
+        writeInt(request, 8, property);
+        writeInt(request, 12, type);
+        writeInt(request, 16, longOffset);
+        writeInt(request, 20, longLength);
+        send(request);
+        return readReply();
+    }
+
+    /**
+     * SendEvent with a {@code SelectionNotify}, which is how the owner of a selection answers: it
+     * tells the requestor where the data was put, or {@code property 0} when it refuses the target.
+     */
+    public void sendSelectionNotify(int destination, int time, int requestor, int selection,
+                                    int target, int property) throws IOException {
+        byte[] event = new byte[32];
+        event[0] = 31;                              // SelectionNotify
+        writeShort(event, 2, 0);                    // sequence: the server fills it in
+        writeInt(event, 4, time);
+        writeInt(event, 8, requestor);
+        writeInt(event, 12, selection);
+        writeInt(event, 16, target);
+        writeInt(event, 20, property);
+        sendEvent(destination, event);
+    }
+
+    /** SendEvent: {@code event} is 32 bytes in the client's own byte order, as Xlib sends it. */
+    public void sendEvent(int destination, byte[] event) throws IOException {
+        byte[] request = new byte[44];
+        request[0] = 25;                            // SendEvent
+        request[1] = 0;                             // propagate: no
+        request[2] = 11;
+        writeInt(request, 4, destination);
+        writeInt(request, 8, 0);                    // event mask: nobody else need hear it
+        System.arraycopy(event, 0, request, 12, 32);
+        send(request);
+    }
+
+    /**
+     * Creates and maps a window that publishes a {@code WM_CLASS}, which is the name the server
+     * remembers a client's host window by - {@code null} for the class leaves the property off, as a
+     * client that publishes none does.
+     *
+     * @return the window id
+     */
+    public int mapWindowWithClass(String className, String title) throws IOException {
+        int window = allocateId();
+        createWindow(window, root(), 0, 0, 200, 200);
+        int string = internAtom("STRING");
+        if (className != null) {
+            // Two NUL separated strings, instance then class, which is what WM_CLASS is.
+            setStringProperty(window, internAtom("WM_CLASS"), string,
+                    className + "\0" + className + "\0");
+        }
+        setStringProperty(window, internAtom("WM_NAME"), string, title == null ? "window" : title);
+        mapWindow(window);
+        flush();
+        return window;
     }
 
     /** Moves the pointer through XTEST, which is how a test plays the part of the user. */
@@ -482,7 +589,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[16 + rectangles.length * 8];
         request[0] = (byte) opcode;
         request[1] = 1;                             // minor: ShapeRectangles
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         request[4] = (byte) operation;              // operation comes before the destination kind
         request[5] = (byte) kind;
         request[6] = 0;                             // ordering: UnSorted
@@ -581,7 +688,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
         request[0] = 16;                            // InternAtom
         request[1] = 0;                             // create the atom if it does not exist
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         request[4] = (byte) name.length();
         request[5] = (byte) (name.length() >> 8);
         for (int i = 0; i < name.length(); i++) {
@@ -597,7 +704,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[(24 + atoms.length * 4 + 3) & ~3];
         request[0] = 18;                            // ChangeProperty
         request[1] = 0;                             // replace
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeInt(request, 4, window);
         writeInt(request, 8, property);
         writeInt(request, 12, type);
@@ -655,7 +762,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[(24 + bytes.length + 3) & ~3];
         request[0] = 18;                            // ChangeProperty
         request[1] = 0;                             // replace
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeInt(request, 4, window);
         writeInt(request, 8, property);
         writeInt(request, 12, type);
@@ -671,7 +778,7 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[(24 + values.length * 4 + 3) & ~3];
         request[0] = 18;                            // ChangeProperty
         request[1] = 0;                             // replace
-        request[2] = (byte) (request.length / 4);
+        writeShort(request, 2, request.length / 4);
         writeInt(request, 4, window);
         writeInt(request, 8, property);
         writeInt(request, 12, type);
@@ -802,6 +909,11 @@ public final class RawXClient implements AutoCloseable {
         bytes[offset + 3] = (byte) (value >> 24);
     }
 
+    /**
+     * The request length is a card16. Writing only its low byte works for every small request
+     * and silently truncates a large one - a property value of more than 1020 bytes, which is
+     * exactly the size a chunked clipboard transfer is made of.
+     */
     private static void writeShort(byte[] bytes, int offset, int value) {
         bytes[offset] = (byte) value;
         bytes[offset + 1] = (byte) (value >> 8);
