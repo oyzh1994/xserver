@@ -226,6 +226,19 @@ on a 192 dpi screen until it was started with `-Dsun.java2d.uiScale=2`, and then
 sharp as they do running natively - the same application whose icons were blank blocks before the A8
 mask below was fixed, so the two together are what makes it look right.
 
+Measured again on 2026-09-24 with the client the author actually forwards, and it is the whole trade
+in one number: EasyShell on a `--scale auto` server (which is 2 on this machine) filled the screen it
+was told about - 1280x800 - so the host window came out **640x428 logical points**, sharp and at half
+size, because a JavaFX client does not read the display's resolution from anywhere.
+
+`--scale auto` is the host's own scale factor (`ServerOptions.hostScale`, from the platform's default
+transform) for a user who wants the sharpness and knows their client follows. **A scaled screen
+publishes `Xft.dpi` in the root window's resource manager** - the property `xrdb -merge` sets, and the
+question a toolkit that renders through Xft asks the display - so GTK, Qt and an Xft `xterm` size
+themselves correctly without being started with anything special. That is the half a server can
+automate; the other half is a client's own toolkit flag, and a server that is unscaled on a scaled
+display says so in its log rather than guessing on the user's behalf.
+
 ## A picture follows its window
 
 A RENDER picture over a window carries the translation from its own coordinates to the framebuffer,
@@ -695,6 +708,35 @@ The decoration is measured when the window opens and not again: the platform app
 asynchronously, so a measurement taken right after setting one reads the old size and comes out a title
 bar wrong - once per viewport change, which walks the window down a title bar at a time. That was
 measured, and it is why the measurement lives in `openWindow` alone.
+
+## What the frame does when the client asks for something
+
+Two things an application asks its window manager for reach the host window, and both are read off
+the client's toplevel the same way the title is: `_NET_WM_STATE_FULLSCREEN` shows the frame full
+screen, and `WM_HINTS`' urgency bit brings it to the front once.
+
+**Full screen is the platform's full screen**, which on macOS means another Space and the animation,
+not a window stretched over the menu bar. That is what the system does for an application that asks
+to fill the display, and it is what a user of that system expects; it is also the one time the frame
+is deliberately *not* the size of its content, which is why `fitWindowToViewport` stands aside while
+it lasts. **Maximised is deliberately not a host window state**: the frame follows its content, and a
+client that maximises resizes its own window - which the screen now grows to fit - so mapping the
+request onto the frame as well would be two things sizing the same window.
+
+**The urgency hint raises the frame and nothing else** - not the keyboard, and not every frame: a
+window that puts itself in front sixty times a second is a window the user cannot get away from, so
+the hint is acted on when it appears and not while it stays. This is not the raise-on-show that C2
+describes and that was parked; nothing here happens unless a client says it wants attention.
+
+**The protocol is the awkward half, and it hid a real bug.** A toolkit does not set `_NET_WM_STATE`:
+it sends a `ClientMessage` to the root and waits for the window manager to write the state into the
+property, and a client that is ignored asks again for ever. Handling that message turned up a
+long-standing fault in `AtomHandlers.sendEvent` - the server filled in the event's window field with
+the window the event was **delivered to**, which is right for every event that is *reported against*
+a window and wrong for a `ClientMessage`, where that field is the subject the sender put there. Every
+EWMH request, and the `WM_DELETE_WINDOW` reply an application sends back, arrived with its subject
+replaced by the root. The field is now left alone for a `ClientMessage` and filled in for everything
+else, which is what the protocol says and what a reference server does.
 
 ## Where a window was left
 

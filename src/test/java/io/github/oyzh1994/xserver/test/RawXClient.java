@@ -318,6 +318,64 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /**
+     * The EWMH {@code _NET_WM_STATE} message a toolkit sends the root when it wants a window
+     * fullscreen, maximised or shaded - which is the request, not the state: the window manager is
+     * expected to answer by writing the state into the window's property.
+     *
+     * @param action 0 removes, 1 adds, 2 toggles
+     */
+    public void sendWindowState(int window, int action, int first, int second) throws IOException {
+        byte[] event = new byte[32];
+        event[0] = 33;                              // ClientMessage
+        event[1] = 32;                              // format
+        writeInt(event, 4, window);
+        writeInt(event, 8, internAtom("_NET_WM_STATE"));
+        writeInt(event, 12, action);
+        writeInt(event, 16, first);
+        writeInt(event, 20, second);
+        sendEvent(root(), event);
+    }
+
+    /**
+     * Sets a client's urgency hint, which is one bit of {@code WM_HINTS}' flags word: the client is
+     * asking the window manager to bring it to the user's attention.
+     */
+    public void setUrgency(int window, boolean urgent) throws IOException {
+        int hints = internAtom("WM_HINTS");
+        setCardinalProperty(window, hints, hints, urgent ? 0x100 : 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    /** The atom ids in a {@code _NET_WM_STATE} property, in the order the window carries them. */
+    public int[] windowState(int window) throws IOException {
+        int atom = internAtom("_NET_WM_STATE");
+        byte[] reply = getProperty(window, atom, 0, false);
+        if (RawXClient.readInt(reply, 8) == 0) {
+            return new int[0];
+        }
+        int count = RawXClient.readInt(reply, 16);
+        int[] states = new int[count];
+        for (int i = 0; i < count; i++) {
+            states[i] = RawXClient.readInt(reply, 32 + i * 4);
+        }
+        return states;
+    }
+
+    /** GetAtomName: what an atom is called, or "<unset>" for one the server does not know. */
+    public String atomName(int atom) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 17;                            // GetAtomName
+        request[2] = 2;
+        writeInt(request, 4, atom);
+        send(request);
+        byte[] reply = readReply();
+        // GetAtomName: the name length is the sixteen bit field at 8, not the 32 bit one a
+        // GetProperty reply carries in the same place.
+        int length = RawXClient.readShort(reply, 8);
+        return length == 0 ? "<unnamed>"
+                : new String(reply, 32, length, java.nio.charset.StandardCharsets.ISO_8859_1);
+    }
+
     /** SetSelectionOwner: {@code owner} 0 gives the selection up, 1 names the requesting client. */
     public void setSelectionOwner(int owner, int selection, int time) throws IOException {
         byte[] request = new byte[16];

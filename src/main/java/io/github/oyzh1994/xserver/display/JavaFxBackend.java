@@ -467,6 +467,31 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     @Override
+    public void setFullScreen(boolean fullScreen) {
+        runOnFxThreadAndWait(() -> {
+            if (stage == null || stage.isFullScreen() == fullScreen) {
+                return;
+            }
+            // On macOS this is the platform's own full screen - another Space, with the animation -
+            // rather than a window stretched to cover the menu bar: it is what the system does for
+            // an application that asks to fill the display, and the user can leave it the usual way.
+            stage.setFullScreen(fullScreen);
+            log.debug("window is {}full screen", fullScreen ? "now " : "no longer ");
+        });
+    }
+
+    @Override
+    public void raise() {
+        runOnFxThreadAndWait(() -> {
+            if (stage != null) {
+                // toFront and not requestFocus: a client asking for attention has not asked to take
+                // the keyboard away from whatever the user is typing into.
+                stage.toFront();
+            }
+        });
+    }
+
+    @Override
     public void screenResized(Screen screen) {
         Framebuffer framebuffer = screen.framebuffer();
         int width = screen.width();
@@ -919,7 +944,9 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private void fitWindowToViewport() {
         Stage open = stage;
-        if (open == null || adjustingWindow || viewport.isEmpty()) {
+        if (open == null || adjustingWindow || viewport.isEmpty() || open.isFullScreen()) {
+            // Full screen is the one time the window is deliberately not the size of its content:
+            // the client asked to fill the display, and the platform is the one sizing the window.
             return;
         }
         double width = logical(viewport.width) + decorationWidth;

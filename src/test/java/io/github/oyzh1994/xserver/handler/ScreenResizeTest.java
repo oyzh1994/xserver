@@ -93,8 +93,6 @@ class ScreenResizeTest {
 
             assertEquals(drawn, client.pixelAt(client.root(), 50, 50),
                     "the pixels moved into a larger array: growing a screen is not a new screen");
-            // And the area it grew into is really there: a screen that said it was 500x400 while the
-            // pixels behind it were still 400x300 would read this out of the end of its own array.
             // And the area it grew into is really there. The window was dragged to the new size, so
             // its own background reaches this corner - but only if the pixels behind the screen are
             // 500x400 as well: a screen that claimed that size over a 400x300 array would read this

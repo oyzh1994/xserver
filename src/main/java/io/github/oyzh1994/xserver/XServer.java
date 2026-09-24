@@ -206,6 +206,9 @@ public final class XServer {
         created.setDefaultColormap(colormap);
         created.setBlackPixel(rootVisual.fromArgb(0xFF000000));
         created.setWhitePixel(rootVisual.fromArgb(0xFFFFFFFF));
+        if (options.scale() > 1) {
+            publishDpi(created);
+        }
         XCursor cursor = XCursor.defaultCursor(resourceIdCounter++, null);
         resources.add(cursor);
         created.setRootCursor(cursor);
@@ -303,6 +306,56 @@ public final class XServer {
      * <p>Called from the handshake, before the setup reply tells the client which root to use, so
      * the client's very first request already lands on its own screen.
      */
+    /**
+     * Says so when this display is scaled and the server is not drawing for it.
+     *
+     * <p>On a Retina panel the default of 1 is the wrong answer - everything is drawn at half the
+     * resolution the display has and then enlarged by the platform - but it stays the default
+     * because the other answer is not free: a client that does not follow the resolution lays itself
+     * out for a screen half the size it is given, so making 2 the default would shrink every
+     * application that has not been started with a scale setting of its own. A line in the log is
+     * what the user has instead of a guess made for them.
+     */
+    private void suggestScale() {
+        int host = ServerOptions.hostScale();
+        if (host > 1 && options.scale() == 1) {
+            log.info("this display is {}x: '--scale auto' draws the screen at {}x pixels per logical "
+                            + "pixel, which a client that reads Xft.dpi follows by itself - one that "
+                            + "does not has to be started with its own scale setting, or it will lay "
+                            + "itself out for a screen half this size (see the README)",
+                    host, host);
+        }
+    }
+
+    /**
+     * Publishes the display's resolution to the clients that read it from the resource manager.
+     *
+     * <p>{@code Xft.dpi} on the root window is what `xrdb -merge` sets and what a toolkit that
+     * renders through Xft - GTK, Qt, an xterm with Xft fonts - sizes its interface from. A client
+     * that reads it draws at the resolution the screen really has, which is exactly what a forwarded
+     * application needs on a Retina panel and what it cannot be told any other way: the server
+     * cannot set a client's own toolkit flags. A client that never looks at the resource manager is
+     * not affected by it either, which is what makes it safe to publish whenever the screen is
+     * scaled.
+     *
+     * <p>It is only half of HiDPI, and the other half is not a server's to do - see
+     * {@code ServerOptions.hostScale} and the README.
+     */
+    private void publishDpi(Screen screen) {
+        int atom = atoms.intern("RESOURCE_MANAGER", true);
+        int string = atoms.intern("STRING", true);
+        if (atom == AtomTable.NONE || string == AtomTable.NONE) {
+            return;
+        }
+        // A line of resource database, as xrdb would write it: the value is what a client multiplies
+        // its points by, and 96 is the resolution a 1x display is assumed to have.
+        byte[] value = ("Xft.dpi:\t" + (96 * options.scale()) + "\n")
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        screen.root().properties().put(atom, new XProperty(atom, string, 8, value));
+        log.info("display :{} is scaled {}x: clients that read Xft.dpi will draw at {} dpi",
+                options.displayNumber(), options.scale(), 96 * options.scale());
+    }
+
     /**
      * The host clipboard bridge, or null when this server has none.
      *
@@ -667,6 +720,7 @@ public final class XServer {
             openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
         }
         startClipboardBridge();
+        suggestScale();
         listener = new ClientListener(this);
         listener.start();
         log.info("xserver listening on display :{} ({}x{}), {}", options.displayNumber(),
@@ -865,6 +919,19 @@ public final class XServer {
             session.setAppliedIdentity(identity);
             window.setWindowTitle(identity.title());
             window.setWindowIcon(identity.iconArgb(), identity.iconWidth(), identity.iconHeight());
+            // What the client asked the window manager for, applied to the frame: full screen is
+            // shown as the display, and the urgency hint brings the window forward once - the two
+            // things a forwarded application cannot do for itself when the frame is not its own.
+            if (identity.fullScreen() != session.appliedFullScreen()) {
+                session.setAppliedFullScreen(identity.fullScreen());
+                window.setFullScreen(identity.fullScreen());
+            }
+            if (identity.urgent() != session.appliedUrgent()) {
+                session.setAppliedUrgent(identity.urgent());
+                if (identity.urgent()) {
+                    window.raise();
+                }
+            }
             // Which window a client's title ends up on is otherwise only visible in the host
             // window's title bar, which nobody looking at a log has.
             log.debug("display :{} window is now \"{}\"{}", options.displayNumber(),

@@ -63,9 +63,9 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
-| C6 | HiDPI automation (`--scale` without hand-editing the client's flags) | host window | S |
+| ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
-| C3 | fullscreen / maximize / urgency from the client | host window | S-M |
+| ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
 | C5 | host ↔ X drag and drop (XDND) | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
@@ -926,30 +926,52 @@ keyboard, and a scripted gesture inside EasyShell has side effects); images and 
 
 ---
 
-### [ ] C6. HiDPI automation. **S**
+### [x] C6. HiDPI automation. **S** - done 2026-09-24
 
-**Current.** `--scale N` makes the picture sharp on a Retina display, but the client has to be started
-with its own scale flag (`-Dsun.java2d.uiScale=2` for AWT, the equivalent for others), and today the
-user does that by hand - the design notes explain why `--scale` is off by default and what a client
-that ignores the resolution looks like.
+**What it was.** `--scale N` made the picture sharp on a Retina panel, but the user had to know the
+panel's scale factor and pass it by hand, and a client that sizes itself from the display had to be
+started with a flag of its own for every application.
 
-**Why it matters.** "Sharp on a Mac" is the main reason to use this rather than VNC, and it costs the
-user a manual step per application today.
+**What changed**, and it is two halves with only one of them a server's to do:
 
-**Plan.** Detect the host scale (`com.sun.glass.ui.Screen.getPrimary().getPlatformScaleX()`, or the
-JavaFX scene's `outputScaleX`), and when it is 2, either (a) start with `--scale 2` automatically and
-tell the client its DPI (the reported millimetres already follow the scale), or (b) leave the server
-at 1x and inject the client's scale property through whatever launcher the project ends up with. The
-server cannot set a client's JVM flags, so (a) plus documentation is the honest version; a per-client
-"scale" preference is the product version.
+- **`--scale auto`** resolves to the host's own scale factor (`ServerOptions.hostScale`, read from the
+  platform's default transform - the one piece of HiDPI information the JDK gives up without a
+  toolkit). The scale stays 1 by default, and the reason is measured below.
+- **The screen publishes `Xft.dpi`** in the root window's `RESOURCE_MANAGER` whenever it is scaled -
+  the same property `xrdb -merge` sets, and the question a toolkit that renders through Xft (GTK, Qt,
+  an `xterm` with Xft fonts) asks the display. A client that reads it draws its interface at the
+  resolution the screen really has, which is what makes a forwarded GTK application sharp without
+  being started with anything special. A client that does not read it is unaffected, which is why
+  publishing it is safe.
+- **The other half is not automatable here**: a JavaFX or AWT client sizes itself from its own toolkit
+  settings, so it needs `-Dsun.java2d.uiScale=2` (or the equivalent) to draw at 2x. The server cannot
+  set a client's JVM flags, so the honest version is a loud line in the log, which an unscaled server
+  on a scaled display now prints with the option's name in it.
 
-**Traps.** A scale of 2 quadruples the framebuffer (memory: see E4, and band-with for the software
-blend); `xdpyinfo`'s reported DPI doubles, which some clients use to *choose* their own scale - that is
-the point, but it also means a client that scales by DPI *and* is given `uiScale` double-scales.
+**Measured 2026-09-24**:
 
-**Verify.** The same window captured at `--scale 1` and `--scale 2` on the Retina panel: the 2x one
-must be pixel-sharp (compare an icon's edge count against the Xvfb render), and a client that ignores
-the resolution must still lay out identically.
+- `ServerOptionsTest` (5 tests) and `handler/HighDpiTest` (2): `--scale auto` is the host's scale and
+  the screen is that many times the logical size; a scale no display can line up with is refused;
+  `--max-screen` is parsed and capped at what sixteen bit fields can describe; a scaled screen
+  publishes exactly `Xft.dpi:\t192\n` and an unscaled one publishes nothing. Not publishing fails one
+  and making `auto` a constant fails the other - on this machine, where the host really is 2x.
+- Live, on the Retina panel: `--scale auto` resolved to 2 (in the log), `xdpyinfo` from the VM
+  reported **1280x800 pixels (169x106 mm) / 192x192 dpi** for a 640x400 `--geometry`, and the
+  resource manager carried `Xft.dpi: 192`.
+- **And the measurement that keeps the default at 1**: EasyShell, run against that server, is a
+  JavaFX application that does not read `Xft.dpi`. Its toplevel came out 1280x800 - filling the screen
+  it was told about - so the host window was **640x428 logical points**, with the application's
+  interface at half the size it should be. Sharp, and half-sized: exactly the trade-off
+  `docs/design-notes.md` records for `--scale`, now measured with the client the author actually
+  forwards.
+
+**Traps.** The screen is four times the memory at scale 2 (see E4) and the software blend has four
+times the pixels (E3). A client that scales by the reported DPI *and* is given its own `uiScale`
+double-scales - the DPI is there to be followed, so do not also pass the flag to something that
+already reads it.
+
+**Left open**: a per-client scale setting, which is what would let one server serve a follower and a
+non-follower at once; it needs the client to say what it wants, and the protocol has no way to.
 
 ---
 
@@ -992,28 +1014,56 @@ store: only the backend knows what the display has room for now.
 
 ---
 
-### [ ] C3. Fullscreen, maximize and urgency from the client. **S-M**
+### [x] C3. Fullscreen and urgency from the client. **S-M** - done 2026-09-24
 
-**Current.** The host window takes the client's title and icon and resizes the client's window when
-dragged, but nothing else of the ICCCM/EWMH vocabulary: a client that asks to be fullscreen
-(`_NET_WM_STATE_FULLSCREEN`), maximised, or urgent (`WM_HINTS.UrgencyHint`) is ignored, and
-`WM_TRANSIENT_FOR` is only reported (it is not used to give a dialog a sensible transient window).
+**What it was.** The host window took the client's title and icon and resized the client's window
+when dragged, but nothing else of the EWMH vocabulary: a client that asked to be fullscreen, or set
+its urgency hint, was ignored.
 
-**Why it matters.** A terminal or a media player that goes fullscreen on a real desktop stays a
-window here; an application that wants the user's attention cannot ask.
+**What changed.** The two things a client asks its window manager for, applied to the frame:
 
-**Plan.** Read the properties a client sets (`_NET_WM_STATE`, `WM_HINTS`) in the same place
-`WindowIdentity` reads the title (i.e. on property change, applied by the tick), and translate them:
-fullscreen/maximised -> the host window's corresponding state; urgency -> a Dock bounce or a
-`Stage.toFront` (decide, it is a user-visible behaviour).
+- **Full screen** (`_NET_WM_STATE_FULLSCREEN`) shows the host window full screen and gives it back
+  when the client asks for it back. `WindowIdentity` reads the state off the client's toplevel, and
+  the tick applies it, the same path the title already takes. `JavaFxBackend.fitWindowToViewport`
+  stands aside while the window is full screen - that is the one time the window is deliberately not
+  the size of its content, and the platform is the one sizing it.
+- **Urgency** (`WM_HINTS`' `UrgencyHint`) brings the window to the front, once per hint, and
+  deliberately does **not** take the keyboard. This is *not* the raise-on-show that C2 describes and
+  that the user parked: nothing happens unless a client says it wants attention, which is the one
+  case where pulling a window out from behind another is what was asked for.
 
-**Traps.** `_NET_WM_STATE` is a *list* that a client adds to and removes from, and it expects the
-window manager to put the state *back* into the property as it applies it - a client that asks for
-fullscreen and is ignored may retry forever. Transient windows: this server shows one client in one
-host window (see C8), so `WM_TRANSIENT_FOR` has nothing to do today.
+**The protocol half, which is where the work was.** A toolkit does not set `_NET_WM_STATE` - it sends
+a `ClientMessage` to the root and waits for the window manager to write the state into the property,
+and a client that is ignored asks again for ever. So `AtomHandlers` handles the message
+(`applyWindowStateMessage`), and there is a **found bug** behind why it could not work before:
+`SendEvent` filled in the event's window field with the window it was *delivered* to, which is right
+for every event that is reported *against* a window and wrong for a `ClientMessage`, whose window
+field is the subject the sender put there. Every EWMH request - and the `WM_DELETE_WINDOW` reply -
+was arriving with its subject replaced by the root. Fixed in `AtomHandlers.sendEvent`.
 
-**Verify.** `xterm -fullscreen`-style clients (or a raw client that sets `_NET_WM_STATE_FULLSCREEN`)
-fills the display; a client that sets the urgency hint is noticeable.
+**Measured 2026-09-24**:
+
+- `handler/WindowStateTest` (6 tests, a real client, a recording backend): asking to fill the display
+  shows the display *and* writes the state back; asking again gives it back; `toggle` adds and then
+  removes; a request naming two states (maximised horizontally and vertically) applies both; a state
+  written straight to the property is honoured too; and the urgency hint raises the frame exactly
+  once - a second raise per frame is what a window the user cannot get away from would look like.
+  All six fail when the message handling or the tick's application of it is disabled.
+- Live, on the Mac with `tools/WindowStateProbe` (new in the kit): `fullscreen on` put the host
+  window into the platform's full screen (`window is now full screen` in the log), the client read
+  `[_NET_WM_STATE_FULLSCREEN]` back out of its own property, and `on,off` in one connection gave it
+  back again.
+
+**Decisions worth keeping.** Full screen is the **platform's** full screen - on macOS another Space,
+with the animation - rather than a window stretched to cover the menu bar: it is what the system does
+for an application that asks to fill the display, and the user leaves it the usual way. It is a
+product decision rather than a technical one, and it is one line to change if it is wrong.
+**Maximised** is deliberately *not* mapped to a host window state: the host window follows its
+content, and a client that maximises itself resizes its own window, which the screen now grows to fit
+(C1) - so the request is written back to the property and the client's own resize does the rest.
+
+**Left open**: `WM_TRANSIENT_FOR` still only exists as a property - with one host window per client
+(see C8) there is nothing for a transient to be relative to.
 
 ---
 

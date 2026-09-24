@@ -41,6 +41,7 @@ Options:
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
+| `--scale N\|auto` | screen pixels per logical pixel: `auto` is the host's own scale, 2 on a Retina panel (default 1) |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and `headless` runs
@@ -131,11 +132,27 @@ before it heard nothing), and `RENDER` — pictures, formats, `Composite` with t
 the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
 their text with.
 
+`--scale 2` draws the screen at twice the pixels for the same physical size, which is what makes a
+forwarded application sharp on a Retina panel: the host window becomes half the logical size and one
+framebuffer pixel lands on one device pixel. `--scale auto` is the host's own scale factor, so it is
+`--scale 2` on such a display. **It is off by default, and the client is the reason**: a client that
+does not draw at the resolution it is told about lays itself out for a screen half the size it has
+been given. Measured with a forwarded JavaFX application: 1280x800 of screen arrived as a 640x428
+window, sharp and at half size. A client that reads `Xft.dpi` - GTK, Qt, an Xft `xterm` - follows by
+itself, because a scaled screen publishes it in the root window's resource manager; a JavaFX or AWT
+client has to be started with `-Dsun.java2d.uiScale=2` (or its toolkit's equivalent), which no server
+can do for it. The server logs a line saying so when it is running unscaled on a scaled display.
+
 The screen grows with the window it shows: dragging the frame's edge past what the screen can show
 makes the screen bigger - the framebuffer, the root and the size clients are told all follow, up to
 `--max-screen` - so a forwarded application can be given a window bigger than `--geometry`. The screen
 never shrinks. A client that watches its root is sent a `ConfigureNotify` for the new size; there is no
 RandR here, so that event is the only way it hears.
+
+The host window answers the two things an application asks its window manager for: a client that
+goes full screen (`_NET_WM_STATE_FULLSCREEN`) gets the platform's full screen, and a client that sets
+its urgency hint (`WM_HINTS`) brings the frame to the front once, without taking the keyboard.
+Maximising is left to the client, which resizes its own window for it.
 
 The host window comes back where it was left: where the user arranged it is remembered per client (by
 `WM_CLASS`) in `~/.xserver/host-windows.properties`, and the next session opens there - clamped to the

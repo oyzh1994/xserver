@@ -19,7 +19,8 @@ import java.nio.charset.StandardCharsets;
  * terminal putting the current directory or the running program in its title does that constantly,
  * and the whole point is that the host window follows.
  */
-public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int iconHeight) {
+public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int iconHeight,
+                             boolean fullScreen, boolean urgent) {
 
     /** The title a modern toolkit sets, in UTF-8. Preferred over {@code WM_NAME}. */
     public static final String NET_WM_NAME = "_NET_WM_NAME";
@@ -30,15 +31,28 @@ public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int ic
     /** The icon a modern toolkit sets: repeated {@code width, height, ARGB pixels} blocks. */
     public static final String NET_WM_ICON = "_NET_WM_ICON";
 
+    /** The list a client adds {@link #NET_WM_STATE_FULLSCREEN} to when it wants the whole screen. */
+    public static final String NET_WM_STATE = "_NET_WM_STATE";
+
+    /** The state a client asks for when it wants to fill the display. */
+    public static final String NET_WM_STATE_FULLSCREEN = "_NET_WM_STATE_FULLSCREEN";
+
+    /** The older hints, one bit of whose flags says "the user should look at this". */
+    public static final String WM_HINTS = "WM_HINTS";
+
+    /** {@code UrgencyHint} in {@code WM_HINTS.flags}: the client is asking to be noticed. */
+    private static final int URGENCY_HINT = 0x100;
+
     /** Icons bigger than this are not window icons; one is only used if nothing smaller exists. */
     private static final int LARGEST_SENSIBLE_ICON = 256;
 
     /** No title and no icon: the host window keeps the name the server was started with. */
-    public static final WindowIdentity NONE = new WindowIdentity(null, null, 0, 0);
+    public static final WindowIdentity NONE = new WindowIdentity(null, null, 0, 0, false, false);
 
-    /** True when a property is one of the three the host window is built from. */
+    /** True when a property is one the host window is built from. */
     public static boolean isIdentityProperty(String name) {
-        return NET_WM_NAME.equals(name) || WM_NAME.equals(name) || NET_WM_ICON.equals(name);
+        return NET_WM_NAME.equals(name) || WM_NAME.equals(name) || NET_WM_ICON.equals(name)
+                || NET_WM_STATE.equals(name) || WM_HINTS.equals(name);
     }
 
     /**
@@ -59,10 +73,62 @@ public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int ic
                 icon = java.util.Arrays.copyOfRange(best, 2, best.length);
             }
         }
-        if (title == null && icon == null) {
+        boolean fullScreen = wantsFullScreen(atoms, window);
+        boolean urgent = isUrgent(atoms, window);
+        if (title == null && icon == null && !fullScreen && !urgent) {
             return NONE;
         }
-        return new WindowIdentity(title, icon, iconWidth, iconHeight);
+        return new WindowIdentity(title, icon, iconWidth, iconHeight, fullScreen, urgent);
+    }
+
+    /**
+     * Whether the window asks to fill the display.
+     *
+     * <p>{@code _NET_WM_STATE} is a list a client adds to and removes from rather than a flag, which
+     * is why this is a search: a client that also wants to be maximised and shaded has all three in
+     * there, and the one being looked for can be anywhere.
+     */
+    private static boolean wantsFullScreen(AtomTable atoms, XWindow window) {
+        XProperty state = propertyOf(atoms, window, NET_WM_STATE);
+        if (state == null || state.format() != XProperty.FORMAT_32) {
+            return false;
+        }
+        int wanted = atoms.intern(NET_WM_STATE_FULLSCREEN, true);
+        if (wanted == AtomTable.NONE) {
+            return false;
+        }
+        for (int atom : readWords(state.data())) {
+            if (atom == wanted) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether the window set the urgency hint.
+     *
+     * <p>{@code WM_HINTS} is the older of the two vocabularies and the only place this bit lives: a
+     * client that wants the user's attention sets it, and none of EWMH's replacements is as widely
+     * implemented for the job.
+     */
+    private static boolean isUrgent(AtomTable atoms, XWindow window) {
+        XProperty hints = propertyOf(atoms, window, WM_HINTS);
+        if (hints == null || hints.format() != XProperty.FORMAT_32) {
+            return false;
+        }
+        int[] words = readWords(hints.data());
+        return words.length > 0 && (words[0] & URGENCY_HINT) != 0;
+    }
+
+    /** A {@code FORMAT_32} property's items, which are stored big-endian whatever wrote them. */
+    public static int[] readWords(byte[] data) {
+        int[] words = new int[data.length / 4];
+        for (int i = 0; i < words.length; i++) {
+            words[i] = ((data[i * 4] & 0xFF) << 24) | ((data[i * 4 + 1] & 0xFF) << 16)
+                    | ((data[i * 4 + 2] & 0xFF) << 8) | (data[i * 4 + 3] & 0xFF);
+        }
+        return words;
     }
 
     /**
@@ -122,13 +188,9 @@ public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int ic
      * @return {@code width, height, pixels...} or null when the property holds no usable image
      */
     private static int[] bestIcon(byte[] data) {
-        int[] words = new int[data.length / 4];
-        for (int i = 0; i < words.length; i++) {
-            // The stored order is big-endian whatever the writing client used, which is also the
-            // order an ARGB pixel is meant to be read in.
-            words[i] = ((data[i * 4] & 0xFF) << 24) | ((data[i * 4 + 1] & 0xFF) << 16)
-                    | ((data[i * 4 + 2] & 0xFF) << 8) | (data[i * 4 + 3] & 0xFF);
-        }
+        // The stored order is big-endian whatever the writing client used, which is also the order
+        // an ARGB pixel is meant to be read in.
+        int[] words = readWords(data);
         int[] best = null;
         int offset = 0;
         while (offset + 2 <= words.length) {

@@ -149,6 +149,36 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
+    public void setFullScreen(boolean fullScreen) {
+        runOnEdtAndWait(() -> {
+            // The window is not resizable in this backend, so "full screen" here is "as large as the
+            // screen and at its origin", which is what the frame's decoration allows.
+            java.awt.GraphicsDevice device = java.awt.GraphicsEnvironment
+                    .getLocalGraphicsEnvironment().getDefaultScreenDevice();
+            if (frame == null || !device.isFullScreenSupported()) {
+                return;
+            }
+            // getFullScreenWindow answers null when no window is full screen, so the comparison is
+            // the other way round from the obvious one.
+            java.awt.Window current = device.getFullScreenWindow();
+            if (fullScreen && current != frame) {
+                device.setFullScreenWindow(frame);
+            } else if (!fullScreen && current == frame) {
+                device.setFullScreenWindow(null);
+            }
+        });
+    }
+
+    @Override
+    public void raise() {
+        runOnEdtAndWait(() -> {
+            if (frame != null) {
+                frame.toFront();
+            }
+        });
+    }
+
+    @Override
     public void screenResized(Screen screen) {
         runOnEdtAndWait(() -> {
             ScreenPanel target = panel;

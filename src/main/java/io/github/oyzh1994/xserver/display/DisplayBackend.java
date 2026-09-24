@@ -164,6 +164,28 @@ public interface DisplayBackend {
     default void screenResized(Screen screen) {
     }
 
+    /**
+     * Shows the window full screen, or puts it back, because the client asked to fill the display.
+     *
+     * <p>A client that goes full screen - a terminal, a video player - has asked for the whole
+     * display, and the host window is the frame around it: showing anything less would be showing it
+     * a window smaller than it asked for. Called from the display tick only.
+     */
+    default void setFullScreen(boolean fullScreen) {
+    }
+
+    /**
+     * Brings the window to the front without taking the keyboard, because the client set its urgency
+     * hint.
+     *
+     * <p>Deliberately not a focus change and deliberately not the raise-on-show that {@code C2}
+     * describes: this one happens only when a client says it wants the user's attention, which is
+     * the one case where pulling a window out from behind another is what was asked for. Called once
+     * per hint, never per frame.
+     */
+    default void raise() {
+    }
+
     /** Tears the window down. */
     void stop();
 

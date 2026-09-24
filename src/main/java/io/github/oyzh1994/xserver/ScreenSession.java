@@ -188,6 +188,23 @@ public final class ScreenSession {
         this.maxClientArea = maxClientArea;
     }
 
+    public boolean appliedFullScreen() {
+        return appliedFullScreen;
+    }
+
+    public void setAppliedFullScreen(boolean appliedFullScreen) {
+        this.appliedFullScreen = appliedFullScreen;
+    }
+
+    /** True once the frame has been raised for the client's urgency hint. */
+    public boolean appliedUrgent() {
+        return appliedUrgent;
+    }
+
+    public void setAppliedUrgent(boolean appliedUrgent) {
+        this.appliedUrgent = appliedUrgent;
+    }
+
     /** Whether this screen has grown and the backend has still to be told. */
     public boolean takeScreenResized() {
         boolean resized = screenResized;
@@ -215,6 +232,10 @@ public final class ScreenSession {
     public void setWindowPosition(java.awt.Point windowPosition) {
         this.windowPosition = windowPosition;
     }
+
+    /** Whether the host window is showing full screen, and whether it was raised for an urgency. */
+    private boolean appliedFullScreen;
+    private boolean appliedUrgent;
 
     /** Where the window was when it was last written to the store. */
     public java.awt.Point persistedWindowPosition() {

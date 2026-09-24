@@ -332,6 +332,31 @@ public final class ServerOptions {
         return scale;
     }
 
+    /**
+     * The host's own scale factor: 2 on a Retina panel, 1 nearly everywhere else.
+     *
+     * <p>Read from the platform's default transform, which is the one piece of HiDPI information the
+     * JDK gives up without a toolkit - JavaFX would say the same thing through
+     * {@code Screen.getPrimary().getPlatformScaleX()}, and AWT is what this class already asks about
+     * the display. {@code --scale auto} is this number.
+     *
+     * <p>It is what makes the picture sharp, and only half of what a forwarded application needs:
+     * the server draws the screen at this many pixels per logical pixel, and a client that draws its
+     * interface at 1x then lays itself out for a screen half the size it was given. A client that
+     * reads {@code Xft.dpi} off the root window follows by itself; one that does not has to be
+     * started with its own scale setting.
+     */
+    public static int hostScale() {
+        try {
+            return Math.max(1, (int) Math.round(java.awt.GraphicsEnvironment
+                    .getLocalGraphicsEnvironment().getDefaultScreenDevice()
+                    .getDefaultConfiguration().getDefaultTransform().getScaleX()));
+        } catch (Throwable e) {
+            // Headless, or a platform that will not say. 1 is the size everything assumes.
+            return 1;
+        }
+    }
+
     /** Screen width in framebuffer pixels, which is what a client is told and draws into. */
     public int pixelWidth() {
         return width * scale;
@@ -347,11 +372,17 @@ public final class ServerOptions {
      * option is for.
      */
     private static int parseScale(String value) {
+        if ("auto".equalsIgnoreCase(value.trim())) {
+            // Resolved here rather than kept as a flag: it is one question to the platform, and
+            // every reader of scale() then has a real number to work with.
+            return hostScale();
+        }
         int scale;
         try {
-            scale = Integer.parseInt(value);
+            scale = Integer.parseInt(value.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("scale must be a whole number, not '" + value + "'");
+            throw new IllegalArgumentException(
+                    "scale must be a whole number or 'auto', not '" + value + "'");
         }
         if (scale < 1 || scale > 4) {
             throw new IllegalArgumentException("scale must be between 1 and 4, not " + scale);

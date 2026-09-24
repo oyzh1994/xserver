@@ -19,6 +19,7 @@ import com.github.moaxcp.x11.protocol.xproto.SendEvent;
 import com.github.moaxcp.x11.protocol.xproto.SelectionClearEvent;
 import com.github.moaxcp.x11.protocol.xproto.SelectionRequestEvent;
 import com.github.moaxcp.x11.protocol.xproto.SetSelectionOwner;
+import io.github.oyzh1994.xserver.WindowIdentity;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
@@ -257,6 +258,108 @@ public final class AtomHandlers {
         }
     }
 
+    /** {@code _NET_WM_STATE}'s actions, as the ClientMessage carries them. */
+    private static final int STATE_REMOVE = 0;
+    private static final int STATE_ADD = 1;
+    private static final int STATE_TOGGLE = 2;
+
+    /**
+     * Applies an EWMH {@code _NET_WM_STATE} message to the window it names.
+     *
+     * <p>This, and not a property write, is how a toolkit asks for its window to be fullscreen or
+     * maximised: it sends a {@code ClientMessage} to the root and the window manager is expected to
+     * say yes by putting the state into the property - a client that is ignored is free to ask again
+     * for ever, and several do. So the message is turned into the property here, which is also the
+     * form the rest of this server reads it in ({@code WindowIdentity}).
+     *
+     * <p>Only the window's own state is kept: this server is not a window manager and has no other
+     * state to arbitrate, so the message is applied rather than decided on.
+     */
+    private void applyWindowStateMessage(byte[] bytes, boolean bigEndian) {
+        if ((bytes[1] & 0xFF) != 32) {
+            return;                                 // only the 32 bit form is defined
+        }
+        int stateAtom = server.atoms().intern(WindowIdentity.NET_WM_STATE, true);
+        if (stateAtom == AtomTable.NONE || readCard32(bytes, 8, bigEndian) != stateAtom) {
+            return;
+        }
+        XResource resource = server.resources().get(readCard32(bytes, 4, bigEndian));
+        if (!(resource instanceof XWindow window)) {
+            return;                                 // for a window that has already gone
+        }
+        int action = readCard32(bytes, 12, bigEndian);
+        int first = readCard32(bytes, 16, bigEndian);
+        int second = readCard32(bytes, 20, bigEndian);
+
+        java.util.List<Integer> states = new java.util.ArrayList<>(
+                readState(window, stateAtom));
+        boolean changed = applyState(states, action, first);
+        if (second != 0) {
+            changed |= applyState(states, action, second);
+        }
+        if (changed) {
+            writeState(window, stateAtom, states);
+        }
+    }
+
+    private static boolean applyState(java.util.List<Integer> states, int action, int atom) {
+        if (atom == 0) {
+            return false;
+        }
+        boolean present = states.contains(atom);
+        switch (action) {
+            case STATE_ADD -> {
+                if (!present) {
+                    states.add(atom);
+                    return true;
+                }
+            }
+            case STATE_REMOVE -> {
+                if (present) {
+                    states.remove(Integer.valueOf(atom));
+                    return true;
+                }
+            }
+            case STATE_TOGGLE -> {
+                if (present) {
+                    states.remove(Integer.valueOf(atom));
+                } else {
+                    states.add(atom);
+                }
+                return true;
+            }
+            default -> {
+                // An action this server does not know: leave the list exactly as it was.
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** The states a window currently carries, read from its {@code _NET_WM_STATE} list. */
+    private static java.util.List<Integer> readState(XWindow window, int stateAtom) {
+        XProperty property = window.properties().get(stateAtom);
+        if (property == null || property.format() != XProperty.FORMAT_32) {
+            return java.util.List.of();
+        }
+        java.util.List<Integer> states = new java.util.ArrayList<>();
+        for (int atom : WindowIdentity.readWords(property.data())) {
+            states.add(atom);
+        }
+        return states;
+    }
+
+    /** Writes the list back, which is how the client is told its request was granted. */
+    private void writeState(XWindow window, int stateAtom, java.util.List<Integer> states) {
+        byte[] data = new byte[states.size() * 4];
+        for (int i = 0; i < states.size(); i++) {
+            putCard32(data, i * 4, states.get(i), true);
+        }
+        int type = server.atoms().intern("ATOM", true);
+        window.properties().put(stateAtom, new XProperty(stateAtom, type, 32, data));
+        notifyProperty(window, stateAtom, NEW_VALUE);
+    }
+
     /**
      * Announces a property write to whoever is watching the window - the clients that selected for
      * {@code PropertyChange} and the server's own listeners, which is what keeps the host window's
@@ -437,7 +540,13 @@ public final class AtomHandlers {
         bytes[0] = (byte) (bytes[0] | 0x80);
         int windowOffset = eventCode < EVENT_WINDOW_OFFSET.length
                 ? EVENT_WINDOW_OFFSET[eventCode] : -1;
-        if (windowOffset >= 0) {
+        if (windowOffset >= 0 && eventCode != CLIENT_MESSAGE) {
+            // Every other event is *reported against* a window, and the server is the one that knows
+            // which - so the field is filled in here. A ClientMessage is the exception: that field
+            // is the window the message is *about*, put there by the client that sent it, and the
+            // destination is only whose selector hears it. Rewriting it loses the subject of the
+            // message, which is what every EWMH request is made of: a window manager told "this
+            // window wants to be fullscreen" with the window left out cannot act at all.
             putCard32(bytes, windowOffset, destination.id(), senderBigEndian);
         }
 
@@ -449,6 +558,10 @@ public final class AtomHandlers {
                 && bridge.ownsWindow(destination.id())) {
             bridge.selectionAnswered(
                     readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
+        }
+
+        if (eventCode == CLIENT_MESSAGE) {
+            applyWindowStateMessage(bytes, senderBigEndian);
         }
 
         int mask = r.getEventMask();

@@ -84,6 +84,10 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   host's own pasteboard: `read` prints what a client would paste, `write <text>` takes the selection
   and serves it, `owner` prints who holds it. `write` stays connected - an X selection is lazy, so the
   data has to still be there when the host asks for it.
+- `WindowStateProbe` - asks a server for a window state the way a toolkit does: a `ClientMessage` to
+  the root, and then a read of the window's own `_NET_WM_STATE` to see what came back. The actions are
+  a comma separated list because they share one window - `fullscreen on,off` is the request and its
+  withdrawal on one connection.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
 
 The two XFixes probes are how A8's rules were taken from a reference server. Their output against Xvfb and
