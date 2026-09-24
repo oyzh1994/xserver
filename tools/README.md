@@ -35,6 +35,13 @@ XSERVER_OPTIONS="-Dxserver.dumpFrame=/tmp/d -Dxserver.dumpFrames=3000" tools/bed
 `SSH_ASKPASS` instead; long-running remote commands need `setsid nohup … < /dev/null &` or ssh kills
 them when the session ends.
 
+**Killing a client on the VM: put the pattern in brackets.** `pkill -9 -f EasyShell` matches the
+command line of the *remote shell running it* - which contains the word - and kills it, so ssh
+returns 255 and nothing you asked for happens, with no output to say why. Write
+`pkill -9 -f '[E]asyShell'`: it still matches the running application and no longer matches the
+command that is doing the killing. (The same trap applies to any `pkill -f` whose pattern appears in
+its own command line, on either machine.)
+
 The tools, one line each (the backlog's §1 table says what each is *for*):
 
 - `Drive` - XTEST driver: `M x y`, `P n`, `R n`, `K kc`, `KD/KU kc`, `W ms`.
@@ -50,7 +57,20 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
 - `AuthProbe` - sends a connection setup with chosen credentials and says what came back: a setup (with
   the vendor and screen count) or the refusal's reason. No arguments means "offer nothing", which is
   what backlog item A7 is about.
+- `SelectionProbe` - subscribes to a selection through XFixes and prints every notification it gets,
+  while other connections take the selection, destroy its owner window and disconnect: the three
+  subtypes, one line each. `SelectionProbe <host> <port> [name]`, the name defaulting to `CLIPBOARD`
+  (a client watching something else is checked by naming it - EasyShell watches `_NET_WM_CM_S0`).
+- `CursorProbe` - the same for `SelectCursorInput`: two windows carrying different glyph cursors, the
+  pointer warped between them, every `CursorNotify` printed. What it is for is the thing about the
+  event that is easy to get wrong: the serial names the *cursor*, so it goes back down when the
+  pointer returns to one it has shown before.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
+
+Both probes are how A8's rules were taken from a reference server. Their output against Xvfb and
+against this server is identical once the things a server assigns for itself are normalised away
+(opcodes, atom ids, cursor serials, and the absolute clock, which is a different epoch on each
+server) - compare the two runs by hand, or with a small normaliser, before believing any difference.
 
 **One open question about `RawXClient`**: its hand-written `ShapeRectangles` request is refused by
 this server as a bad request, so `ShapeClippingTest` sets shapes in process instead. The layout

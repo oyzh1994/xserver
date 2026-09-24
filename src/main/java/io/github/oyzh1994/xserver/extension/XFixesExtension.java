@@ -8,6 +8,7 @@ import com.github.moaxcp.x11.protocol.xfixes.ChangeSaveSet;
 import com.github.moaxcp.x11.protocol.xfixes.CopyRegion;
 import com.github.moaxcp.x11.protocol.xfixes.CreatePointerBarrier;
 import com.github.moaxcp.x11.protocol.xfixes.CreateRegion;
+import com.github.moaxcp.x11.protocol.xfixes.CursorNotifyEvent;
 import com.github.moaxcp.x11.protocol.xfixes.CreateRegionFromBitmap;
 import com.github.moaxcp.x11.protocol.xfixes.CreateRegionFromGC;
 import com.github.moaxcp.x11.protocol.xfixes.CreateRegionFromPicture;
@@ -31,6 +32,7 @@ import com.github.moaxcp.x11.protocol.xfixes.QueryVersionReply;
 import com.github.moaxcp.x11.protocol.xfixes.RegionExtents;
 import com.github.moaxcp.x11.protocol.xfixes.SelectCursorInput;
 import com.github.moaxcp.x11.protocol.xfixes.SelectSelectionInput;
+import com.github.moaxcp.x11.protocol.xfixes.SelectionNotifyEvent;
 import com.github.moaxcp.x11.protocol.xfixes.SetCursorName;
 import com.github.moaxcp.x11.protocol.xfixes.SetGCClipRegion;
 import com.github.moaxcp.x11.protocol.xfixes.SetPictureClipRegion;
@@ -44,6 +46,7 @@ import com.github.moaxcp.x11.protocol.xfixes.XfixesPlugin;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XGC;
@@ -80,12 +83,16 @@ import java.util.Map;
  * and pointer barrier requests, which have no backing resources, and the cursor mutation requests,
  * which would have to rewrite a cursor image in place.
  *
+ * <p>Both kinds of notification are delivered. {@code SelectSelectionInput} subscriptions are
+ * answered with the three {@code SelectionNotify} subtypes, raised by {@link #notifySelection} from
+ * the code that changes a selection's owner; {@code SelectCursorInput} subscriptions are answered by
+ * {@link #notifyCursor} from the display tick, which is where the server knows what the pointer is
+ * over. Both were measured against a reference server first - the specification does not say, for
+ * instance, that a selection losing its owner window reports the time the owner <em>took</em> it
+ * rather than now, nor that a cursor's serial is the cursor's own rather than a change counter.
+ *
  * <p>Known gaps, all deliberate:
  * <ul>
- *   <li>No selection or cursor notification events are ever generated. {@code SelectSelectionInput}
- *       and {@code SelectCursorInput} are recorded so the masks are not lost, but the events they
- *       ask for would have to be raised from the selection and cursor code, which lives outside
- *       this extension.
  *   <li>{@code HideCursor}/{@code ShowCursor} only count: {@code InputState} draws the sprite
  *       unconditionally, so the cursor stays visible. {@link #isCursorHidden()} is what a caller
  *       would consult to change that, and it is what the counter exists for.
@@ -107,9 +114,32 @@ public final class XFixesExtension implements Extension {
     /** The SHAPE extension, resolved lazily because registration order is not ours to pick. */
     private ShapeExtension shape;
 
-    /** Selection and cursor event masks clients asked for, per client and window. */
-    private final Map<ClientConnection, Map<Integer, Integer>> selectionInput = new IdentityHashMap<>();
+    /**
+     * One {@code SelectSelectionInput}: which window the client wants the event reported against,
+     * which selection it is watching, and the mask it asked for.
+     *
+     * <p>The selection is part of the subscription and not only of the request: a client that
+     * watches CLIPBOARD must not hear about PRIMARY, and a map keyed by window alone cannot tell
+     * the two apart. The window is what the event carries, because that is what the client named.
+     */
+    private record SelectionSubscription(int window, int selection, int mask) {
+    }
+
+    /** Cursor subscriptions, per client and per window: a cursor belongs to a screen, not to a thing. */
     private final Map<ClientConnection, Map<Integer, Integer>> cursorInput = new IdentityHashMap<>();
+
+    /**
+     * Selection subscriptions, per client. The subscription lives as long as the window it was made
+     * on does - measured against a reference server, which stops notifying the moment that window is
+     * destroyed, since the window is the subscriber's resource.
+     */
+    private final Map<ClientConnection, List<SelectionSubscription>> selectionInput =
+            new IdentityHashMap<>();
+
+    /** The three selection notification subtypes, for the callers outside this extension. */
+    public static final byte SELECTION_SET_OWNER = 0;
+    public static final byte SELECTION_WINDOW_DESTROY = 1;
+    public static final byte SELECTION_CLIENT_CLOSE = 2;
 
     /** How many clients currently have the cursor hidden. */
     private int hiddenCursors;
@@ -218,6 +248,129 @@ public final class XFixesExtension implements Extension {
         cursorInput.remove(client);
     }
 
+    /** This extension as registered on a server, or null when it is not there at all. */
+    public static XFixesExtension of(XServer server) {
+        Extension extension = server.extensions().byName("XFIXES");
+        return extension instanceof XFixesExtension xfixes ? xfixes : null;
+    }
+
+    /**
+     * Tells every client that subscribed to {@code selection} that its owner changed.
+     *
+     * <p>Called from the three places a selection can change hands - {@code SetSelectionOwner}, the
+     * destruction of the owner window, and the owner's client going away - because none of them is
+     * inside this extension. It is a no-op when XFIXES is not registered, which is how the callers
+     * can use it unconditionally.
+     *
+     * @param owner the new owner, or 0 when the selection now belongs to nobody
+     * @param timestamp when this change happened
+     * @param selectionTimestamp when the selection was last <em>taken</em>, which is not the same
+     *     thing: an owner window being destroyed reports the time its owner took the selection,
+     *     because the selection has not changed hands - it has lost its holder
+     * @param subtype one of {@link #SELECTION_SET_OWNER}, {@link #SELECTION_WINDOW_DESTROY},
+     *     {@link #SELECTION_CLIENT_CLOSE}
+     */
+    public static void notifySelection(XServer server, int selection, int owner, int timestamp,
+                                       int selectionTimestamp, byte subtype) {
+        XFixesExtension xfixes = of(server);
+        if (xfixes != null) {
+            xfixes.selectionChanged(server, selection, owner, timestamp, selectionTimestamp, subtype);
+        }
+    }
+
+    /**
+     * The subscription a window carried goes with it.
+     *
+     * <p>Measured against a reference server: destroying the window a client subscribed on stops the
+     * notifications, because the subscription is registered as a resource of that window. A client
+     * that wants to go on hearing about the clipboard keeps its window alive.
+     */
+    public void windowDestroyed(XWindow window) {
+        int id = window.id();
+        for (List<SelectionSubscription> subscriptions : selectionInput.values()) {
+            subscriptions.removeIf(subscription -> subscription.window() == id);
+        }
+        for (Map<Integer, Integer> masks : cursorInput.values()) {
+            masks.remove(id);
+        }
+    }
+
+    /**
+     * Tells every client that subscribed to a screen's cursor that the displayed cursor changed.
+     *
+     * <p>Called from the display tick, which is where the server knows what the pointer is over. The
+     * event names the window the subscription was made on - not the window the pointer is in - and
+     * carries the cursor's own serial, so a client can tell a cursor it has seen before from a
+     * different one.
+     */
+    public static void notifyCursor(XServer server, Screen screen, int cursorSerial,
+                                    int timestamp) {
+        XFixesExtension xfixes = of(server);
+        if (xfixes != null) {
+            xfixes.cursorChanged(server, screen, cursorSerial, timestamp);
+        }
+    }
+
+    private void cursorChanged(XServer server, Screen screen, int cursorSerial, int timestamp) {
+        List<Map.Entry<ClientConnection, Map<Integer, Integer>>> subscriptions =
+                new ArrayList<>(cursorInput.entrySet());
+        for (Map.Entry<ClientConnection, Map<Integer, Integer>> entry : subscriptions) {
+            ClientConnection recipient = entry.getKey();
+            for (Map.Entry<Integer, Integer> subscription : entry.getValue().entrySet()) {
+                if ((subscription.getValue() & 1) == 0) {
+                    continue;
+                }
+                // The window is what names the screen the client is watching: a cursor notification
+                // is about a screen, and the window only says which one.
+                XResource resource = server.resources().get(subscription.getKey());
+                if (!(resource instanceof XWindow window) || window.screen() != screen) {
+                    continue;
+                }
+                server.events().send(recipient, CursorNotifyEvent.builder()
+                        .firstEventOffset(firstEvent())
+                        .sentEvent(false)
+                        .subtype((byte) 0)              // DisplayCursor
+                        .sequenceNumber(recipient.sequenceNumber())
+                        .window(subscription.getKey())
+                        .cursorSerial(cursorSerial)
+                        .timestamp(timestamp)
+                        .name(0)                        // cursors here carry no name
+                        .build());
+            }
+        }
+    }
+
+    private void selectionChanged(XServer server, int selection, int owner, int timestamp,
+                                  int selectionTimestamp, byte subtype) {
+        int wantBit = 1 << subtype;
+        // Snapshot first: sending can close a connection, and a closed connection is dropped from
+        // these tables by clientDisconnected while this loop is walking them.
+        List<Map.Entry<ClientConnection, List<SelectionSubscription>>> subscriptions =
+                new ArrayList<>(selectionInput.entrySet());
+        for (Map.Entry<ClientConnection, List<SelectionSubscription>> entry : subscriptions) {
+            ClientConnection recipient = entry.getKey();
+            for (SelectionSubscription subscription : new ArrayList<>(entry.getValue())) {
+                // Two ways not to be interested: the mask does not cover this subtype, or this is
+                // not the selection the client asked about.
+                if (subscription.selection() != selection
+                        || (subscription.mask() & wantBit) == 0) {
+                    continue;
+                }
+                server.events().send(recipient, SelectionNotifyEvent.builder()
+                        .firstEventOffset(firstEvent())
+                        .sentEvent(false)
+                        .subtype(subtype)
+                        .sequenceNumber(recipient.sequenceNumber())
+                        .window(subscription.window())
+                        .owner(owner)
+                        .selection(selection)
+                        .timestamp(timestamp)
+                        .selectionTimestamp(selectionTimestamp)
+                        .build());
+            }
+        }
+    }
+
     /** Whether some client asked for the cursor to be hidden. */
     public boolean isCursorHidden() {
         return hiddenCursors > 0;
@@ -314,10 +467,29 @@ public final class XFixesExtension implements Extension {
     // Notifications, hiding
     // ------------------------------------------------------------------
 
+    /**
+     * Records a selection subscription, replacing whatever this client had for the same window and
+     * selection. A mask of zero is how a client unsubscribes, and it cancels rather than adds.
+     */
     private void selectSelectionInput(XServer server, ClientConnection client,
                                       SelectSelectionInput request) {
         XWindow window = requireWindow(server, client, request.getWindow());
-        recordMask(selectionInput, client, window.id(), request.getEventMask());
+        int mask = request.getEventMask();
+        if (log.isDebugEnabled()) {
+            // Which selection a client asked to hear about, on which window, and with which bits:
+            // the first thing to check when a notification never arrives, and the reason a
+            // subscription is not simply "this client wants selection events".
+            log.debug("XFIXES 0x{} watches {} mask 0x{} on 0x{}", client.index(),
+                    server.atoms().name(request.getSelection()), Integer.toHexString(mask),
+                    Integer.toHexString(window.id()));
+        }
+        List<SelectionSubscription> subscriptions =
+                selectionInput.computeIfAbsent(client, key -> new ArrayList<>());
+        subscriptions.removeIf(subscription -> subscription.window() == window.id()
+                && subscription.selection() == request.getSelection());
+        if (mask != 0) {
+            subscriptions.add(new SelectionSubscription(window.id(), request.getSelection(), mask));
+        }
     }
 
     private void selectCursorInput(XServer server, ClientConnection client,
@@ -341,9 +513,8 @@ public final class XFixesExtension implements Extension {
     }
 
     /**
-     * Records an event mask, dropping it when it is zero, which is how a client unselects. Nothing
-     * reads these back yet: the events they ask for are raised by the selection code and the cursor
-     * sprite, neither of which is part of this extension.
+     * Records a cursor subscription, dropping it when the mask is zero, which is how a client
+     * unsubscribes.
      */
     private void recordMask(Map<ClientConnection, Map<Integer, Integer>> table,
                             ClientConnection client, int window, int mask) {

@@ -581,6 +581,43 @@ them with what it has already seen; the caveat is that the server stamps a motio
 request, so a range beginning a millisecond after the client's own clock reading can still contain one
 (which is a test that fails one run in four).
 
+## What a subscriber is told
+
+XFixes lets a client ask to be told that a selection changed hands, or that the pointer moved onto a
+different cursor, instead of polling. What the notification *says* is not in the specification in the
+form the clients rely on, so all of it was measured - `tools/SelectionProbe` and `tools/CursorProbe`
+drive the same requests against Xvfb and against this server, and their output is diffed. The two
+runs agree event for event once the things a server assigns for itself are normalised away (opcodes,
+atom ids, cursor serials), which is what makes the rules below worth writing down rather than
+re-deriving:
+
+- **A selection notification names the window the subscription was made on**, not the owner window
+  and not the window under the pointer. That is the only thing that window is for: it says which
+  screen, and it carries the event.
+- **Three ways for a selection to change hands, three subtypes**, and the timestamps tell them
+  apart. `SetSelectionOwner` reports the new owner and sets *both* times to now. An owner window
+  being destroyed (`SelectionWindowDestroy`) or its client disconnecting (`SelectionClientClose`)
+  reports **no owner** and keeps the time the selection was *taken* as the selection's own time -
+  nothing changed hands, the selection lost its holder. A client that compares the two times to
+  decide whether a notification is news is relying on exactly that.
+- **Every `SetSelectionOwner` is reported**, including one that names the owner already there and one
+  that gives the selection up to `None`. Both look like a no-op and neither is.
+- **The subscription is a resource of the window it was made on**, and dies with it: destroying that
+  window stops the notifications. A client that wants to go on hearing about the clipboard keeps the
+  window alive, and a client that destroys it hears nothing more.
+- **A cursor's `cursorSerial` names the cursor, not the change.** Moving the pointer off a window and
+  back onto it reports the serial the cursor had the first time, because it is the same cursor - a
+  reference server's serials go back down on the way back. What is counted is cursor *creation*, so
+  the counter is assigned where a cursor is built, and the root's own cursor has one too.
+- **The cursor event goes with the display, not with a client's drawing**: it is raised from the
+  display tick, which is where the server knows what the pointer is over, and the first cursor the
+  server can name after it learns where the pointer is is the baseline rather than a change.
+
+A real server refuses every XFixes request from a client that never called `XFixesQueryVersion`
+(`BadRequest`), which this server does not - measured, and deliberately left alone: it gains a client
+nothing to be told off for it, and every real client asks first anyway. It shows up in a hand-written
+probe, which is how this note exists.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Diff two probe runs, ignoring what each server assigns for itself.
+
+`SelectionProbe` and `CursorProbe` print what a client is told, so the same run against Xvfb and
+against this server answers "does this server behave like the reference". The two outputs cannot be
+compared byte for byte, because a server picks its own opcodes, hands out its own atom ids, numbers
+the cursors it creates, and stamps events from its own clock (this server's is wall-clock
+milliseconds, Xvfb's is its uptime) - none of which is a decision the client can see. Everything that
+*is* a decision is compared as it stands.
+
+Usage:
+
+    tools/probe-diff.py xvfb-run.txt ours-run.txt
+
+Prints "IDENTICAL" when the two agree, or a unified diff when they do not. A difference here is a
+behaviour difference, not a formatting one - which is the whole point of the tool.
+"""
+
+import difflib
+import re
+import sys
+
+# What a server assigns for itself: the major opcode and event base of an extension, the ids it
+# hands out, and its own clock.
+SUBSTITUTIONS = [
+    (r"major=\d+", "major=?"),
+    (r"firstEvent=\d+", "firstEvent=?"),
+    (r"firstError=\d+", "firstError=?"),
+    (r"selection=\d+", "selection=ATOM"),
+    (r"atom=\d+", "atom=ATOM"),
+    (r"cursorSerial=\d+", "cursorSerial=SERIAL"),
+    (r"type=\d+", "type=E"),
+]
+
+
+def normalise(line):
+    for pattern, replacement in SUBSTITUTIONS:
+        line = re.sub(pattern, replacement, line)
+
+    # The event time and the selection's own time are absolute clocks, so they differ between two
+    # servers by construction. Whether they are the *same instant* is the decision that matters:
+    # SetSelectionOwner sets both to now, an owner going away leaves the selection's time alone.
+    def relative(match):
+        relation = "SAME" if match.group(1) == match.group(2) else "OLDER"
+        return "timestamp=T selectionTimestamp=" + relation
+
+    line = re.sub(r"timestamp=(-?\d+) selectionTimestamp=(-?\d+)", relative, line)
+    return re.sub(r"timestamp=-?\d+", "timestamp=T", line)
+
+
+def load(path):
+    with open(path, encoding="utf-8") as handle:
+        return [normalise(line) for line in handle]
+
+
+def main(argv):
+    if len(argv) != 3:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    left, right = load(argv[1]), load(argv[2])
+    if left == right:
+        print("IDENTICAL apart from opcodes, atom ids, cursor serials and the clock")
+        return 0
+    sys.stdout.writelines(difflib.unified_diff(left, right, argv[1], argv[2]))
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

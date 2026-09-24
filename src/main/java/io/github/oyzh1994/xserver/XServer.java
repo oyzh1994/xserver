@@ -13,6 +13,7 @@ import io.github.oyzh1994.xserver.event.EventDispatcher;
 import io.github.oyzh1994.xserver.event.RawEvent;
 import io.github.oyzh1994.xserver.extension.Extension;
 import io.github.oyzh1994.xserver.extension.ExtensionRegistry;
+import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.handler.AtomHandlers;
 import io.github.oyzh1994.xserver.handler.DrawHandlers;
 import io.github.oyzh1994.xserver.handler.InputHandlers;
@@ -62,7 +63,7 @@ public final class XServer {
      */
     private final List<ScreenSession> sessions = new CopyOnWriteArrayList<>();
     private final BitSet usedClientIndices = new BitSet(ClientConnection.MAX_CLIENTS);
-    private final Map<String, Integer> selectionOwners = new HashMap<>();
+    private final Map<String, Selection> selections = new HashMap<>();
     private final List<io.github.oyzh1994.xserver.handler.InputHandlers.PassiveGrab> passiveGrabs =
             new ArrayList<>();
 
@@ -401,8 +402,81 @@ public final class XServer {
         return masterSession.backend();
     }
 
-    public Map<String, Integer> selectionOwners() {
-        return selectionOwners;
+    /**
+     * A selection's current owner - zero for none - and when it last changed hands.
+     *
+     * <p>The timestamp is the one the XFixes selection notification carries as its
+     * {@code selectionTimestamp}, which a client compares against the time it used in its own
+     * {@code SetSelectionOwner} to decide whether a notification is news or an echo. Only
+     * {@code SetSelectionOwner} moves it: a selection whose owner window is destroyed or whose owner
+     * disconnects keeps the time it was taken, which is what a reference server was measured doing.
+     */
+    public record Selection(int owner, int timestamp) {
+    }
+
+    /** A selection's current owner, or 0 when nobody owns it. */
+    public int selectionOwner(String name) {
+        Selection selection = selections.get(name);
+        return selection == null ? 0 : selection.owner();
+    }
+
+    /** When a selection last changed hands, or the current time when it never has. */
+    public int selectionTimestamp(String name) {
+        Selection selection = selections.get(name);
+        return selection == null ? events.time() : selection.timestamp();
+    }
+
+    /**
+     * Changes a selection's owner and tells the clients that subscribed to hear about it, in that
+     * order: a notification sent before the owner is recorded makes the client query the old one.
+     *
+     * <p>This is the only way ownership moves, so it is also the only place that has to remember
+     * that every {@code SetSelectionOwner} is announced - including the ones that name the owner
+     * already there and the ones that name nobody, which a reference server was measured treating as
+     * a change and moving the timestamp for.
+     *
+     * @param selectionTime when the selection changed hands, which becomes the selection's own time
+     * @param subtype the XFixes subtype that says <em>why</em> it moved - the three do not carry the
+     *     same times. When the selection changes hands the notification <em>is</em> the change, and
+     *     a reference server reports both times as that one instant; when an owner goes away the
+     *     notification happens now and the selection keeps the time it was taken.
+     */
+    public void setSelectionOwner(String name, int owner, int selectionTime, byte subtype) {
+        selections.put(name, new Selection(owner, selectionTime));
+        int atom = atoms.intern(name, true);
+        if (atom != AtomTable.NONE) {
+            int timestamp = subtype == XFixesExtension.SELECTION_SET_OWNER
+                    ? selectionTime : events.time();
+            XFixesExtension.notifySelection(this, atom, owner, timestamp, selectionTime, subtype);
+        }
+    }
+
+    /**
+     * The names of the selections {@code windowId} currently owns, so the code that destroys a
+     * window or loses a client can release them and say why.
+     */
+    public List<String> selectionsOwnedBy(int windowId) {
+        List<String> owned = new ArrayList<>();
+        for (Map.Entry<String, Selection> entry : selections.entrySet()) {
+            if (entry.getValue().owner() == windowId) {
+                owned.add(entry.getKey());
+            }
+        }
+        return owned;
+    }
+
+    /**
+     * Releases every selection a window owns and tells the subscribers, keeping the time each was
+     * taken: this is the owner going away rather than the selection changing hands, and a reference
+     * server reports it that way.
+     *
+     * @param subtype {@code XFixesExtension.SELECTION_WINDOW_DESTROY} when the window is being
+     *     destroyed, {@code SELECTION_CLIENT_CLOSE} when its client is disconnecting
+     */
+    public void releaseSelectionsOwnedBy(int windowId, byte subtype) {
+        for (String name : selectionsOwnedBy(windowId)) {
+            setSelectionOwner(name, 0, selectionTimestamp(name), subtype);
+        }
     }
 
     /**
@@ -664,6 +738,21 @@ public final class XServer {
                 markSpriteDamage(session, session.lastCursor());
                 markSpriteDamage(session, cursor);
                 session.setLastCursor(cursor);
+            }
+            // The cursor a client subscribed to hearing about, from here rather than from the
+            // pointer's own path: it is the display that knows which window the pointer is in, and
+            // the answer is the same whoever asks.
+            XCursor displayed = session.input().displayedCursor();
+            if (!session.cursorBaselineTaken()) {
+                // Nothing is announced until there is a previous value to have changed from.
+                session.setCursorBaselineTaken(true);
+                session.setNotifiedCursor(displayed);
+            } else if (displayed != session.notifiedCursor()) {
+                session.setNotifiedCursor(displayed);
+                if (displayed != null) {
+                    XFixesExtension.notifyCursor(this, session.screen(), displayed.serial(),
+                            events.time());
+                }
             }
             damage = session.screen().framebuffer().takeDamage();
         } finally {

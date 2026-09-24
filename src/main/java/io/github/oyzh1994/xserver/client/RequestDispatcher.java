@@ -5,6 +5,7 @@ import com.github.moaxcp.x11.protocol.XRequest;
 import com.github.moaxcp.x11.protocol.xproto.XprotoPlugin;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.extension.Extension;
+import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.handler.AtomHandlers;
 import io.github.oyzh1994.xserver.handler.DrawHandlers;
 import io.github.oyzh1994.xserver.handler.InputHandlers;
@@ -362,6 +363,15 @@ public final class RequestDispatcher {
             }
         }
         ResourceTable table = server.resources();
+        // The selections this client owns are released before its windows are destroyed, so the
+        // subscribers are told the *client* went away rather than that each window did: a reference
+        // server distinguishes the two, and a clipboard manager reacts differently - a destroyed
+        // owner window is a window it can wait for, a closed client is one it has to replace.
+        for (XResource resource : table.resourcesOf(client)) {
+            if (resource instanceof XWindow window) {
+                server.releaseSelectionsOwnedBy(window.id(), XFixesExtension.SELECTION_CLIENT_CLOSE);
+            }
+        }
         List<XResource> owned = table.resourcesOf(client);
         for (XResource resource : owned) {
             if (resource instanceof XWindow window && !window.isDestroyed()) {
@@ -373,8 +383,5 @@ public final class RequestDispatcher {
         for (XResource resource : table.resourcesOf(client)) {
             table.free(resource.id());
         }
-        // Selections owned by windows that no longer exist are released.
-        server.selectionOwners().entrySet()
-                .removeIf(entry -> server.resources().get(entry.getValue()) == null);
     }
 }

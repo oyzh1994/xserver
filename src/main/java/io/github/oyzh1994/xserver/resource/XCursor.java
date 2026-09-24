@@ -30,6 +30,18 @@ public final class XCursor extends XResource {
             0b0000000000000000,
     };
 
+    /**
+     * Handed out in creation order, and what XFixes reports as a cursor's {@code cursorSerial}.
+     *
+     * <p>It identifies the cursor rather than the change: a client that watches the cursor is told
+     * which one is displayed, so moving back to a cursor it has already seen reports the same number
+     * again. Measured against a reference server, whose serials go back down on the way back.
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger NEXT_SERIAL =
+            new java.util.concurrent.atomic.AtomicInteger(1);
+
+    private final int serial = NEXT_SERIAL.getAndIncrement();
+
     private final int width;
     private final int height;
     private final int hotspotX;
@@ -39,6 +51,11 @@ public final class XCursor extends XResource {
 
     private int foreground;
     private int background;
+
+    /** This cursor's XFixes serial, stable for the cursor's lifetime. */
+    public int serial() {
+        return serial;
+    }
 
     public XCursor(int id, ClientConnection owner, int width, int height, int hotspotX,
                    int hotspotY, int[] pixels, boolean recolorable) {

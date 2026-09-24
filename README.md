@@ -121,7 +121,9 @@ and `doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
 operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
-`SetWindowClipRegion`), and `RENDER` — pictures, formats, `Composite` with the full operator table,
+`SetWindowClipRegion`, and the selection and cursor subscriptions — a client that asks to be told
+when the clipboard changes, or when the pointer moves onto a different cursor, is told, where
+before it heard nothing), and `RENDER` — pictures, formats, `Composite` with the full operator table,
 `FillRectangles`, `Trapezoids`/`Triangles`/`TriStrip`/`TriFan`, the solid and gradient fills, and
 the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
 their text with.

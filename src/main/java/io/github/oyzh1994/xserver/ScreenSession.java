@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.input.InputState;
+import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
 
 import java.awt.Rectangle;
@@ -54,6 +55,17 @@ public final class ScreenSession {
     private XWindow identitySource;
     /** The largest client area the window was last told it may be, or null before it was told. */
     private java.awt.Dimension maxClientArea;
+    /**
+     * The cursor the XFixes subscribers were last told about, and whether they have been told
+     * anything at all yet. Only the display tick touches either.
+     *
+     * <p>The first value is adopted silently rather than announced: the pointer's position is not
+     * known until the first mouse event, so the first cursor the server can name is the baseline the
+     * subscription started at, not a change. A reference server sends nothing until the cursor moves
+     * off what was displayed when the client subscribed, and this is what makes the two the same.
+     */
+    private XCursor notifiedCursor;
+    private boolean cursorBaselineTaken;
 
     public ScreenSession(Screen screen, InputState input, ClientConnection client) {
         this.screen = screen;
@@ -159,6 +171,22 @@ public final class ScreenSession {
 
     public void setMaxClientArea(java.awt.Dimension maxClientArea) {
         this.maxClientArea = maxClientArea;
+    }
+
+    public XCursor notifiedCursor() {
+        return notifiedCursor;
+    }
+
+    public void setNotifiedCursor(XCursor notifiedCursor) {
+        this.notifiedCursor = notifiedCursor;
+    }
+
+    public boolean cursorBaselineTaken() {
+        return cursorBaselineTaken;
+    }
+
+    public void setCursorBaselineTaken(boolean cursorBaselineTaken) {
+        this.cursorBaselineTaken = cursorBaselineTaken;
     }
 
     public WindowIdentity appliedIdentity() {

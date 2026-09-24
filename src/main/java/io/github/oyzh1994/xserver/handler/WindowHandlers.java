@@ -48,6 +48,7 @@ import io.github.oyzh1994.xserver.display.VisualInfo;
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.event.RawEvent;
+import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.resource.ResourceTable;
 import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XColormap;
@@ -376,6 +377,15 @@ public final class WindowHandlers {
                             .event(w.id())
                             .window(window.id())
                             .build());
+        }
+        // A selection is owned by a window, so it dies with it - and the clients that subscribed to
+        // it hear about it, with the time its owner took it rather than the current time: nothing
+        // took the selection away, it lost the window that held it.
+        server.releaseSelectionsOwnedBy(window.id(), XFixesExtension.SELECTION_WINDOW_DESTROY);
+        XFixesExtension xfixes = XFixesExtension.of(server);
+        if (xfixes != null) {
+            // The subscription itself lived on this window, so it goes too.
+            xfixes.windowDestroyed(window);
         }
         server.resources().free(window.id());
         server.markScreenDirty(window);

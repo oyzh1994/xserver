@@ -1078,6 +1078,19 @@ public final class InputState implements DisplayBackend.InputSink {
                 width, height, cursorPixels);
     }
 
+    /**
+     * The cursor the pointer is showing: the nearest one set on the window it is in or above it.
+     *
+     * <p>Distinct from {@link #cursorSprite()}, which is where to draw it: this is the identity a
+     * client is told about when it changes, before anything is drawn and whether or not a frame goes
+     * out, which is why XFixes can use it while the display is idle. Null until the pointer's
+     * position is known, for the same reason the sprite is: until then there is no window under it to
+     * ask.
+     */
+    public XCursor displayedCursor() {
+        return pointerKnown ? cursorFor() : null;
+    }
+
     private XCursor cursorFor() {
         for (XWindow window = pointerWindow; window != null; window = window.parent()) {
             XCursor cursor = window.cursor();

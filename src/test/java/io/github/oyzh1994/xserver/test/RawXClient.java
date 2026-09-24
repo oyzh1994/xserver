@@ -173,6 +173,140 @@ public final class RawXClient implements AutoCloseable {
         return reply[8] == 0 ? 0 : reply[9] & 0xFF;
     }
 
+    /**
+     * QueryExtension with every field it answers: {@code {present, majorOpcode, firstEvent,
+     * firstError}}.
+     *
+     * <p>The first event code is what a caller has to add to an extension event's own number to
+     * recognise it on the wire, and it is not derivable from anything the client already knows - a
+     * probe that guesses it reads the event as a core one with a nonsense type.
+     */
+    public int[] queryExtensionInfo(String name) throws IOException {
+        byte[] request = new byte[(8 + name.length() + 3) & ~3];
+        request[0] = 98;                            // QueryExtension
+        request[2] = (byte) (request.length / 4);
+        writeShort(request, 4, name.length());
+        for (int i = 0; i < name.length(); i++) {
+            request[8 + i] = (byte) name.charAt(i);
+        }
+        send(request);
+        byte[] reply = readReply();
+        return new int[] {reply[8] & 0xFF, reply[9] & 0xFF, reply[10] & 0xFF, reply[11] & 0xFF};
+    }
+
+    /** XFixesQueryVersion: {@code {major, minor}} as the server reports them. */
+    public int[] queryXfixesVersion(int opcode, int major, int minor) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = (byte) opcode;
+        request[1] = 0;                             // X_XFixesQueryVersion
+        request[2] = 3;
+        writeInt(request, 4, major);
+        writeInt(request, 8, minor);
+        send(request);
+        byte[] reply = readReply();
+        return new int[] {readInt(reply, 8), readInt(reply, 12)};
+    }
+
+    /**
+     * XFixesSelectSelectionInput: subscribe to notifications about one selection.
+     *
+     * @param eventMask bit 0 SetSelectionOwner, bit 1 SelectionWindowDestroy, bit 2
+     *     SelectionClientClose
+     */
+    public void selectSelectionInput(int opcode, int window, int selection, int eventMask)
+            throws IOException {
+        byte[] request = new byte[16];
+        request[0] = (byte) opcode;
+        request[1] = 2;                             // X_XFixesSelectSelectionInput
+        request[2] = 4;
+        writeInt(request, 4, window);
+        writeInt(request, 8, selection);
+        writeInt(request, 12, eventMask);
+        send(request);
+    }
+
+    /** OpenFont: {@code name} is an X font name, e.g. {@code cursor} for the cursor font. */
+    public void openFont(int font, String name) throws IOException {
+        byte[] request = new byte[(12 + name.length() + 3) & ~3];
+        request[0] = 45;                            // OpenFont
+        request[2] = (byte) (request.length / 4);
+        writeInt(request, 4, font);
+        writeShort(request, 8, name.length());
+        for (int i = 0; i < name.length(); i++) {
+            request[12 + i] = (byte) name.charAt(i);
+        }
+        send(request);
+    }
+
+    /**
+     * CreateGlyphCursor: a cursor drawn from one glyph of a font, which is what
+     * {@code XCreateFontCursor} does - {@code source} is the shape's bitmap, {@code mask} the
+     * character whose bitmap says where it is transparent.
+     */
+    public void createGlyphCursor(int cursor, int sourceFont, int maskFont, int sourceChar,
+                                  int maskChar, int foreground, int background) throws IOException {
+        byte[] request = new byte[32];
+        request[0] = 94;                            // CreateGlyphCursor
+        request[2] = 8;
+        writeInt(request, 4, cursor);
+        writeInt(request, 8, sourceFont);
+        writeInt(request, 12, maskFont);
+        writeShort(request, 16, sourceChar);
+        writeShort(request, 18, maskChar);
+        writeShort(request, 20, (foreground >> 16) & 0xFF);
+        writeShort(request, 22, (foreground >> 8) & 0xFF);
+        writeShort(request, 24, foreground & 0xFF);
+        writeShort(request, 26, (background >> 16) & 0xFF);
+        writeShort(request, 28, (background >> 8) & 0xFF);
+        writeShort(request, 30, background & 0xFF);
+        send(request);
+    }
+
+    /** ChangeWindowAttributes with just {@code CWCursor}: which cursor the window shows. */
+    public void setWindowCursor(int window, int cursor) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 2;                             // ChangeWindowAttributes
+        request[2] = 4;
+        writeInt(request, 4, window);
+        writeInt(request, 8, 0x4000);               // CWCursor
+        writeInt(request, 12, cursor);              // the only value in the list
+        send(request);
+    }
+
+    /** WarpPointer: moves the pointer into {@code destination} at a window relative point. */
+    public void warpPointer(int destination, int x, int y) throws IOException {
+        byte[] request = new byte[24];
+        request[0] = 41;                            // WarpPointer
+        request[2] = 6;
+        writeInt(request, 4, 0);                    // source window: None
+        writeInt(request, 8, destination);
+        writeShort(request, 20, x);
+        writeShort(request, 22, y);
+        send(request);
+    }
+
+    /** XFixesSelectCursorInput: subscribe to notifications about the cursor displayed on a screen. */
+    public void selectCursorInput(int opcode, int window, int eventMask) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = (byte) opcode;
+        request[1] = 3;                             // X_XFixesSelectCursorInput
+        request[2] = 3;
+        writeInt(request, 4, window);
+        writeInt(request, 8, eventMask);
+        send(request);
+    }
+
+    /** SetSelectionOwner: {@code owner} 0 gives the selection up, 1 names the requesting client. */
+    public void setSelectionOwner(int owner, int selection, int time) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 22;                            // SetSelectionOwner
+        request[2] = 4;
+        writeInt(request, 4, owner);
+        writeInt(request, 8, selection);
+        writeInt(request, 12, time);                // 0 is CurrentTime
+        send(request);
+    }
+
     /** Moves the pointer through XTEST, which is how a test plays the part of the user. */
     public void fakeMotion(int opcode, int x, int y) throws IOException {
         fakeInput(opcode, 6, 0, x, y);               // MotionNotify, absolute

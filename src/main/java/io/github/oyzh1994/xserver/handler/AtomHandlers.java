@@ -23,6 +23,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.event.EventMasks;
+import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.resource.AtomTable;
 import io.github.oyzh1994.xserver.resource.XProperty;
 import io.github.oyzh1994.xserver.resource.XResource;
@@ -270,37 +271,47 @@ public final class AtomHandlers {
     // Selections
     // ------------------------------------------------------------------
 
+    /**
+     * Hands a selection to a window, or takes it away from everyone when the owner is {@code None}.
+     *
+     * <p>Three things are told that the owner changed, and they are told different things: the
+     * outgoing owner hears {@code SelectionClear}, while the clients that subscribed through XFixes
+     * hear a {@code SelectionNotify} - including the subscribers of a selection that had no owner
+     * and of one whose owner did not actually change, because a reference server was measured
+     * sending both.
+     */
     public void setSelectionOwner(ClientConnection client, SetSelectionOwner r) {
         String name = selectionName(r.getSelection());
         XWindow owner = r.getOwner() == 0 ? null : window(client, r.getOwner());
         if (r.getTime() != 0 && !isNewerThanCurrent(r.getTime())) {
             return;
         }
-        Integer previous = server.selectionOwners().put(name, owner == null ? 0 : owner.id());
-        if (previous == null || previous == 0 || (owner != null && previous == owner.id())) {
-            return;
-        }
-        // The outgoing owner is told it lost the selection.
-        XResource previousResource = server.resources().get(previous);
-        if (previousResource instanceof XWindow previousWindow
-                && previousWindow.owner() != null) {
-            ClientConnection previousOwner = previousWindow.owner();
-            server.events().send(previousOwner, SelectionClearEvent.builder()
-                    .firstEventOffset((byte) 0)
-                    .sentEvent(false)
-                    .sequenceNumber(previousOwner.sequenceNumber())
-                    .time(server.events().time())
-                    .owner(previous)
-                    .selection(r.getSelection())
-                    .build());
+        int now = server.events().time();
+        int newOwner = owner == null ? 0 : owner.id();
+        int previous = server.selectionOwner(name);
+        server.setSelectionOwner(name, newOwner, now, XFixesExtension.SELECTION_SET_OWNER);
+        if (previous != 0 && previous != newOwner) {
+            // The outgoing owner is told it lost the selection.
+            XResource previousResource = server.resources().get(previous);
+            if (previousResource instanceof XWindow previousWindow
+                    && previousWindow.owner() != null) {
+                ClientConnection previousOwner = previousWindow.owner();
+                server.events().send(previousOwner, SelectionClearEvent.builder()
+                        .firstEventOffset((byte) 0)
+                        .sentEvent(false)
+                        .sequenceNumber(previousOwner.sequenceNumber())
+                        .time(now)
+                        .owner(previous)
+                        .selection(r.getSelection())
+                        .build());
+            }
         }
     }
 
     public void getSelectionOwner(ClientConnection client, GetSelectionOwner r) {
-        Integer owner = server.selectionOwners().get(selectionName(r.getSelection()));
         client.sendReply(GetSelectionOwnerReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .owner(owner == null ? 0 : owner)
+                .owner(server.selectionOwner(selectionName(r.getSelection())))
                 .build());
     }
 
@@ -313,8 +324,8 @@ public final class AtomHandlers {
      */
     public void convertSelection(ClientConnection client, ConvertSelection r) {
         XWindow requestor = window(client, r.getRequestor());
-        Integer ownerId = server.selectionOwners().get(selectionName(r.getSelection()));
-        if (ownerId == null || ownerId == 0) {
+        int ownerId = server.selectionOwner(selectionName(r.getSelection()));
+        if (ownerId == 0) {
             server.events().send(requestor.owner(), com.github.moaxcp.x11.protocol.xproto
                     .SelectionNotifyEvent.builder()
                     .firstEventOffset((byte) 0)

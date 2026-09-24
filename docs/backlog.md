@@ -54,7 +54,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
 | A12 | window gravity is stored but not applied | correctness | S-M |
-| A8 | XFixes selection/cursor notifications are never delivered | correctness | S-M |
+| ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | A5 | the focus does not follow the pointer under `PointerRoot` | correctness | M |
 | A1 | passive grabs are recorded but never matched | correctness | M |
@@ -102,7 +102,8 @@ the rules exist because ignoring them produced an afternoon of chasing an imagin
 ### [ ] E0. Finish the verification kit. **S**
 
 Restored on 2026-09-24: `Drive`, `WinTree`, `Focus`, `Pixel`, `Xwd`, `Blocks`, `Colors`, `Shift`,
-`Rect`, `Crop`, a reconstruction of `XProxy`, and a new `AuthProbe` (written for A7). `RawXClient`
+`Rect`, `Crop`, a reconstruction of `XProxy`, a new `AuthProbe` (written for A7), and `SelectionProbe`
+with `CursorProbe` (written for A8). `RawXClient`
 grew a key driver, an auto-repeat setter and - worth more than the rest - a **reply sequence check**:
 a reply that is not the one being waited for is now an error instead of a wrong value, which is how a
 test that asked for an empty range once came back with the previous query's three events. Still missing and worth having (see
@@ -127,6 +128,8 @@ The kit, and what each piece is for:
 | `Rect` | an ASCII map of a rectangle (darkness buckets) - how a ghost dialog was spotted. |
 | `Focus` | `SetInputFocus` to an arbitrary window from a bare-protocol client, i.e. plays the window manager for a test. |
 | `AuthProbe` | sends a connection setup with chosen credentials and reports the answer: the setup's vendor and screen count, or the refusal's reason. No arguments means "offer nothing". |
+| `SelectionProbe` | subscribes to a selection through XFixes and prints every notification, while other connections take the selection, destroy its window and disconnect - the three subtypes A8 is about. Takes a selection name, so a client watching something other than CLIPBOARD can be checked. |
+| `CursorProbe` | the same for `SelectCursorInput`: two windows with different glyph cursors, the pointer warped between them, every `CursorNotify` printed. |
 | `XProxy` | a byte-level X11 proxy: logs a client's request/event stream against a *real* server, which is the only way to compare what a client sends to Xvfb with what it sends here. |
 | `Crop`, `Pixel`, `Diff`, `Compare` | small image helpers (Crop magnifies a region around a point). |
 
@@ -406,29 +409,53 @@ parent, print the child's `GetGeometry`).
 
 ---
 
-### [ ] A8. XFixes selection and cursor notifications are never delivered. **S-M**
+### [x] A8. XFixes selection and cursor notifications were never delivered. **S-M** - done 2026-09-24
 
-**Current.** `XFixesExtension` implements `SelectSelectionInput`/`SelectCursorInput` (it records the
-selection) and never sends `SetSelectionOwnerNotify`, `SelectionWindowDestroyNotify`,
-`SelectionClientCloseNotify` or `CursorNotify`; the class javadoc says so.
+**What it was.** `XFixesExtension` implemented `SelectSelectionInput`/`SelectCursorInput` - it recorded
+them - and never sent `SetSelectionOwnerNotify`, `SelectionWindowDestroyNotify`,
+`SelectionClientCloseNotify` or `CursorNotify`. A clipboard manager, an `xclip`/`wl-paste` bridge or a
+cursor-theme tool, all of which subscribe instead of polling the owner, saw nothing ever change.
 
-**Why it matters.** Clipboard managers, `xclip`/`wl-paste` bridges and cursor-theme tools subscribe to
-these instead of polling the selection owner. Without them, a client that wants to know "the clipboard
-changed" sees nothing.
+**What changed.** The three selection subtypes, raised from the code that changes a selection's owner
+(`XFixesExtension.notifySelection`, called from `AtomHandlers.setSelectionOwner`, from
+`WindowHandlers.destroyWindowTree` and from the client-disconnect cleanup), and `CursorNotify`, raised
+from the display tick - which is where the server knows what the pointer is over. Ownership is now
+`XServer.Selection{owner, timestamp}` rather than an owner id alone, because the notification carries
+the selection's own timestamp and it is not always now. A subscription is a
+`(window, selection, mask)` triple: the window is what the event names, and the selection matters
+because a client that watches CLIPBOARD must not hear about PRIMARY - the first version keyed
+subscriptions by window alone and the regression test caught it.
 
-**Plan.** In `AtomHandlers.setSelectionOwner`, deliver `SetSelectionOwnerNotify` to every client that
-selected for that selection (also on owner window destroy / client close, the two other variants), and
-`CursorNotify` from the cursor-display path in `DisplayBackend`/`XServer.tick`. The event numbers for
-XFixes events are *not* in the extension's advertised range by accident - check `XFixesExtension`'s
-registered event count (2) against the classes used, and remember the `eventcopy` bug in the fork
-(E1) when the numbers look wrong.
+**Measured 2026-09-24**, two ways:
 
-**Traps.** Both are *events with a timestamp*; the XFixes notification carries the selection's timestamp
-and must match `SetSelectionOwner`'s, or a client that compares them discards the event. Sending the
-notification *before* the owner is updated makes the client query the old owner.
+- `tools/SelectionProbe` and `tools/CursorProbe` (new in the kit) run the same requests against Xvfb
+  and against this server and print every event. The two outputs are **identical** once the things a
+  server assigns for itself are normalised away (opcodes, atom ids, cursor serials, absolute clocks),
+  which is how the rules in `docs/design-notes.md` ("What a subscriber is told") were established.
+  Among them: a destroyed owner window and a disconnecting owner report `owner=0` with the
+  *selection's original* timestamp, while every `SetSelectionOwner` - including one that changes
+  nothing - sets both times to now; and a cursor's `cursorSerial` names the cursor, so it goes back
+  down when the pointer returns to one it has shown before.
+- Live, with the real client: EasyShell on the VM subscribes to `_NET_WM_CM_S0` as it starts
+  (measured: `mask 0x7 on 0x400001`), and taking that selection from a probe delivered the
+  notification to it. Taking `CLIPBOARD` did **not** notify it, which is the point of the triple -
+  and what the old "a subscription means this client wants selection events" reading got wrong.
 
-**Verify.** A raw client that selects for the CLIPBOARD and prints what it gets, with another client
-taking ownership; compare with Xvfb, which implements the same subscription.
+`extension/XFixesNotifyTest` (7 tests, real connections, the display loop running) pins all of it.
+Five fail without the notifications, the subscription-lifetime test fails without the window cleanup,
+and the seventh is the "did not subscribe, hears nothing" guard that caught the window-only key.
+
+**Traps worth keeping.** The two timestamps are not interchangeable (see above), and sending the
+notification *before* the owner is updated makes the client query the old owner. A reference server
+**refuses every XFixes request from a client that never called `XFixesQueryVersion`** (`BadRequest`) -
+measured while probing, and deliberately not copied: a real client always asks first, so all it would
+change is a hand-written probe. Registration order is not ours to pick, so the event base comes from
+`firstEvent()`, and the two event classes are numbered correctly by the fork (`NUMBER` 0 and 1),
+unlike the five in E1.
+
+**Left open here**: `ChangeCursor` and `CreateRegionFromPicture` are still refused with
+`BadImplementation`, and `HideCursor`/`ShowCursor` still only count (the sprite is drawn
+unconditionally) - neither is about notifications.
 
 ---
 
