@@ -478,10 +478,11 @@ public final class JavaFxBackend implements DisplayBackend {
         });
         scene.setOnMouseDragged(this::pointerMoved);
         scene.setOnMousePressed(event -> {
+            hostEvent("pressed", event);
             enterWindow();
             mouseButton(event, true);
         });
-        scene.setOnMouseReleased(event -> mouseButton(event, false));
+        scene.setOnMouseReleased(event -> { hostEvent("released", event); mouseButton(event, false); });
         scene.setOnScroll(this::scrolled);
         scene.setOnKeyPressed(event -> keyChanged(event.getCode(), true));
         scene.setOnKeyReleased(event -> keyChanged(event.getCode(), false));
@@ -844,6 +845,21 @@ public final class JavaFxBackend implements DisplayBackend {
     // ------------------------------------------------------------------
     // Input
     // ------------------------------------------------------------------
+
+    /**
+     * Reports a mouse event the host window itself received, before anything is done with it.
+     *
+     * <p>This exists because "the click did nothing" has two very different causes that look the same
+     * from the client: the host window never passed the event on (the platform took it, or the
+     * toolkit did not deliver it), or it passed on an event the client then ignored. The client side
+     * is logged too, by {@code InputState} and the request log; this is the other end of the wire.
+     */
+    private void hostEvent(String what, MouseEvent event) {
+        if (log.isDebugEnabled()) {
+            log.debug("host window {} {} at scene ({},{}), stage focused {}", what, event.getButton(),
+                    event.getX(), event.getY(), stage != null && stage.isFocused());
+        }
+    }
 
     private void pointerMoved(MouseEvent event) {
         int x = screenX(event.getX());

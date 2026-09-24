@@ -262,6 +262,31 @@ The core protocol never had the bug, because `DrawHandlers.Target` asks the wind
 per request; only the picture path cached it, which is why everything except a moved window's
 *contents* - its background, its border, its event handling - behaved.
 
+## What a window leaves behind when it goes
+
+A window's own visible region is its rectangle minus its children - a parent does not draw over its
+children - and for the shape every toolkit gives a toplevel or a dialog that comes out **empty**: the
+frame's content window covers the frame completely. That is the right answer for drawing and for
+`Expose`, and the wrong one for "what does this window leave behind", which is what an unmap, a
+destroy, a move or a restack has to hand back to the windows underneath.
+
+Measured with termora: closing the settings dialog sent `UnmapWindow` and then `DestroyWindow`, the
+window really was gone from the tree - and its picture stayed on the screen, because the region handed
+back for repainting was the frame's own, which is nothing at all. The symptom the user reported was
+that the close button "needs two clicks": the first click closed the dialog, and the picture it left
+behind was what they went on aiming at, so the second click - the one whose hover made the client
+repaint that area - looked like the one that took effect. The same shape explains the two others they
+saw: a dialog's confirm button closing a dialog, and a popup dismissed by clicking outside it.
+
+`XWindow.coveredRegion()` is the other region: the rectangle including its border and its children,
+minus what is stacked above it - the area the window is *seen* in. `WindowHandlers.coveredRegionOf` is
+what the code asks wherever the question is what a window leaves behind: `unmapWindow`,
+`applyConfigure` (a moved or resized window hands back where it was, so a dragged dialog no longer
+leaves a trail) and `circulateSubwindows`. `visibleRegion()` stays what drawing and exposure are
+clipped to, which is why the two are not one method.
+`WindowObscuringTest.unmappingAFrameGivesBackTheAreaItsContentWindowCovered` pins it and fails without
+the fix.
+
 ## A depth 8 drawable holds bytes, not colours
 
 A depth 8 pixel is stored as the byte the client sent, unconverted, whether or not the drawable has a

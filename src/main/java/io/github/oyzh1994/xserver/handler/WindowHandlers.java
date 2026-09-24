@@ -555,8 +555,10 @@ public final class WindowHandlers {
     public void unmapWindow(XWindow window, boolean notify) {
         // The area it covered goes back to the windows below, which have to draw it again: their
         // pixels there are the ones this window painted over. This happens even when the unmap is
-        // not reported, because a destroyed window's area has to be restored just the same.
-        List<Rectangle> before = visibleRegionOf(window);
+        // not reported, because a destroyed window's area has to be restored just the same - and it
+        // is what the window *covers* rather than what it owns, so a frame whose content window
+        // fills it gives back the dialog's picture rather than the nothing its own region is.
+        List<Rectangle> before = coveredRegionOf(window);
         window.setMapped(false);
         // A window that is no longer on screen cannot be holding the pointer's implicit grab: pinning
         // events to it would leave every client without input until another button press.
@@ -644,8 +646,10 @@ public final class WindowHandlers {
         int oldHeight = window.height();
         int oldBorder = window.borderWidth();
         // Where it showed before the change, so the parts it stops covering can be handed back to
-        // the windows underneath and the parts it starts covering can be drawn.
-        List<Rectangle> before = visibleRegionOf(window);
+        // the windows underneath and the parts it starts covering can be drawn. What it *covered*,
+        // so a window driven by its children - every toolkit's dialog and toplevel - hands back
+        // where its content was rather than the nothing its own region is.
+        List<Rectangle> before = coveredRegionOf(window);
 
         if (ConfigWindow.X.isEnabled(mask)) {
             window.setPosition(r.getX(), window.y());
@@ -822,10 +826,12 @@ public final class WindowHandlers {
         }
         // Circulating is a restack of every mapped child, so what each of them shows changes: their
         // regions are captured before the order moves and compared after, which is what gets the
-        // newly covered windows told to stop and the newly revealed ones told to draw.
+        // newly covered windows told to stop and the newly revealed ones told to draw. What is
+        // captured is what each child covers - its own children included, as everywhere the
+        // question is "what does this leave behind" - so a frame is not read as showing nothing.
         Map<XWindow, List<Rectangle>> before = new LinkedHashMap<>();
         for (XWindow child : mapped) {
-            before.put(child, visibleRegionOf(child));
+            before.put(child, coveredRegionOf(child));
         }
         for (XWindow child : mapped) {
             int index = parent.children().indexOf(child);
@@ -1113,6 +1119,20 @@ public final class WindowHandlers {
     private List<Rectangle> visibleRegionOf(XWindow window) {
         return window != null && window.isViewable() && !window.isInputOnly()
                 ? window.visibleRegion() : List.of();
+    }
+
+    /**
+     * The area a window covers - its children included - or nothing when it is not on screen.
+     *
+     * <p>This is the region to ask for when the question is "what does this window leave behind
+     * when it goes away or moves", and it is deliberately not {@link #visibleRegionOf}: a toolkit's
+     * toplevel is a frame whose content window covers it entirely, so the frame's own region is
+     * empty and giving back only that restores nothing at all. Read it before the window is
+     * unmapped or moved - the answer is about where it was.
+     */
+    private List<Rectangle> coveredRegionOf(XWindow window) {
+        return window != null && window.isViewable() && !window.isInputOnly()
+                ? window.coveredRegion() : List.of();
     }
 
     /**

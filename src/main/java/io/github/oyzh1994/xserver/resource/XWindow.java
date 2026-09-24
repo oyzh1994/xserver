@@ -470,7 +470,32 @@ public final class XWindow extends XResource {
         return visibleRegion(outerClipRect());
     }
 
+    /**
+     * Everything this window puts on the screen: its own rectangle and border, its children, minus
+     * whatever is stacked above it.
+     *
+     * <p>{@link #visibleRegion()} is the window's <em>own</em> pixels and stops where a child
+     * begins; this is the area it is seen in, and the difference matters for the shape a toolkit
+     * gives every toplevel and dialog: a frame whose content window covers it completely. Such a
+     * frame has no visible region of its own at all, so an unmap that gives back "what the window
+     * showed" computed that way gives back nothing - and the dialog's picture stays on the screen
+     * after its window has gone. A moved or resized window is the same story.
+     */
+    public List<Rectangle> coveredRegion() {
+        return visibleRegion(outerClipRect(), true);
+    }
+
     private List<Rectangle> visibleRegion(Rectangle clip) {
+        return visibleRegion(clip, false);
+    }
+
+    /**
+     * @param includeChildren true for the area the window covers rather than the pixels it owns:
+     *                        its children are painted inside it, so they are part of what it shows
+     *                        and must be given back when it goes away, while they are not part of
+     *                        its own drawing surface - which stops at the child's rectangle.
+     */
+    private List<Rectangle> visibleRegion(Rectangle clip, boolean includeChildren) {
         if (clip.isEmpty()) {
             return List.of();
         }
@@ -479,7 +504,7 @@ public final class XWindow extends XResource {
         // one we came through are the ones that can cover it - and this window's own children,
         // which are drawn inside it, are above its own content just as surely.
         for (XWindow window = this; window != null && !region.isEmpty(); window = window.parent()) {
-            if (window == this) {
+            if (window == this && !includeChildren) {
                 region = subtractMappedChildren(this, region);
             }
             XWindow parent = window.parent();
