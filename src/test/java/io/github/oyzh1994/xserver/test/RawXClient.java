@@ -20,6 +20,8 @@ public final class RawXClient implements AutoCloseable {
     /** The first id this client may use; ids above it are ours to hand out. */
     private final int idBase;
     private int nextId = 1;
+    /** Requests sent so far, which is the sequence number the next reply has to carry. */
+    private int sequence;
 
     private final Socket socket;
     private final DataInputStream in;
@@ -296,6 +298,66 @@ public final class RawXClient implements AutoCloseable {
         return children;
     }
 
+    /**
+     * Asks for the pointer's history inside a window between two times: one {@code {time, x, y}} per
+     * event, oldest first.
+     *
+     * <p>This is the request a client makes twice - once for the count, once with room for the
+     * events - and the reply's {@code nitems} is what says which. Times are 32 bit and wrap, so the
+     * caller brackets its own gestures with the same clock the server stamps them with.
+     */
+    public java.util.List<long[]> getMotionEvents(int window, long start, long stop)
+            throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 39;                            // GetMotionEvents
+        request[2] = 4;
+        writeInt(request, 4, window);
+        writeInt(request, 8, (int) start);
+        writeInt(request, 12, (int) stop);
+        send(request);
+        byte[] reply = readReply();
+        int count = readInt(reply, 8);              // nitems
+        // A reply whose length field disagrees with its item count desynchronises the stream: every
+        // answer after it is read from the wrong offset. Say so here rather than letting a later
+        // assertion report the wrong number.
+        int length = readInt(reply, 4);
+        if (length != count * 2 || reply.length != 32 + length * 4) {
+            throw new IOException("GetMotionEvents reply is inconsistent: length=" + length
+                    + " items=" + count + " bytes=" + reply.length);
+        }
+        java.util.List<long[]> events = new java.util.ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            int at = 32 + i * 8;                    // Timecoord: time, x, y
+            events.add(new long[]{readInt(reply, at) & 0xFFFFFFFFL,
+                    (short) readShort(reply, at + 4), (short) readShort(reply, at + 6)});
+        }
+        return events;
+    }
+
+    /** Presses or releases one key, through XTEST. */
+    public void fakeKey(int opcode, int keycode, boolean pressed) throws IOException {
+        byte[] request = new byte[36];
+        request[0] = (byte) opcode;                 // XTEST FakeInput
+        request[1] = 2;
+        request[2] = 9;
+        request[4] = (byte) (pressed ? 2 : 3);      // KeyPress / KeyRelease
+        request[5] = (byte) keycode;
+        request[35] = 0;                            // the core keyboard
+        send(request);
+    }
+
+    /**
+     * {@code ChangeKeyboardControl}, for the auto-repeat mode: an empty keycode list means every key.
+     */
+    public void setAutoRepeat(int keycode, boolean on) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = 102;                           // ChangeKeyboardControl
+        request[2] = 3;
+        writeInt(request, 4, 0x80);                 // value-mask: AutoRepeatMode
+        writeInt(request, 8, (on ? 1 : 0) | (keycode < 0 ? 0 : keycode << 8));
+        send(request);
+    }
+
     /** Reads pixels back from a drawable, as ZPixmap bytes. */
     public byte[] getImage(int drawable, int x, int y, int width, int height) throws IOException {
         byte[] request = new byte[20];
@@ -505,6 +567,12 @@ public final class RawXClient implements AutoCloseable {
             // arrives after every drawing request, for one - so it is dropped rather than mistaken
             // for the answer.
         }
+        int expected = outstandingSequence() & 0xFFFF;
+        int got = readShort(reply, 2);
+        if (got != expected) {
+            throw new IOException("reply for sequence " + got + " arrived while waiting for "
+                    + expected + ": a reply was left unread, and every answer after it is suspect");
+        }
         int extra = readInt(reply, 4) * 4;
         if (extra > 0) {
             byte[] all = new byte[32 + extra];
@@ -533,9 +601,24 @@ public final class RawXClient implements AutoCloseable {
         return (bytes[offset] & 0xFF) | ((bytes[offset + 1] & 0xFF) << 8);
     }
 
+    /**
+     * Sends one request, remembering its sequence number.
+     *
+     * <p>The X protocol numbers every request a connection sends, and every reply and error carries
+     * the number of the request that caused it. Checking it is what tells "this reply is the answer
+     * to my request" from "this is the answer to an earlier one": a reply left unread desynchronises
+     * everything after it, and the symptom is not an error but a *wrong value* - which is how a test
+     * that asks for an empty range once came back with the three events of the query before it.
+     */
     private void send(byte[] request) throws IOException {
         out.write(request);
         flush();
+        sequence++;
+    }
+
+    /** The sequence number of the request whose reply is expected next. */
+    private int outstandingSequence() {
+        return sequence;
     }
 
     private byte[] readFully(long count) throws IOException {

@@ -47,12 +47,12 @@ A prompt that starts a fresh session on this, verbatim:
 | id | item | area | size |
 |----|------|------|------|
 | E0 | finish the verification kit | engineering | S |
-| A7 | `--auth` can be bypassed by offering no credentials | security | S |
+| ~~A7~~ | ~~`--auth` can be bypassed by offering no credentials~~ **done 2026-09-24** | security | S |
 | A3 | font cursors are drawn as a filled cell | correctness | S |
 | A4 | `xdotool` segfaults against this server | correctness | S-M |
 | A2 | a bounding shape does not clip drawing | correctness | S-M |
-| A11 | no keyboard autorepeat | correctness | S-M |
-| A10 | `GetMotionEvents` returns nothing | correctness | S |
+| ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
+| ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
 | A12 | window gravity is stored but not applied | correctness | S-M |
 | A8 | XFixes selection/cursor notifications are never delivered | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
@@ -102,7 +102,10 @@ the rules exist because ignoring them produced an afternoon of chasing an imagin
 ### [ ] E0. Finish the verification kit. **S**
 
 Restored on 2026-09-24: `Drive`, `WinTree`, `Focus`, `Pixel`, `Xwd`, `Blocks`, `Colors`, `Shift`,
-`Rect`, `Crop`, and a reconstruction of `XProxy`. Still missing and worth having (see
+`Rect`, `Crop`, a reconstruction of `XProxy`, and a new `AuthProbe` (written for A7). `RawXClient`
+grew a key driver, an auto-repeat setter and - worth more than the rest - a **reply sequence check**:
+a reply that is not the one being waited for is now an error instead of a wrong value, which is how a
+test that asked for an empty range once came back with the previous query's three events. Still missing and worth having (see
 `tools/README.md`): a typed-string driver (`Keys`), a `GetImage` capture tool, and the raw-protocol
 probes (`Probe`, `MenuProbe`, `PointProbe`) that the focus and menu measurements in the design notes
 were made with. Also worth doing here: a single script that runs a whole comparison - start both beds,
@@ -123,6 +126,7 @@ The kit, and what each piece is for:
 | `Shift` | difference cost per offset in ±4 pixels - tells a shift from a rendering difference before blaming rendering. |
 | `Rect` | an ASCII map of a rectangle (darkness buckets) - how a ghost dialog was spotted. |
 | `Focus` | `SetInputFocus` to an arbitrary window from a bare-protocol client, i.e. plays the window manager for a test. |
+| `AuthProbe` | sends a connection setup with chosen credentials and reports the answer: the setup's vendor and screen count, or the refusal's reason. No arguments means "offer nothing". |
 | `XProxy` | a byte-level X11 proxy: logs a client's request/event stream against a *real* server, which is the only way to compare what a client sends to Xvfb with what it sends here. |
 | `Crop`, `Pixel`, `Diff`, `Compare` | small image helpers (Crop magnifies a region around a point). |
 
@@ -177,32 +181,37 @@ to; `WindowHandlers` logs which events a client selected.
 
 ## 2. A - Correctness: the code accepts a request and does the wrong thing
 
-### [ ] A7. `--auth` can be bypassed by offering no credentials. **S**
+### [x] A7. `--auth` could be bypassed by offering no credentials. **S** - done 2026-09-24
 
-**Current.** `ConnectionSetup.authenticate()` (line ~83) reads
-`if (!server.options().authRequired() || authName.isEmpty()) return true;` - so a client that starts
-its handshake with an **empty** authorization name is accepted even though `--auth` was requested. A
-real server, when access control is on and the client offers no credentials, refuses the connection
-("no authentication protocol offered").
+**What it was.** `ConnectionSetup.authenticate()` read
+`if (!server.options().authRequired() || authName.isEmpty()) return true;` - so a client that left the
+credentials out of its handshake was accepted even though `--auth` was requested. Since the server
+listens on every interface by default, that was the whole of the access control: the flag looked like
+one and was not.
 
-**Why it matters.** `--auth` looks like access control and is not one: the server listens on all
-interfaces by default (`--local` narrows it), so anyone who can reach the port gets a screen. The
-`ListHosts`/`ChangeHosts`/`SetAccessControl` requests are implemented and report the same story, so
-the flag is trusted by a user who then forwards a desktop onto a network.
+**What changed.** "Access control is on and nothing was offered" is a refusal (with a log line naming
+the peer); an `-ac` server - the default - still takes anything, which is what every other test and
+the author's own test bed rely on.
 
-**Plan.** In `authenticate`, treat "auth required and nothing offered" as a rejection; keep the
-`-ac` behaviour only when `authRequired` is false. Check the error text the client sees (a failed
-handshake must send `SetupFail` with a reason, which the existing path already does).
+**Measured 2026-09-24** with `tools/AuthProbe` (new in the kit) against live servers:
 
-**Traps.** A client with no `~/.Xauthority` entry for that display offers nothing; the failure looks
-exactly like "the server is down" to the user, so the log line must say which host was refused and why.
-Xlib's `xauth`-less path and JavaFX/AWT both offer no credentials when the display has no cookie, so
-this change *will* break the author's own test bed setups that rely on `--no-auth` - which is correct,
-and is why the default stays `--no-auth`.
+```
+no credentials, --auth on:   REFUSED: Authentication rejected
+right cookie:                SETUP: vendor=xserver screens=1
+wrong cookie (one byte off): REFUSED: Authentication rejected
+no credentials, --no-auth:   SETUP: vendor=xserver screens=1
+```
 
-**Verify.** `xauth -f /tmp/xa add :97 . <hex>` + start with `--auth /tmp/xa`; connect a bare-protocol
-client that sends an empty auth block (it must be refused, with a log line), one with the right cookie
-(accepted) and one with a wrong cookie (refused).
+`client/AuthenticationTest` (6 tests) pins all four plus "an empty cookie is not the same as offering
+none" and "an unknown authorization protocol is refused"; the bypass test fails without the fix
+(`expected: <> but was: <setup>`).
+
+**Traps worth keeping.** A client with no `~/.Xauthority` entry for that display offers nothing, and
+the failure looks exactly like "the server is down", so the refusal is logged with the peer - check the
+log before blaming the network. And `AuthProbe`'s own handshake bit twice while it was written: the
+setup request's two length fields are read in the byte order the client *declares* (little-endian for
+`'l'`), and a failure reply is an eight byte header with the reason after it, not two bytes - getting
+either wrong reads as a *hung* handshake rather than a bad request.
 
 ---
 
@@ -288,56 +297,65 @@ underneath. Xvfb is the reference for the same script.
 
 ---
 
-### [ ] A11. There is no keyboard autorepeat. **S-M**
+### [x] A11. There was no keyboard autorepeat. **S-M** - done 2026-09-24
 
-**Current.** `InputState.keyChanged` is called for the press and the release the host window (or
-XTEST) delivers, and nothing generates the repeats a held key produces on a real server. Meanwhile
-`GetKeyboardControl` reports every key as auto-repeating (`MiscHandlers` line ~181) and
-`ChangeKeyboardControl` accepts a repeat rate that is never used. XKB's "detectable autorepeat"
-mechanism is absent too (see B1), which is the other way a client can be told about repeats.
+**What it was.** The server delivered the press and the release and nothing in between, while
+`GetKeyboardControl` claimed every key repeats - so a held Backspace in a forwarded terminal deleted
+one character, and a client that turned a key's repeat off was ignored.
 
-**Why it matters.** Holding backspace or an arrow key in a forwarded terminal types one character.
-This is a terminal-forwarding server; that alone makes it a real gap. (Verify which clients implement
-their own repeat: some toolkits do, `xterm` does not.)
+**What changed.** The display tick (`XServer.pollAutoRepeat`, under the server lock, once per frame)
+delivers the repeats: a key's first repeat comes `repeatDelayMillis` after it went down and the rest
+every `repeatIntervalMillis` - X's own defaults, 660 ms and 40 ms (`xset q`'s "delay 660, rate 25"), as
+constants in `InputState`. A release stops it, a second press starts a fresh delay, a **modifier does
+not repeat** (XKB decides that on a stock server, and a repeating Shift is a run of presses no toolkit
+expects), and a client's `ChangeKeyboardControl` with `AutoRepeatMode` is honoured - for one keycode or,
+with no keycode in the value, for every key, and `GetKeyboardControl` now reports what was actually set
+rather than a blanket "everything repeats".
 
-**Plan.** A timer in `InputState`: after the configured delay (`ChangeKeyboardControl`'s
-`auto_repeat_mode`/`AutoRepeat` keysyms), while a key is held and no modifier-grab suppresses it,
-deliver `KeyPress` again at the repeat rate. X11's rule: the server generates the repeats, and a client
-that sets `auto_repeat_mode = Off` for a key stops them; with XKB's `DetectableAutoRepeat` the server
-sets a flag instead and the client generates its own - so B1 changes this code path.
+**Measured 2026-09-24**, both ways:
 
-**Traps.** The repeat must not fire while the key's window is gone, while a grab is active, or on a key
-whose mode was turned off; `Keymap` may need to hold the per-key repeat flag. Get the timing from the
-`ChangeKeyboardControl` values, not from constants, or a client that sets a 200 ms delay gets the
-default 660 ms.
+- `input/AutoRepeatTest` (5 tests, bare-protocol client, XTEST, the display loop actually running):
+  the delay is honoured and the interval is kept, a release stops it, a modifier never repeats, a key
+  whose repeat was turned off (and back on) behaves, and - the end-to-end one - a key held for a second
+  and a half delivers about twenty presses *on its own, from the tick*. With the tick's call commented
+  out, that test fails with `saw 0` while the other four still pass, which is the split the item wants:
+  the arithmetic is pinned separately from the delivery.
+- Live, against a real client on the VM (termora, `--single-window`), one 1.6 s hold of Backspace
+  through XTEST: **27 `KeyPressEvent` deliveries and 1 release**, against 1 and 1 before.
 
-**Verify.** `xterm` (or any Swing text field): hold Backspace and watch the characters repeat;
-`xset q` on the VM shows the server's repeat settings; a raw client can count the `KeyPress` events for
-one held key.
+**What is still missing** is the rest of X's repeat vocabulary, and it is XKB's (B1): the *delay* and
+the *rate* are only settable through `XkbSetControls`/`XkbSetAutoRepeatRate`, so a client that wants a
+200 ms delay cannot have one, and `XkbSetDetectableAutoRepeat` - where the client generates the repeats
+itself and only needs to be told when a repeat would have started - is not there either. Until then the
+defaults are what every client gets.
 
 ---
 
-### [ ] A10. `GetMotionEvents` returns nothing (and pointer acceleration is accepted and ignored). **S**
+### [x] A10. `GetMotionEvents` returned nothing. **S** - done 2026-09-24
 
-**Current.** `GetMotionEvents` replies with no events (README's known limitations). Pointer
-acceleration in `ChangePointerControl` is recorded and ignored; the platform's own acceleration is what
-the user feels.
+**What it was.** The handler replied with an empty list, on the argument that a buffer per window is
+waste for a request almost nobody makes. What that cost: a client that wants to tell a drag from a
+click, or to draw a stroke with the shape it had, was told the pointer never moved.
 
-**Why it matters.** Motion history is what a few applications use to tell a drag from a click, to
-detect gestures, or to draw a stroke with the shape it had (paint programs). It is a small, bounded
-feature (a ring buffer of the last N motion events with their timestamps).
+**What changed.** `InputState` keeps a bounded ring of the last 256 motions per screen (Xorg's own
+`MOTION_HISTORY_SIZE`), each filed under the window the pointer was in at the time and stamped with the
+event clock, and `InputHandlers.getMotionEvents` answers from it, clipped to the window and to the
+half-open time range the client asked for - compared as 32 bit values that wrap, the way X compares
+`Time`.
 
-**Plan.** Keep a ring buffer of `(time, x, y)` per screen in `InputState.pointerMoved` (a few hundred
-entries, X's own servers default to a bounded history), and answer `GetMotionEvents` from it clipped to
-the requested window and time range.
+**Measured 2026-09-24.** `input/MotionHistoryTest` (2 tests, bare-protocol client over TCP, XTEST
+motion): three motions inside a window come back in order with their coordinates and usable timestamps;
+a motion outside the window is another window's history; two overlapping windows each get their own;
+an empty range answers none. Without the fix both tests fail (the first with `expected: <3> but was:
+<0>`).
 
-**Traps.** The timestamps must be the same millisecond clock that goes into events
-(`ClientOutput`/`RawEvent` already carry one), or a client that intersects a time range gets nothing.
-Acceleration is a separate decision - leaving it to the platform is defensible; say so in the docs
-rather than silently accepting the request.
-
-**Verify.** A raw client: warp the pointer in a straight line, then `GetMotionEvents` over that window
-and time range and check the count and order; `xev -event mouse` on the VM for the event timestamps.
+**Traps.** The history holds what the pointer *did*, not what was delivered: a motion swallowed by a
+grab, or made over another client's window, is still in it. Times are the ones events carry
+(`server.events().time()`), so a client can compare them with what it has already seen - but the server
+stamps a motion when it *reads* the request, so a range that begins a millisecond after the client's
+own clock reading can still contain a real motion, which is a test that fails one run in four (it did).
+Pointer acceleration is still accepted and ignored: that stays a deliberate deviation, since the
+platform's own acceleration is what the user feels.
 
 ---
 

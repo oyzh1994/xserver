@@ -106,7 +106,14 @@ Core protocol: windows (create, map, configure, restack, reparent, circulate), t
 (points, lines, segments, rectangles, arcs, polygons, both text requests, `PutImage`/`GetImage`,
 `CopyArea`/`CopyPlane`, `ClearArea`), GCs, pixmaps, fonts, cursors, colormaps, atoms, properties,
 selections, keyboard and pointer mapping, focus, grabs (active ones, and the implicit grab a press
-starts; a passive grab is recorded but never matched), and `SendEvent`.
+starts; a passive grab is recorded but never matched), the pointer's motion history
+(`GetMotionEvents`, 256 events per screen), and `SendEvent`.
+
+The keyboard's repeats are the server's own work, as they are on a real one: a held key starts
+repeating 660 ms after it goes down and then every 40 ms until it comes up, a modifier never repeats,
+and `ChangeKeyboardControl`'s `AutoRepeatMode` is honoured for one key or for every key. The delay and
+the rate themselves are only settable through XKB, which this server does not have - see
+`docs/backlog.md` B1.
 
 Events: structure notifications, exposes, property and colormap notifications, crossing and focus
 events with the full detail lattice and the grab modes, pointer and keyboard events with propagation
@@ -235,7 +242,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   holding the server lock. A real server buffers per client and drops the connection.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
-- **`GetMotionEvents` returns nothing** and pointer acceleration is accepted and ignored.
+- **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
+  feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
+  screen - so a client that asks what the pointer did is answered.)
 - **Passive grabs are recorded but never matched.** `GrabButton` and `GrabKey` are stored and listed
   by nobody: a client that arms one (a window manager, a toolkit's popup shortcut) never hears about
   the button or key it asked for. Active grabs, including the implicit grab a press starts, are

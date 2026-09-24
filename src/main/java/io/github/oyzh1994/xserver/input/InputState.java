@@ -18,6 +18,7 @@ import io.github.oyzh1994.xserver.extension.ShapeExtension;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -73,6 +74,56 @@ public final class InputState implements DisplayBackend.InputSink {
     private int modifiers;
     private int latched;
 
+    /**
+     * How many motion events this screen remembers. Xorg's own {@code MOTION_HISTORY_SIZE} is 256,
+     * and the number is a bound on memory per screen rather than a protocol requirement: a client
+     * that asks for more than is kept is told what there is.
+     */
+    private static final int MOTION_HISTORY = 256;
+
+    /**
+     * The pointer's own history, oldest first, for {@code GetMotionEvents}.
+     *
+     * <p>It holds what the pointer <em>did</em>, not what was delivered: a motion reached through a
+     * grab, or while the pointer was over another client's window, is part of the history all the
+     * same. The window each one is filed under is the one the pointer was in at the time, which is
+     * what the request asks about - and the times are the event clock, so they can be compared with
+     * the timestamps a client has already seen.
+     */
+    private final java.util.ArrayDeque<Motion> motionHistory = new java.util.ArrayDeque<>();
+
+    /** One remembered motion: when, where, and the window the pointer was in. */
+    public record Motion(int time, int x, int y, XWindow window) {
+    }
+
+    /**
+     * How long a key is held before it starts repeating, and how long between repeats, in
+     * milliseconds: X's own defaults, which is what a client sees on a stock server (`xset q` reports
+     * this delay and a rate of 25 per second).
+     */
+    private static final int DEFAULT_REPEAT_DELAY_MILLIS = 660;
+    private static final int DEFAULT_REPEAT_INTERVAL_MILLIS = 40;
+
+    /**
+     * The keys that are held down and when each is due to repeat next.
+     *
+     * <p>The server generates the repeats itself, as a real one does: a toolkit that types a run of
+     * characters from a held key depends on it - `xterm` and a Swing text field both print one
+     * character per press and nothing else, so without this a held backspace deletes one character.
+     */
+    private final java.util.Map<Integer, Long> repeatDue = new java.util.HashMap<>();
+
+    /**
+     * Which keycodes may repeat. Every key starts out repeating, and a client turns individual ones
+     * off with {@code ChangeKeyboardControl}'s {@code AutoRepeatMode} - which is the only repeat
+     * control the core protocol has: the delay and the rate are XKB's
+     * ({@code XkbSetAutoRepeatRate}), so a client that wants to change them needs XKB support.
+     */
+    private final boolean[] autoRepeats = new boolean[256];
+
+    private int repeatDelayMillis = DEFAULT_REPEAT_DELAY_MILLIS;
+    private int repeatIntervalMillis = DEFAULT_REPEAT_INTERVAL_MILLIS;
+
     /** Focus revert modes, numbered as {@code SetInputFocus} numbers them. */
     public static final int REVERT_TO_NONE = 0;
     public static final int REVERT_TO_POINTER_ROOT = 1;
@@ -108,6 +159,8 @@ public final class InputState implements DisplayBackend.InputSink {
         this.server = server;
         this.screen = screen;
         this.inputFocus = screen.root();
+        // Every key repeats until a client says otherwise, which is what a stock server reports.
+        java.util.Arrays.fill(autoRepeats, true);
     }
 
     /** The screen whose pointer, focus and grabs this is. */
@@ -318,6 +371,14 @@ public final class InputState implements DisplayBackend.InputSink {
         try {
             movePointer(x, y, false);
             updateModifiers(keycode, pressed);
+            if (pressed) {
+                armRepeat(keycode);
+            } else {
+                // A key that comes up stops repeating, which is the whole of what a client has to do
+                // to stop a run of characters - and a key that is pressed again starts a fresh delay
+                // rather than inheriting the old one.
+                repeatDue.remove(keycode);
+            }
             deliverKey(keycode, pressed);
         } finally {
             server.unlockServer();
@@ -367,6 +428,9 @@ public final class InputState implements DisplayBackend.InputSink {
 
         XWindow window = windowAtPointer();
         pointerWindow = window;
+        if (moved) {
+            rememberMotion(clampedX, clampedY, window);
+        }
         if (moved && window != announcedWindow) {
             // Only a pointer that really moved reports a crossing. A button or key event recomputes
             // the window under the pointer too - that is how a window that appeared underneath is
@@ -379,6 +443,126 @@ public final class InputState implements DisplayBackend.InputSink {
         if (generateMotion && moved) {
             deliverMotion();
         }
+    }
+
+    /**
+     * Arms the repeat for a key that has just gone down.
+     *
+     * <p>A modifier does not repeat: a stock server repeats the keys that produce characters, and a
+     * held Shift that repeated would be reported as a run of presses no toolkit expects (its own
+     * `auto_repeats` answer is not the whole story - XKB decides which keys repeat, and the modifier
+     * keys are not among them).
+     */
+    private void armRepeat(int keycode) {
+        if (!autoRepeats[keycode] || isModifier(keycode)) {
+            return;
+        }
+        repeatDue.put(keycode, System.currentTimeMillis() + repeatDelayMillis);
+    }
+
+    private static boolean isModifier(int keycode) {
+        for (int modifier : MOMENTARY_KEYCODES) {
+            if (modifier == keycode) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Delivers the key repeats that have come due. Called from the display tick, under the server
+     * lock, once per frame.
+     *
+     * <p>One repeat per key per call, never a catch-up burst: a tick that was late - a stalled
+     * screen, a machine that slept - would otherwise deliver a run of presses at once, which a
+     * terminal prints as a line of characters nobody typed.
+     */
+    public void pollAutoRepeat(long nowMillis) {
+        if (repeatDue.isEmpty()) {
+            return;
+        }
+        for (java.util.Map.Entry<Integer, Long> entry : new java.util.ArrayList<>(repeatDue.entrySet())) {
+            int keycode = entry.getKey();
+            long due = entry.getValue();
+            if (nowMillis < due) {
+                continue;
+            }
+            long next = due + repeatIntervalMillis;
+            if (next <= nowMillis) {
+                // Late enough that the tick missed a whole interval: resume from now.
+                next = nowMillis + repeatIntervalMillis;
+            }
+            repeatDue.put(keycode, next);
+            deliverKey(keycode, true);
+        }
+    }
+
+    /** Whether a keycode repeats when it is held. */
+    public boolean autoRepeats(int keycode) {
+        return keycode >= 0 && keycode < autoRepeats.length && autoRepeats[keycode];
+    }
+
+    /**
+     * Turns repeating on or off, for one keycode or for every key.
+     *
+     * @param keycode the key, or -1 for all of them (which is what a client that names no keycode
+     *                means)
+     * @param on      true for repeat, false for a key that presses once however long it is held
+     */
+    public void setAutoRepeat(int keycode, boolean on) {
+        if (keycode < 0) {
+            java.util.Arrays.fill(autoRepeats, on);
+            if (!on) {
+                repeatDue.clear();
+            }
+            return;
+        }
+        if (keycode >= autoRepeats.length) {
+            return;
+        }
+        autoRepeats[keycode] = on;
+        if (!on) {
+            repeatDue.remove(keycode);
+        }
+    }
+
+    /**
+     * Adds one motion to the pointer's history, dropping the oldest when it is full.
+     */
+    private void rememberMotion(int x, int y, XWindow window) {
+        motionHistory.addLast(new Motion(server.events().time(), x, y, window));
+        while (motionHistory.size() > MOTION_HISTORY) {
+            motionHistory.removeFirst();
+        }
+    }
+
+    /**
+     * The remembered motions inside {@code window} between two times, oldest first.
+     *
+     * <p>The times are the client's own - the ones its motion events carried - so they are compared
+     * the way X compares {@code Time}: as 32 bit values that wrap, and with a range that wraps with
+     * them (a client that asks for a range across the wrap gets it). An empty range - {@code start}
+     * equal to {@code stop} - is the "how many are there" question, and answers none.
+     */
+    public List<Motion> motionHistory(XWindow window, long start, long stop) {
+        List<Motion> found = new ArrayList<>();
+        for (Motion motion : motionHistory) {
+            if (motion.window() == window && inTimeRange(motion.time(), start, stop)) {
+                found.add(motion);
+            }
+        }
+        return found;
+    }
+
+    /** Whether a 32 bit timestamp falls in the half-open range, allowing for the wrap. */
+    private static boolean inTimeRange(int time, long start, long stop) {
+        long from = start & 0xFFFFFFFFL;
+        long until = stop & 0xFFFFFFFFL;
+        long at = time & 0xFFFFFFFFL;
+        if (from == until) {
+            return false;
+        }
+        return from < until ? at >= from && at < until : at >= from || at < until;
     }
 
     /**

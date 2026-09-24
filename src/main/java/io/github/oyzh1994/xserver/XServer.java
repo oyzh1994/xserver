@@ -318,6 +318,26 @@ public final class XServer {
         return screens;
     }
 
+    /**
+     * Lets every screen deliver the key repeats that have come due, at {@code nowMillis}.
+     *
+     * <p>The keyboard's repeats are the server's own work - a client that holds a key down is not
+     * expected to press it again, and a toolkit that types a run of characters from it would type
+     * one - so they are driven from the display tick, under the server lock, once per frame. Taking
+     * the time as an argument keeps the whole thing testable, and one call covers every screen
+     * because each has its own keyboard.
+     */
+    public void pollAutoRepeat(long nowMillis) {
+        serverLock.lock();
+        try {
+            for (Screen screen : screens) {
+                inputFor(screen).pollAutoRepeat(nowMillis);
+            }
+        } finally {
+            serverLock.unlock();
+        }
+    }
+
     public XWindow rootWindow() {
         return screen.root();
     }
@@ -577,6 +597,9 @@ public final class XServer {
             // A resize the user asked for goes first: it changes the windows the rectangle below is
             // the union of, so doing it after would put the window and the frame one tick apart.
             applyRequestedSize(session);
+            // A held key repeats from here rather than from the client: the tick is where the
+            // server's own periodic work lives, and the lock is already held.
+            inputFor(session.screen()).pollAutoRepeat(System.currentTimeMillis());
             XWindow source = identitySource(session.screen());
             if (source != session.identitySource()) {
                 // The window the host window is named after, which is the largest one the client has

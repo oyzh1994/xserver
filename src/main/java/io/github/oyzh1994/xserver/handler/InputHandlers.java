@@ -39,10 +39,13 @@ import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.input.Keymap;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
+import org.eclipse.collections.impl.factory.Lists;
 import org.eclipse.collections.impl.factory.primitive.ByteLists;
 import org.eclipse.collections.impl.factory.primitive.IntLists;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
@@ -126,12 +129,22 @@ public final class InputHandlers {
     }
 
     public void getMotionEvents(ClientConnection client, GetMotionEvents r) {
-        // Pointer history is not retained: reporting no events is legal and keeps the server from
-        // growing a buffer per window that almost no client ever reads.
-        window(client, r.getWindow());
+        InputState input = server.inputFor(client);
+        XWindow window = window(client, r.getWindow());
+        // The answer is what the pointer did inside this window between the two times the client
+        // named, out of the bounded history the screen keeps. A client asks twice - once for the
+        // count, once with room for it - so an answer that is empty the first time is normal.
+        List<com.github.moaxcp.x11.protocol.xproto.Timecoord> events = new ArrayList<>();
+        for (InputState.Motion motion : input.motionHistory(window, r.getStart(), r.getStop())) {
+            events.add(com.github.moaxcp.x11.protocol.xproto.Timecoord.builder()
+                    .time(motion.time())
+                    .x((short) motion.x())
+                    .y((short) motion.y())
+                    .build());
+        }
         client.sendReply(GetMotionEventsReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .events(org.eclipse.collections.impl.factory.Lists.immutable.empty())
+                .events(Lists.immutable.ofAll(events))
                 .build());
     }
 

@@ -80,9 +80,18 @@ public final class ConnectionSetup {
     }
 
     private boolean authenticate(ClientConnection client, String authName, byte[] authData) {
-        if (!server.options().authRequired() || authName.isEmpty()) {
-            // No credentials asked for, or none offered: accept, matching an -ac server.
+        if (!server.options().authRequired()) {
+            // An -ac server: nothing is asked for, and anything offered is ignored.
             return true;
+        }
+        if (authName.isEmpty()) {
+            // Access control is on and the client offered nothing. A real server refuses this: the
+            // setup request always has room for credentials, so "none offered" is a client asking to
+            // skip them, and accepting it makes --auth decorative - any client that leaves the block
+            // empty would be let in. (An empty *cookie* is a different thing and is checked below.)
+            log.info("rejecting client {}: access control is on and no credentials were offered",
+                    client.peer());
+            return false;
         }
         if (AUTH_COOKIE.equals(authName)) {
             return checkCookie(authData);

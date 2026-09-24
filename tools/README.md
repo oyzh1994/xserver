@@ -46,6 +46,9 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
 - `Shift` - difference cost per ±4 pixel offset: a shift or a real difference?
 - `Rect` - an ASCII map of a rectangle, so a region can be judged without a viewer.
 - `Crop` - a magnified crop around a point.
+- `AuthProbe` - sends a connection setup with chosen credentials and says what came back: a setup (with
+  the vendor and screen count) or the refusal's reason. No arguments means "offer nothing", which is
+  what backlog item A7 is about.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
 
 ## What is missing
@@ -71,7 +74,7 @@ it to do that is step one of backlog item A4.
 
 ## Rules that go with the tools
 
-Two of these cost hours each the first time:
+These cost hours each, the first time:
 
 1. **Park the pointer in the same place and the application in the same state before capturing two
    sides.** One capture with the pointer over a toolbar and one without lights up hover states and

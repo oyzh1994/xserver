@@ -548,6 +548,39 @@ Two traps the probe fell into, both worth an hour of somebody else's time:
   where a `RevertToParent` fails and the focus falls through to PointerRoot, and no client has been
   seen to care. Written down so the next person does not have to re-derive them.
 
+## The server generates the keyboard's repeats
+
+A held key speaks once, and the run of characters that follows is the server's own work: a client is
+told the key went down and is not expected to press it again. Worth writing down because it is easy to
+assume the client does it - and the symptom of getting it wrong is not an error but a terminal that
+deletes one character however long Backspace is held.
+
+- The repeats come from the **display tick** (`XServer.pollAutoRepeat`), under the lock the tick already
+  holds, once per frame: a key's first repeat `repeatDelayMillis` after the press, the rest every
+  `repeatIntervalMillis` - X's own 660 ms and 40 ms (`xset q`'s "delay 660, rate 25").
+- **One repeat per key per tick, never a catch-up burst.** A tick that was late - a stalled screen, a
+  machine that slept - would otherwise deliver a run of presses at once, which a client prints as
+  characters nobody typed.
+- **A modifier does not repeat.** On a stock server that is XKB's decision, and a repeating Shift is a
+  run of presses no toolkit expects.
+- **A release stops it and a second press starts a fresh delay**, or a tapped key repeats immediately
+  on the next tap.
+- **`ChangeKeyboardControl`'s `AutoRepeatMode` is honoured** (one keycode, or every key when it names
+  none) and `GetKeyboardControl` reports what was actually set rather than a blanket "everything
+  repeats".
+- The **delay and the rate themselves are XKB's** (`XkbSetAutoRepeatRate`), not the core protocol's, so
+  a client that wants different ones cannot have them until item B1 of the backlog exists.
+
+## The pointer's history
+
+`GetMotionEvents` answers from a bounded ring per screen - 256 entries, Xorg's own
+`MOTION_HISTORY_SIZE` - and it holds what the pointer *did* rather than what was delivered: a motion
+swallowed by a grab, or made over another client's window, is part of it, filed under the window the
+pointer was in at the time. The timestamps are the ones the events carried, so a client can compare
+them with what it has already seen; the caveat is that the server stamps a motion when it *reads* the
+request, so a range beginning a millisecond after the client's own clock reading can still contain one
+(which is a test that fails one run in four).
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

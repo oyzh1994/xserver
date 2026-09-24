@@ -7,6 +7,7 @@ import com.github.moaxcp.x11.protocol.xproto.ChangePointerControl;
 import com.github.moaxcp.x11.protocol.xproto.ForceScreenSaver;
 import com.github.moaxcp.x11.protocol.xproto.GetKeyboardControl;
 import com.github.moaxcp.x11.protocol.xproto.GetKeyboardControlReply;
+import com.github.moaxcp.x11.protocol.xproto.Kb;
 import com.github.moaxcp.x11.protocol.xproto.GetPointerControl;
 import com.github.moaxcp.x11.protocol.xproto.GetPointerControlReply;
 import com.github.moaxcp.x11.protocol.xproto.GetScreenSaver;
@@ -29,6 +30,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.event.EventMasks;
+import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.extension.Extension;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.eclipse.collections.impl.factory.Lists;
@@ -178,11 +180,21 @@ public final class MiscHandlers {
     }
 
     public void getKeyboardControl(ClientConnection client, GetKeyboardControl r) {
+        InputState input = server.inputFor(client);
+        // One bit per keycode, least significant bit of each byte first. The answer is what the
+        // client actually set, not a blanket "everything repeats": a client that turned a key off
+        // and reads it back has to see that it is off, or it cannot tell its own change took.
         byte[] autoRepeats = new byte[32];
-        java.util.Arrays.fill(autoRepeats, (byte) 1);
+        boolean any = false;
+        for (int keycode = 0; keycode < 256; keycode++) {
+            if (input.autoRepeats(keycode)) {
+                autoRepeats[keycode >> 3] |= (byte) (1 << (keycode & 7));
+                any = true;
+            }
+        }
         client.sendReply(GetKeyboardControlReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .globalAutoRepeat((byte) 1)
+                .globalAutoRepeat((byte) (any ? 1 : 0))
                 .ledMask(0)
                 .keyClickPercent((byte) 0)
                 .bellPercent((byte) 50)
@@ -192,8 +204,33 @@ public final class MiscHandlers {
                 .build());
     }
 
+    /**
+     * {@code ChangeKeyboardControl}: only the auto-repeat mode is acted on.
+     *
+     * <p>LEDs and the bell are accepted and ignored - there is no host keyboard to light up - but
+     * repeat has to be honoured, because it is how a client says "this key must not repeat": the
+     * server is what generates the repeats, so a client that turns one off and is ignored gets a run
+     * of characters it explicitly asked not to have. The value travels as one four byte word: the
+     * mode in the first byte, then up to three keycodes, and no keycode at all means every key.
+     */
     public void changeKeyboardControl(ClientConnection client, ChangeKeyboardControl r) {
-        // LED and bell settings are accepted and not acted on; there is no host keyboard to drive.
+        if (!Kb.AUTO_REPEAT_MODE.isEnabled(r.getValueMask())) {
+            return;
+        }
+        int packed = r.getAutoRepeatMode();
+        boolean on = (packed & 0xFF) != 0;              // 2 (Default) means the same as 1 (On)
+        InputState input = server.inputFor(client);
+        int[] keycodes = {(packed >> 8) & 0xFF, (packed >> 16) & 0xFF, (packed >> 24) & 0xFF};
+        if (keycodes[0] == 0) {
+            input.setAutoRepeat(-1, on);
+            return;
+        }
+        for (int keycode : keycodes) {
+            if (keycode == 0) {
+                break;
+            }
+            input.setAutoRepeat(keycode, on);
+        }
     }
 
     // ------------------------------------------------------------------
