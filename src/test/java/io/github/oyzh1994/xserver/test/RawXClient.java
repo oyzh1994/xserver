@@ -334,6 +334,36 @@ public final class RawXClient implements AutoCloseable {
         return events;
     }
 
+    /**
+     * SHAPE's {@code ShapeRectangles}: replaces or combines one of a window's shapes, in window
+     * coordinates. {@code kind} is 0 bounding, 1 clip, 2 input; {@code operation} is 0 set, 1 union,
+     * 2 intersect, 3 subtract, 4 invert.
+     */
+    public void shapeRectangles(int opcode, int window, int kind, int operation, int[][] rectangles)
+            throws IOException {
+        // An extension request carries its minor opcode where a core request carries its first
+        // field, and SHAPE's ShapeRectangles is minor 1. Putting the destination kind there instead
+        // makes the server read the request as QueryVersion - which *replies*, so the mistake shows
+        // up as a sequence number out of step rather than as a shape that never took.
+        byte[] request = new byte[16 + rectangles.length * 8];
+        request[0] = (byte) opcode;
+        request[1] = 1;                             // minor: ShapeRectangles
+        request[2] = (byte) (request.length / 4);
+        request[4] = (byte) operation;              // operation comes before the destination kind
+        request[5] = (byte) kind;
+        request[6] = 0;                             // ordering: UnSorted
+        writeInt(request, 8, window);
+        writeShort(request, 12, (short) 0);         // x-offset
+        writeShort(request, 14, (short) 0);         // y-offset
+        for (int i = 0; i < rectangles.length; i++) {
+            writeShort(request, 16 + i * 8, rectangles[i][0]);
+            writeShort(request, 18 + i * 8, rectangles[i][1]);
+            writeShort(request, 20 + i * 8, rectangles[i][2]);
+            writeShort(request, 22 + i * 8, rectangles[i][3]);
+        }
+        send(request);
+    }
+
     /** Presses or releases one key, through XTEST. */
     public void fakeKey(int opcode, int keycode, boolean pressed) throws IOException {
         byte[] request = new byte[36];
@@ -560,8 +590,12 @@ public final class RawXClient implements AutoCloseable {
                 break;                              // the reply
             }
             if (type == 0) {
-                throw new IOException("the server refused the request: error "
-                        + (reply[1] & 0xFF) + " value 0x" + Integer.toHexString(readInt(reply, 4)));
+                // The sequence in an error names the request it belongs to, which is the whole of
+                // what makes one diagnosable when several are in flight.
+                throw new IOException("the server refused request "
+                        + readShort(reply, 2) + ": error " + (reply[1] & 0xFF) + " value 0x"
+                        + Integer.toHexString(readInt(reply, 4)) + " (waiting for "
+                        + outstandingSequence() + ")");
             }
             // Anything else is an event the client never asked to read separately - a NoExposure
             // arrives after every drawing request, for one - so it is dropped rather than mistaken

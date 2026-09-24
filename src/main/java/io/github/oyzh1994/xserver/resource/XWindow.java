@@ -89,6 +89,26 @@ public final class XWindow extends XResource {
     /** True when the window has never been drawn, so a map must produce exposes. */
     private boolean needsFullExpose = true;
 
+    /**
+     * The window's bounding shape as rectangles in window coordinates, or null when it has none.
+     *
+     * <p>Kept here rather than looked up in the shape extension because the region code runs once per
+     * drawing request and has no server to ask; the extension hands the region over whenever the
+     * shape changes. A bounding shape <em>removes</em> pixels from the window - its corners are not
+     * part of it - so it is a subtraction from {@link #visibleRegion()}, not a clip on top of it, and
+     * it applies to the children too: a child outside its parent's shape is not on screen either.
+     */
+    private List<Rectangle> boundingShape;
+
+    /** The window's bounding shape in window coordinates, or null when it has none. */
+    public List<Rectangle> boundingShape() {
+        return boundingShape;
+    }
+
+    public void setBoundingShape(List<Rectangle> shape) {
+        this.boundingShape = shape == null || shape.isEmpty() ? null : List.copyOf(shape);
+    }
+
     private boolean redirectToParent;
 
     public XWindow(int id, ClientConnection owner, Screen screen, XWindow parent, int depth,
@@ -504,6 +524,15 @@ public final class XWindow extends XResource {
         // one we came through are the ones that can cover it - and this window's own children,
         // which are drawn inside it, are above its own content just as surely.
         for (XWindow window = this; window != null && !region.isEmpty(); window = window.parent()) {
+            if (window.boundingShape() != null) {
+                // The shape takes pixels away, at every level: the window's own corners are not
+                // part of it, and neither is the part of a child that falls outside its parent's.
+                region = ShapeState.intersect(region, ShapeState.translate(window.boundingShape(),
+                        window.absoluteX(), window.absoluteY()));
+                if (region.isEmpty()) {
+                    return region;
+                }
+            }
             if (window == this && !includeChildren) {
                 region = subtractMappedChildren(this, region);
             }
@@ -538,8 +567,15 @@ public final class XWindow extends XResource {
             return region;
         }
         // Only the child's own rectangle: a child is clipped by its parent, so its whole subtree is
-        // inside it and needs no separate subtraction.
-        return ShapeState.subtract(region, List.of(above.absoluteBoundsWithBorder()));
+        // inside it and needs no separate subtraction - except where a bounding shape takes part of
+        // that rectangle away, because what the window covers is then its shape and the corners it
+        // no longer has are the screen underneath's again. A window whose corners kept being
+        // subtracted would never be asked to paint them, and they would stay whatever the covered
+        // window left there.
+        List<Rectangle> shape = above.boundingShape();
+        return ShapeState.subtract(region, shape == null
+                ? List.of(above.absoluteBoundsWithBorder())
+                : ShapeState.translate(shape, above.absoluteX(), above.absoluteY()));
     }
 
     /**

@@ -48,9 +48,9 @@ A prompt that starts a fresh session on this, verbatim:
 |----|------|------|------|
 | E0 | finish the verification kit | engineering | S |
 | ~~A7~~ | ~~`--auth` can be bypassed by offering no credentials~~ **done 2026-09-24** | security | S |
-| A3 | font cursors are drawn as a filled cell | correctness | S |
-| A4 | `xdotool` segfaults against this server | correctness | S-M |
-| A2 | a bounding shape does not clip drawing | correctness | S-M |
+| ~~A3~~ | ~~font cursors are drawn as a filled cell~~ **done 2026-09-24** | correctness | S |
+| A4 | `xdotool` segfaults against this server **- crash is at startup** | correctness | S-M |
+| ~~A2~~ | ~~a bounding shape does not clip drawing~~ **done 2026-09-24** | correctness | S-M |
 | ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
 | A12 | window gravity is stored but not applied | correctness | S-M |
@@ -215,28 +215,35 @@ either wrong reads as a *hung* handshake rather than a bad request.
 
 ---
 
-### [ ] A3. Font cursors are drawn as a filled cell. **S**
+### [x] A3. Font cursors were drawn as a filled cell. **S** - done 2026-09-24
 
-**Current.** `XCursor.fromGlyph` (line 115) approximates an X cursor-font glyph with a filled cell. A
-client that calls `XCreateFontCursor` - `xterm`, `xclock`, `xcalc`, most Xlib applications - gets a
-solid rectangle under the pointer instead of the standard arrow.
+**What it was.** `XCursor.fromGlyph` had no glyph outlines to draw, so it approximated the character
+with "this cell is the shape": a client that called `XCreateFontCursor` - `xterm`, `xclock`, `xcalc`,
+most Xlib applications - got a solid rectangle under the pointer instead of the standard arrow.
 
-**Why it matters.** It is the first thing a user notices on a forwarded desktop, and it makes the
-pointer unusable where it matters (a text I-beam, a resize arrow).
+**What changed.** The X cursor font's bitmaps are embedded (`resource/CursorFont.java`, 74 shapes:
+source bitmap, mask bitmap, hotspot, generated from `cursor.pcf` by `tools/gen-cursor-font.py`, which
+is in the repository so it can be regenerated). `fromGlyph` composes them the way
+`XCreateGlyphCursor` defines it: the source bitmap in the foreground over the mask character's bitmap
+in the background, at the glyph's own hotspot - and the font argument is not consulted at all on that
+path, because a client that asks for `XC_left_ptr` means the arrow every X server draws.
 
-**Plan.** Embed the cursor font's glyphs (the `cursor.pcf`/`cursor` font's bitmaps for the XC_*
-shapes), and render the requested `sourceChar` as that bitmap with the foreground/background colours,
-honouring the hotspot. The X cursor font is a fixed, public, ~25 KB table of 1-bit glyphs; the shapes
-needed in practice are the ~30 standard ones (`XC_left_ptr`, `XC_xterm`, `XC_watch`, `XC_hand2`, …).
+**Measured 2026-09-24.** `resource/CursorFontTest` (3 tests): the arrow leaves most of its cell
+transparent and draws a shape in the foreground (a filled cell has no transparent pixels at all), the
+hotspot is inside the bitmap, and a shape the table does not have still gets the old approximation.
+The two arrow tests fail without the fix.
 
-**Traps.** `CreateGlyphCursor` (glyph + glyph set) is a *different* path from `CreateFontCursor`
-(source char + font) - check both; the hotspot is the glyph's `left_side_bearing`/`ascent`, not its
-top-left corner; and clients that use *themed* cursors (GTK, Qt, JavaFX) never touch this path at all -
-they upload ARGB images through `CreateCursor` + a pixmap, which already works.
+**Traps.** The font's copyright line is what makes embedding legal - "These glyphs are unencumbered" -
+and the hotspot is the font's own convention (left side bearing, ascent), not the bitmap's corner.
+Clients with *themed* cursors (GTK, Qt, JavaFX) never touch this path: they upload ARGB images through
+`CreateCursor` and a pixmap, which already worked. `CreateGlyphCursor` with an arbitrary glyph set is
+a different path again and still has no outlines.
 
-**Verify.** `xterm` in both modes: the pointer must be an I-beam over the text area and an arrow over
-the frame. Then `xclock` (arrow) and `xcalc` (arrow). Capture the sprite from the `-scene-` dump, which
-is the only place it appears.
+**Verify (partly done).** In process, by `CursorFontTest`. Live, `xterm` over a forwarded display is
+what would show it - an I-beam over the text area - but **the VM has no `xterm`** (only `xclock`,
+whose cursor is the default arrow and does not take this path), so the sprite has not been looked at
+over a real display yet. The sprite appears only in the `-scene-` frame dump: diff it against the
+`-image-` dump of the same frame and the differing region is the sprite.
 
 ---
 
@@ -251,12 +258,22 @@ enough formed for a lenient client and malformed enough for Xlib to misread - a 
 needs a hand-written driver (see E0), and any user who scripts their desktop hits a crash they will
 blame on their own script.
 
-**Plan.** Reproduce under a debugger or with `XProxy` in front of **Xvfb** running the same calls, and
-diff the replies byte for byte. `QueryPointer`'s reply is the prime suspect (Xlib reads `root`,
-`child`, `root_x/y`, `win_x/y`, `mask`, and then `XGetWindowAttributes` of the child - a `child` id
-that is stale or garbage sends Xlib into a window that does not exist). `XProxy` prints requests and
-events but not reply *bodies*; extend it to dump the 32-byte reply header plus payload, which is the
-fastest route to the malformed field.
+**Leads so far (2026-09-24).** The crash is **not** in a reply xdotool parses: *every* subcommand
+dies, including `getdisplaygeometry`, which needs nothing but the screen - so it happens while xdotool
+starts up, in `xdo_new` or in what it requires of the display before dispatching. Checked on the VM
+against a live server: `getdisplaygeometry`, `getactivewindow`, `search --name xterm`,
+`getmouselocation`, `getwindowfocus` all come back with SIGSEGV (139).
+
+**One thing was fixed on the way, and it is a real deviation either way**:
+`InputHandlers.queryPointer` answered with the *deepest* window under the pointer, where the protocol
+says the *child of the queried window* - a client uses that answer to name the window it points at,
+and handing it a grandchild makes it query a window it never asked about. It now uses
+`window.childAt`, which is the immediate child. Xdotool still crashes, so this was not the cause.
+
+**Next step.** A backtrace (`gdb`/`lldb` on the VM, or a core dump - the VM does write one), or
+`strace -f -e trace=network`, to see which call is last before the fault. Then `XProxy` in front of
+**Xvfb**, extended to log reply *bodies*, to compare what a working session gets back with what this
+server sends - `XProxy` prints requests and events only, and extending it is the first thing to do.
 
 **Traps.** A `BadWindow` error in the middle of Xlib's own request sequence also looks like a
 segfault, because the error arrives asynchronously and Xlib's default handler exits; check the server
@@ -267,33 +284,38 @@ log for `rejected the request` lines at the moment of the crash before assuming 
 
 ---
 
-### [ ] A2. A bounding shape does not clip drawing. **S-M**
+### [x] A2. A bounding shape did not clip drawing. **S-M** - done 2026-09-24
 
-**Current.** `ShapeExtension` stores both shapes and reports both extents, but only the *input* shape
-is honoured (for hit testing); the bounding shape does not affect `visibleRegion()`, so a shaped
-window's clipped-away corners are still painted with the window's background.
+**What it was.** Only the input shape was honoured, for hit testing. The bounding shape affected the
+extents a client could query and nothing else: a shaped window's corners were painted with its
+background, its children painted outside it, and (the half that is easy to miss) the window kept
+*obscuring* its whole rectangle, so the corners it no longer covered were never given back to the
+screen underneath.
 
-**Why it matters.** Rounded-corner and non-rectangular windows (popups with rounded corners, shaped
-splash screens, `xeyes`-like toys, some toolkits' menus) show square corners. On a compositing-less
-server this is the only way a window gets a non-rectangular outline.
+**What changed.** `XWindow` carries its own bounding region (`boundingShape`, in window coordinates),
+handed over by `ShapeExtension` on every shape change - the extension owns the shapes, but the region
+code runs once per drawing request and has no server to ask. `visibleRegion()` intersects it for the
+window and for each ancestor (so a child outside its parent's shape is clipped by the parent's), and
+`subtractWindow` subtracts the *shape* rather than the rectangle where there is one, which is what
+lets the corners go back to what is under them. `WindowHandlers.shapeChanged` does the two halves a
+shape change owes, the same two a move owes: give back what it stopped covering (`repaintUnder`) and
+ask the client to draw what it gained (`Expose`).
 
-**Plan.** The region machinery already exists (`ShapeState`, `XWindow.visibleRegion()`,
-`WindowHandlers.repaintUnder`). The bounding shape has to be intersected into the window's *own*
-region - note that this is a different notion from the clip: the shape *removes* pixels from what the
-window owns, so it belongs next to `subtractMappedChildren` in `XWindow.visibleRegion(clip, …)`, and
-it must also affect what the window's *children* may paint (a child outside the parent's shape is
-clipped away by the parent's region, which the existing ancestor walk already does).
-`WindowVisibilityTest`/`WindowObscuringTest` are the place for the tests; a shaped window is a
-`ShapeState` union of rectangles and can be built directly in a unit test.
+**Measured 2026-09-24.** `resource/ShapeClippingTest` (3 tests, in-process server, framebuffer
+assertions): a shaped window takes the fill only inside its shape; a shape set *after* the window is
+mapped hands the corner back; a child outside its parent's shape does not paint. All three fail
+without the fix.
 
-**Traps.** A shape set *after* the window is mapped changes what is visible, so it has to go through
-the same "what did it stop covering" path as an unmap (`repaintUnder`), or the corners it hides keep
-showing their previous pixels. `SetWindowClipRegion` (XFixes) is a different thing - a clip on
-*drawing*, already implemented - do not conflate them.
+**Traps.** A shape is a subtraction from the window's pixels, not a clip on top of them - and the
+border lives outside the content rectangle, so a shaped window's border is clipped by the shape too
+(`outerVisibleRegion` gets it from the same walk). `SetWindowClipRegion` (XFixes) is a different
+thing, a clip on drawing, and stays where it is.
 
-**Verify.** A raw client that sets a bounding shape (e.g. a cross) on a mapped window: the framebuffer
-must show the window's background only inside the shape, and the area outside must go back to what is
-underneath. Xvfb is the reference for the same script.
+**Left open here**: the hand-written `ShapeRectangles` request in `RawXClient` is refused by this
+server as a bad request, so the tests set shapes in process. The layout matches the generated writer
+(minor 1, then operation, destination kind, ordering, pad, window, offsets), so the next step is to
+see which request the server actually decodes - `XProxy` in front of the server, or a debug line in
+`ShapeExtension.handleRequest`.
 
 ---
 

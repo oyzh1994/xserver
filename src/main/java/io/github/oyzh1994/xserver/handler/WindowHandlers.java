@@ -1136,6 +1136,29 @@ public final class WindowHandlers {
     }
 
     /**
+     * A window's bounding shape changed: hand back the area it no longer covers, and ask it to draw
+     * the part it has just gained.
+     *
+     * <p>A shape set on a window that is already on screen changes what is on it just as surely as a
+     * move does, and the two halves are the same as a move's: the area the shape took away belongs to
+     * whatever is underneath again (its pixels are still the shaped window's - nothing copies window
+     * contents along), and the area it gained has to be drawn by the client, which is told with an
+     * {@code Expose}.
+     */
+    public void shapeChanged(XWindow window, List<Rectangle> lost, List<Rectangle> gained) {
+        if (!window.isViewable()) {
+            return;
+        }
+        if (!lost.isEmpty()) {
+            repaintUnder(lost, window);
+        }
+        for (Rectangle area : gained) {
+            paintBackground(window, area);
+            deliverExpose(window, area);
+        }
+    }
+
+    /**
      * Repaints the parts of the windows under {@code window} that {@code areas} uncovered.
      *
      * <p>Walked bottom to top so the topmost window of the ones below is painted last, and clipped

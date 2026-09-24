@@ -113,8 +113,13 @@ public final class InputHandlers {
     public void queryPointer(ClientConnection client, QueryPointer r) {
         XWindow window = window(client, r.getWindow());
         InputState input = server.inputFor(client);
-        XWindow child = window.windowAt(input.pointerX(), input.pointerY());
-        int childId = child == window ? 0 : child.id();
+        // The protocol asks for the *child of the queried window* that the pointer is in, not the
+        // deepest window under it: a client uses this answer to name the window it is pointing at
+        // (`xdotool getmouselocation`, a drag-and-drop source), and handing it a grandchild makes it
+        // query a window the client never asked about. Xdotool segfaulted against this server, which
+        // is what led here.
+        XWindow child = window.childAt(input.pointerX(), input.pointerY());
+        int childId = child == null ? 0 : child.id();
         client.sendReply(QueryPointerReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .sameScreen(true)

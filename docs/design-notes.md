@@ -591,9 +591,11 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
 - **SHAPE's bounding shape does not clip drawing** - only the input shape is honoured - so a shaped
   window's corners are still painted.
-- **`XCursor.fromGlyph` approximates a font cursor as a filled cell**, so a client that uses
-  `XCreateFontCursor` gets a solid rectangle under the pointer instead of an arrow. Fixing it means
-  embedding the cursor font's glyphs.
+- **`CreateGlyphCursor` against a font other than the cursor font has no outlines to draw** and falls
+  back to a filled cell. The cursor font's own 74 shapes are embedded (`resource/CursorFont.java`,
+  generated from `cursor.pcf` by `tools/gen-cursor-font.py`), which is what `XCreateFontCursor`
+  actually asks for - so `xterm`'s I-beam and every client's arrow are the real ones now; a client that
+  invents a glyph set still gets the approximation.
 - **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it. The host
   window is resizable, but a resize is therefore capped at the screen rather than growing it, and a
   client's window larger than `--geometry` is still clipped.

@@ -114,6 +114,28 @@ public final class XCursor extends XResource {
      */
     public static XCursor fromGlyph(int id, ClientConnection owner, XFont font, int sourceChar,
                                     int maskChar, int foreground, int background) {
+        CursorFont.Glyph shape = CursorFont.glyph(sourceChar);
+        if (shape != null) {
+            // One of the cursor font's own shapes: the client asked for an arrow, an I-beam, a
+            // resize handle. Its bitmap is the shape and the character after it is its mask, which
+            // is what XCreateGlyphCursor composes: the source in the foreground over the mask in
+            // the background. The font argument is not needed for this path at all - the glyphs are
+            // in the table, because a client that asks for XC_left_ptr means the arrow that every X
+            // server draws, not whatever this server's stand-in font has at that character.
+            int[] pixels = new int[shape.width() * shape.height()];
+            for (int y = 0; y < shape.height(); y++) {
+                for (int x = 0; x < shape.width(); x++) {
+                    boolean source = bit(shape.source(), shape.width(), x, y);
+                    boolean mask = bit(shape.mask(), shape.width(), x, y);
+                    pixels[y * shape.width() + x] = source && mask ? foreground
+                            : mask ? background : 0;
+                }
+            }
+            XCursor cursor = new XCursor(id, owner, shape.width(), shape.height(),
+                    shape.hotspotX(), shape.hotspotY(), pixels, true);
+            cursor.setColors(foreground, background);
+            return cursor;
+        }
         int width = Math.max(1, font.maxWidth());
         int height = Math.max(1, font.ascent() + font.descent());
         int[] pixels = new int[width * height];
@@ -134,6 +156,16 @@ public final class XCursor extends XResource {
         XCursor cursor = new XCursor(id, owner, width, height, 0, 0, pixels, true);
         cursor.setColors(foreground, background);
         return cursor;
+    }
+
+    /** One bit of a packed cursor bitmap: a row is padded to whole bytes, most significant bit first. */
+    private static boolean bit(byte[] rows, int width, int x, int y) {
+        int stride = (width + 7) / 8;
+        int index = y * stride + (x >> 3);
+        if (index < 0 || index >= rows.length) {
+            return false;
+        }
+        return ((rows[index] >> (7 - (x & 7))) & 1) != 0;
     }
 
     private static int cursorPixel(boolean source, boolean mask) {

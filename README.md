@@ -232,9 +232,11 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 
 - **No Composite, DAMAGE, RandR or XInput2.** `xeyes` prints a warning about the missing
   `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
-- **A bounding shape does not clip drawing.** SHAPE's input shape is honoured for hit testing; the
-  bounding shape only affects `QueryExtents` and `GetRectangles`, so a shaped window's corners are
-  still painted. The visible region that obscuring computes does not consult it either.
+- **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
+  painted only inside its shape, its children are clipped by it, and the corners it does not cover are
+  given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
+  arbitrary glyph set - the cursor font's own shapes are embedded, another font's outlines are not -
+  and `ShapeNotify` details beyond the extents.
 - **A revealed window is restored by asking it to draw.** Nothing of a window's content is kept, so
   the area under a window that goes away is repainted with the lower window's background and an
   `Expose` - a client that ignores the expose shows its background there.

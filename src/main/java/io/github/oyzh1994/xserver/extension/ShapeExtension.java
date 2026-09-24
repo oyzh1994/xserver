@@ -176,6 +176,20 @@ public final class ShapeExtension implements Extension {
                 || state.contains(screenX - window.absoluteX(), screenY - window.absoluteY());
     }
 
+    /**
+     * Hands a window's bounding shape to the window itself, as rectangles in its own coordinates.
+     *
+     * <p>Nothing to hand over when the shape is unset - which is the common case and the reason the
+     * window's field is null there rather than "the whole rectangle": a null is a reference test per
+     * request, an all-covering rectangle list is an intersection per request.
+     */
+    private void pushBoundingShape(XWindow window) {
+        ShapeState.Shape shape = stateIfPresent(window) == null
+                ? null : state(window).shape(ShapeState.BOUNDING);
+        window.setBoundingShape(shape == null || !shape.isSet()
+                ? null : shape.absoluteRectangles());
+    }
+
     /** Whether a window relative point reaches the window through its shape. */
     public boolean acceptsWindowPoint(XWindow window, int x, int y) {
         ShapeState state = stateIfPresent(window);
@@ -426,6 +440,17 @@ public final class ShapeExtension implements Extension {
 
     /** A shape changed: repaint, and notify the clients that asked for shape events. */
     private void changed(XServer server, XWindow window, int kind) {
+        if (kind == ShapeState.BOUNDING) {
+            // The window carries its own bounding region, and the region code reads it per drawing
+            // request: keep the two in step, and repaint what the change took away or added.
+            List<Rectangle> before = window.coveredRegion();
+            pushBoundingShape(window);
+            List<Rectangle> after = window.coveredRegion();
+            server.windows().shapeChanged(window, ShapeState.subtract(before, after),
+                    ShapeState.subtract(after, before));
+        } else {
+            pushBoundingShape(window);
+        }
         server.markScreenDirty(window);
         Set<ClientConnection> clients;
         synchronized (notifyClients) {

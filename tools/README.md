@@ -11,6 +11,7 @@ these is meant to carry out, so keep them working.
 |------|-------|-----|
 | the tools | `src/test/java/io/github/oyzh1994/xserver/tools/` | Java, in the test source root so `mvn -o test-compile` compiles them with everything else: a tool that stops compiling is caught instead of rotting |
 | the two-machine harness | `tools/vm.sh`, `tools/bed.sh` | start a server here and a client on the VM against it (or against the VM's own Xvfb, for a comparison) |
+| the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
 
 Run a tool with the test classpath:
 
@@ -50,6 +51,12 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   the vendor and screen count) or the refusal's reason. No arguments means "offer nothing", which is
   what backlog item A7 is about.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
+
+**One open question about `RawXClient`**: its hand-written `ShapeRectangles` request is refused by
+this server as a bad request, so `ShapeClippingTest` sets shapes in process instead. The layout
+matches the library's generated writer (minor 1, then operation, destination kind, ordering, pad,
+window, offsets), so the next step is to see which request the server decodes - a debug line in
+`ShapeExtension.handleRequest`, or `XProxy` in front of the server. Backlog item A2 records it.
 
 ## What is missing
 
