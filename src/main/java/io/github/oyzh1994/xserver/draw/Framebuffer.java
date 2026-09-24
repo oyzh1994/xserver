@@ -13,9 +13,15 @@ import java.awt.Rectangle;
  */
 public final class Framebuffer implements PixelStore {
 
-    private final int width;
-    private final int height;
-    private final int[] pixels;
+    private int width;
+    private int height;
+    /**
+     * The pixels, which change identity when the screen is resized - so a caller that keeps the
+     * array between frames has to ask again after one (see {@link #resize}). Everything else about
+     * this object, its identity included, survives a resize, which is what the backends and the
+     * picture store depend on.
+     */
+    private int[] pixels;
 
     private boolean dirty;
     private int dirtyX0;
@@ -29,6 +35,39 @@ public final class Framebuffer implements PixelStore {
         this.pixels = new int[width * height];
         java.util.Arrays.fill(this.pixels, fillArgb);
         markDirty(0, 0, width, height);
+    }
+
+    /**
+     * Reallocates the pixels at a new size, keeping what was already drawn.
+     *
+     * <p>For the screen that a client asked to be bigger - the one case where the size of a screen
+     * changes after clients have connected. The contents are copied into the new arrays rather than
+     * the array being swapped for a new one everywhere: this object keeps its identity, which the
+     * display backends and every picture over it hold on to, so the pixels are what moves.
+     *
+     * <p>Everything that caches {@link #pixels()} past the end of a frame has to take it again -
+     * which is why the backends are told through {@code DisplayBackend.screenResized} rather than
+     * being expected to notice.
+     *
+     * @param fillArgb what the area the old screen did not cover is painted with, which is the
+     *     screen's own background: a client that had a window there is told about the change and
+     *     draws into it, and until then it is the desktop
+     */
+    public void resize(int width, int height, int fillArgb) {
+        if (width == this.width && height == this.height) {
+            return;
+        }
+        int[] grown = new int[width * height];
+        java.util.Arrays.fill(grown, opaque(fillArgb));
+        int keepWidth = Math.min(width, this.width);
+        int keepHeight = Math.min(height, this.height);
+        for (int row = 0; row < keepHeight; row++) {
+            System.arraycopy(pixels, row * this.width, grown, row * width, keepWidth);
+        }
+        this.pixels = grown;
+        this.width = width;
+        this.height = height;
+        markAllDirty();
     }
 
     @Override

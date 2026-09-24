@@ -1,6 +1,7 @@
 package io.github.oyzh1994.xserver;
 
 import com.github.moaxcp.x11.protocol.X11Input;
+import com.github.moaxcp.x11.protocol.xproto.ConfigureNotifyEvent;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ConnectionSetup;
 import io.github.oyzh1994.xserver.client.ProtocolException;
@@ -12,6 +13,7 @@ import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.display.VisualInfo;
 import io.github.oyzh1994.xserver.event.EventDispatcher;
+import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.event.RawEvent;
 import io.github.oyzh1994.xserver.extension.Extension;
 import io.github.oyzh1994.xserver.extension.ExtensionRegistry;
@@ -831,19 +833,27 @@ public final class XServer {
                 return;
             }
             openSessionBackend(session, wanted);
-        } else if (viewportChanged) {
-            session.backend().setViewport(wanted);
+        } else {
+            if (session.takeScreenResized()) {
+                // The screen grew while the lock was held; a backend that wrapped the old pixels has
+                // to be told before it is asked to present them.
+                session.backend().screenResized(session.screen());
+            }
+            if (viewportChanged) {
+                session.backend().setViewport(wanted);
+            }
         }
         DisplayBackend window = session.backend();
         if (window == null) {
             return;
         }
-        // How large the window may be dragged, which is the screen less where the content starts on
-        // it: a window twenty pixels down the screen has twenty pixels less of itself that can ever
-        // be shown, and the frame is pulled back to the content the moment it is dragged past that.
+        // How large the window may be dragged, which is not the screen any more: the screen grows to
+        // fit what the user asks for, so a limit at the screen's current edge would stop the drag
+        // that was supposed to grow it. What is left is `--max-screen` - the size beyond which a
+        // client could not be described the screen at all - less where the content starts on it.
         java.awt.Dimension maxArea = new java.awt.Dimension(
-                session.screen().width() - session.viewport().x,
-                session.screen().height() - session.viewport().y);
+                options.maxScreenWidth() - session.viewport().x,
+                options.maxScreenHeight() - session.viewport().y);
         if (maxArea.width > 0 && maxArea.height > 0 && !maxArea.equals(session.maxClientArea())) {
             session.setMaxClientArea(maxArea);
             window.setMaxClientArea(maxArea.width, maxArea.height);
@@ -991,6 +1001,10 @@ public final class XServer {
             return;
         }
         Screen screen = session.screen();
+        // Before anything is measured: a drag that asked for more than the screen can show grows the
+        // screen to fit it, so the extents below are worked out against the size there will be rather
+        // than the one there was.
+        growScreenToFit(screen, requested);
         boolean resized = false;
         boolean capped = false;
         for (XWindow window : screen.root().children()) {
@@ -1028,6 +1042,85 @@ public final class XServer {
         if (resized) {
             screen.framebuffer().markAllDirty();
         }
+    }
+
+    /**
+     * Grows the screen when a drag asked for more than it can show.
+     *
+     * <p>This is what "the screen follows the window" means here: the client's window can only be
+     * told to be as large as the framebuffer behind it, so the framebuffer has to be the thing that
+     * moves first. The growth is bounded by {@code --max-screen}: a screen is described to clients in
+     * sixteen bit fields, and every pixel costs four bytes.
+     *
+     * <p>A screen with no mapped window on it is left alone - the drag would have had nothing to
+     * resize - and so is one that is already large enough, which is every drag but the one that
+     * reaches the edge.
+     *
+     * @return true when the screen grew, in which case the backend has to rebuild what it holds
+     */
+    private boolean growScreenToFit(Screen screen, java.awt.Dimension requested) {
+        int wantedWidth = screen.width();
+        int wantedHeight = screen.height();
+        boolean anything = false;
+        for (XWindow window : screen.root().children()) {
+            if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
+                continue;
+            }
+            anything = true;
+            // The window's own far edge has to be on the screen for this many pixels of it to be
+            // visible, and a window that starts off the left or the top needs no more room than the
+            // pixels it is showing.
+            wantedWidth = Math.max(wantedWidth, requested.width + Math.max(0, window.x()));
+            wantedHeight = Math.max(wantedHeight, requested.height + Math.max(0, window.y()));
+        }
+        if (!anything) {
+            return false;
+        }
+        int width = Math.min(wantedWidth, options.maxScreenWidth());
+        int height = Math.min(wantedHeight, options.maxScreenHeight());
+        if (width == screen.width() && height == screen.height()) {
+            if (wantedWidth > width || wantedHeight > height) {
+                log.debug("display :{} asked for a {}x{} screen, which --max-screen holds at {}x{}",
+                        options.displayNumber(), wantedWidth, wantedHeight, width, height);
+            }
+            return false;
+        }
+        log.info("growing the screen of display :{} to {}x{}: a client's window was dragged past it",
+                options.displayNumber(), width, height);
+        screen.resize(width, height);
+        tellClientsTheScreenChanged(screen);
+        for (ScreenSession session : sessions) {
+            if (session.screen() == screen) {
+                session.setScreenResized();
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Tells the clients that asked to hear it that the root is a different size.
+     *
+     * <p>There is no RandR here, so a client that watches the screen - a toolkit laying out against
+     * the display, a terminal that wants to reflow - has no other way to learn this. A real server
+     * sends the same event for the same reason: the root window is a window, and its geometry
+     * changed.
+     */
+    private void tellClientsTheScreenChanged(Screen screen) {
+        events.deliverToWindow(screen.root(), EventMasks.STRUCTURE_NOTIFY,
+                (client, w, child, x, y) -> ConfigureNotifyEvent.builder()
+                        .firstEventOffset((byte) 0)
+                        .sentEvent(false)
+                        .sequenceNumber(client.sequenceNumber())
+                        .event(w.id())
+                        .window(screen.root().id())
+                        .x((short) 0)
+                        .y((short) 0)
+                        .width((short) screen.width())
+                        .height((short) screen.height())
+                        .borderWidth((short) 0)
+                        .aboveSibling(0)
+                        .overrideRedirect(false)
+                        .build());
     }
 
     /** How much of a window of {@code size} at {@code origin} lies on a screen of {@code screenSize}. */

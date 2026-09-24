@@ -149,6 +149,17 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
+    public void screenResized(Screen screen) {
+        runOnEdtAndWait(() -> {
+            ScreenPanel target = panel;
+            if (target != null) {
+                target.resize(screen.framebuffer());
+                target.applyViewport();
+            }
+        });
+    }
+
+    @Override
     public void setIdle(boolean idle) {
         ScreenPanel target = panel;
         if (target == null) {
@@ -310,9 +321,12 @@ public final class SwingBackend implements DisplayBackend {
      */
     private final class ScreenPanel extends JPanel {
 
-        private final int[] pixels;
-        private final int stride;
-        private final BufferedImage image;
+        // Not final: a screen that grows replaces the array behind this panel, and the panel is
+        // rebuilt in place rather than replaced - the listeners the window's own events arrive
+        // through belong to it.
+        private int[] pixels;
+        private int stride;
+        private BufferedImage image;
 
         /** The pointer sprite as an image, rebuilt when a client replaces the cursor. */
         private BufferedImage cursorImage;
@@ -327,6 +341,15 @@ public final class SwingBackend implements DisplayBackend {
             applyViewport();
             setBackground(Color.BLACK);
             setFocusable(true);
+        }
+
+        /** Rebuilds the image for a framebuffer that has changed size. Must run on the EDT. */
+        void resize(Framebuffer framebuffer) {
+            this.pixels = framebuffer.pixels();
+            this.stride = framebuffer.stride();
+            this.image = new BufferedImage(framebuffer.width(), framebuffer.height(),
+                    BufferedImage.TYPE_INT_ARGB);
+            blit(0, 0, framebuffer.width(), framebuffer.height());
         }
 
         /** Sizes the window to the rectangle of the screen it shows. Must run on the EDT. */

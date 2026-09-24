@@ -25,10 +25,9 @@ menus and popups overlapping correctly inside its window.
 
 The host window shows a **sub-rectangle** of the screen (`DisplayBackend.setViewport`): the union of
 the client's mapped top-level windows, so a small application arrives in a small window rather than
-in a screen-sized one with black around it. The screen itself is never resized: growing the
-framebuffer would make `Screen`/`Framebuffer` sizes mutable and would tell the client a root size it
-can never see again (there is no RandR here). A window larger than `--geometry` is clipped, as it was
-before.
+in a screen-sized one with black around it. The screen grows when a window is dragged past it - see
+"The screen grows with the window" below - and never shrinks; a window larger than the screen is
+clipped until the drag that needs the room grows it.
 
 `--single-window` keeps the older shape - one shared screen, every client on it - which is also the
 mode the in-process tests build on.
@@ -72,13 +71,13 @@ not the same number, and both differences were reported as bugs before they were
   window size that shows `wanted` pixels is `wanted` plus the part hanging off the start of the screen,
   capped at the screen's far edge (`XServer.windowExtent`), and a dimension whose visible size did not
   change is left alone entirely.
-- A drag past what the screen can show must stop at the most there is, and not overshoot and be pulled
-  back: a window twenty pixels down the screen can be 780 pixels tall where the screen is 800, and
-  asking for more than that lands at 780 rather than at the screen's 800 - which would otherwise be a
-  frame that grew past what it could draw and snapped back to a size it had already left.
+- A drag stops at the most there is, and does not overshoot and get pulled back: since the screen
+  grows to fit the drag, the most there is is now `--max-screen`, and a drag that reaches it lands
+  there rather than being pulled back to a size the frame had already left.
 
 **The window is told how large it may be dragged** (`DisplayBackend.setMaxClientArea`, the server pushing
-the screen less where the content starts on it). Without it the platform happily lets the user drag the
+`--max-screen` less where the content starts on the screen - it was the screen itself until the screen
+became something a drag could grow). Without it the platform happily lets the user drag the
 window past what the client's windows can fill, and the two failure modes are both visible: the frame is
 left larger than its content, so the part it grew into shows the scene's black, and the next time the
 server says how big the content really is the window is pulled back to it - away from the pointer that is
@@ -662,6 +661,40 @@ is why that is a debug line in `serve`. And **the shell's `pbcopy`/`pbpaste` wer
 environment's sandbox while AWT was not**, so the host end of a live check goes through Java; the
 verification that mattered was a real `java.awt` clipboard on the VM, which *is* the X selection and
 the same path a Swing application's clipboard takes.
+
+## The screen grows with the window
+
+A client can only be told a window is as large as the framebuffer behind it, so "the frame can be
+dragged bigger" means the *screen* has to move first: a drag past the screen grows it, up to
+`--max-screen`, and the client's window is resized into the room that made. The screen never shrinks -
+growing is what a user asks for by dragging, and there is no matching gesture that says "and now the
+desktop is smaller" - so the extra pixels stay allocated for the session.
+
+Everything about the screen's size is computed from two numbers, so the three parts that own them -
+the framebuffer's array, the root window's geometry, and what the setup reply says - change together,
+from the display tick and under the server lock. The pixels move into a *larger array* rather than the
+framebuffer being replaced: the backends wrap `pixels()` and every picture over the screen holds the
+store, so it is the size that changes and not the object. The backends are told afterwards, outside the
+lock, through `screenResized`, because a backend that wrapped the old array is holding a picture of the
+size the screen used to be.
+
+Two things this cost, and both would look like the feature simply not working:
+
+- **An unmanaged canvas contributes nothing to its parent's preferred size.** The canvas is unmanaged
+  on purpose - a managed one puts a floor under the window that the user cannot drag below - so
+  `sizeToScene()`, which is what "the window follows its content" had always used, silently did
+  nothing: a window whose content changed kept whatever size the user had last dragged it to. The
+  window is now sized explicitly from the viewport plus the measured decoration.
+- **A window size applied while the user is still dragging is discarded by the platform.** The size is
+  therefore re-checked every frame (`fitWindowToViewport`, on the FX thread) rather than only when the
+  viewport moves. This is also what brings the frame back when a client *refuses* a resize: the content
+  stops growing, the viewport stops changing, and without the per-frame check nothing would ever pull
+  the frame back to what it frames.
+
+The decoration is measured when the window opens and not again: the platform applies a new window size
+asynchronously, so a measurement taken right after setting one reads the old size and comes out a title
+bar wrong - once per viewport change, which walks the window down a title bar at a time. That was
+measured, and it is why the measurement lives in `openWindow` alone.
 
 ## Where a window was left
 

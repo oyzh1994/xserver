@@ -60,7 +60,7 @@ A prompt that starts a fresh session on this, verbatim:
 | A1 | passive grabs are recorded but never matched | correctness | M |
 | A9 | `IncludeInferiors`, backing store, save-unders are recorded only | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw semantics | correctness | S |
-| C1 | screen auto-size (grow the screen with the window) | host window | M |
+| ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
 | C6 | HiDPI automation (`--scale` without hand-editing the client's flags) | host window | S |
@@ -783,43 +783,59 @@ The host window plays the part of a window manager's frame. Everything in this s
 that frame behave the way a user expects, and each item is as much a product decision as a technical
 one.
 
-### [ ] C1. Screen auto-size: grow the screen with the window. **M**
+### [x] C1. Screen auto-size: grow the screen with the window. **M** - done 2026-09-24
 
-**Current.** The screen (root, framebuffer, host window) is the size `--geometry` gave it, for the life
-of the server. A resize caps the *client's* window at the screen (`DisplayBackend.setMaxClientArea`),
-because the framebuffer behind it is fixed; a client window larger than the screen is clipped.
+**What it was.** The screen was the size `--geometry` gave it for the life of the server, so a client's
+window was capped at the screen and a forwarded application that wanted to be 2000 pixels wide could
+not be. Dragging the host window's edge stretched the frame and stopped.
 
-**Why it matters.** A forwarded application that wants to be 2000 pixels wide cannot be; a terminal
-maximised on a big display gets a small window. This is the difference between "a viewer" and "a
-desktop".
+**What changed.** The screen grows to fit what a drag asks for:
 
-**Plan** (decided in an earlier session, recorded here because the decisions are the hard part):
+- `Framebuffer.resize` moves the pixels into a larger array and keeps this object's identity - the
+  backends wrap `pixels()` and every picture over the screen holds the store - so what changes is the
+  size, not the object. `Screen.resize` changes the framebuffer, the root window's geometry and the
+  reported size together, because the damage rectangles, the pointer clamp and every window's clip are
+  computed from them and a screen whose parts disagreed would draw at the wrong stride.
+- The resize happens from the display tick, under the server lock, in `applyRequestedSize` - the same
+  place a drag is already applied - and the backends are told afterwards, outside the lock, through a
+  new `DisplayBackend.screenResized` (the JavaFX `PixelBuffer`/`WritableImage` and the Swing panel's
+  `BufferedImage` are rebuilt there).
+- Clients that asked to hear it are sent a `ConfigureNotify` for the root: there is no RandR here, so
+  it is the only way a client learns the display changed under it.
+- `ConnectionSetup.sendSetup` reads the screen's size under the server lock, so a client cannot be
+  told a size the framebuffer does not have.
+- `--max-screen WxH` (default 8192x8192) is the ceiling: the setup reply's fields are sixteen bit, and
+  8192x8192 is already 256 MB of pixels.
+- The window's maximum size (`setMaxClientArea`) is now `--max-screen` rather than the screen. A limit
+  at the screen's present edge would stop the very drag that was meant to grow it.
 
-- `Framebuffer.resize` must reallocate **in place**: `Picture.store` is final and every backend
-  captured the array, so the array cannot be swapped for a new one - copy into the new arrays and
-  keep the object identity.
-- Apply the resize **from the display tick**, never from the request thread: the JavaFX/AWT input
-  callbacks take the server lock, so holding it while waiting on the toolkit's thread deadlocks.
-- The backends rebuild their `PixelBuffer`/`WritableImage`/`Canvas`/`Scene` (JavaFX) or
-  panel/`BufferedImage` (Swing) on the tick.
-- Cap it (`--max-screen`, default 8192x8192), because the setup reply's width/height are 16-bit.
-- Take the server lock in `ConnectionSetup.sendSetup` so a client cannot be told a size the framebuffer
-  does not have.
-- Tell clients that are watching: without RandR (B2) nothing can notify a client of a new screen size,
-  so either implement the minimal RandR notify or accept that the client learns by polling
-  `GetGeometry`.
-- The per-client mode already shows a viewport sub-rectangle of the framebuffer; growing the screen is
-  the same mechanism with a bigger target size.
+**A screen never shrinks.** Growing is what a user asks for by dragging a window bigger, and there is
+no matching gesture that says "and now the desktop is smaller".
 
-**Traps.** `Screen`/`Framebuffer` sizes are currently immutable and read from many places (the damage
-rectangles, the cursor clamp, the viewport); a resize has to be visible to all of them at once or a
-frame is presented at the wrong stride. The host window's own maximum size must be re-derived after a
-resize. Shrinking has the same problem in reverse: a client window that no longer fits must be told.
+**Measured 2026-09-24**, two ways:
 
-**Verify.** A raw client that creates a window larger than `--geometry`; the framebuffer dump shows the
-whole window, `xdpyinfo` reports the new size, and the client gets a `ConfigureNotify`/
-`ScreenChangeNotify`. Then a real application resized by dragging the host window's edge beyond the
-old screen.
+- `handler/ScreenResizeTest` (4 tests, a real client over TCP): a drag past the screen grows it in both
+  dimensions; what was drawn is still there afterwards *and* the area it grew into really exists (a
+  screen claiming 500x400 over a 400x300 array reads nothing at that corner); the growth stops at
+  `--max-screen`; and the client is sent a `ConfigureNotify` naming the root and its new size.
+  Disabling the growth fails all four, disabling the notification fails exactly one, and disabling the
+  pixel move fails exactly one. `HostWindowTest`'s drag tests now assert the new behaviour - the drag
+  is honoured rather than capped - and its maximum-size test asserts `--max-screen`.
+- Live, on the Mac with EasyShell from the VM on a 900x600 screen: a synthesized drag of the frame's
+  bottom-right corner grew the screen to **1200x789** (confirmed from a framebuffer dump) and the
+  client's window was resized with it. EasyShell refuses a window larger than 1000x756, so the frame
+  came back to **1000x784** = its content plus the title bar - which is the "the frame is pulled back
+  to the content" behaviour the design notes describe, now working in the direction it never did.
+
+**Traps.** Two things this ran into, both now in the design notes: an unmanaged canvas contributes
+nothing to its parent's preferred size, so `sizeToScene()` leaves the window at the size the scene was
+built with - a window whose content changed used to keep whatever size the user had dragged it to - and
+a window size applied while the user is still dragging is discarded by the platform, so the fit has to
+be re-checked every frame rather than only when the viewport moves.
+
+**Left open**: a screen does not shrink (above); and a client that has not asked for structure events
+learns the new size only by asking again (`xdpyinfo` reports it, since each connection is answered from
+the screen as it is now).
 
 ---
 

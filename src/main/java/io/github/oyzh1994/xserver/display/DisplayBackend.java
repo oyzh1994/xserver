@@ -150,6 +150,20 @@ public interface DisplayBackend {
     default void setWindowPosition(int x, int y) {
     }
 
+    /**
+     * The screen has been resized, so whatever the backend holds sized to it has to be rebuilt.
+     *
+     * <p>A screen grows when a client's window is dragged past what it could show; the pixels move
+     * into a larger array, so a backend that wrapped the old one - a {@code PixelBuffer} over it, a
+     * {@code BufferedImage} filled from it - is holding a picture of the size the screen used to be.
+     * The framebuffer object is the same one, and {@code screen.framebuffer().pixels()} is the array
+     * that is there now.
+     *
+     * <p>Called from the display tick after the resize, never while the server lock is held.
+     */
+    default void screenResized(Screen screen) {
+    }
+
     /** Tears the window down. */
     void stop();
 

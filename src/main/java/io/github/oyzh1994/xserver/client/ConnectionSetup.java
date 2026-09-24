@@ -150,6 +150,24 @@ public final class ConnectionSetup {
         client.close();
     }
 
+    /**
+     * The screen as the protocol describes it, which means its size - and a screen's size can change
+     * while clients are connected, because the display tick grows one when a client's window is
+     * dragged past it.
+     *
+     * <p>Read under the server lock, so a client cannot be told a size the framebuffer does not have:
+     * a client that believes a root is larger than the pixels behind it computes a stride and an
+     * origin that do not exist, and the damage it then draws lands outside the screen.
+     */
+    private com.github.moaxcp.x11.protocol.xproto.Screen protocolScreen(Screen screen) {
+        server.lockServer();
+        try {
+            return screen.toProtocolScreen(screen.root().id(), screen.defaultColormap().id());
+        } finally {
+            server.unlockServer();
+        }
+    }
+
     private void sendSetup(ClientConnection client) throws IOException {
         // A connection with a screen of its own is told about that one only: it is the only screen
         // that client can see, and its root is the one it builds its windows in.
@@ -157,7 +175,7 @@ public final class ConnectionSetup {
         int vendorPadded = (VENDOR.length() + 3) & ~3;
 
         var formats = screen.pixmapFormats();
-        var root = screen.toProtocolScreen(screen.root().id(), screen.defaultColormap().id());
+        var root = protocolScreen(screen);
 
         // The length field counts everything after the 8 byte prefix (status, unused, and the two
         // version words): the rest of the 40 byte header plus all the variable data. Verified

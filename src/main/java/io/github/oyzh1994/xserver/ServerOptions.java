@@ -49,6 +49,14 @@ public final class ServerOptions {
     private int tickRate = 60;
     /** True when every client shares one window instead of getting one of its own. */
     private boolean singleWindow;
+    /**
+     * How large a screen may be grown to. The setup reply's width and height are sixteen bit
+     * fields, so a screen beyond 65535 could not be described to a client at all; the default is a
+     * picture the size of a large desktop rather than that hard ceiling, and a framebuffer of
+     * 8192x8192 is already 256 MB.
+     */
+    private int maxScreenWidth = 8192;
+    private int maxScreenHeight = 8192;
     /** Whether the host clipboard is bridged to the X CLIPBOARD selection. */
     private boolean clipboard = true;
     /**
@@ -96,6 +104,7 @@ public final class ServerOptions {
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
+                case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
                 case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
@@ -291,6 +300,24 @@ public final class ServerOptions {
      * True when every client connection gets a screen and a window of its own, which is the default:
      * a forwarded application then appears as its own window, sized to what it draws.
      */
+    /** The largest a screen may be grown to, which a drag past the screen is capped at. */
+    public int maxScreenWidth() {
+        return maxScreenWidth;
+    }
+
+    public int maxScreenHeight() {
+        return maxScreenHeight;
+    }
+
+    private void parseMaxScreen(String value) {
+        String[] parts = value.toLowerCase(java.util.Locale.ROOT).split("x");
+        if (parts.length != 2) {
+            throw new IllegalArgumentException("--max-screen wants WxH, not " + value);
+        }
+        maxScreenWidth = Math.min(65535, Integer.parseInt(parts[0].trim()));
+        maxScreenHeight = Math.min(65535, Integer.parseInt(parts[1].trim()));
+    }
+
     /** Whether the host clipboard should be bridged to the X CLIPBOARD selection. */
     public boolean noClipboard() {
         return !clipboard;

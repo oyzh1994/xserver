@@ -12,6 +12,7 @@ these is meant to carry out, so keep them working.
 | the tools | `src/test/java/io/github/oyzh1994/xserver/tools/` | Java, in the test source root so `mvn -o test-compile` compiles them with everything else: a tool that stops compiling is caught instead of rotting |
 | the two-machine harness | `tools/vm.sh`, `tools/bed.sh` | start a server here and a client on the VM against it (or against the VM's own Xvfb, for a comparison) |
 | the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
+| the host-window tools | `tools/host-windows.c`, `tools/host-drag.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window |
 
 Run a tool with the test classpath:
 
@@ -34,6 +35,20 @@ XSERVER_OPTIONS="-Dxserver.dumpFrame=/tmp/d -Dxserver.dumpFrames=3000" tools/bed
 `expect` hangs on the password prompt in this environment, which is why the script goes through
 `SSH_ASKPASS` instead; long-running remote commands need `setsid nohup … < /dev/null &` or ssh kills
 them when the session ends.
+
+Two tools that are not Java, and need building (macOS only):
+
+```sh
+clang -o /tmp/winlist tools/host-windows.c -framework ApplicationServices
+clang -o /tmp/drag    tools/host-drag.c    -framework ApplicationServices
+/tmp/winlist                       # owner | title | x,y WxH, one window per line
+/tmp/drag 650 209 950 329          # a left-button drag, as a hand makes it
+```
+
+`winlist` needs no permission; `drag` posts events into the session and so needs the *Accessibility*
+permission for whatever is at the top of the shell's parent chain (the same grant that screen
+recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its
+bottom-right corner resizes it, which is what C1's verification does.
 
 **Killing a client on the VM: put the pattern in brackets.** `pkill -9 -f EasyShell` matches the
 command line of the *remote shell running it* - which contains the word - and kills it, so ssh

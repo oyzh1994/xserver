@@ -40,6 +40,7 @@ Options:
 | `--tick-rate N` | display refresh rate (default 60) |
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
+| `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and `headless` runs
@@ -129,6 +130,12 @@ before it heard nothing), and `RENDER` — pictures, formats, `Composite` with t
 `FillRectangles`, `Trapezoids`/`Triangles`/`TriStrip`/`TriFan`, the solid and gradient fills, and
 the glyph path (`CreateGlyphSet`, `AddGlyphs`, `CompositeGlyphs8/16/32`) that Xft and cairo draw
 their text with.
+
+The screen grows with the window it shows: dragging the frame's edge past what the screen can show
+makes the screen bigger - the framebuffer, the root and the size clients are told all follow, up to
+`--max-screen` - so a forwarded application can be given a window bigger than `--geometry`. The screen
+never shrinks. A client that watches its root is sent a `ConfigureNotify` for the new size; there is no
+RandR here, so that event is the only way it hears.
 
 The host window comes back where it was left: where the user arranged it is remembered per client (by
 `WM_CLASS`) in `~/.xserver/host-windows.properties`, and the next session opens there - clamped to the
@@ -283,11 +290,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   puzzle: the cause was not in them but under them - the client was never told it had the keyboard,
   because `SetInputFocus` generated no focus events. With those delivered the scripted gesture leaves
   the menu up 6 runs out of 6 where it closed 3 out of 3, and the design notes record what that took.
-- **A resize cannot grow past the screen.** The host window is resizable and resizes the client's
-  window, but the framebuffer behind it is fixed at `--geometry`: the window is told the largest area
-  it may be given, so the platform stops the drag at the screen rather than leaving it larger than
-  anything that can fill it. Growing the screen with the window is the deferred work the design notes
-  describe.
+- **A resize grows the screen, up to `--max-screen`.** The host window is resizable and resizes the
+  client's window; a drag past what the screen currently shows makes the screen bigger first, so a
+  forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag
+  stops, and the screen never shrinks again for the session.
+- **A screen grows but does not shrink.** Dragging a forwarded window past the edge of the screen
+  makes the screen bigger so the client can be told about the larger window; nothing brings it back
+  down when the window goes small again, so the extra framebuffer stays allocated for the session.
 - **The clipboard bridge is text only, and only `CLIPBOARD`.** Images and files on the host
   pasteboard are not offered to clients (there is no X target for them that a forwarded application
   would have asked for), `PRIMARY` is not bridged, and a client that copies a very large amount of

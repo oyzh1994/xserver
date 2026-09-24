@@ -239,11 +239,25 @@ public final class JavaFxBackend implements DisplayBackend {
                 canvas.setHeight(logical(viewport.height));
                 graphics = canvas.getGraphicsContext2D();
                 drawViewport();
-                open.sizeToScene();
+                // The window is sized to what it shows, by setting its size rather than by
+                // sizeToScene(): the canvas is unmanaged - deliberately, so it cannot put a floor
+                // under the window the user cannot drag below - and an unmanaged child contributes
+                // nothing to its parent's preferred size, so sizeToScene() leaves the window at the
+                // size the scene was built with. A window whose content changed therefore used to
+                // keep the size the user had dragged it to.
+                //
+                // The decoration is not re-measured here: the platform applies a new window size
+                // asynchronously, so a measurement taken now would read the old size and be wrong by
+                // a title bar's worth - once per viewport change, which walks the window down a
+                // title bar at a time. It was measured when the window was opened, where it is known
+                // to fit its content, and it does not change while the window lives.
+                open.setWidth(canvas.getWidth() + decorationWidth);
+                open.setHeight(canvas.getHeight() + decorationHeight);
+                if (log.isDebugEnabled()) {
+                    log.debug("window sized to {}x{} for content {}x{}",
+                            open.getWidth(), open.getHeight(), viewport.width, viewport.height);
+                }
                 keepOnScreen();
-                // The window fits its content exactly here, which is the one moment the platform's
-                // decoration can be measured rather than guessed at.
-                rememberDecoration();
             } finally {
                 adjustingWindow = false;
             }
@@ -450,6 +464,34 @@ public final class JavaFxBackend implements DisplayBackend {
         } catch (RuntimeException e) {
             log.debug("JavaFX had already stopped", e);
         }
+    }
+
+    @Override
+    public void screenResized(Screen screen) {
+        Framebuffer framebuffer = screen.framebuffer();
+        int width = screen.width();
+        int height = screen.height();
+        // Read the array here, on the tick thread, and hand it to the FX thread: the framebuffer
+        // cannot be resized again while the tick is between the two, and the FX thread must not read
+        // it while a client is drawing into it.
+        IntBuffer pixels = IntBuffer.wrap(framebuffer.pixels());
+        runOnFxThreadAndWait(() -> showNewScreenSize(width, height, pixels));
+    }
+
+    /**
+     * Runs on the FX thread. The canvas is deliberately not rebuilt: it draws the part of the screen
+     * the viewport shows, so its own size is the viewport's and does not change with the screen's -
+     * only the image it draws from is a different size now.
+     */
+    private void showNewScreenSize(int width, int height, IntBuffer pixels) {
+        if (closed) {
+            return;
+        }
+        screenWidth = width;
+        screenHeight = height;
+        pixelBuffer = new PixelBuffer<>(width, height, pixels, PixelFormat.getIntArgbPreInstance());
+        image = new WritableImage(pixelBuffer);
+        drawViewport();
     }
 
     @Override
@@ -699,6 +741,7 @@ public final class JavaFxBackend implements DisplayBackend {
      * Runs on the FX thread.
      */
     private void flushDamage() {
+        fitWindowToViewport();
         Rectangle region;
         CursorSprite cursor;
         synchronized (damageLock) {
@@ -861,6 +904,36 @@ public final class JavaFxBackend implements DisplayBackend {
             }
         }
         write(out, path);
+    }
+
+    /**
+     * Keeps the window the size of what it shows. Runs on the FX thread, once a frame.
+     *
+     * <p>{@link #setViewport} sets the size when the content changes, but the platform applies a
+     * window size asynchronously and a size the user is in the middle of dragging with wins. A drag
+     * that the client refuses is the case that matters: the content does not grow with it, so the
+     * viewport stops changing and nothing else would ever bring the frame back to what it frames -
+     * the window would sit there larger than its content, with a band of nothing around it. This is
+     * also what a window manager's frame does, and it is why the comparison has to be made every
+     * frame rather than only when the viewport moves.
+     */
+    private void fitWindowToViewport() {
+        Stage open = stage;
+        if (open == null || adjustingWindow || viewport.isEmpty()) {
+            return;
+        }
+        double width = logical(viewport.width) + decorationWidth;
+        double height = logical(viewport.height) + decorationHeight;
+        if (Math.abs(open.getWidth() - width) < 1 && Math.abs(open.getHeight() - height) < 1) {
+            return;
+        }
+        adjustingWindow = true;
+        try {
+            open.setWidth(width);
+            open.setHeight(height);
+        } finally {
+            adjustingWindow = false;
+        }
     }
 
     /**

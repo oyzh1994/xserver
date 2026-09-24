@@ -168,15 +168,15 @@ class HostWindowTest {
     }
 
     /**
-     * A drag that asks for more than the screen can show stops at the most there is.
+     * A drag that asks for more than the screen can show grows the screen to fit it.
      *
-     * <p>It must not overshoot and then be pulled back to something smaller than the frame already
-     * was: that reads as the window jumping away from the pointer. The window's own origin counts
-     * here too - a window twenty pixels down the screen has twenty pixels less of itself that can
-     * ever be shown.
+     * <p>This used to stop at the screen, because the framebuffer behind it was fixed; the screen
+     * follows the window now, so what the drag asked for is what the client is told. The window's
+     * own origin still counts - a window twenty pixels down the screen has twenty pixels of itself
+     * under its own title bar that no resize can bring back - but that is the only thing subtracted.
      */
     @Test
-    void aDragPastTheScreenStopsAtTheMostThatCanBeShown() throws Exception {
+    void aDragPastTheScreenGrowsTheScreenToFitIt() throws Exception {
         Server server = new Server(DISPLAY);
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = client.allocateId();
@@ -186,9 +186,14 @@ class HostWindowTest {
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
             waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
+            assertEquals(800, backend.screen.height(), "the screen starts at --geometry's height");
 
             backend.input.windowResized(1250, 4000);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, backend.screen.height() - 20));
+            waitForFrame(backend, new Rectangle(0, 20, 1250, 4000));
+            // Twenty pixels more than the drag asked for: the window sits twenty pixels down the
+            // screen, and those twenty are part of the screen the window is on.
+            assertEquals(4020, backend.screen.height(),
+                    "the screen grew to reach the far edge of what the drag asked for");
         } finally {
             server.stop();
         }
@@ -237,9 +242,13 @@ class HostWindowTest {
 
     /**
      * The window is told the largest area it may be given, so the platform can stop the user
-     * dragging it past that. Without it the drag runs on into area the client's windows cannot fill:
-     * the frame is bigger than its content, and the next time the server says how big the content is
-     * the window is pulled back to it - away from the pointer that is still dragging.
+     * dragging it past that.
+     *
+     * <p>The limit used to be the screen, because the framebuffer behind it was fixed; it is now
+     * {@code --max-screen}, because the screen grows to fit what the user asks for - a limit at the
+     * screen's present edge would stop the very drag that was meant to grow it. What is subtracted
+     * is still where the content starts on the screen: a window twenty pixels down has twenty pixels
+     * less of itself that can ever be shown.
      */
     @Test
     void theWindowIsToldTheLargestAreaItCanBeGiven() throws Exception {
@@ -253,16 +262,17 @@ class HostWindowTest {
             TestBackend backend = server.windows.get(0);
             waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
 
-            // The screen is the limit, less the twenty pixels of it the client's window starts below.
-            waitUntil(() -> new Dimension(1280, 780).equals(backend.maxClientArea),
+            // --max-screen is the limit, less the twenty pixels of it the client's window starts
+            // below.
+            waitUntil(() -> new Dimension(8192, 8172).equals(backend.maxClientArea),
                     "the window should have been told how large it may be, was told "
                             + backend.maxClientArea);
 
-            // A client window that moves to the top of the screen has the whole screen to grow into,
+            // A client window that moves to the top of the screen has that much more to grow into,
             // and the limit follows it there.
             client.configureWindow(window, 0, 0, 1300, 700);
             client.flush();
-            waitUntil(() -> new Dimension(1280, 800).equals(backend.maxClientArea),
+            waitUntil(() -> new Dimension(8192, 8192).equals(backend.maxClientArea),
                     "the limit should follow the content up the screen, was told "
                             + backend.maxClientArea);
         } finally {
@@ -271,7 +281,7 @@ class HostWindowTest {
     }
 
     @Test
-    void aResizeIsCappedAtTheScreen() throws Exception {
+    void aResizeGrowsTheScreenRatherThanBeingCappedAtIt() throws Exception {
         Server server = new Server(DISPLAY);
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = client.allocateId();
@@ -282,14 +292,17 @@ class HostWindowTest {
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
             waitUntil(() -> new Rectangle(0, 0, 200, 100).equals(backend.viewport), "no window");
+            int wasWide = backend.screen.width();
 
-            // The framebuffer is not resized with the window, so a drag past the screen cannot be
-            // honoured: the client's window stops at the screen rather than growing into pixels
-            // that do not exist.
-            backend.input.windowResized(backend.screen.width() + 500, 100);
+            // The screen grows with the window, so a drag past what the screen was is honoured
+            // rather than capped - and the client is told the width it actually got.
+            backend.input.windowResized(wasWide + 500, 100);
+            waitForFrame(backend, new Rectangle(0, 0, wasWide + 500, 100));
 
-            assertNotNull(configureOfWidth(client, backend.screen.width()),
-                    "the client's window should have been resized to the screen, not past it");
+            assertEquals(wasWide + 500, backend.screen.width(),
+                    "the screen grew by what the drag asked for");
+            assertNotNull(configureOfWidth(client, wasWide + 500),
+                    "the client's window should have been resized to what the drag asked for");
         } finally {
             server.stop();
         }

@@ -45,8 +45,12 @@ public final class Screen {
     public static final int DEFAULT_BORDER_ARGB = 0xFFA0A0A0;
 
     private final int number;
-    private final int width;
-    private final int height;
+    /**
+     * The screen's pixel size, which changes only when a client's window is dragged past what the
+     * screen can show and the screen grows to fit it (see {@link #resize}).
+     */
+    private int width;
+    private int height;
     /** How many of this screen's pixels a client is expected to draw per logical pixel. */
     private final int scale;
     private final int widthMillimeters;
@@ -115,6 +119,34 @@ public final class Screen {
     /** How many framebuffer pixels a logical pixel is, which is what a backend draws at. */
     public int scale() {
         return scale;
+    }
+
+    /**
+     * Makes the screen bigger - the one direction it ever moves, and only when a client's window
+     * has been dragged past what the screen could show.
+     *
+     * <p>The framebuffer, the root window and the area the root covers all change together, because a
+     * screen whose parts disagreed about their size would draw at the wrong stride: the damage
+     * rectangles, the pointer clamp and every window's clip are computed from these two numbers.
+     *
+     * <p>Called from the display tick, under the server lock, and never from a request thread - the
+     * tick is the only thread that owns the pixels it is replacing. The backends are told afterwards,
+     * outside the lock, through {@code DisplayBackend.screenResized}.
+     *
+     * <p>A screen never shrinks. Growing is what a user asks for by dragging a window bigger, and
+     * there is no matching gesture that says "and now the desktop is smaller"; a window that goes
+     * back to a small size simply leaves the rest of the screen showing its background.
+     */
+    public void resize(int width, int height) {
+        if (width == this.width && height == this.height) {
+            return;
+        }
+        this.width = width;
+        this.height = height;
+        framebuffer.resize(width, height, DEFAULT_BACKGROUND_ARGB);
+        // The root is the window every client sees the size of, and the one a client that never
+        // asks again learns the new size from - there is no RandR here to tell it otherwise.
+        root.setSize(width, height);
     }
 
     public int width() {

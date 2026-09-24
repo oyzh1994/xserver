@@ -149,6 +149,28 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /**
+     * GetGeometry: {@code {x, y, width, height}} of a window, with x and y signed and the size
+     * unsigned - a window can hang off the left of the screen, and a screen cannot.
+     */
+    public int[] geometry(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 14;                            // GetGeometry
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+        byte[] reply = readReply();
+        return new int[] {readShort(reply, 12), readShort(reply, 14), readShort(reply, 16),
+                readShort(reply, 18)};
+    }
+
+    /** One pixel of a drawable as ARGB, which is the shape the rest of the server talks in. */
+    public int pixelAt(int drawable, int x, int y) throws IOException {
+        byte[] image = getImage(drawable, x, y, 1, 1);
+        return 0xFF000000 | ((image[34] & 0xFF) << 16) | ((image[33] & 0xFF) << 8)
+                | (image[32] & 0xFF);
+    }
+
     /** The root a window belongs to, which is how a test tells two screens apart. */
     public int rootOf(int window) throws IOException {
         byte[] request = new byte[8];

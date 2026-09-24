@@ -71,6 +71,13 @@ public final class ScreenSession {
      * left. Only the display tick touches these.
      */
     private String clientKey;
+    /**
+     * Set when the tick has grown this screen and the backend has not been told yet. It happens
+     * under the server lock - the pixels are replaced there - and the backend is reached from the
+     * tick's unlocked half, like every other call into the toolkit.
+     */
+    private boolean screenResized;
+
     private java.awt.Point windowPosition;
     private java.awt.Point persistedWindowPosition;
     private long positionHeldSince;
@@ -179,6 +186,17 @@ public final class ScreenSession {
 
     public void setMaxClientArea(java.awt.Dimension maxClientArea) {
         this.maxClientArea = maxClientArea;
+    }
+
+    /** Whether this screen has grown and the backend has still to be told. */
+    public boolean takeScreenResized() {
+        boolean resized = screenResized;
+        screenResized = false;
+        return resized;
+    }
+
+    public void setScreenResized() {
+        this.screenResized = true;
     }
 
     public String clientKey() {
