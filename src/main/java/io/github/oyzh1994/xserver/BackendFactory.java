@@ -32,7 +32,7 @@ public final class BackendFactory {
     public static DisplayBackend create(ServerOptions.Backend backend) {
         return switch (backend) {
             case JAVAFX -> createJavaFx();
-            case SWING -> new SwingBackend(DEFAULT_TITLE);
+            case SWING -> createSwing();
             case HEADLESS -> new HeadlessBackend();
         };
     }
@@ -44,10 +44,36 @@ public final class BackendFactory {
             JavaFxBackend.verifyAvailable();
             return new JavaFxBackend(DEFAULT_TITLE);
         } catch (Throwable t) {
+            if (java.awt.GraphicsEnvironment.isHeadless()) {
+                return headlessInstead("JavaFX is not usable (" + describe(t) + ")");
+            }
             log.warn("JavaFX is not usable ({}), falling back to the swing backend", describe(t));
             log.debug("JavaFX startup failed", t);
             return new SwingBackend(DEFAULT_TITLE);
         }
+    }
+
+    /** A Swing window, or the headless backend where there is no display to open one on. */
+    private static DisplayBackend createSwing() {
+        if (java.awt.GraphicsEnvironment.isHeadless()) {
+            return headlessInstead("this machine has no display");
+        }
+        return new SwingBackend(DEFAULT_TITLE);
+    }
+
+    /**
+     * The end of the fallback chain, said out loud.
+     *
+     * <p>A Swing window is opened on the event dispatch thread, so a machine that cannot show one
+     * fails there rather than in {@code start} - out of the caller's sight. The server then served
+     * every client, showed nothing, and logged nothing about it (C11). Where the platform itself says
+     * there is no display there is no point trying the next toolkit: the honest answer is the headless
+     * backend, and a line saying that is what happened.
+     */
+    private static DisplayBackend headlessInstead(String why) {
+        log.warn("{}: nothing can be shown on this machine, so the server is running headless -"
+                + " clients are served and no window is opened", why);
+        return new HeadlessBackend();
     }
 
     /** Names the real cause when the failure arrived wrapped in an initializer or invocation. */

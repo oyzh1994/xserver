@@ -346,11 +346,17 @@ public final class WindowHandlers {
         if (window.isDestroyed()) {
             return;
         }
-        for (XWindow child : new ArrayList<>(window.children())) {
-            destroyWindowTree(client, child);
-        }
+        // Unmapped before the children are destroyed rather than after, so that the whole subtree
+        // stops being viewable at once: the focus of a window inside it then reverts past all of it,
+        // the way a reference server reverts it, instead of landing on a window that this same
+        // request is destroying. Measured with FocusProbe (E. with "focus B" then "kill A"): this
+        // used to tell the dying parent it had gained the focus (FocusIn A, Inferior) and then that
+        // it had lost it again, where the reference tells it FocusOut A, Virtual, once.
         if (window.isMapped()) {
             unmapWindow(window, false);
+        }
+        for (XWindow child : new ArrayList<>(window.children())) {
+            destroyWindowTree(client, child);
         }
         XWindow parent = window.parent();
         if (parent != null) {

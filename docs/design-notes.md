@@ -190,9 +190,10 @@ Two consequences worth keeping:
   called it used not to come back - the server went on answering clients with nothing ever shown
   again. When it does give up, `BackendFactory` falls back to Swing (it always did), and a backend
   whose `start` refuses makes the tick log one line and stop the server rather than serve into the
-  void. What that chain still lacks is an ending: a Swing window that cannot be opened fails on the
-  event dispatch thread rather than in `start`, so on a machine where AWT is headless too the server
-  can still end up with a backend that shows nothing and no line saying so.
+  void. The chain ends at the **headless** backend where the platform itself says there is no
+  display (`GraphicsEnvironment.isHeadless()`), with a line saying that clients are served and no
+  window will be opened: a Swing window is opened on the event dispatch thread, so a machine that
+  cannot show one fails there rather than in `start`, out of the caller's sight.
 
 ## The pointer sprite
 
@@ -606,6 +607,15 @@ Two deliberate deviations, both measured rather than reasoned:
   tore the menu down as it was mapped in three runs out of three. A window that *goes away* under
   the pointer is reported at once, because the alternative there is a pointer pinned to a window
   that no longer exists and a next click that is reported against nothing.
+
+## The order a window tree is torn down in
+
+`WindowHandlers.destroyWindowTree` unmaps a window **before** it destroys its children, and that order
+is load-bearing rather than incidental: unviewability is what the focus revert walks past, so unmapping
+the parent first makes the whole subtree stop being viewable at once and a focus inside it reverts to
+the root in one step. Destroying the children first left the parent viewable while the focus moved off
+a child, and the parent - which the same request was about to destroy - was told it had gained the
+focus and then that it had lost it. Measured with `FocusProbe`'s `kill` step against Xvfb (A5).
 
 ## The focus is the client's to be told about
 

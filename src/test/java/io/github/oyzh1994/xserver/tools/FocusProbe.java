@@ -27,6 +27,8 @@ import java.util.Locale;
  *   ungrabkey                       UngrabKeyboard
  *   grabptr A|B|C [owner]           GrabPointer on that window, Async both ways
  *   ungrabptr                       UngrabPointer
+ *   kill A|B|C                      DestroyWindow, for the focus revert rules
+ *   unmap A|B|C                     UnmapWindow, the other way out of being viewable
  *   key KEYCODE                     one key press and release, through XTEST
  *   wait MS                         let the display tick run
  * </pre>
@@ -176,6 +178,8 @@ public final class FocusProbe {
                 fakeInput(wire, xtest, 2, keycode, 0, 0);
                 fakeInput(wire, xtest, 3, keycode, 0, 0);
             }
+            case "kill" -> destroyWindow(wire, windowOf(parts[1], a, b, c));
+            case "unmap" -> unmapWindow(wire, windowOf(parts[1], a, b, c));
             case "wait" -> {
                 Thread.sleep(Long.parseLong(parts[1]));
                 // Nothing to sync against: the wait is for the tick, not for a request.
@@ -323,6 +327,29 @@ public final class FocusProbe {
         Wire.writeInt(request, 4, window);
         Wire.writeInt(request, 8, 0x800);           // CWEventMask
         Wire.writeInt(request, 12, mask);
+        wire.send(request);
+    }
+
+    /**
+     * Destroys one of the probe's windows, which is the case the focus revert rules exist for: the
+     * window holding the focus goes away, and where the focus lands depends on what the last
+     * {@code SetInputFocus} asked for. No reply is read here - the step's events are printed by the
+     * {@code GetInputFocus} that follows every step.
+     */
+    /** Unmaps one of the probe's windows: the other way a window stops being viewable. */
+    private static void unmapWindow(Wire wire, int window) throws Exception {
+        byte[] request = new byte[8];
+        request[0] = 10;                            // UnmapWindow
+        Wire.writeShort(request, 2, 2);
+        Wire.writeInt(request, 4, window);
+        wire.send(request);
+    }
+
+    private static void destroyWindow(Wire wire, int window) throws Exception {
+        byte[] request = new byte[8];
+        request[0] = 4;                             // DestroyWindow
+        Wire.writeShort(request, 2, 2);
+        Wire.writeInt(request, 4, window);
         wire.send(request);
     }
 

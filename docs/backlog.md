@@ -71,7 +71,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
-| [~] C11 | a server that cannot open a window: the hang and the silence are fixed; the fallback chain still ends silently | host window | S |
+| ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | [~] B1 | XKEYBOARD: read, and set by a client that compiles its own map (`xkbcomp`); no compiler in the server, so no layout by name | extension | M-L |
@@ -739,10 +739,37 @@ already recorded (RandR's `GetOutputProperty` and JavaFX's two asks about window
 menu case relied on the server's initial focus being PointerRoot (it is the root window), and its
 `givingTheFocusBackToThePointerMovesItToThePointer` asserted the incoming chain innermost first.
 
-**Left open here**: the two detail values in the corner where a `RevertToParent` fails and the focus
-falls through to `PointerRoot` (recorded in the design notes) are **not re-measured** - `FocusProbe`
-has no step that destroys a focused window, so the rule now covers that corner but nothing has checked
-it. That is the first thing to test if this area is touched again.
+**The corner that was left open, measured and fixed 2026-09-25.** `FocusProbe` had no step that
+destroys a window, so the revert rules had never been exercised against the reference. It has one now
+(`kill A|B|C`), and the first sequence tried found a real difference. With `B` focused inside `A`,
+`kill A`:
+
+```
+this server                        Xvfb
+FocusOut win=B detail=Ancestor     FocusOut win=B detail=Ancestor
+FocusIn  win=A detail=Inferior     FocusOut win=A detail=Virtual
+FocusOut win=A detail=Ancestor
+focus = R                          focus = R
+```
+
+The focus reverts in **two steps** here - `B` to its parent `A`, and only then to the root once `A`
+goes away too - so a window being destroyed by the very request is told it has gained the focus and
+then that it has lost it. Xvfb reverts past the whole subtree in one step. The cause is the order in
+`WindowHandlers.destroyWindowTree`: the children were destroyed (and the focus reverted) **before**
+the parent was unmapped, so the parent was still viewable when the revert looked for an ancestor to
+land on. Unmapping the window before destroying its subtree makes the whole of it stop being viewable
+at once, and the revert then walks past all of it - `FocusOut A detail=Virtual` and nothing else.
+Measured afterwards: five `kill` sequences (`focus B` then `kill A`, `focus A` then `kill A`, `focus
+A` then `focus none` then `kill A`, `focus A` then `kill B`, `focus C` then `kill A`) and the default
+sequence are **all identical to Xvfb**, where the first of them was two events out before. `mvn test`
+260/260 - the destroy order is used by every test that tears a window down.
+
+**The same corners through the other way out, measured 2026-09-25.** `FocusProbe` gained an
+`unmap A|B|C` step beside `kill`, and five sequences (`focus B` then `unmap A`, `focus A` then
+`unmap A`, `focus B` then `unmap B`, `focus A` then `unmap B`, `focus C` then `unmap A`) are **all
+identical to Xvfb already** - the unmap path reverts *after* the window has stopped being viewable,
+so it never had the ordering fault the destroy path had. That is what makes the two-event difference
+above a destroy-path bug rather than a rule that was wrong everywhere.
 
 **The original wording, kept for what it measured:**
 
@@ -1935,15 +1962,21 @@ WARN  i.g.o.x.BackendFactory - JavaFX is not usable (java.lang.IllegalStateExcep
       swing backend
 ```
 
-**What is still open, and it is the second half of the same finding.** `BackendFactory` already had a
-fallback - JavaFX failing yields a Swing backend - and the log line above is it working, but the chain
-ends there: a Swing window that cannot be opened fails *asynchronously* (its `start` posts the window
-to the event dispatch thread), so on a machine where AWT is headless too, the server carries on with a
-backend that will never show anything and no line saying so. The honest end of the chain is either the
-headless backend with a line saying nothing will be shown, or a refusal to start; what it must not be
-is a third silent failure. Not measured on a real headless host either - macOS ignores
-`java.awt.headless` for Swing's own paths, so the fallback *succeeded* here and the end of the chain
-could not be reached.
+**The second half of the finding, closed 2026-09-25.** The chain used to end at the Swing backend
+whatever the machine was, and a Swing window that cannot be opened fails on the event dispatch thread
+- out of the caller's sight - so on a machine where AWT is headless too the server ended up serving
+clients with a backend that would never show anything and no line saying so. `BackendFactory` now
+asks `GraphicsEnvironment.isHeadless()` before either toolkit: JavaFX failing there, or Swing being
+asked for on such a machine, gives the **headless backend** and one line that says what happened.
+Measured with `-Djava.awt.headless=true`: the server logs
+
+```
+WARN BackendFactory - JavaFX is not usable (... did not start within 10s ...): nothing can be shown
+     on this machine, so the server is running headless - clients are served and no window is opened
+```
+
+and then serves clients normally (a FocusProbe run against it completes), where before it went on with
+a Swing backend that could fail invisibly. `mvn test` 260/260.
 
 ## 5. D - Large / product-level
 
