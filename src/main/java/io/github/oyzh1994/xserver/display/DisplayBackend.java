@@ -211,6 +211,18 @@ public interface DisplayBackend {
     default void raise() {
     }
 
+    /**
+     * The pointer's appearance, told every frame whether or not anything was drawn.
+     *
+     * <p>A backend that shows the pointer itself - the JavaFX and Swing windows, which draw it over
+     * the frame they present - has no use for this: the sprite already arrives with
+     * {@link #present}. A backend whose viewers are somewhere else does: a viewer that has just
+     * connected needs to know what the pointer looks like, and on a screen where nothing is being
+     * drawn there is no frame to carry it.
+     */
+    default void presentCursor(CursorSprite cursor) {
+    }
+
     /** Tears the window down. */
     void stop();
 

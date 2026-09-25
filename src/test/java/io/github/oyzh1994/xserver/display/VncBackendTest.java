@@ -331,6 +331,56 @@ class VncBackendTest {
     }
 
     /**
+     * A viewer that asked for the Cursor pseudo-encoding is told what the pointer looks like.
+     *
+     * <p>Without it a viewer draws a pointer of its own, so an I-beam over a text field looks like an
+     * arrow and a resize handle looks like an arrow. The message is a rectangle whose <b>x and y are
+     * the hotspot</b> - not a position, which is the one thing about it that is unlike every other
+     * update - followed by the image and a one bit mask.
+     */
+    @Test
+    void aViewerThatAsksForTheCursorIsToldWhatThePointerLooksLike() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 200, 0xFFFFFF);
+                client.mapWindow(window);
+                // The X cursor font's left pointer (68), which is the arrow every client asks for.
+                int font = client.allocateId();
+                client.openFont(font, "cursor");
+                int cursor = client.allocateId();
+                client.createGlyphCursor(cursor, font, font, 68, 69, 0, 0);
+                client.setWindowCursor(window, cursor);
+                client.warpPointer(window, 100, 100);
+                client.flush();
+
+                viewer.setEncodings(-239, 16, 0);
+                // The pointer's shape is the display tick's news, not the framebuffer's: it arrives
+                // with the next frame the tick presents, so this waits for it rather than reading one
+                // frame and looking.
+                CursorRect shape = null;
+                long deadline = System.currentTimeMillis() + 5000;
+                while (shape == null && System.currentTimeMillis() < deadline) {
+                    viewer.requestFullFrame();
+                    // A message that carries only the cursor has no data rectangle in it, so this
+                    // reads whatever arrives rather than insisting on a frame: the cursor is its own
+                    // update.
+                    viewer.readFrameOrNull();
+                    shape = viewer.lastCursor();
+                }
+                assertNotNull(shape, "a viewer that asked for the cursor should be sent one");
+                assertTrue(shape.width() > 0 && shape.height() > 0, "with an image: " + shape);
+                assertTrue(shape.hotX() >= 0 && shape.hotX() < shape.width()
+                                && shape.hotY() >= 0 && shape.hotY() < shape.height(),
+                        "and a hotspot inside it: " + shape);
+                assertTrue(shape.maskBits() > 0,
+                        "the mask says which pixels are the pointer: " + shape);
+            }
+        }
+    }
+
+    /**
      * The DES itself, against a vector computed outside this codebase.
      *
      * <p>The scheme is the one every VNC server implements and no DES library does by default: the
@@ -559,6 +609,10 @@ class VncBackendTest {
      * colour reversed, which looks like a server that swapped red and blue rather than a reader that
      * was one line wrong.
      */
+    /** The cursor the server sent: the rectangle's x and y are its hotspot, which is the point. */
+    private record CursorRect(int hotX, int hotY, int width, int height, int maskBits) {
+    }
+
     private record Frame(int x, int y, int width, int height, int bytesPerPixel, boolean bigEndian,
                          int encodedBytes, byte[] pixels) {
         int pixel(int px, int py) {
@@ -587,6 +641,18 @@ class VncBackendTest {
         private boolean bigEndian;
         /** The bytes the last update took on the wire, for the encoding tests. */
         private int lastFrameBytes;
+        /**
+         * One inflater for the whole session, because the ZRLE stream is one: each update's bytes
+         * continue the last one's. A fresh inflater per update decodes the first frame and then says
+         * "incorrect header check" - which is exactly what the first version of this client did.
+         */
+        private final java.util.zip.Inflater zrleInflater = new java.util.zip.Inflater();
+        /** The last cursor the server sent, for the Cursor pseudo-encoding test. */
+        private CursorRect lastCursor;
+
+        CursorRect lastCursor() {
+            return lastCursor;
+        }
 
 
         boolean wasRefused;
@@ -787,6 +853,17 @@ class VncBackendTest {
                 if (encoding == -223) {                     // DesktopSize: no pixels follow it
                     continue;
                 }
+                if (encoding == -239) {                     // Cursor: image then a one bit mask
+                    int bytesPerPixel = Math.max(1, this.bytesPerPixel);
+                    byte[] image = readBytes(width * height * bytesPerPixel);
+                    byte[] mask = readBytes(((width + 7) / 8) * height);
+                    int bits = 0;
+                    for (byte b : mask) {
+                        bits += Integer.bitCount(b & 0xFF);
+                    }
+                    lastCursor = new CursorRect(x, y, width, height, bits);
+                    continue;
+                }
                 byte[] data;
                 if (encoding == 16) {                       // ZRLE: a length, then compressed tiles
                     int compressed = readInt();
@@ -814,7 +891,7 @@ class VncBackendTest {
          * future encoder that invented one fails here rather than in somebody's viewer.
          */
         private byte[] decodeZrle(byte[] compressed, int width, int height) throws IOException {
-            java.util.zip.Inflater inflater = new java.util.zip.Inflater();
+            java.util.zip.Inflater inflater = zrleInflater;
             inflater.setInput(compressed);
             byte[] raw = new byte[width * height * 4 + 1024];
             int rawLength = 0;
@@ -831,8 +908,6 @@ class VncBackendTest {
                 }
             } catch (java.util.zip.DataFormatException e) {
                 throw new IOException("the ZRLE stream is not zlib", e);
-            } finally {
-                inflater.end();
             }
             int cpxel = bytesPerPixel == 4 ? 3 : bytesPerPixel;
             // Each tile goes into the region at its own place: the tiles arrive in order, but the
@@ -965,6 +1040,7 @@ class VncBackendTest {
 
         @Override
         public void close() throws IOException {
+            zrleInflater.end();
             socket.close();
         }
 

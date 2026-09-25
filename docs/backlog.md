@@ -87,7 +87,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
-| [~] D2 | built-in remote transport: **VNC is in** (`--backend vnc`: raw and ZRLE, password or not, clipboard both ways, and a browser path with no bridge); the `Cursor` pseudo-encoding and `Tight` are not | large | L-XL |
+| [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | B6 | GLX / OpenGL | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
@@ -2211,7 +2211,7 @@ that narrow looks like. One line, and the file's own helper was already there.
 
 ---
 
-### [x] D2. Built-in remote transport. **L-XL** - done 2026-09-26: raw and ZRLE frames, password or not, clipboard both ways, a browser path with no bridge; `Tight` and the `Cursor` pseudo-encoding are the only things left
+### [x] D2. Built-in remote transport. **L-XL** - done 2026-09-26: RFB over TCP and over a WebSocket, raw and ZRLE frames, the Cursor pseudo-encoding, a password or open, and the clipboard both ways. `Tight`/`CoRRE` are optimisations left undone
 
 **Current.** The framebuffer is presented by three backends: JavaFX and Swing windows on the machine
 the server runs on, and a headless one that presents nothing. To watch a screen from elsewhere the
@@ -2334,14 +2334,30 @@ protocol requires every client to decode.
   sent, so those are optimisations rather than gaps - and the palette/RLE/solid/raw set is what a
   screen of windows actually needs.
 
+**The Cursor pseudo-encoding, done 2026-09-26.** A viewer that lists it (-239) is sent the pointer's
+image, so it draws the X session's pointer - an I-beam over a text field, a resize handle on a border
+- instead of an arrow of its own. Measured live: an X client's own 24x24 cursor arrived at a viewer as
+`hotspot=(7,4), 24x24, 231 masked pixels` - a shape with a real hole in it, not a filled cell.
+
+- **The one thing about the message that is unlike every other**: the rectangle's **x and y are the
+  hotspot**, not the corner of a region. Read from the client's own source (noVNC's `_handleCursor`)
+  rather than guessed, because a viewer that reads them as a corner draws the pointer in the wrong
+  place and looks like a server that is one pixel out.
+- **A viewer that connects to an idle screen is told nothing, and that is the design**: the frame
+  holds its last contents and there is no sprite to describe (the same state that logs "nothing to
+  show"). With an application on the screen the pointer arrives with the next tick - which is why the
+  `DisplayBackend` grew `presentCursor`, told every frame rather than only when something drew: a
+  viewer that has just connected has to be answered on a screen that is otherwise quiet.
+- The mask is one bit per pixel, so a *semi*-transparent cursor edge travels as opaque; RFB's
+  `AlphaCursor` would carry it, and no client here needs it.
+
 **What is not done, and what each would take.**
 - **The page itself is not served.** The WebSocket carries RFB for a browser, but noVNC's own files
   come from somewhere else (the live check used `python3 -m http.server` for them). Serving a page
   from this server would mean HTTP file serving in a display server, which is a different product
   decision than a transport.
-- **The `Cursor` pseudo-encoding**: the X cursor's *shape* is not sent, so a viewer shows its own
-  pointer and an I-beam over a text field looks like an arrow. `Tight`/`CoRRE` are not implemented
-  either, for the reason above.
+- **`Tight`, `CoRRE` and palette RLE** are not implemented; ZRLE is what a client gets, and it is the
+  encoding every VNC client understands after raw.
 - **One port for the whole screen**, and therefore one screen: per-client mode would need a port per
   client, which is why `--backend vnc` implies `--single-window`.
 - **`--scale`** is the HiDPI knob and works (the screen really is that many pixels), but the *colour

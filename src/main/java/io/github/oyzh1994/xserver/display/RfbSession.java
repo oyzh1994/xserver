@@ -116,6 +116,7 @@ final class RfbSession implements Runnable {
     /** The encodings this server sends, and the pseudo-encoding a resize is told with. */
     private static final int ENCODING_RAW = 0;
     private static final int ENCODING_ZRLE = 16;
+    private static final int ENCODING_CURSOR = -239;
     private static final int ENCODING_DESKTOP_SIZE = -223;
 
     /**
@@ -178,6 +179,12 @@ final class RfbSession implements Runnable {
     private volatile boolean zrleWanted;
 
     /**
+     * True when the client listed the Cursor pseudo-encoding (-239), which is how it is told what
+     * the pointer looks like rather than drawing one of its own.
+     */
+    private volatile boolean cursorWanted;
+
+    /**
      * This session's zlib stream, which outlives the updates (see {@link ZrleEncoder}).
      *
      * <p>Created with the session and ended with it: a {@code Deflater} holds memory outside the
@@ -198,6 +205,20 @@ final class RfbSession implements Runnable {
     private boolean resized;
     /** Clipboard text waiting to be sent to this viewer, from the bridge's listener. */
     private String pendingCutText;
+
+    /**
+     * The pointer's image as this session last saw it, waiting to be sent, and the image it has
+     * already sent.
+     *
+     * <p>{@code currentCursor} is remembered whether or not the client wants it, because the client
+     * says so in its {@code SetEncodings} - which arrives after the session has been handed a few
+     * frames. Without that, a viewer that asked for the cursor got one only the next time the pointer
+     * changed shape, which for a pointer parked over a text field is never.
+     */
+    private CursorSprite pendingCursor;
+    private CursorSprite currentCursor;
+    private CursorSprite sentCursor;
+    private int[] lastCursorPixels;
 
     private volatile boolean running = true;
 
@@ -266,6 +287,40 @@ final class RfbSession implements Runnable {
             pendingCutText = text == null ? "" : text;
             lock.notifyAll();
         }
+    }
+
+    /**
+     * The pointer's appearance changed; this viewer is told from its own thread, like the clipboard.
+     *
+     * <p>Compared by the pixel array and not by the sprite: the sprite is rebuilt every frame with
+     * the pointer's position in it, so its identity changes whenever the mouse moves - and the image
+     * is the same image. The input state caches the array per cursor, so two sprites built from one
+     * cursor share it and a different cursor does not.
+     */
+    void setCursor(CursorSprite sprite) {
+        if (sprite == null) {
+            log.debug("VNC client {} has no pointer sprite yet", peer());
+            return;
+        }
+        log.debug("VNC client {} was handed a {}x{} sprite", peer(), sprite.width(),
+                sprite.height());
+        synchronized (lock) {
+            if (sprite.pixels() != lastCursorPixels) {
+                lastCursorPixels = sprite.pixels();
+                currentCursor = sprite;
+            }
+            queueCursor();
+        }
+    }
+
+    /** Queues the pointer's image if the client wants one and has not been sent this one. */
+    private void queueCursor() {
+        if (!cursorWanted || currentCursor == null || currentCursor == sentCursor) {
+            return;
+        }
+        sentCursor = currentCursor;
+        pendingCursor = currentCursor;
+        lock.notifyAll();
     }
 
     /** The screen changed size, which the client can only be told if it asked to hear it. */
@@ -432,7 +487,7 @@ final class RfbSession implements Runnable {
                 // Nothing from the client, and that is the moment to send what is waiting: a
                 // clipboard change is not damage, so it arrives whether or not an update was asked
                 // for.
-                flushPendingCutText();
+                flushPending();
                 continue;
             }
             transport.readTimeout(0);                    // the rest of the message is not on a clock
@@ -508,6 +563,14 @@ final class RfbSession implements Runnable {
             if (encoding == ENCODING_ZRLE) {
                 zrleWanted = true;
             }
+            if (encoding == ENCODING_CURSOR) {
+                // A client that has just asked for the cursor is owed the one that is on the screen
+                // now, not the next one to change.
+                cursorWanted = true;
+            }
+        }
+        synchronized (lock) {
+            queueCursor();
         }
         // Everything else is left unsaid: a client that lists ZRLE or Tight gets raw frames, which
         // every one of them can read - the list is what a client *can* decode, not what it demands.
@@ -530,10 +593,14 @@ final class RfbSession implements Runnable {
         if (asked.isEmpty()) {
             return;
         }
+        // Whatever is queued that is not damage goes first, and for both kinds of request: a fresh
+        // viewer's first request is a full one, which is where a client that asked for the cursor
+        // expects to hear about it.
+        flushPending();
         Rectangle send;
         synchronized (lock) {
             if (incremental) {
-                while (running && !resized && pendingCutText == null
+                while (running && !resized && pendingCutText == null && pendingCursor == null
                         && (pending == null || pending.intersection(asked).isEmpty())) {
                     try {
                         lock.wait(1000);             // a wake-up is also how a closed socket is noticed
@@ -545,12 +612,13 @@ final class RfbSession implements Runnable {
                 if (!running) {
                     return;
                 }
-                if (pendingCutText != null) {
-                    // A clipboard change is not damage: it is sent whatever the area asked about,
-                    // and then the request waits for damage again.
-                    flushPendingCutText();
+                if (pendingCutText != null || pendingCursor != null) {
+                    // A clipboard change or a new pointer is not damage: it goes whatever the area
+                    // asked about, and then the request waits for damage again.
+                    flushPending();
                     if (pending == null || pending.intersection(asked).isEmpty()) {
                         while (running && !resized && pendingCutText == null
+                                && pendingCursor == null
                                 && (pending == null || pending.intersection(asked).isEmpty())) {
                             try {
                                 lock.wait(1000);
@@ -657,16 +725,75 @@ final class RfbSession implements Runnable {
         sink.accept(copied);
     }
 
-    /** Sends a queued clipboard change, if there is one. Called from the session's own thread. */
-    private void flushPendingCutText() throws IOException {
+    /**
+     * Sends whatever is queued that is not damage - a clipboard change, or the pointer's new shape.
+     * Called from the session's own thread.
+     */
+    private void flushPending() throws IOException {
         String text;
+        CursorSprite cursor;
         synchronized (lock) {
             text = pendingCutText;
             pendingCutText = null;
+            cursor = pendingCursor;
+            pendingCursor = null;
         }
         if (text != null) {
             sendCutText(text);
         }
+        if (cursor != null) {
+            sendCursor(cursor);
+        }
+    }
+
+    /**
+     * {@code Cursor} (-239): the pointer's image, so the viewer shows what the X session's pointer
+     * looks like rather than a pointer of its own.
+     *
+     * <p>The rectangle's <b>x and y are the hotspot</b>, not a position - which is easy to get wrong,
+     * because every other update's x and y are the corner of the region it describes. The client
+     * reads them as the hotspot and draws the image so that point lands on the pointer (measured in
+     * noVNC's own source, which is the client this has to satisfy).
+     */
+    private void sendCursor(CursorSprite sprite) throws IOException {
+        int width = sprite.width();
+        int height = sprite.height();
+        if (width <= 0 || height <= 0 || sprite.pixels().length < width * height) {
+            // Nothing to draw: a cursor with no image is not one a viewer can be sent, and sending a
+            // zero sized one is how this was found - an index out of bounds on the empty pixel array.
+            return;
+        }
+        int bytesPerPixel = Math.max(1, format.bitsPerPixel / 8);
+        // Not named `pixels`: that is the session's own raw-frame buffer, which `store` writes into,
+        // and a local of the same name shadows it - so the images were written into the empty field
+        // and the first pixel threw. Measured, and it is the kind of bug a name like `image` prevents.
+        byte[] image = new byte[width * height * bytesPerPixel];
+        int at = 0;
+        for (int i = 0; i < width * height; i++) {
+            at = store(image, packedPixel(sprite.pixels()[i]), at, bytesPerPixel);
+        }
+        // A one bit mask says which pixels are drawn at all: a cursor with an alpha channel gets its
+        // transparency from this, because the pseudo-encoding has no room for a per-pixel alpha.
+        byte[] mask = new byte[((width + 7) / 8) * height];
+        for (int i = 0; i < width * height; i++) {
+            if ((sprite.pixels()[i] >>> 24) != 0) {
+                mask[i / 8] |= (byte) (0x80 >> (i % 8));
+            }
+        }
+
+        out.write(0);                                // FramebufferUpdate
+        out.write(0);                                // padding
+        writeU16(1);                                 // one rectangle
+        writeU16(sprite.hotX());
+        writeU16(sprite.hotY());
+        writeU16(width);
+        writeU16(height);
+        writeInt(ENCODING_CURSOR);
+        out.write(image);
+        out.write(mask);
+        out.flush();
+        log.debug("VNC client {} sent a {}x{} cursor, hotspot {},{}", peer(), width, height,
+                sprite.hotX(), sprite.hotY());
     }
 
     /** {@code ServerCutText}: what the clipboard holds now, so the viewer can paste it. */
@@ -735,7 +862,7 @@ final class RfbSession implements Runnable {
             }
             int at = 0;
             for (int i = 0; i < argb.length; i++) {
-                at = store(packedPixel(argb[i]), at, bytesPerPixel);
+                at = store(pixels, packedPixel(argb[i]), at, bytesPerPixel);
             }
             writeInt(ENCODING_RAW);
             out.write(pixels);
@@ -797,15 +924,22 @@ final class RfbSession implements Runnable {
         return pixels;
     }
 
-    /** One pixel into the buffer, in the client's byte order and width. */
-    private int store(int value, int at, int bytesPerPixel) {
+    /**
+     * One pixel into {@code target}, in the client's byte order and width.
+     *
+     * <p>The target is a parameter and not the session's own buffer: it was read from a field, and a
+     * caller with a local array of its own - the cursor image - then wrote into the session's raw
+     * frame buffer instead, which is empty until the first frame. The first pixel of the first cursor
+     * threw, which is how it was found.
+     */
+    private int store(byte[] target, int value, int at, int bytesPerPixel) {
         if (format.bigEndian != 0) {                 // big endian
             for (int i = bytesPerPixel - 1; i >= 0; i--) {
-                pixels[at++] = (byte) (value >> (8 * i));
+                target[at++] = (byte) (value >> (8 * i));
             }
         } else {
             for (int i = 0; i < bytesPerPixel; i++) {
-                pixels[at++] = (byte) (value >> (8 * i));
+                target[at++] = (byte) (value >> (8 * i));
             }
         }
         return at;

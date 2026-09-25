@@ -1238,9 +1238,22 @@ exactly four output buffers. Every test with a tile-sized frame passed while a r
 made the client close the connection - which is why the ZRLE test set now includes one frame whose
 compressed output spans many buffers.
 
+**The pointer travels as an image, not as a position** (D2, 2026-09-26). A viewer that lists the
+Cursor pseudo-encoding is sent the X cursor itself, so an I-beam over a text field looks like one. Two
+things about it are worth knowing: the rectangle's **x and y are the hotspot**, unlike every other
+update, and the mask is one bit per pixel - so a semi-transparent edge travels opaque. Measured live:
+an application's own 24x24 cursor arrived as `hotspot=(7,4), 231 masked pixels`, a shape with a hole
+in it rather than a filled cell.
+
+It also made `DisplayBackend` grow one method, and the reason is a state this server has had all
+along: a session with no client windows is **idle** - the frame holds its last contents and nothing is
+presented - so a viewer that connects to an idle screen has no frame to ride along with and would
+otherwise draw its own pointer for ever. `presentCursor` is told every frame, whether or not anything
+drew, and the backend decides whether it is news.
+
 **What is not there** (the item keeps the list): `Tight`/`CoRRE`, palette RLE, the noVNC page itself
-(the WebSocket carries RFB; the page comes from wherever the user keeps it), the `Cursor`
-pseudo-encoding, and any colour-depth reduction. Raw frames are what this sends, and a viewer
+(the WebSocket carries RFB; the page comes from wherever the user keeps it), and any colour-depth
+reduction. Raw frames are what this sends, and a viewer
 on the same machine or a LAN is what that is for.
 
 ## Deliberately not done

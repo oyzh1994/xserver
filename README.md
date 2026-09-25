@@ -372,8 +372,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   copy lands in the X `CLIPBOARD` selection and on the Mac, and a copy in the session reaches the
   viewer, and a browser can be one of the clients (`--vnc-ws-port`, no bridge needed). Frames are raw
   unless the client asks for **ZRLE**, which every VNC client understands and which turns a desktop of
-  flat colours into kilobytes instead of megabytes. Not there: `Tight`/`CoRRE` and the cursor's
-  *shape* (a viewer draws its own pointer).
+  flat colours into kilobytes instead of megabytes, and a client that asks for the **Cursor**
+  pseudo-encoding is sent the X pointer's own shape. Not there: `Tight`/`CoRRE` (optimisations on top
+  of ZRLE).
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user

@@ -13,7 +13,9 @@ package io.github.oyzh1994.xserver.display;
  *
  * @param x      left edge, already offset by the cursor's hotspot
  * @param y      top edge, already offset by the cursor's hotspot
+ * @param hotX   the hotspot, which is the point of the image the pointer is at
+ * @param hotY   the same vertically
  * @param pixels non-premultiplied ARGB, {@code width * height} of them, row major
  */
-public record CursorSprite(int x, int y, int width, int height, int[] pixels) {
+public record CursorSprite(int x, int y, int width, int height, int hotX, int hotY, int[] pixels) {
 }

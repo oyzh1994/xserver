@@ -1061,6 +1061,11 @@ public final class XServer {
         if (window == null) {
             return;
         }
+        // The pointer's appearance, every frame and not only when something drew: a backend that
+        // shows the pointer to somebody else - the VNC one - has to be able to answer a viewer that
+        // has just connected, and on an idle screen there is no damage to ride along with. The
+        // backend compares it against what it last sent, so this is a reference check per frame.
+        window.presentCursor(cursor);
         // How large the window may be dragged, which is not the screen any more: the screen grows to
         // fit what the user asks for, so a limit at the screen's current edge would stop the drag
         // that was supposed to grow it. What is left is `--max-screen` - the size beyond which a

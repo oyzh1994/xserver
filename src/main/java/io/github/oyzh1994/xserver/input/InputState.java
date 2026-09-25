@@ -1536,7 +1536,7 @@ public final class InputState implements DisplayBackend.InputSink {
             cursorPixelsFor = cursor;
         }
         return new CursorSprite(pointerX - cursor.hotspotX(), pointerY - cursor.hotspotY(),
-                width, height, cursorPixels);
+                width, height, cursor.hotspotX(), cursor.hotspotY(), cursorPixels);
     }
 
     /**

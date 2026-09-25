@@ -175,6 +175,18 @@ public final class VncBackend implements DisplayBackend {
     }
 
     @Override
+    public void presentCursor(CursorSprite cursor) {
+        if (cursor == null || sessions.isEmpty()) {
+            return;
+        }
+        for (RfbSession session : sessions) {
+            // A viewer that asked for the Cursor pseudo-encoding gets the X session's pointer rather
+            // than drawing one of its own, and the session decides whether it has sent this one.
+            session.setCursor(cursor);
+        }
+    }
+
+    @Override
     public void screenResized(Screen screen) {
         for (RfbSession session : sessions) {
             session.screenResized();
