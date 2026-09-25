@@ -100,6 +100,12 @@ moved or restacked, the area it stops covering is handed back: the windows under
 with their own background and sent `Expose`, because nothing of theirs was kept anywhere.
 `VisibilityNotify` reports unobscured, partially obscured and fully obscured as that changes.
 
+**A client that stops reading is dropped, not waited for.** Every connection has a bounded queue of
+outgoing messages and a writer thread of its own, so the only thread that ever waits for a client is
+that client's own - and a queue that fills up means the client has stopped reading altogether, which
+is what gets it disconnected. Before this, messages were written to the socket on the thread that held
+the server lock, so one hung client froze every other client's screen.
+
 **Replies are serialised to memory before they reach the socket.** The generated writer for a reply
 computes its length field from the wrong base, and short replies are emitted without their trailing
 padding; both would desynchronise a real client. `ClientOutput` rewrites the length from the bytes
@@ -293,8 +299,6 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 - **A revealed window is restored by asking it to draw.** Nothing of a window's content is kept, so
   the area under a window that goes away is repainted with the lower window's background and an
   `Expose` - a client that ignores the expose shows its background there.
-- **Writing to a client that has stopped reading blocks the server**, because events are sent while
-  holding the server lock. A real server buffers per client and drops the connection.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user

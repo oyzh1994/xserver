@@ -439,12 +439,15 @@ public final class ClientConnection implements Runnable {
         }
     }
 
+    /**
+     * Asked for by whoever has just written something and wants it out.
+     *
+     * <p>It no longer does anything: the connection's writer thread flushes after every message, so
+     * there is nothing to push. Kept because a caller saying "this one matters" is worth leaving in
+     * the code, and because it is where the flush used to be.
+     */
     public void flush() {
-        try {
-            output.flush();
-        } catch (IOException e) {
-            close();
-        }
+        output.flush();
     }
 
     public void enableBigRequests() {
@@ -465,6 +468,9 @@ public final class ClientConnection implements Runnable {
             return;
         }
         closed = true;
+        // The writer thread first: it is the only thing that waits for this client, and stopping it
+        // before the socket is what keeps it from sitting in a write that will never finish.
+        output.close();
         try {
             if (socket != null) {
                 socket.close();

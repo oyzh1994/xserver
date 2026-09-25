@@ -77,7 +77,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | E2 | continuous integration | engineering | S |
 | E4 | per-client framebuffer memory | engineering | M |
-| E5 | backpressure to a client that has stopped reading | engineering | M |
+| ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | E3 | performance: local blending, fewer copies | engineering | M-L |
 | D3 | core-font fidelity | large | M-L |
 | B4 | XInput2 | extension | L |
@@ -1814,27 +1814,47 @@ heap use, or simply asserts that two clients of the same size share/allocate as 
 
 ---
 
-### [ ] E5. Backpressure to a client that has stopped reading. **M**
+### [x] E5. Backpressure to a client that has stopped reading. **M** - done 2026-09-25
 
-**Current.** Events are written to a client's socket while the server lock is held; a client that
-stops reading fills the socket buffer and blocks the server (README's known limitation). A real server
-buffers per client in user space and drops the connection when its buffer overflows.
+**What it was.** Every reply and event was written to the client's socket on whichever thread held the
+server lock - the display tick for an event, another client's request thread for a reply. A client that
+stopped reading filled its socket buffer, that write blocked, and the lock was never released: **one
+hung client froze every other client's screen**, which the README listed as a known limitation and
+which is the worst failure mode a display server can have.
 
-**Why it matters.** One hung client freezes every other client's screen - the worst failure mode a
-display server can have.
+**What changed.** `ClientOutput` now has a **bounded queue (1024 messages) and a writer thread of its
+own** per connection. Nothing writes to the socket from the caller's thread: the only thread that ever
+waits for a client is that client's own, and a queue that fills up means the client has stopped reading
+altogether - so it is dropped, with the reason in the log line (`the client is not reading: 1024
+messages are already queued for it`) rather than a bare "broken pipe". Order is preserved by
+construction: one queue, one thread taking from it, flushed after each message. `flush()` became a
+no-op (the writer flushes every message, so nothing has to be pushed) and the request loop's
+flush-after-each-request - which existed to break a deadlock this removes - no longer has anything to
+do. A close **drains briefly first** (100 ms), because a refusal of the connection setup, a final error
+and the farewell a graceful shutdown sends are the last thing a client will hear.
 
-**Plan.** A per-connection output queue with a bound, written by the connection's own thread (or a
-writer thread per connection) instead of inline under the server lock; on overflow, log and drop the
-connection the way `killClient` does. `ClientOutput` is where the writes happen today.
+**Measured 2026-09-25.** `net/BackpressureTest` (2 tests, and the item's own Verify): a client that
+handshakes, shrinks its receive buffer and then sends requests whose replies it never reads, while
+another client draws and reads its own pixels back. With the fix: 2/2 in 0.7 s. **Without it: both
+fail** - the second client's round trip dies with `SocketTimeoutException: Read timed out` (the server
+frozen, exactly as the item says) and the stalled client is never dropped. `mvn test` 228/228.
 
-**Traps.** Event ordering must survive: everything a client is sent must leave in the order it was
-generated, so the queue cannot be per-event-thread without a sequence. Replies and events share the
-stream. A test needs a client that deliberately stops reading (a socket that connects, handshakes and
-then never reads again) while another client keeps drawing.
+**Two traps, and both cost a rewrite of the test.**
 
-**Verify.** The test above: the second client's screen must keep updating, and the stalled one must be
-disconnected with a log line.
+- **A test that hangs is not a regression guard.** The first version flooded from the test's own thread
+  and, with the fix reverted, blocked there: a socket write has no timeout, so the *test* stopped
+  instead of failing - for ten minutes. The flood now runs on a daemon thread of its own and the test's
+  own waits are all bounded by read timeouts.
+- **The first measurement was a lie, and it was the socket's rather than the server's.** One
+  screen-sized `GetImage` reply as "more than any buffer can hold" is not more than any buffer can hold:
+  the server absorbed it without blocking, the round trip succeeded, and the test read as "the unfixed
+  server is fine". What is past any buffer is *several megabytes* of replies - measured by adding them
+  until the freeze appeared.
 
+**Left open, and named in the design notes**: a client that reads *slowly* rather than not at all is
+served in order and keeps its connection; there is no per-client bandwidth policy and no coalescing of
+pending motion events, which is what a real server does and the next thing to do here if a slow client
+ever becomes a real case.
 ---
 
 ### [ ] E3. Performance: local blending, fewer copies. **M-L**
@@ -1917,7 +1937,6 @@ measurement *before* it is proposed, not after.
   asking it to draw (`Expose`). A client that ignores the expose shows its background there. A9 is the
   item that would change this deliberately.
 - **`IncludeInferiors` behaves as `ClipByChildren`** (A9 is the item).
-- **Writing to a client that has stopped reading blocks the server** (E5 is the item).
 - **The pointer cannot leave the host window's viewport** and is clamped to the screen: the sprite is
   hidden outside it, and a warp beyond it is clamped rather than moving the platform pointer.
 

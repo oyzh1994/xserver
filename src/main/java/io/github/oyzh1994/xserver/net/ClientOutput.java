@@ -31,6 +31,18 @@ import org.slf4j.LoggerFactory;
  * <p>Because both fixes need the finished byte image, everything is serialized into a small
  * scratch buffer first. Replies and events are at most a few kilobytes in practice, and the
  * copy is far cheaper than a desynchronized protocol stream.
+ *
+ * <p><b>Nothing here writes to the socket directly.</b> Every message goes onto a bounded queue that
+ * a writer thread of its own drains, because the callers run while the server lock is held: a client
+ * that stops reading fills its socket buffer, and a write into it blocks the thread that is holding
+ * the lock - which is every other client's screen as well. With the queue, that client's own writer
+ * thread is the only thing that waits, and when the queue is full the client is dropped instead of
+ * the server being stopped. A real server does the same thing, and the bound is the whole of the
+ * policy: a client that cannot keep up with what is being sent to it is a client that is gone.
+ *
+ * <p>Order is preserved because there is one queue per connection and one thread taking from it: what
+ * is enqueued first is written first, whether it is a reply, an event or an error, and the writer
+ * flushes after each message so a client waiting for one is not left waiting for the next.
  */
 public final class ClientOutput {
 
@@ -42,11 +54,46 @@ public final class ClientOutput {
     /** Fixed size of a reply header; reply payload follows. */
     private static final int REPLY_HEADER_SIZE = 32;
 
+    /**
+     * How many messages may wait for a client that is not reading before it is dropped.
+     *
+     * <p>A thousand events is far more than a healthy client ever has outstanding - the socket buffer
+     * holds several times that in bytes - so a queue this deep means the client has stopped reading
+     * altogether, not that it is busy.
+     */
+    private static final int MAX_QUEUED_MESSAGES = 1024;
+
+    /** How long {@link #close()} lets the writer finish the queue before the socket goes. */
+    private static final int DRAIN_MILLIS = 100;
+
     private final OutputStream out;
     private final boolean bigEndian;
     private final ByteArrayOutputStream scratch = new ByteArrayOutputStream(256);
 
-    private boolean broken;
+    /**
+     * Messages waiting for the socket, and the thread that drains them.
+     *
+     * <p>The queue is what keeps a blocked write off the server's own thread: the callers enqueue and
+     * return, and only this thread ever waits for the client.
+     */
+    private final java.util.concurrent.BlockingQueue<byte[]> queue =
+            new java.util.concurrent.ArrayBlockingQueue<>(MAX_QUEUED_MESSAGES);
+
+    private final Thread writer;
+
+    private volatile boolean running = true;
+
+    /**
+     * True while the writer is inside a socket write.
+     *
+     * <p>{@link #close()} waits for the queue to empty, and a message the writer has already taken is
+     * no longer in the queue - so without this the close could go ahead while that message was still
+     * on its way out. It is a race, and it is not theoretical: the connection-setup refusal was lost
+     * about half the time, which reads to the client as "the server hung up" instead of "no".
+     */
+    private volatile boolean writing;
+
+    private volatile boolean broken;
 
     /**
      * True when bytes have been buffered but not yet handed to the socket. A caller holding a
@@ -57,6 +104,10 @@ public final class ClientOutput {
     public ClientOutput(OutputStream out, boolean bigEndian) {
         this.out = out;
         this.bigEndian = bigEndian;
+        this.writer = new Thread(this::drainToSocket, "xserver-client-writer");
+        // A daemon, so a server that is shutting down is not held up by a client that is not reading.
+        this.writer.setDaemon(true);
+        this.writer.start();
     }
 
     public boolean isBigEndian() {
@@ -172,22 +223,21 @@ public final class ClientOutput {
         write(bytes);
     }
 
-    /** True when a reply, event or error is still sitting in the buffer. */
-    public synchronized boolean hasPending() {
-        return pending;
+    /** True when a reply, event or error is still queued for the writer. */
+    public boolean hasPending() {
+        return pending && !queue.isEmpty();
     }
 
-    public synchronized void flush() throws IOException {
-        if (broken) {
-            return;
-        }
-        try {
-            out.flush();
-            pending = false;
-        } catch (IOException e) {
-            broken = true;
-            throw e;
-        }
+    /**
+     * Nothing to do: the writer thread flushes after every message it writes, so a client waiting
+     * for a reply has it as soon as the queue reaches the socket.
+     *
+     * <p>This used to be where the bytes actually left, and it was the request loop's job to call it
+     * after each request - a client waiting for a reply while the server waited for the rest of a
+     * request is a deadlock neither side can break. The flush is now the writer's own, which is
+     * better for the same reason the queue exists: it happens off the server's thread.
+     */
+    public void flush() {
     }
 
     private interface Writer {
@@ -204,16 +254,94 @@ public final class ClientOutput {
         return scratch.toByteArray();
     }
 
+    /**
+     * Queues one message for the writer thread.
+     *
+     * <p>A full queue is the one failure this class reports rather than absorbs: the client has
+     * stopped reading, and the caller - which is either the display tick or another client's request
+     * - has to be released rather than blocked. The exception's message is what the log line says, so
+     * it names the reason: a client that is gone and a client that is not reading look the same from
+     * a closed socket, and they are not the same thing to whoever reads the log.
+     */
     private void write(byte[] bytes) throws IOException {
         if (broken) {
             throw new IOException("connection is broken");
         }
-        try {
-            out.write(bytes);
-            pending = true;
-        } catch (IOException e) {
+        if (!queue.offer(bytes)) {
             broken = true;
-            throw e;
+            throw new IOException("the client is not reading: " + queue.size()
+                    + " messages are already queued for it");
+        }
+        pending = true;
+    }
+
+    /**
+     * The writer: the only thread that ever waits for this client's socket.
+     *
+     * <p>A failed write ends the loop and closes the stream, which is what tells the connection's own
+     * read loop that the client is gone - the class has no reference to the connection, and the side
+     * that can report a disconnect is the side that owns it.
+     */
+    private void drainToSocket() {
+        while (running) {
+            byte[] bytes;
+            try {
+                // Blocking, with no poll interval: a message must leave as soon as it is queued, and
+                // a poll timeout is latency on every message - the first version of this waited up to
+                // two hundred milliseconds per reply, which for a client waiting on one is a pause
+                // the user can see. The thread is stopped by interrupting it.
+                bytes = queue.take();
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            writing = true;
+            try {
+                out.write(bytes);
+                out.flush();
+            } catch (IOException gone) {
+                broken = true;
+                running = false;
+                closeQuietly();
+                return;
+            } finally {
+                writing = false;
+            }
+        }
+    }
+
+    /**
+     * Lets what is already queued reach the client, then stops the writer and closes the stream.
+     *
+     * <p>The drain is not politeness: a refusal of the connection setup, a final error and the
+     * farewell a graceful shutdown sends are all "the last thing this client will hear", and closing
+     * over them turns "the server said no" into "the server hung up" - which is exactly what the
+     * authentication tests caught when this closed immediately (a client that offered a wrong cookie
+     * read an empty stream instead of the refusal).
+     *
+     * <p>Bounded, because the caller may be holding the server lock and the client may be the one that
+     * stopped reading: a write that never finishes must not become a close that never returns.
+     */
+    public void close() {
+        long deadline = System.nanoTime() + DRAIN_MILLIS * 1_000_000L;
+        while ((!queue.isEmpty() || writing) && !broken && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException stopped) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        running = false;
+        writer.interrupt();
+        closeQuietly();
+    }
+
+    private void closeQuietly() {
+        try {
+            out.close();
+        } catch (IOException ignored) {
+            // Closing is best effort, and the caller is on its way out either way.
         }
     }
 

@@ -605,6 +605,37 @@ Two traps the probe fell into, both worth an hour of somebody else's time:
   where a `RevertToParent` fails and the focus falls through to PointerRoot, and no client has been
   seen to care. Written down so the next person does not have to re-derive them.
 
+## A client that is not reading is dropped
+
+Every connection has a **bounded queue of outgoing messages and a writer thread of its own**. The
+thread is not an optimisation: replies and events were written to the socket on whichever thread held
+the server lock - the display tick for an event, another client's request thread for a reply - so a
+client that stopped reading filled its socket buffer, the write blocked, and the lock was never
+released. One hung client froze every other client's screen, which is the worst failure mode a display
+server can have.
+
+- **The queue is the policy**: 1024 messages, which is far more than a healthy client ever has
+  outstanding. A full queue is the one failure the output reports rather than absorbs, and the caller -
+  the tick, or another client's request - is released instead of blocked. The client is dropped, and a
+  real server drops it for the same reason.
+- **Order is preserved** because there is one queue and one thread taking from it: replies, events and
+  errors leave in the order they were queued, and the writer flushes after each message so a client
+  waiting for a reply is not left waiting for the next one.
+- **A close drains first, briefly.** A refusal of the connection setup, a final error and the farewell
+  a graceful shutdown sends are the last thing a client will hear; closing over them turns "the server
+  said no" into "the server hung up", which is exactly what the authentication tests caught when this
+  closed immediately. The drain is bounded because the caller may be holding the server lock and the
+  client may be the one that stopped reading.
+
+**What it costs**: one more thread per connection. A connection already reads on a thread of its own,
+so this doubles that, and the alternative - a single writer with a global queue - is a lock in the one
+place that must not have one.
+
+**What is not covered**: a client that reads *slowly* rather than not at all is served in order and
+keeps its connection; there is no per-client bandwidth policy, and no coalescing of pending events
+(a client that is behind gets every motion, not the last one). A real server drops motion events it
+has not sent yet, which is the next thing to do here if a slow client is ever a real case.
+
 ## The server generates the keyboard's repeats
 
 A held key speaks once, and the run of characters that follows is the server's own work: a client is

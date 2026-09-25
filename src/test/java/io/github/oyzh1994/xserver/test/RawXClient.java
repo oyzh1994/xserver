@@ -79,6 +79,14 @@ public final class RawXClient implements AutoCloseable {
         return root;
     }
 
+    /**
+     * Shrinks this client's receive buffer, so a test that deliberately stops reading fills the
+     * server's output queue for it quickly instead of needing a megabyte of traffic first.
+     */
+    public void smallReceiveBuffer(int bytes) throws IOException {
+        socket.setReceiveBufferSize(bytes);
+    }
+
     /** An id from this client's range, for a window it creates. */
     public int allocateId() {
         return idBase + nextId++;
