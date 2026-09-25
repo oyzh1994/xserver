@@ -355,7 +355,7 @@ a fix.
 
 ---
 
-### [ ] A4old. `xdotool` segfaults against this server. **S-M**
+### [x] A4old. `xdotool` segfaults against this server. **S-M** - superseded: the cause was B1, and A4 has the record
 
 **Current.** `xdotool getmouselocation` aborts; a hand-written raw-protocol client issues the same
 `QueryPointer`/`WarpPointer`/`GetInputFocus` and is fine. So some reply this server sends is well
@@ -2161,7 +2161,7 @@ needs that environment.
 
 ---
 
-### [~] C11. A server whose window cannot be opened. **S** - the hang and the silence are fixed 2026-09-25; the fallback chain is still silent at its end
+### [x] C11. A server whose window cannot be opened. **S** - done 2026-09-25: the hang, the silence and the end of the fallback chain
 
 **Found while doing E2**, which is about running the suite on a machine with no display, and it is
 worse than the CI problem that led to it. With the JavaFX backend and no display - measured with
@@ -2751,6 +2751,14 @@ property is checked - there is no client that can be made to exercise every mask
 ---
 
 ### [ ] E1. The `eventcopy` generator fix lives in the protocol fork. **S** (in the fork)
+
+**Blocked on the fork, measured 2026-09-26.** `~/IdeaProjects/other/x11` **is not a git checkout**
+(`git status` says "not a repository"), so a fix there is a change nobody can commit or review, and
+the artifacts this project builds against live in the local Maven repository - so regenerating and
+publishing them also affects the fork's other dependants. Two ways forward, both the fork owner's to
+choose: put the fork under version control first, or replace the five `<eventcopy>` entries in
+`xproto.xml` with full `<event>` entries (which the generator honours) and re-publish. The workaround
+(`ClientOutput.EVENT_NUMBERS`) stays until then, and it is correct as it stands.
 
 **Current.** `ClientOutput.EVENT_NUMBERS` rewrites five event type bytes by hand, because the
 generator in the `moaxcp/x11-protocol` fork ignores the `number` on an `eventcopy` and renumbers
