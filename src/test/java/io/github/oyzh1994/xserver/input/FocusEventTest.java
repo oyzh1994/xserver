@@ -115,6 +115,14 @@ class FocusEventTest {
         client.fakeMotion(xtest, 250, 250);
         client.flush();
 
+        // PointerRoot has to be asked for, and this used to work without it because the server folded
+        // the root window - the state a reference server starts in, `xdpyinfo`'s "focus: window
+        // 0x1ff" - into PointerRoot. They are different states and report a different detail on the
+        // way out: measured with tools/FocusProbe, and pinned in FocusReportingTest.
+        client.setInputFocus(POINTER_ROOT, REVERT_TO_POINTER_ROOT);
+        client.flush();
+        quiet();
+
         client.setInputFocus(outer, REVERT_TO_POINTER_ROOT);
         client.flush();
 
@@ -237,16 +245,18 @@ class FocusEventTest {
         assertEquals(inner, RawXClient.readInt(out, 4));
         assertEquals(NONLINEAR, out[1] & 0xFF, "the focus went to the pointer, not to a window");
 
-        byte[] in = client.readEvent(FOCUS_IN);
-        assertNotNull(in, "the window the pointer is in was not told");
-        assertEquals(inner, RawXClient.readInt(in, 4));
-        assertEquals(POINTER, in[1] & 0xFF, "the keyboard went back to the pointer");
-
-        // The parent of the window the pointer is in is told as well, outermost last here.
+        // The parent of the window the pointer is in is told first: the chain arrives outermost
+        // first, like every other way in - measured against a reference server, and the opposite of
+        // what this test asserted when the server sent it the other way round.
         byte[] toOuter = client.readEvent(FOCUS_IN);
         assertNotNull(toOuter, "the window holding the one the pointer is in was not told");
         assertEquals(outer, RawXClient.readInt(toOuter, 4));
         assertEquals(POINTER, toOuter[1] & 0xFF);
+
+        byte[] in = client.readEvent(FOCUS_IN);
+        assertNotNull(in, "the window the pointer is in was not told");
+        assertEquals(inner, RawXClient.readInt(in, 4));
+        assertEquals(POINTER, in[1] & 0xFF, "the keyboard went back to the pointer");
     }
 
     /**

@@ -69,6 +69,9 @@ public final class FocusProbe {
     private static int b;
     private static int c;
 
+    /** The root window, so the probe can name a focus that is the root rather than PointerRoot. */
+    private static int root;
+
     private static final String[] FOCUS_DETAILS = {"Ancestor", "Virtual", "Inferior", "Nonlinear",
             "NonlinearVirtual", "Pointer", "PointerRoot", "None"};
     private static final String[] CROSSING_MODES = {"NotifyNormal", "NotifyGrab", "NotifyUngrab",
@@ -91,6 +94,7 @@ public final class FocusProbe {
             a = wire.allocateId();
             b = wire.allocateId();
             c = wire.allocateId();
+            root = wire.root();
             int xtest = queryExtension(wire, "XTEST");
             // Park the pointer before the windows exist, and somewhere none of them reaches: the
             // pointer outlives every client, so a probe that starts wherever the last run left it
@@ -210,7 +214,7 @@ public final class FocusProbe {
                 // What the server *says* the focus is, which is not always what the steps asked for:
                 // a state machine that quietly keeps something else is invisible otherwise, and the
                 // events alone cannot distinguish it from a server that answered wrongly.
-                System.out.println("  focus = " + name(Wire.readInt(message, 8), a, b, c));
+                System.out.println("  focus = " + name(Wire.readInt(message, 8), root, a, b, c));
                 return;
             }
             describe(message, a, b, c);
@@ -225,13 +229,13 @@ public final class FocusProbe {
             // laid out differently - its event window is at 12 and its mode at 30 - and the last
             // byte packs same-screen into bit 0 and the focus bit into bit 1.
             case 9, 10 -> System.out.printf("  %s win=%s detail=%s mode=%s%n",
-                    type == 9 ? "FocusIn" : "FocusOut", name(Wire.readInt(message, 4), a, b, c),
+                    type == 9 ? "FocusIn" : "FocusOut", name(Wire.readInt(message, 4), root, a, b, c),
                     detail(FOCUS_DETAILS, message[1] & 0xFF), mode(message[8] & 0xFF));
             // The last byte of a crossing packs same-screen and the focus bit, and which is which
             // is easy to get backwards: printing the byte rather than a reading of it is what settled
             // this against Xlib, which disagreed with the first reading this probe made.
             case 7, 8 -> System.out.printf("  %s win=%s detail=%s mode=%s last=0x%02x%n",
-                    type == 7 ? "EnterNotify" : "LeaveNotify", name(Wire.readInt(message, 12), a, b, c),
+                    type == 7 ? "EnterNotify" : "LeaveNotify", name(Wire.readInt(message, 12), root, a, b, c),
                     detail(CROSSING_DETAILS, message[1] & 0xFF), mode(message[30] & 0xFF),
                     message[31] & 0xFF);
             case 0 -> System.out.printf("  ERROR %d opcode=%d resource=0x%x%n", message[1] & 0xFF,
@@ -249,7 +253,7 @@ public final class FocusProbe {
         return value < CROSSING_MODES.length ? CROSSING_MODES[value] : "mode" + value;
     }
 
-    private static String name(int window, int a, int b, int c) {
+    private static String name(int window, int root, int a, int b, int c) {
         if (window == a) {
             return "A";
         }
@@ -258,6 +262,12 @@ public final class FocusProbe {
         }
         if (window == c) {
             return "C";
+        }
+        if (window == root) {
+            // The root window's id, which is a *different* state from PointerRoot: the keys go to the
+            // root rather than following the pointer, and a reference server answers it here where
+            // this one used to answer PointerRoot. Both are named, so a diff shows which.
+            return "R";
         }
         // A focus of 1 is PointerRoot, and 0 is None - the two states that are not windows. Their
         // names matter: a server that answers the root window's id where another answers PointerRoot

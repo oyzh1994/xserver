@@ -194,6 +194,7 @@ public final class InputHandlers {
     public void setInputFocus(ClientConnection client, SetInputFocus r) {
         int focus = r.getFocus();
         XWindow window;
+        boolean pointerRoot = false;
         if (focus == 0) {
             // None: the keyboard focus is nowhere.
             window = null;
@@ -203,19 +204,23 @@ public final class InputHandlers {
             // asks for PointerRoot is asking for a focus that follows the pointer, and it can tell
             // that apart from a focus it placed on a window of its own.
             window = server.inputFor(client).screen().root();
+            pointerRoot = true;
         } else {
+            // The root window asked for by id is *not* PointerRoot, and a client can tell the two
+            // apart: GetInputFocus answers the id, and the keys go to the root window rather than
+            // following the pointer. Measured against a reference server with tools/FocusProbe.
             window = window(client, focus);
         }
-        server.inputFor(client).setInputFocus(window, r.getRevertTo());
+        server.inputFor(client).setInputFocus(window, r.getRevertTo(), pointerRoot);
     }
 
     public void getInputFocus(ClientConnection client, GetInputFocus r) {
-        XWindow focus = server.inputFor(client).inputFocus();
+        InputState input = server.inputFor(client);
+        XWindow focus = input.inputFocus();
         client.sendReply(GetInputFocusReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .revertTo((byte) server.inputFor(client).focusRevertTo())
-                .focus(focus == null ? 0
-                        : (focus == server.inputFor(client).screen().root() ? 1 : focus.id()))
+                .revertTo((byte) input.focusRevertTo())
+                .focus(focus == null ? 0 : (input.focusIsPointerRoot() ? 1 : focus.id()))
                 .build());
     }
 

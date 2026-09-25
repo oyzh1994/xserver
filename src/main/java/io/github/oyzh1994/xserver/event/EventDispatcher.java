@@ -172,13 +172,13 @@ public final class EventDispatcher {
      *
      * <p>This is the only way a client is told it has the keyboard. A toolkit moves the focus to a
      * dialog and waits to be told the dialog got it; a window that is never told stays drawn but
-     * inert, with every keystroke going somewhere else and no way to tell. Both arguments may be
-     * null - the focus is nowhere - and the root window stands for PointerRoot here, which is how the
-     * rest of the server reads it (keys go to whatever the pointer is in), so the two states that
-     * are not an ordinary window have their own detail rather than being reported as a window.
+     * inert, with every keystroke going somewhere else and no way to tell. Either end may be null -
+     * the focus is nowhere - or a focus that follows the pointer, which is a state of its own and not
+     * a window, and is reported against the windows the pointer is inside with a detail that says so.
      */
     public void deliverFocusChange(XWindow previous, XWindow current) {
-        deliverFocusChange(previous, current, NOTIFY_MODE_NORMAL, false);
+        deliverFocusChange(previous, previous != null && previous.isRoot(), current,
+                current != null && current.isRoot(), NOTIFY_MODE_NORMAL, false);
     }
 
     /**
@@ -193,70 +193,184 @@ public final class EventDispatcher {
      *     A reports {@code FocusOut A / FocusIn A}, both Nonlinear
      */
     public void deliverFocusChange(XWindow previous, XWindow current, byte mode, boolean force) {
-        if (previous == current) {
+        deliverFocusChange(previous, previous != null && previous.isRoot(), current,
+                current != null && current.isRoot(), mode, force);
+    }
+
+    /**
+     * The whole rule, with the two states that follow the pointer named as such.
+     *
+     * <p><b>The root window is not PointerRoot, and a reference server was measured treating them
+     * differently</b> - {@code tools/FocusProbe} with {@code "focus A" "warp 50 50" "focus pointer"}
+     * and the same with {@code "focus root"} produce completely different events, and
+     * {@code GetInputFocus} answers {@code PointerRoot} for one and the root's own id for the other.
+     * PointerRoot means "the focus is the windows the pointer is inside"; the root window is a window
+     * like any other, and one that nothing can hold, so the two also differ in what they tell the
+     * pointer's windows - see {@link #pointerLeft} and {@link #pointerStillIn}, whose asymmetry is
+     * measured rather than derived.
+     *
+     * <p>Every event this sends was measured against Xvfb with {@code FocusProbe}, one sequence at a
+     * time. The sequences are in {@code XkbTest}'s sibling {@code FocusProbeTest}, which pins them.
+     */
+    public void deliverFocusChange(XWindow previous, boolean previousFollowsPointer,
+                                   XWindow current, boolean currentFollowsPointer,
+                                   byte mode, boolean force) {
+        boolean sameWindow = previous == current && previousFollowsPointer == currentFollowsPointer;
+        if (sameWindow) {
             if (!force || previous == null || previous.isRoot()) {
                 return;
             }
+        }
+        XWindow screenWindow = previous != null ? previous : current;
+        XWindow underPointer = screenWindow == null ? null
+                : server.inputFor(screenWindow.screen()).pointerWindow();
+
+        // The windows the pointer is inside, innermost first. A change that moves the focus into or
+        // out of the focus the pointer implies tells them so, with a detail of its own that says this
+        // is about the pointer and not about another window - the only way a client can tell "the
+        // focus moved into my subtree" from "the keyboard came to where the mouse is".
+        java.util.List<XWindow> chain = pointerChain(underPointer);
+        for (XWindow w : chain) {
+            if (pointerLeft(previous, previousFollowsPointer, w)
+                    && (sameWindow || !pointerStillIn(current, currentFollowsPointer, underPointer, w))) {
+                deliverFocusWindow(w, false, NOTIFY_POINTER, mode);
+            }
+        }
+
+        if (sameWindow) {
             // The two ends are one window, so there is no chain to walk: the reference sends the
             // pair against that window and nothing else - its own ancestors are not told, which the
             // ordinary path would do because there is no common ancestor above it to stop at.
             deliverFocusWindow(previous, false, NOTIFY_NONLINEAR, mode);
             deliverFocusWindow(previous, true, NOTIFY_NONLINEAR, mode);
-            return;
+        } else {
+            // The window's own side of the change. The root window does not *lose* the focus - it
+            // cannot look like it had it - so a focus leaving it reports nothing of its own, while a
+            // focus arriving on it is reported like any other window's (measured: an outgoing focus of
+            // C against an incoming root window reports {@code FocusOut C detail=Ancestor}).
+            XWindow arriving = currentFollowsPointer ? null : current;
+            // The root window does not *lose* the focus - it cannot look like it had it - so a focus
+            // leaving it reports nothing of its own, while a focus arriving on it is reported like any
+            // other window's. It is still the other end of the lattice for the detail, though: a
+            // focus going from the root window to A reports {@code FocusIn A detail=Ancestor}, which
+            // is measured, so the root has to be named to the detail and not to the event.
+            XWindow leavingEnd = previousFollowsPointer ? null : previous;
+            XWindow arrivingEnd = arriving;
+            XWindow leaving = leavingEnd != null && !leavingEnd.isRoot() ? leavingEnd : null;
+            XWindow common = commonAncestor(leaving != null ? leaving : leavingEnd, arrivingEnd);
+            if (leaving != null) {
+                // The window losing the focus, then its ancestors up to the one the two have in
+                // common: a toolkit wants to know the focus left its whole subtree, not only its
+                // leaf. Innermost first, so a menu hears about the leaf before the window that holds
+                // it.
+                deliverFocusWindow(leaving, false, focusDetail(leaving, arrivingEnd), mode);
+                for (XWindow w = leaving.parent(); w != null && w != common; w = w.parent()) {
+                    deliverFocusWindow(w, false, virtualDetail(w, arrivingEnd), mode);
+                }
+            }
+            if (arriving != null) {
+                // Outermost first on the way in, which is the other way round from the way out: a
+                // toolkit tracks focus by walking down into the window that gained it, and can only do
+                // that if the window holding the focus is named before the window inside it.
+                java.util.List<XWindow> in = new java.util.ArrayList<>();
+                for (XWindow w = arriving.parent(); w != null && w != common; w = w.parent()) {
+                    in.add(w);
+                }
+                for (int i = in.size() - 1; i >= 0; i--) {
+                    deliverFocusWindow(in.get(i), true, virtualDetail(in.get(i), leavingEnd), mode);
+                }
+                deliverFocusWindow(arriving, true, focusDetail(arriving, leavingEnd), mode);
+            }
         }
-        // PointerRoot is reported against the window the pointer is in, with a detail that says so:
-        // a client cannot be told anything by a window called "the pointer", and the window under
-        // the pointer is the one that can act on it. None is reported against nothing at all - the
-        // side that is losing the focus simply loses it.
-        XWindow screenWindow = previous != null ? previous : current;
-        XWindow underPointer = screenWindow == null ? null
-                : server.inputFor(screenWindow.screen()).pointerWindow();
-        XWindow leaving = previous == null ? null
-                : previous.isRoot() ? underPointer : previous;
-        XWindow arriving = current == null ? null
-                : current.isRoot() ? underPointer : current;
-        // The two can be the same window - the focus moving from PointerRoot to the window the
-        // pointer is already in, which is what a click-to-focus does - and that is not a no-op: a
-        // reference server was measured sending the whole pair, the window leaving the pointer and
-        // arriving under the focus. Treating it as a no-op leaves the client that asked for the
-        // focus never told it got it.
-        XWindow common = commonAncestor(leaving, arriving);
-        if (previous != null && previous.isRoot()) {
-            // PointerRoot: the keyboard is leaving the pointer, and every window holding the window
-            // the pointer is in is told so, each with the detail that says this is about the pointer
-            // rather than about another window.
-            for (XWindow w = leaving; w != null; w = w.parent()) {
-                deliverFocusWindow(w, false, NOTIFY_POINTER, mode);
+
+        // And the other half of the pointer's pair, outermost first like every other way in.
+        for (int i = chain.size() - 1; i >= 0; i--) {
+            XWindow w = chain.get(i);
+            if (!pointerArrived(current, currentFollowsPointer, w)) {
+                continue;
             }
-        } else if (leaving != null) {
-            // The window losing the focus, then its ancestors up to the one the two have in common:
-            // a toolkit wants to know the focus left its whole subtree, not only its leaf. Innermost
-            // first, so a menu hears about the leaf before the window that holds it.
-            deliverFocusWindow(leaving, false, focusDetail(leaving, arriving), mode);
-            for (XWindow w = leaving.parent(); w != null && w != common; w = w.parent()) {
-                deliverFocusWindow(w, false, virtualDetail(w, arriving), mode);
+            // The window the change arrived on is named by the ordinary pair above, and so is the one
+            // it left - except under PointerRoot, which tells the window the pointer is in even when
+            // that window is the one it just came from: measured, {@code "focus A" "warp 50 50"
+            // "focus pointer"} reports {@code FocusOut B / FocusIn A / FocusIn B}, and its own
+            // {@code FocusOut A} is not repeated as a FocusIn.
+            if (!currentFollowsPointer && current.isRoot() ? w == previous : w == current) {
+                continue;
             }
+            // A change *to* PointerRoot subtracts nothing here either: the window it is leaving is
+            // told the focus went to the pointer and that the pointer is still in it, both - measured,
+            // {@code "focus A" "warp 50 50" "focus pointer"} reports {@code FocusIn B} after
+            // {@code FocusIn A}.
+            if (!sameWindow && !currentFollowsPointer
+                    && pointerLeft(previous, previousFollowsPointer, w)) {
+                continue;
+            }
+            deliverFocusWindow(w, true, NOTIFY_POINTER, mode);
         }
-        if (current != null && current.isRoot()) {
-            // And the reverse, the same chain: the windows holding the one the pointer is in have
-            // the keyboard again. There may be none at all, when nothing has said where the pointer
-            // is yet.
-            for (XWindow w = arriving; w != null; w = w.parent()) {
-                deliverFocusWindow(w, true, NOTIFY_POINTER, mode);
-            }
-        } else if (arriving != null) {
-            // Outermost first on the way in, which is the other way round from the way out: a toolkit
-            // tracks focus by walking down into the window that gained it, and can only do that if
-            // the window holding the focus is named before the window inside it.
-            java.util.List<XWindow> chain = new java.util.ArrayList<>();
-            for (XWindow w = arriving.parent(); w != null && w != common; w = w.parent()) {
-                chain.add(w);
-            }
-            for (int i = chain.size() - 1; i >= 0; i--) {
-                deliverFocusWindow(chain.get(i), true, virtualDetail(chain.get(i), leaving), mode);
-            }
-            deliverFocusWindow(arriving, true, focusDetail(arriving, leaving), mode);
+    }
+
+    /** The windows the pointer is inside, innermost first, or an empty list when it is on the root. */
+    private java.util.List<XWindow> pointerChain(XWindow underPointer) {
+        java.util.List<XWindow> chain = new java.util.ArrayList<>();
+        for (XWindow w = underPointer; w != null; w = w.parent()) {
+            chain.add(w);
         }
+        return chain;
+    }
+
+    /**
+     * Whether a window of the pointer's chain is <em>giving up</em> the focus the pointer implies.
+     *
+     * <p>PointerRoot makes the whole chain the focus, and so does the root window - everything is
+     * inside it - which is why a change away from either reports the whole chain. For an ordinary
+     * window it is the windows really inside it, and not the window itself: the focus moving from a
+     * window to its child does not tell the parent's subtree that the focus left.
+     */
+    private boolean pointerLeft(XWindow focus, boolean followsPointer, XWindow window) {
+        if (focus == null) {
+            return false;
+        }
+        if (followsPointer || focus.isRoot()) {
+            return true;
+        }
+        // Strictly inside: XWindow.isAncestorOf counts the window itself, and the focus moving from
+        // a window to its child does not tell that window's own subtree that the focus left.
+        return focus != window && focus.isAncestorOf(window);
+    }
+
+    /**
+     * Whether the incoming focus takes a window of the pointer's chain in, which is what suppresses
+     * the FocusOut above: a window that is inside both ends of the change has not moved.
+     *
+     * <p><b>The one asymmetry in this rule, and it is measured.</b> Entries whose incoming focus is
+     * <em>PointerRoot</em> subtract nothing - {@code "focus A" "warp 50 50" "focus pointer"} reports
+     * the FocusOut for the window the pointer is in, and the same sequence with {@code "focus root"}
+     * does not. The window itself counts as inside the incoming focus unless it is the pointer's own
+     * window, which is what the second half of that comparison is: measured with
+     * {@code "focus root" "focus A"} and with {@code "focus A" "warp 150 150" "focus C"}.
+     */
+    private boolean pointerStillIn(XWindow focus, boolean followsPointer, XWindow underPointer,
+                                   XWindow window) {
+        if (focus == null || followsPointer) {
+            return false;
+        }
+        if (focus.isRoot()) {
+            return true;
+        }
+        // True for the windows inside the new focus, and for the new focus itself unless it is the
+        // pointer's own window - the window that is only now becoming the focus has not "stayed".
+        return focus.isAncestorOf(window) && !(window == focus && focus == underPointer);
+    }
+
+    /** Whether the incoming focus reports a window of the pointer's chain as having it. */
+    private boolean pointerArrived(XWindow focus, boolean followsPointer, XWindow window) {
+        if (focus == null) {
+            return false;
+        }
+        // The window itself included, unlike {@link #pointerLeft}: the window the focus arrives on
+        // is inside itself, and the caller takes it out again where the ordinary pair has already
+        // named it.
+        return followsPointer || focus.isRoot() || (focus != null && focus.isAncestorOf(window));
     }
 
     /**

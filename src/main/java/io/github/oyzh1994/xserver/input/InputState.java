@@ -134,6 +134,8 @@ public final class InputState implements DisplayBackend.InputSink {
     public static final int REVERT_TO_PARENT = 2;
 
     private XWindow inputFocus;
+    /** True when {@link #inputFocus} - always the root window then - means PointerRoot. */
+    private boolean focusIsPointerRoot;
     private int focusRevertTo = 1;   // RevertToPointerRoot
     private boolean focusSet;
 
@@ -240,27 +242,67 @@ public final class InputState implements DisplayBackend.InputSink {
         return inputFocus;
     }
 
+    /**
+     * Whether the focus is {@code PointerRoot} rather than the window {@link #inputFocus} names.
+     *
+     * <p>The two are different states and a client can tell them apart: {@code GetInputFocus} answers
+     * {@code PointerRoot} for one and the root window's own id for the other, and a key press goes to
+     * whatever the pointer is in for one and to the root window for the other. The root window is
+     * how both are stored here because it is a real window object; this flag is what separates them.
+     */
+    public boolean focusIsPointerRoot() {
+        return inputFocus != null && focusIsPointerRoot;
+    }
+
+    /** Sets the focus to a window, to {@code None} when the window is null, or to PointerRoot when it
+     * is the root - the reading every caller inside this class wants. A client's own request says
+     * which of the two it meant; see the three argument form. */
     public void setInputFocus(XWindow window, int revertTo) {
+        setInputFocus(window, revertTo, window != null && window.isRoot());
+    }
+
+    /**
+     * The same, with the two states that are not an ordinary window spelled out.
+     *
+     * @param window the window, or null for None, or the root for either of the states below
+     * @param pointerRoot true when the focus follows the pointer rather than naming that window
+     */
+    public void setInputFocus(XWindow window, int revertTo, boolean pointerRoot) {
         XWindow previous = inputFocus;
+        boolean previousFollows = focusIsPointerRoot();
         // The three states are kept apart, because a client can tell them apart: null is None (the
-        // keyboard goes nowhere), the root is PointerRoot (it goes to whatever the pointer is in),
-        // and anything else is a window. Folding None into PointerRoot would report a focus the
-        // client did not ask for.
+        // keyboard goes nowhere), the root with this flag is PointerRoot (it goes to whatever the
+        // pointer is in), the root without it is the root window, and anything else is a window.
+        // Folding any two of them together would report a focus the client did not ask for.
         this.inputFocus = window;
+        this.focusIsPointerRoot = pointerRoot && window != null && window.isRoot();
         this.focusRevertTo = revertTo;
         this.focusSet = true;
         if (log.isDebugEnabled()) {
-            log.debug("focus set to {}, was {}, reverting to {}", describe(inputFocus),
-                    describe(previous), revertTo);
+            log.debug("focus set to {}, was {}, reverting to {}",
+                    describeFocus(inputFocus, focusIsPointerRoot), describeFocus(previous,
+                            previousFollows), revertTo);
         }
         // A client that asks for the focus is waiting to be told it got it, and this is the only
         // thing that tells it. While a keyboard grab is held the change is reported as made *by*
         // the grab, which is what a toolkit reads the mode for: measured with tools/FocusProbe, a
         // reference server reports every focus change made inside a grab as NotifyWhileGrabbed.
-        server.events().deliverFocusChange(previous, inputFocus,
+        server.events().deliverFocusChange(previous, previousFollows, inputFocus,
+                focusIsPointerRoot(),
                 keyboardGrab == null ? EventDispatcher.NOTIFY_MODE_NORMAL
                         : EventDispatcher.NOTIFY_MODE_WHILE_GRABBED,
                 false);
+    }
+
+    /** A focus state's name for a log line: the two that are not a window say so. */
+    private static String describeFocus(XWindow window, boolean pointerRoot) {
+        if (window == null) {
+            return "nowhere";
+        }
+        if (pointerRoot) {
+            return "the pointer";
+        }
+        return "0x" + Integer.toHexString(window.id()) + (window.isRoot() ? " (the root window)" : "");
     }
 
     private static String describe(XWindow window) {
@@ -337,8 +379,8 @@ public final class InputState implements DisplayBackend.InputSink {
             }
             return;
         }
-        server.events().deliverFocusChange(inputFocus, grab.window(),
-                EventDispatcher.NOTIFY_MODE_GRAB, true);
+        server.events().deliverFocusChange(inputFocus, focusIsPointerRoot(), grab.window(),
+                grab.window().isRoot(), EventDispatcher.NOTIFY_MODE_GRAB, true);
     }
 
     /**
@@ -350,8 +392,8 @@ public final class InputState implements DisplayBackend.InputSink {
      * way back from the grab window to the new window rather than to the old one.
      */
     private void reportKeyboardGrabEnd(Grab grab) {
-        server.events().deliverFocusChange(grab.window(), inputFocus,
-                EventDispatcher.NOTIFY_MODE_UNGRAB, true);
+        server.events().deliverFocusChange(grab.window(), grab.window().isRoot(), inputFocus,
+                focusIsPointerRoot(), EventDispatcher.NOTIFY_MODE_UNGRAB, true);
     }
 
     public void clientDisconnected(ClientConnection client) {
@@ -1283,9 +1325,11 @@ public final class InputState implements DisplayBackend.InputSink {
             // hand them to a client that never asked for them.
             return null;
         }
-        if (inputFocus.isRoot()) {
+        if (focusIsPointerRoot) {
             return pointerWindow == null ? screen.root() : pointerWindow;
         }
+        // The root window focused explicitly is not PointerRoot: the keys go to the root window and
+        // stay there, where a client that focused it (rather than asking for PointerRoot) put them.
         return inputFocus;
     }
 
@@ -1312,13 +1356,18 @@ public final class InputState implements DisplayBackend.InputSink {
         }
         XWindow previous = inputFocus;
         inputFocus = revertTarget(previous);
+        // Only RevertToPointerRoot leaves the focus following the pointer; RevertToParent landing on
+        // the root leaves it on the root *window*, which is a different state - see the field.
+        focusIsPointerRoot = focusRevertTo != REVERT_TO_PARENT && inputFocus != null
+                && inputFocus.isRoot();
         // The focus moved, so both sides of the move are told. The window that was holding it is
         // named as it was even though it is on its way out: being told the focus left is the half
         // its client can still act on.
-        server.events().deliverFocusChange(previous, inputFocus);
+        server.events().deliverFocusChange(previous, false, inputFocus, focusIsPointerRoot,
+                EventDispatcher.NOTIFY_MODE_NORMAL, false);
         if (log.isDebugEnabled()) {
             log.debug("focus reverted from {} to {}: 0x{} went away", describe(previous),
-                    describe(inputFocus), Integer.toHexString(window.id()));
+                    describeFocus(inputFocus, focusIsPointerRoot), Integer.toHexString(window.id()));
         }
     }
 
