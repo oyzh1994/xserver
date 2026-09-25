@@ -56,9 +56,11 @@ what `xwd` needs.
 `vnc` presents no window either, and serves the screen to VNC clients instead:
 
 ```sh
+# serve the whole screen on 5900, to anyone who connects
 mvn exec:java -Dexec.args="--backend vnc --vnc-port 5900 --geometry 1300x800"
-printf 'password
-' > ~/.xserver-vnc-pass     # only if you want clients to type one
+
+# or ask clients for a password (one line in the file; macOS's Screen Sharing requires one)
+echo 'my-password' > ~/.xserver-vnc-pass
 mvn exec:java -Dexec.args="--backend vnc --vnc-password-file ~/.xserver-vnc-pass"
 ```
 
@@ -362,8 +364,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   `save_under` is **not** implemented - measured, and the reference does not implement it either.
 - **The VNC backend sends raw frames, and nothing else yet.** `--backend vnc` serves the whole
   screen (and so implies `--single-window`) to any VNC client as uncompressed damage rectangles, with
-  RFB's `None` security or a password from a file. Not there: the compressed encodings (`ZRLE`,
-  `Tight`), a clipboard between the viewer and the X selections, the cursor's *shape* (a viewer draws
+  RFB's `None` security or a password from a file, and **the clipboard goes both ways** - a viewer's
+  copy lands in the X `CLIPBOARD` selection and on the Mac, and a copy in the session reaches the
+  viewer. Not there: the compressed encodings (`ZRLE`, `Tight`), the cursor's *shape* (a viewer draws
   its own pointer), and the browser path - a WebSocket and a canvas are a project of their own. A
   viewer on the same machine or a LAN is what raw frames are for.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and

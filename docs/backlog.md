@@ -2300,7 +2300,14 @@ whatever covered the window it went into - and recorded its drawn region nowhere
   bridge in front of the TCP port, not a WebSocket server inside this one. It answers the item's
   question - "can a browser watch this screen" - with yes; building the WebSocket into the server is
   still on the list below.
-- `mvn test` 282/282.
+- **The clipboard, both ways, out of process** (2026-09-26): with `--backend vnc` running, a viewer
+  that sent `ClientCutText` "from the viewer" had it read back out of the X `CLIPBOARD` selection by
+  the kit's own `ClipboardProbe read`, and a `ClipboardProbe write` of "from the X session" arrived
+  at that viewer as `ServerCutText`. A viewer's copy goes down the path an X client's copy takes -
+  into the host's pasteboard and out again - so "somebody copied on the Mac" and "a viewer copied"
+  cannot fight over the selection, and the Mac's clipboard gets the viewer's text the way every
+  remote-desktop client makes it.
+- `mvn test` 283/283.
 
 **What is not done, and what each would take.**
 
@@ -2311,10 +2318,6 @@ whatever covered the window it went into - and recorded its drawn region nowhere
 - **The browser path** (WebSocket + canvas) is a second presentation of the same framebuffer and is
   not attempted. The VNC half answers "watch and drive this display from another machine"; a browser
   needs a WebSocket server and a page, and that is a project of its own.
-- **The RFB clipboard** (`ClientCutText`/`ServerCutText`): a viewer's clipboard is read and dropped,
-  and the host clipboard bridge is off for this backend (`HostClipboard` is the *Mac's* pasteboard,
-  which is a different bridge). Copying text between a viewer and the X session therefore does nothing
-  yet, which for a forwarded terminal is the first thing a user will miss.
 - **The `Cursor` pseudo-encoding**: the X cursor's *shape* is not sent, so a viewer shows its own
   pointer and an I-beam over a text field looks like an arrow.
 - **One port for the whole screen**, and therefore one screen: per-client mode would need a port per

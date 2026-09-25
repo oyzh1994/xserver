@@ -64,6 +64,16 @@ final class RfbSession implements Runnable {
     private static final int SECURITY_NONE = 1;
     private static final int SECURITY_VNC = 2;
 
+    /**
+     * The longest clipboard text this server will read from a client.
+     *
+     * <p>A length field is the client's word, and a client that says "four gigabytes" must not make
+     * the server try to allocate them: measured while writing the live check, where a client whose
+     * padding was one byte short had its text length read from the wrong offset. 16 MB is far more
+     * than a clipboard, and a client that claims more is told so rather than believed.
+     */
+    private static final int MAX_CUT_TEXT_BYTES = 16 * 1024 * 1024;
+
     /** Client to server message types. */
     private static final int SET_PIXEL_FORMAT = 0;
     private static final int SET_ENCODINGS = 2;
@@ -71,6 +81,15 @@ final class RfbSession implements Runnable {
     private static final int KEY_EVENT = 4;
     private static final int POINTER_EVENT = 5;
     private static final int CLIENT_CUT_TEXT = 6;
+
+    /**
+     * How long the message loop waits for a client's next byte before it looks at its own pending
+     * work. It is what lets a session that is idle - no update request outstanding, so its thread is
+     * blocked reading - still deliver a {@code ServerCutText} within half a second (D2's clipboard).
+     * The timeout is set for the first byte of a message and cleared for the body, so a client that
+     * dribbles a message out can never have it split by a timeout.
+     */
+    private static final int IDLE_POLL_MILLIS = 500;
 
     /** The one encoding this server sends, and the pseudo-encoding a resize is told with. */
     private static final int ENCODING_RAW = 0;
@@ -109,6 +128,7 @@ final class RfbSession implements Runnable {
         }
     }
 
+    private final VncBackend backend;
     private final Socket socket;
     private final Screen screen;
     private final DisplayBackend.InputSink input;
@@ -135,6 +155,8 @@ final class RfbSession implements Runnable {
     private final Object lock = new Object();
     private Rectangle pending;
     private boolean resized;
+    /** Clipboard text waiting to be sent to this viewer, from the bridge's listener. */
+    private String pendingCutText;
 
     private volatile boolean running = true;
 
@@ -145,8 +167,9 @@ final class RfbSession implements Runnable {
 
     private byte[] pixels = new byte[0];
 
-    RfbSession(Socket socket, Screen screen, DisplayBackend.InputSink input, String name,
-               String password) throws IOException {
+    RfbSession(VncBackend backend, Socket socket, Screen screen, DisplayBackend.InputSink input,
+               String name, String password) throws IOException {
+        this.backend = backend;
         this.socket = socket;
         this.screen = screen;
         this.input = input;
@@ -186,6 +209,21 @@ final class RfbSession implements Runnable {
     void addDamage(Rectangle damage) {
         synchronized (lock) {
             pending = pending == null ? new Rectangle(damage) : pending.union(damage);
+            lock.notifyAll();
+        }
+    }
+
+    /**
+     * The clipboard changed; this viewer is told, from <em>its own</em> thread.
+     *
+     * <p>Queued rather than written here because the caller is the clipboard bridge, holding the
+     * server lock: a write to a socket that a viewer has stopped reading would block the clipboard
+     * for every client. The session's thread picks it up on its next wake-up - which is also why a
+     * session that is waiting for damage is woken by this.
+     */
+    void setClipboardText(String text) {
+        synchronized (lock) {
+            pendingCutText = text == null ? "" : text;
             lock.notifyAll();
         }
     }
@@ -349,7 +387,18 @@ final class RfbSession implements Runnable {
 
     private void serve() throws IOException {
         while (running) {
-            int type = in.read();
+            socket.setSoTimeout(IDLE_POLL_MILLIS);
+            int type;
+            try {
+                type = in.read();
+            } catch (java.net.SocketTimeoutException idle) {
+                // Nothing from the client, and that is the moment to send what is waiting: a
+                // clipboard change is not damage, so it arrives whether or not an update was asked
+                // for.
+                flushPendingCutText();
+                continue;
+            }
+            socket.setSoTimeout(0);                      // the rest of the message is not on a clock
             if (type < 0) {
                 return;
             }
@@ -444,7 +493,8 @@ final class RfbSession implements Runnable {
         Rectangle send;
         synchronized (lock) {
             if (incremental) {
-                while (running && !resized && (pending == null || pending.intersection(asked).isEmpty())) {
+                while (running && !resized && pendingCutText == null
+                        && (pending == null || pending.intersection(asked).isEmpty())) {
                     try {
                         lock.wait(1000);             // a wake-up is also how a closed socket is noticed
                     } catch (InterruptedException e) {
@@ -454,6 +504,25 @@ final class RfbSession implements Runnable {
                 }
                 if (!running) {
                     return;
+                }
+                if (pendingCutText != null) {
+                    // A clipboard change is not damage: it is sent whatever the area asked about,
+                    // and then the request waits for damage again.
+                    flushPendingCutText();
+                    if (pending == null || pending.intersection(asked).isEmpty()) {
+                        while (running && !resized && pendingCutText == null
+                                && (pending == null || pending.intersection(asked).isEmpty())) {
+                            try {
+                                lock.wait(1000);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                return;
+                            }
+                        }
+                        if (!running) {
+                            return;
+                        }
+                    }
                 }
                 if (resized) {
                     resized = false;
@@ -520,15 +589,54 @@ final class RfbSession implements Runnable {
         }
     }
 
+    /**
+     * {@code ClientCutText}: the viewer copied something, and it belongs in the X clipboard.
+     *
+     * <p>It goes to the server's clipboard bridge, which is where the X selection's text lives; the
+     * bridge then serves it to X clients and the Mac gets it too. With no bridge - a server without
+     * a host pasteboard, or {@code --no-clipboard} - the text has nowhere to go and says so at debug
+     * level rather than being silently dropped.
+     */
     private void clientCutText() throws IOException {
         in.readNBytes(3);                            // padding
         int length = readInt();
-        byte[] text = new byte[Math.max(0, length)];
+        if (length < 0 || length > MAX_CUT_TEXT_BYTES) {
+            throw new IOException("a clipboard of " + length + " bytes is not one this server will"
+                    + " read (at most " + MAX_CUT_TEXT_BYTES + ")");
+        }
+        byte[] text = new byte[length];
         in.readNBytes(text, 0, text.length);
-        // The host clipboard bridge is not wired to this: a viewer's clipboard and the X selection
-        // are two bridges away from each other (backlog D2 says so, and the C4 bridge is the X side).
-        log.debug("VNC client {} sent {} byte(s) of clipboard text, which this server does not bridge",
-                peer(), text.length);
+        String copied = new String(text, java.nio.charset.StandardCharsets.UTF_8);
+        java.util.function.Consumer<String> sink = backend.clipboardSink();
+        if (sink == null) {
+            log.debug("VNC client {} copied {} byte(s), and this server has no clipboard to put"
+                    + " them in", peer(), text.length);
+            return;
+        }
+        log.debug("VNC client {} copied {} byte(s) into the X clipboard", peer(), text.length);
+        sink.accept(copied);
+    }
+
+    /** Sends a queued clipboard change, if there is one. Called from the session's own thread. */
+    private void flushPendingCutText() throws IOException {
+        String text;
+        synchronized (lock) {
+            text = pendingCutText;
+            pendingCutText = null;
+        }
+        if (text != null) {
+            sendCutText(text);
+        }
+    }
+
+    /** {@code ServerCutText}: what the clipboard holds now, so the viewer can paste it. */
+    private void sendCutText(String text) throws IOException {
+        byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        out.write(3);                                // ServerCutText
+        out.write(new byte[3]);                      // padding
+        writeInt(bytes.length);
+        out.write(bytes);
+        out.flush();
     }
 
     // ------------------------------------------------------------------

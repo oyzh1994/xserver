@@ -99,6 +99,16 @@ public final class ClipboardBridge {
     /** Text an X client copied, waiting to be written to the host by the poll thread. */
     private String outgoing;
 
+    /**
+     * Told whenever the text the selection serves changes, with the new text or null.
+     *
+     * <p>The hook the VNC backend uses (D2): a viewer has to be sent what X copied, and this is the
+     * one place that knows the selection's text has changed - whichever direction it came from. It
+     * is called <b>under the server lock</b>, so an implementation must not block: queue the text and
+     * let the thread that owns the socket send it.
+     */
+    private java.util.function.Consumer<String> listener;
+
     /** The fetch in flight: whose data was asked for, with which target, and how it is going. */
     private int fetchWindow;
     private int fetchTarget;
@@ -134,6 +144,33 @@ public final class ClipboardBridge {
      * piece of user interface, and the host window sizes itself to the client's mapped windows - a
      * visible bridge window would be a window the user never asked for.
      */
+    /** The hook a backend registers to hear about clipboard changes; see {@link #listener}. */
+    public void setListener(java.util.function.Consumer<String> listener) {
+        this.listener = listener;
+    }
+
+    /**
+     * Clipboard text from outside the X session - a VNC viewer's copy (D2).
+     *
+     * <p>It goes down the path an X client's copy takes: the poll thread writes it to the host's
+     * pasteboard, and from there the bridge serves it to X clients the way it serves anything else.
+     * That is deliberate and not a shortcut - the host's pasteboard remains the single source the
+     * bridge serves from, so "somebody copied on the Mac" and "a viewer copied" cannot fight over
+     * the selection, and a viewer's copy reaching the Mac's clipboard is what every remote-desktop
+     * client does.
+     */
+    public void remoteCopy(String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        server.lockServer();
+        try {
+            outgoing = text;
+        } finally {
+            server.unlockServer();
+        }
+    }
+
     public void start() {
         server.resources().add(window);
         running = true;
@@ -298,6 +335,9 @@ public final class ClipboardBridge {
                 // Recorded as the last text seen, so the comparison below does not read it back as
                 // an outside change and steal the selection from the client that just copied.
                 hostText = toWrite;
+                if (listener != null) {
+                    listener.accept(toWrite);
+                }
             } finally {
                 server.unlockServer();
             }
@@ -314,9 +354,15 @@ public final class ClipboardBridge {
                     // application that finds no owner leaves what the user had alone.
                     hostText = null;
                     releaseOwnership();
+                    if (listener != null) {
+                        listener.accept(null);
+                    }
                 }
             } else if (!now.equals(hostText)) {
                 hostText = now;
+                if (listener != null) {
+                    listener.accept(now);
+                }
                 if (fetchWindow == 0) {
                     // The host changed and it was not this bridge that changed it, so somebody
                     // copied on the Mac: take the selection, or an X paste would be answered by the

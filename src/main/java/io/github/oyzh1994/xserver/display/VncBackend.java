@@ -55,6 +55,14 @@ public final class VncBackend implements DisplayBackend {
     private volatile int displayNumber;
 
     /**
+     * Where a viewer's clipboard text goes - the server's clipboard bridge - or null when there is
+     * no bridge (no host pasteboard, or {@code --no-clipboard}). Set at startup, after the bridge
+     * exists; a session reads it when a client sends text, so a viewer that connects before the
+     * wiring is done still finds it.
+     */
+    private volatile java.util.function.Consumer<String> clipboardSink;
+
+    /**
      * @param port         the TCP port to listen on, or 0 for any free one (which a test wants)
      * @param title        what the client's window will say it is connected to
      * @param loopbackOnly true when the server was told to listen on loopback only ({@code --local})
@@ -111,6 +119,28 @@ public final class VncBackend implements DisplayBackend {
         return boundPort;
     }
 
+    /** Where a viewer's clipboard text is handed; see {@link #clipboardSink}. */
+    public void setClipboardSink(java.util.function.Consumer<String> sink) {
+        this.clipboardSink = sink;
+    }
+
+    java.util.function.Consumer<String> clipboardSink() {
+        return clipboardSink;
+    }
+
+    /**
+     * The clipboard's text changed, from a client's copy or from the Mac's. Every viewer is told.
+     *
+     * <p>Called from the clipboard bridge under the <b>server lock</b>, so this only hands each
+     * session the text - the session's own thread does the writing, which is the whole shape of
+     * this backend: nobody waits for a viewer.
+     */
+    public void clipboardTextChanged(String text) {
+        for (RfbSession session : sessions) {
+            session.setClipboardText(text);
+        }
+    }
+
     @Override
     public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
         if (damage == null || sessions.isEmpty()) {
@@ -158,7 +188,7 @@ public final class VncBackend implements DisplayBackend {
                 // The name a viewer puts in its window: the X display it is watching, not the
                 // screen's index - "xserver :96" is what a user recognises, and the index is 0 for
                 // the only screen this backend serves.
-                RfbSession session = new RfbSession(client, screen, input,
+                RfbSession session = new RfbSession(this, client, screen, input,
                         title + " :" + displayNumber, password);
                 sessions.add(session);
                 Thread thread = new Thread(() -> {

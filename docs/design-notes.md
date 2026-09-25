@@ -1192,9 +1192,25 @@ would agree with it on any mistake they shared. Apple's Screen Sharing is why it
 prompts for a password whatever the server offers, so a `None` server cannot be reached from the Mac
 it runs on.
 
-**What is not there** (the item keeps the list): the compressed encodings, the browser path, the RFB
-clipboard, the `Cursor` pseudo-encoding, and any colour-depth reduction. Raw frames are what this
-sends, and a viewer on the same machine or a LAN is what that is for.
+**The clipboard is the same bridge as the Mac's**, which is why it is wired where it is rather than
+written again (D2). A viewer's `ClientCutText` is handed to `ClipboardBridge.remoteCopy`, which is the
+path an X client's copy takes: it goes to the host's pasteboard, and the bridge serves it to the X
+session from there. That keeps one source of truth for "what the clipboard holds", so a copy on the
+Mac and a copy in a viewer cannot fight over the selection, and it makes a viewer's copy appear on the
+Mac the way every remote-desktop client does. The other direction is the bridge's listener: whenever
+the text it serves changes, every viewer is sent `ServerCutText`.
+
+Two things about that are worth keeping. **The listener runs under the server lock**, so a session
+only *queues* the text - its own thread writes it, which is this backend's whole shape. And that
+thread is usually blocked reading its socket, so the message loop waits for the client's next byte
+with a **half-second timeout** and uses the wake-up to send what is queued; the timeout is on the
+first byte of a message only and cleared for its body, so a client that dribbles a message out cannot
+have it split. Measured live: `ClipboardProbe read` showed a viewer's text in the X selection, and a
+`ClipboardProbe write` arrived at the viewer as `ServerCutText`.
+
+**What is not there** (the item keeps the list): the compressed encodings, the browser path, the
+`Cursor` pseudo-encoding, and any colour-depth reduction. Raw frames are what this sends, and a viewer
+on the same machine or a LAN is what that is for.
 
 ## Deliberately not done
 

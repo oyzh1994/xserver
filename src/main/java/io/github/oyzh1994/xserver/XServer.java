@@ -435,7 +435,15 @@ public final class XServer {
      * nobody asked for.
      */
     private void startClipboardBridge() {
-        if (options.noClipboard() || presentsNoWindowHere()) {
+        if (options.noClipboard()) {
+            return;
+        }
+        // A window on this machine has the Mac's own pasteboard as its other end. A VNC server (D2)
+        // has no window but does have viewers, and they want the same thing in the other direction -
+        // so it gets the bridge too, wired up in both directions below.
+        DisplayBackend window = masterSession.backend();
+        boolean vnc = window instanceof io.github.oyzh1994.xserver.display.VncBackend;
+        if (presentsNoWindowHere() && !vnc) {
             return;
         }
         HostClipboard host = HostClipboard.open();
@@ -493,8 +501,18 @@ public final class XServer {
         }
         clipboard = new ClipboardBridge(this, host);
         clipboard.start();
+        // A VNC server has no window but does have viewers, and they are the other end of the same
+        // clipboard: X -> viewers is the bridge's listener, viewers -> X is its remoteCopy. Wired
+        // here rather than in the caller so that a test (or an embedder) that supplies its own host
+        // clipboard gets the same behaviour.
+        DisplayBackend window = masterSession.backend();
+        if (window instanceof io.github.oyzh1994.xserver.display.VncBackend vncBackend) {
+            clipboard.setListener(vncBackend::clipboardTextChanged);
+            vncBackend.setClipboardSink(clipboard::remoteCopy);
+        }
         return clipboard;
     }
+
 
     public ScreenSession openClientScreen(ClientConnection client) {
         Screen privateScreen = createScreen(0);

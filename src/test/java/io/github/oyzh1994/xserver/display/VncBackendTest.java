@@ -2,6 +2,7 @@ package io.github.oyzh1994.xserver.display;
 
 import io.github.oyzh1994.xserver.ServerOptions;
 import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.clipboard.HostClipboard;
 import io.github.oyzh1994.xserver.test.RawXClient;
 import org.junit.jupiter.api.Test;
 
@@ -149,6 +150,46 @@ class VncBackendTest {
     }
 
     /**
+     * A viewer's copy lands in the X clipboard, and X's copy lands in the viewer's.
+     *
+     * <p>Both directions go through the server's clipboard bridge - the same one the Mac's pasteboard
+     * uses (C4) - so what this pins is the wiring: a viewer's {@code ClientCutText} must reach the
+     * bridge, and the bridge telling the server that the clipboard changed must reach every viewer as
+     * {@code ServerCutText}. The host pasteboard is a fake here for the same reason the C4 tests use
+     * one: a test that rearranges whatever the person running it had copied is a test that fails for
+     * reasons of its own.
+     */
+    @Test
+    void theClipboardGoesBothWaysBetweenAViewerAndTheXSession() throws Exception {
+        try (Server server = new Server()) {
+            FakeClipboard host = new FakeClipboard();
+            host.setText("the host's own text");
+            server.xserver.startClipboardBridge(HostClipboard.of(host));
+
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 100, 0xFFFFFF);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+
+                // The viewer copies: the X clipboard serves it, so a client pasting gets it.
+                viewer.cutText("from the viewer");
+                assertEquals("from the viewer", awaitPaste(client, window, "from the viewer"),
+                        "what the viewer copied should be pasted in the X session");
+                assertEquals("from the viewer", host.text(),
+                        "and the Mac's clipboard should have it too - that is the path it takes");
+
+                // And X's copy goes the other way, as ServerCutText.
+                copy(client, window, "from the X session");
+                assertEquals("from the X session", viewer.readCutText(),
+                        "what a client copied should reach the viewer");
+            }
+        }
+    }
+
+    /**
      * A client that speaks **3.3**, which is what macOS Screen Sharing announces.
      *
      * <p>Found by the live check, and it is the branch no test covered: 3.3 has no security-type
@@ -269,10 +310,10 @@ class VncBackendTest {
             }
             xserver = new XServer(ServerOptions.parse(password == null
                     ? new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                            "--no-unix", "--geometry", "320x240"}
+                            "--no-unix", "--geometry", "320x240", "--no-clipboard"}
                     : new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
                             "--no-unix", "--geometry", "320x240", "--vnc-password-file",
-                            passwordFile.toString()}));
+                            passwordFile.toString(), "--no-clipboard"}));
             xserver.start();
             xserver.startEventLoop();
             screen = xserver.screen();
@@ -287,6 +328,108 @@ class VncBackendTest {
         @Override
         public void close() {
             xserver.stop();
+        }
+    }
+
+    /**
+     * Pastes through an X client until the clipboard serves {@code expected}.
+     *
+     * <p>Waiting for the *text* and not for "something": the clipboard already has the host's
+     * contents when the test starts, so the first paste answers with those - and an assertion on the
+     * first non-empty answer passes while testing nothing at all.
+     */
+    private static String awaitPaste(RawXClient client, int window, String expected)
+            throws Exception {
+        long deadline = System.currentTimeMillis() + 5000;
+        String text = null;
+        while (System.currentTimeMillis() < deadline) {
+            text = paste(client, window);
+            if (expected.equals(text)) {
+                return text;
+            }
+            Thread.sleep(50);
+        }
+        return text;
+    }
+
+    private static String paste(RawXClient client, int window) throws IOException {
+        int property = client.internAtom("XSERVER_VNC_TEST_DATA");
+        client.convertSelection(window, client.internAtom("CLIPBOARD"),
+                client.internAtom("UTF8_STRING"), property, 0);
+        client.flush();
+        byte[] notify = null;
+        long deadline = System.currentTimeMillis() + 3000;
+        while (notify == null && System.currentTimeMillis() < deadline) {
+            byte[] event = client.readEvent();
+            if (event != null && (event[0] & 0x7F) == 31) {
+                notify = event;
+            }
+        }
+        if (notify == null || RawXClient.readInt(notify, 20) == 0) {
+            return "";
+        }
+        byte[] reply = client.getProperty(window, property, 0, true);
+        int length = RawXClient.readInt(reply, 16) * (reply[1] & 0xFF) / 8;
+        return new String(reply, 32, length, StandardCharsets.UTF_8);
+    }
+
+    /** Copies from inside the X session: take the selection and answer the bridge's fetch. */
+    private static void copy(RawXClient client, int window, String text) throws IOException {
+        int selection = client.internAtom("CLIPBOARD");
+        client.setSelectionOwner(window, selection, 0);
+        client.flush();
+        long deadline = System.currentTimeMillis() + 3000;
+        while (System.currentTimeMillis() < deadline) {
+            byte[] event = client.readEvent();
+            if (event == null) {
+                continue;
+            }
+            if ((event[0] & 0x7F) == 30 && RawXClient.readInt(event, 16) == selection) {
+                int requestor = RawXClient.readInt(event, 12);
+                int target = RawXClient.readInt(event, 20);
+                int property = RawXClient.readInt(event, 24);
+                client.setStringProperty(requestor, property, target, text);
+                client.flush();
+                client.sendSelectionNotify(requestor, 0, requestor, selection, target, property);
+                client.flush();
+                return;
+            }
+        }
+    }
+
+    /** The host clipboard the test owns, so the suite never touches the Mac's pasteboard. */
+    private static final class FakeClipboard extends java.awt.datatransfer.Clipboard {
+
+        private String text;
+
+        FakeClipboard() {
+            super("xserver-vnc-test");
+        }
+
+        synchronized String text() {
+            return text;
+        }
+
+        /** What the test puts on the "Mac's clipboard" before the bridge starts polling it. */
+        synchronized void setText(String text) {
+            this.text = text;
+        }
+
+        @Override
+        public synchronized void setContents(java.awt.datatransfer.Transferable contents,
+                                             java.awt.datatransfer.ClipboardOwner owner) {
+            try {
+                text = contents == null ? null
+                        : (String) contents.getTransferData(
+                                java.awt.datatransfer.DataFlavor.stringFlavor);
+            } catch (Exception e) {
+                text = null;
+            }
+        }
+
+        @Override
+        public synchronized java.awt.datatransfer.Transferable getContents(Object requestor) {
+            return text == null ? null : new java.awt.datatransfer.StringSelection(text);
         }
     }
 
@@ -431,6 +574,38 @@ class VncBackendTest {
             writeU16(out, 0xFFFF);
             out.flush();
         }
+
+        /** {@code ClientCutText}: this viewer copied something. */
+        void cutText(String text) throws IOException {
+            byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
+            out.write(6);
+            out.write(new byte[3]);
+            writeInt(out, bytes.length);
+            out.write(bytes);
+            out.flush();
+        }
+
+        /** {@code ServerCutText}, which is how the server tells this viewer the clipboard changed. */
+        String readCutText() throws IOException {
+            while (true) {
+                int type = in.read();
+                if (type < 0) {
+                    throw new EOFException("the server closed the connection");
+                }
+                if (type == 3) {
+                    readBytes(3);
+                    int length = readInt();
+                    return new String(readBytes(length), StandardCharsets.UTF_8);
+                }
+                if (type == 0) {                         // an update we are not waiting for
+                    readBytes(1);
+                    int rectangles = (readBytes(2)[0] << 8) | 0;
+                    continue;
+                }
+                throw new IOException("unexpected RFB message " + type);
+            }
+        }
+
 
         void pointer(int buttonMask, int x, int y) throws IOException {
             out.write(5);
