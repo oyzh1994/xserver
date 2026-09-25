@@ -190,6 +190,12 @@ on its top-level window (`_NET_WM_NAME` or `WM_NAME`, and `_NET_WM_ICON`), and d
 resizes the client's window, which is told with a `ConfigureNotify`. A resize is capped at the
 screen, since the framebuffer is not resized with it.
 
+It also comes to the front by itself when an application arrives: the first top-level window a
+client maps raises the frame, once per client and only after a frame has been shown, so starting a
+forwarded application while something else is frontmost does not leave its window grey and
+keyboardless behind it. A menu or a tooltip - anything `override_redirect` - is not a reason to take
+the front away from whatever the user is doing.
+
 Verified against real clients: `xdpyinfo`, `xwininfo`, `xprop`, `xlsclients`, `xwd`, `xeyes`,
 `xlogo`, `xclock`, `xcalc`, `xmessage`, `xterm` with core fonts and with Xft (`-fa`, which needs
 RENDER), and `twm` as a window manager.

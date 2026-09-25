@@ -132,6 +132,23 @@ Two platform details were forced by measurement rather than design:
 The client is free to refuse - a window with a fixed size keeps its size - and the frame is then
 simply larger than what it frames.
 
+**The frame comes forward when an application arrives** (C2). Without it a forwarded application
+started while something else was frontmost stayed behind that window with a grey title bar and no
+keyboard - and, because macOS ignores a background application's cursor changes, with the platform
+pointer still visible beside the sprite. The raise happens on the client's *first* top level window,
+once per session, and only after a frame has been shown: the two conditions are what keep it from
+being a window that takes the front at every popup or arrives as an empty frame. Both live in the
+tick (`ScreenSession.raisePending` and `framePresented`), because that is the only thread that
+touches a backend, and the raise itself is the `raise()` the urgency hint already used.
+
+**One measurement worth writing down**: this is *not* observable in the test bed. With IDEA
+frontmost and a client launched, the host window comes forward and the frontmost *application*
+becomes the server's own process - **with the raise disabled as well**. A JavaFX stage shown by a
+process that is opening its first window activates its application by itself, so the two runs agree
+and the difference this item is about (`lsappinfo front`, and `tools/host-windows.c`'s order) cannot
+be produced here by removing the fix. What the tests pin is the part that can be: the order (a
+`present` before the raise) and the once-only rules.
+
 ## The display tick owns the windows
 
 `XServer.eventLoop` runs on its own non-daemon thread and is the only thread that opens or presents

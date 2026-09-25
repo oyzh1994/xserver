@@ -147,16 +147,20 @@ class WindowStateTest {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = mapWindow(client);
             TestWindow frame = server.awaitWindow().awaitInput();
+            // The client's first window is itself a raise (C2 - the frame comes forward when an
+            // application arrives), so the hint is measured as a *change* rather than from zero.
+            Thread.sleep(500);
+            int before = frame.raises.get();
 
             client.setUrgency(window, true);
             client.flush();
-            assertTrue(await(() -> frame.raises.get() == 1),
+            assertTrue(await(() -> frame.raises.get() == before + 1),
                     "a client asking for attention gets the window brought forward");
 
             // The same hint, still set, a second later: the frame is already there, and a window
             // that raises itself every frame is a window the user cannot get away from.
             Thread.sleep(500);
-            assertEquals(1, frame.raises.get(), "the hint is acted on once, not once a frame");
+            assertEquals(before + 1, frame.raises.get(), "the hint is acted on once, not once a frame");
 
             // Cleared and set again is a second request, and is answered.
             client.setUrgency(window, false);
@@ -164,7 +168,7 @@ class WindowStateTest {
             Thread.sleep(200);
             client.setUrgency(window, true);
             client.flush();
-            assertTrue(await(() -> frame.raises.get() == 2), "a new hint is a new request");
+            assertTrue(await(() -> frame.raises.get() == before + 2), "a new hint is a new request");
             assertFalse(client.windowState(window).length > 0, "and it is not a window state");
         }
     }

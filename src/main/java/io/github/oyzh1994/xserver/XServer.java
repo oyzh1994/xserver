@@ -879,10 +879,20 @@ public final class XServer {
                 // The window the host window is named after, which is the largest one the client has
                 // mapped - so it arrives with the first window the client maps and follows along if
                 // the client replaces it.
+                boolean firstTopLevel = session.identitySource() == null && source != null;
                 session.setIdentitySource(source);
                 session.setIdentity(source == null
                         ? WindowIdentity.NONE
                         : WindowIdentity.of(atoms, source));
+                if (firstTopLevel) {
+                    // The client's first top level window has been mapped, and the host window is
+                    // the frame around it: without this it stays behind whatever the user was
+                    // looking at when they started the application, grey and unfocused. The raise
+                    // itself waits for a frame - see the end of this tick - and happens once per
+                    // session: a client's later windows are its own business, and a popup is not a
+                    // reason to pull the window out from under the user's hands.
+                    session.setRaisePending(true);
+                }
             }
             // The master screen shows all of itself; a client's screen shows the part of it that
             // client's windows occupy, which is what keeps a small application out of a full-screen
@@ -1034,7 +1044,19 @@ public final class XServer {
             onWindowClosed(session);
             return;
         }
+        if (session.raisePending() && session.framePresented()) {
+            // A frame has been on the screen since the client's first window appeared, so bringing
+            // the host window forward now shows that window rather than an empty frame. The wait is
+            // for *a* frame and not for damage in this tick: the tick a window is mapped in consumes
+            // the damage that drew it, and a raise that waited for another one would wait for the
+            // client to draw again, which a static window never does.
+            session.setRaisePending(false);
+            window.raise();
+            log.debug("display :{} host window brought to the front for a new client window",
+                    options.displayNumber());
+        }
         if (!session.idle() && damage != null) {
+            session.setFramePresented(true);
             window.present(session.screen(), damage, cursor);
         }
     }

@@ -63,7 +63,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw: the premise is **real** (the probe had the grab modes backwards); semantics measured, not yet modelled | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
-| C2 | raise/activate the host window when a client window appears | host window | S-M |
+| ~~C2~~ | ~~raise/activate the host window when a client window appears~~ **done 2026-09-25** (the live A/B is inconclusive: the bed activates it either way) | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
@@ -1493,30 +1493,49 @@ the screen as it is now).
 
 ---
 
-### [ ] C2. Raise and activate the host window when a client window appears. **S-M**
+### [x] C2. Raise and activate the host window when a client window appears. **S-M** - done 2026-09-25
+**What it was.** The host window was made once and never brought forward, so a forwarded application
+started while something else was frontmost stayed behind it: grey title bar, no keyboard, and - since
+macOS ignores a background application's cursor changes - the platform pointer left visible next to
+the sprite.
 
-**Current.** The host window is created once and never brought to the front. A client window that
-appears while another application is frontmost stays behind it, with a grey title bar and no focus, and
-- because macOS ignores cursor changes made by a background application - the platform pointer stays
-visible next to the sprite.
+**What changed**, as the plan recorded here asked: the tick raises the frame when the client's **first
+top level window** is mapped, and only after a frame has been presented. `ScreenSession` carries the
+two facts (`raisePending`, `framePresented`), `XServer.tick` sets the first where the identity source
+goes from nothing to a window and consumes it at the end of a tick, and the backend call is the
+`raise()` that C3's urgency hint already used (`stage.toFront()` / `frame.toFront()`, deliberately not
+a focus request).
 
-**Why it matters.** Reported by the user as "the window opens behind the IDE", and it also causes the
-parked "two cursors while the window is not active" item.
+Three things keep it from being a window that steals the front: it fires **once per session** (a
+client's later windows, dialogs included, are its own business), it ignores **override-redirect**
+windows (the identity source is already the largest non-override-redirect toplevel, so a menu mapped
+per keystroke cannot trigger it), and it **waits for a frame**, because raising onto an empty frame is
+telling the user their application arrived and showing them nothing. Everything a raise waits for is
+the tick's own work, so the raise can happen on a tick that presents nothing new - a window that has
+drawn once and then sits still never damages the framebuffer again, and a raise gated on damage would
+never happen at all (which is how the first version of this failed its own test).
 
-**Plan** (decided earlier, recorded here): `DisplayBackend.raise()` (JavaFX `stage.toFront()`, Swing
-`frame.toFront()`), a `raisePending` flag set when a client's top level window is mapped and consumed
-in the tick **after a frame was actually presented** (raising before the first frame shows an empty
-window). Only raise when the mapping is a *new* top level, not on every damage.
+**Measured 2026-09-25**, `HostWindowRaiseTest` (3 tests, a recording backend): the first window brings
+the frame forward, and a `present` call is in the record before the raise; a second, larger window
+does not raise again; and a popup does not raise at all. **The first two fail with the raise disabled**
+(the popup test passes either way - it asserts that nothing happens, which is also what a server with
+no raise does, so it is a guard rather than a test of the fix). `mvn test` 254/254. C3's
+`WindowStateTest` was updated for the interaction: its urgency test measured raises from zero and now
+measures the *change* the hint makes, because a client window appearing is itself a raise now.
 
-**Traps.** Raising on every map turns the window into something that steals the user's focus
-constantly (a client that maps a popup per keystroke). Guard it to the client's *first* top-level
-window, or to a window that is not a popup (`override_redirect` false and larger than trivial).
-`toFront()` on macOS also activates the application, which is a user-visible side effect - decide
-whether to request the user's attention instead (`stage.requestFocus`, or the Dock bounce for an
-urgency hint, see C3).
+**The live check is inconclusive here, and this is the honest result.** With IDEA frontmost and
+EasyShell launched from the VM, the host window came to the front - but it did so **with the raise
+disabled as well**. Both oracles agree: `tools/host-windows.c`'s list puts the host window first in
+both runs, and the frontmost *application* (`lsappinfo front`) becomes the server's own process in both
+runs. A JavaFX stage shown by a stage that is already opening the window activates its application by
+itself, so the difference this item is about cannot be produced in this test bed even by removing the
+fix. What the tests cover is the ordering and the once-only rules; what is *not* covered by any
+measurement here is the case the item was reported from.
 
-**Verify.** Start the IDE frontmost, then launch termora: the host window must come forward on its
-own, and the sprite must be the only pointer.
+**Traps.** `toFront()` on macOS activates the application, which is a visible side effect (the user's
+own front window changes) - kept deliberately, because the report is about an application that was not
+active. The second trap is the one that cost a rewrite: `raisePending` has to be consumed on a tick
+that needs no damage, or a still window never gets its raise.
 
 ---
 

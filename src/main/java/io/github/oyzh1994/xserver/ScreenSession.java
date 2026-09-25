@@ -53,6 +53,24 @@ public final class ScreenSession {
     private WindowIdentity appliedIdentity = WindowIdentity.NONE;
     /** The client window the identity above was read from, or null before one is mapped. */
     private XWindow identitySource;
+    /**
+     * Whether the host window still owes a raise, because the client's first top level window has
+     * appeared (C2).
+     *
+     * <p>Set when that window is mapped and cleared once the raise has been made, which is one raise
+     * per session however many windows the client goes on to map. A client that maps a popup per
+     * keystroke is not asking to be brought to the front, and one that is already in front does not
+     * need to be.
+     */
+    private volatile boolean raisePending;
+    /**
+     * Whether a frame has been put on the screen at all.
+     *
+     * <p>The raise waits for this: bringing the window forward the moment a client's first window is
+     * mapped would show the user an empty frame, and what they are being told is that their
+     * application has arrived.
+     */
+    private volatile boolean framePresented;
     /** The largest client area the window was last told it may be, or null before it was told. */
     private java.awt.Dimension maxClientArea;
     /**
@@ -178,6 +196,24 @@ public final class ScreenSession {
 
     public void setIdentitySource(XWindow identitySource) {
         this.identitySource = identitySource;
+    }
+
+    /** True while the host window still owes a raise - see {@link #raisePending}. */
+    public boolean raisePending() {
+        return raisePending;
+    }
+
+    public void setRaisePending(boolean raisePending) {
+        this.raisePending = raisePending;
+    }
+
+    /** True once the frame has been put on the screen, which is what a raise waits for. */
+    public boolean framePresented() {
+        return framePresented;
+    }
+
+    public void setFramePresented(boolean framePresented) {
+        this.framePresented = framePresented;
     }
 
     public java.awt.Dimension maxClientArea() {
