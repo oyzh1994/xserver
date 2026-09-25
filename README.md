@@ -297,6 +297,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
   arbitrary glyph set - the cursor font's own shapes are embedded, another font's outlines are not -
   and `ShapeNotify` details beyond the extents.
+- **A picture over a window sees the window's own pixels, not its children's**, unless the client
+  asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
+  *shows* - the children painted on top of it - which is what copying the screen through a parent
+  window needs. What is stacked above the window is excluded either way.
 - **A revealed window is restored by asking it to draw.** Nothing of a window's content is kept, so
   the area under a window that goes away is repainted with the lower window's background and an
   `Expose` - a client that ignores the expose shows its background there.

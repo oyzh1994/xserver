@@ -457,7 +457,13 @@ public final class Picture extends XResource {
         }
         drawableX = window.absoluteX();
         drawableY = window.absoluteY();
-        windowClip = window.visibleRegion();
+        // A picture over a window reads that window's own pixels and stops where a child begins.
+        // With IncludeInferiors the children *are* part of what the window shows, which is what a
+        // client copying "the screen" through a parent window is asking for: without it a frame whose
+        // content child covers it has no pixels to offer at all, and the copy comes back empty.
+        // What is stacked *above* the window is excluded either way - those pixels are not its own.
+        windowClip = subwindowMode == INCLUDE_INFERIORS ? window.coveredRegion()
+                : window.visibleRegion();
     }
 
     /**

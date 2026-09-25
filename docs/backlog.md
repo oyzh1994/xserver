@@ -60,7 +60,7 @@ A prompt that starts a fresh session on this, verbatim:
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | A5 | `PointerRoot` focus reporting: the premise was wrong, five measured differences remain | correctness | M |
 | ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
-| A9 | `IncludeInferiors`, backing store, save-unders are recorded only | correctness | M-L |
+| A9 | ~~`IncludeInferiors`~~ **done 2026-09-25**; backing store/save-unders still open | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw: premise disproven (measured), nothing to do | correctness | S |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
@@ -842,36 +842,38 @@ field the window goes in (the button is the byte right after the opcode), so the
 disarming nothing; both it and `RawXClient`'s new helpers are written from the generated reader.
 ---
 
-### [ ] A9. `SubwindowMode.IncludeInferiors`, backing store and save-unders are recorded only. **M-L**
+### [~] A9. `SubwindowMode.IncludeInferiors` done; backing store and save-unders still recorded only. **M-L**
 
-**Current.** `Picture.subwindowMode` is stored and never consulted (`Picture`'s javadoc says so): a
-picture over a window behaves as `ClipByChildren` always, which is what toolkits ask for. The
-`backing_store` and `save_unders` window attributes are stored and unused, and `XWindow.backingPixel`
-with them.
+**What it was.** `Picture.subwindowMode` was stored and never consulted, so every picture over a window
+behaved as `ClipByChildren`: it read the window's own pixels and stopped where a child began. For a
+frame whose content child covers it - every toolkit's toplevel - that meant **no pixels at all**, so a
+client copying "what this window shows" through its parent got an empty picture. `backing_store`,
+`save_unders` and `XWindow.backingPixel` are still stored and unused.
 
-**Why it matters.** `IncludeInferiors` is what a client uses to copy *the screen* rather than a window
-- `xwd`, screenshot tools, `xcompmgr`-less composition, and some toolkits' "grab the parent's pixels"
-tricks. Today they get the window's own pixels only, which for a frame whose content child covers it
-is nothing at all. Backing store is a *performance* hint: honouring it would let a covered window keep
-its pixels and answer an expose without the client repainting (which would also make the "restore what
-a window covered" path cheaper and less dependent on the lower window's cooperation).
+**What changed (2026-09-25).** One line, and the plan above was right about where: `Picture.refreshClip`
+takes the window's region with its children when the mode says `IncludeInferiors`
+(`window.coveredRegion()`, which already existed for the "what does this window leave behind" question)
+and without them otherwise (`visibleRegion()`). **What is stacked above the window is excluded either
+way** - those pixels are not the window's to own - and the window rectangle still bounds it, so
+`IncludeInferiors` widens a window to its children rather than to the screen, and a *write* with the
+mode is still clipped to the window's own rectangle (the item's trap).
 
-**Plan.** For `IncludeInferiors`, the pixel source of a window picture has to include its children: the
-compositor's sampler reads from the framebuffer, which already *has* the children painted into it, so
-the change is in the *clip*: `Picture.hasContent`/`isWritable` currently subtract children (via
-`visibleRegion`); with `IncludeInferiors` they must not. Backing store is a bigger decision - it is one
-buffer per window, and it changes what "obscured" means; the design notes explain why the server went
-without one, so treat it as a design change, not a fix.
+**Measured 2026-09-25.** `resource/IncludeInferiorsTest` (4 tests, in process, on a parent with a
+painted child): the default does not see the child; `IncludeInferiors` does, and still sees the parent's
+own pixels; a window stacked above the parent is excluded either way; and the corners outside the
+window answer nothing. **The one that fails without the change is the second** (it reads 0 where the
+child's colour should be, which is exactly the symptom this item is about); the other three are the
+guards that say what did not change. `mvn test` 237/237.
 
-**Traps.** The two are independent: `IncludeInferiors` is per-picture (a picture attribute), backing
-store is per-window. Writing into a window with `IncludeInferiors` must still be clipped by the window
-rectangle, or a client can scribble over the whole screen. `GetImage` uses `plane_mask` and its own
-rules, not `subwindowMode`.
+**What is left of this item is the backing store**, and the item's own warning stands: it is "one buffer
+per window, and it changes what `obscured` means", the design notes explain why the server went without
+one, and 256 clients each keeping a full window's pixels is a memory decision rather than a fix. Treat
+it as a design change with `E4` (per-client framebuffer memory), not as a bug.
 
-**Verify.** `xwd -id <frame>` against a window with a child: the image must contain the child's content
-(compare with Xvfb). For backing store: `xclock`, cover it, uncover it, and check with the frame dumps
-that the client was not asked to repaint (`-Dxserver.dumpFrames` plus the request log).
-
+**Traps.** `GetImage` uses `plane_mask` and its own rules, not `subwindowMode` - so the item's Verify
+(`xwd -id <frame>`) is not the check for this half, and the in-process test is. A picture's `sample`
+takes a *point*, so a pixel is sampled at its centre (`x + 0.5`); sampling its corner reads the
+neighbour.
 ---
 
 ### [ ] A13. `AllowEvents` freeze/thaw semantics. **S** - the premise was measured, and the modes are inert on the reference too
