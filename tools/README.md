@@ -15,7 +15,7 @@ these is meant to carry out, so keep them working.
 | the reference display | `tools/xvfb.sh` | `start`/`stop`/`status` for the VM's `Xvfb :98` plus `x11vnc`: the other side of every comparison, and the three flags it needs are easy to get wrong (below) |
 | one-command comparison | `tools/compare.sh` | the six steps a rendering comparison takes - both beds, the same gesture on each, the same capture tool, the `Xwd` diff and the `Blocks` grid - as one command |
 | the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
-| the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window |
+| the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window. **Both ends on the same point make it a click**, which is how D1's live check closes a window the way a user does (the close button is at the top left of the title bar, about 14,13 in from the bounds the first tool prints) |
 
 Run a tool with the test classpath - `tools/kit.sh` is that line with the classpath filled in, which
 is worth using because pasting the twenty jars by hand produces `command too long` from the shell:
@@ -40,6 +40,14 @@ XSERVER_OPTIONS="-Dxserver.dumpFrame=/tmp/d -Dxserver.dumpFrames=3000" tools/bed
 `expect` hangs on the password prompt in this environment, which is why the script goes through
 `SSH_ASKPASS` instead; long-running remote commands need `setsid nohup … < /dev/null &` or ssh kills
 them when the session ends.
+
+**Talking to a detached server** (D1): a server started with `--control-port N` answers one command per
+connection on `127.0.0.1`, so no tool is needed beyond `nc`:
+
+```sh
+printf 'status\n' | nc -w 2 127.0.0.1 6200    # display :95 sessions=1 windows=0 detached=1 clients=2
+printf 'attach\n' | nc -w 2 127.0.0.1 6200    # opening a window for 1 session(s); 2 client(s) connected
+```
 
 Two tools that are not Java, and need building (macOS only):
 

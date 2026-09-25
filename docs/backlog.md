@@ -86,7 +86,7 @@ A prompt that starts a fresh session on this, verbatim:
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
-| D1 | session persistence and re-attach | large | L-XL |
+| ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | D2 | built-in remote transport (VNC / WebSocket / RDP) | large | L-XL |
 | B6 | GLX / OpenGL | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
@@ -2135,7 +2135,8 @@ a Swing backend that could fail invisibly. `mvn test` 260/260.
 
 ## 5. D - Large / product-level
 
-### [ ] D1. Session persistence and re-attach. **L-XL**
+### [x] D1. Session persistence and re-attach. **L-XL** - both halves done 2026-09-25; only the
+across-a-server-restart step is not attempted, which the item itself rules out
 
 **Current.** The session ends with the host window: closing it sends `WM_DELETE_WINDOW` to the clients
 that asked for it, waits `--close-grace-ms`, then disconnects them. A client that dies takes its
@@ -2152,13 +2153,61 @@ eventually per client. Persisting across a *server* restart is a third, much lar
 framebuffer would have to be journalled and the clients' connections re-established, which plain X11
 cannot do - the realistic answer is "the server stays up, in the background").
 
-**Traps.** A detached server has no user to say "this window is in the way" - the raise-on-show
-behaviour (C2) must not fire without a window; the tick can idle to save CPU when nothing is presented
-and nothing is damaged; and the "close the window means close the session" contract has to become a
-flag (`--detach-on-close`) rather than the only behaviour.
+**Done, both halves (2026-09-25).**
 
-**Verify.** Start a client, detach, kill the host window, re-attach: the same windows with the same
-contents, and the client never sees a disconnect.
+- **`--detach-on-close`**: the window closes, the session does not. The clients keep being served -
+  their requests are answered, their keys repeat, their pixels land in the framebuffer - and nothing is
+  presented, because there is nothing to present to. Off by default, so the behaviour this server has
+  always had (close the window, the application was in it) is what a user gets unless they ask for the
+  other one.
+- **`--control-port N`** is how a window comes back: one command per connection over loopback, `attach`,
+  `detach` or `status`, answered in one line. `detach` works on its own too - it is how the window gets
+  out of the way without the session ending.
+- **What the plan called "eventually per client" is not done, and is not needed yet**: `attach` opens a
+  window for every detached session, and since there is one host window per session that is the same
+  thing a user means. A command naming one session is the next step if a server ever shows several.
+
+**Traps, all three measured rather than argued.**
+
+- **"Detached" has to be a state of its own, not "the backend is null".** The tick opens a window
+  whenever a session has none and its client has drawn something - that is how a client that only asks
+  questions avoids a window - so a detached session that was only "a session without a backend" had a
+  window opened for it again on the next frame. The tick's guard is the flag, and it is also where a
+  window that is still up gets closed (after the lock is released, because closing one waits on the
+  toolkit's thread).
+- **C2's raise must not fire with no window**, and does not: detaching clears `raisePending`, so a
+  client that maps a new top level while nobody is watching does not queue a raise that would fire at
+  whatever window comes next.
+- **The tick does not need an idle state, and that is a measurement.** Measured on a real server with
+  an idle client: **1.4-2.1% of a core detached against 1.4-2.3% attached**. The per-frame work is the
+  bookkeeping - which window is the identity, what the viewport is, taking the damage - and it runs
+  either way; presentation was never where the cost was. So the item's "can idle to save CPU" is
+  answered rather than implemented.
+
+**Measured 2026-09-25**, three ways:
+
+- `test/SessionDetachTest` (4 tests, a recording backend, real connections): closing the window with
+  the flag on keeps the client served (a rectangle it draws comes back out of the framebuffer) and
+  **no window is opened for it again**; attaching over the control port opens one and its first frame
+  is **the whole viewport** rather than the damage; the control port's own `detach` and `status` do
+  what they say; and the guard that a session which was never detached is not attached twice. **Two of
+  the four fail with the `--detach-on-close` branch disabled** and a third pins the control port
+  independently.
+- **Live, on the Mac with a real window and EasyShell**: the window's close button was clicked
+  (`tools/host-drag.c` with both ends on the same point is a click), the log said
+  `window closed and --detach-on-close is on: 2 client(s) keep running with no window`, the host window
+  disappeared from `tools/host-windows.c` and `status` read `windows=0 detached=1 clients=2` - while
+  EasyShell's own windows were still mapped and answering. `printf 'attach\n' | nc -w 2 127.0.0.1 6200`
+  opened a new window, and a screenshot of the Mac showed **EasyShell's interface exactly as it was**
+  (the welcome page, the host list) - which is the whole-viewport frame doing its job, since the damage
+  that drew it had been consumed while there was no window.
+- `mvn test` 272/272.
+
+**Found on the way, and fixed**: `HostWindowPositionTest.aWindowOpensWhereItWasLeftLastTime` called
+`.awaitWindow()` and then `window.input()` without `.awaitInput()` - the other tests in the file do both,
+this one did not, and the gap is the few microseconds between a backend being handed to a session and
+being started. It passed for a week and failed once under a full suite's load, which is what a race
+that narrow looks like. One line, and the file's own helper was already there.
 
 ---
 

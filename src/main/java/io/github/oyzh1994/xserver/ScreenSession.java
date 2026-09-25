@@ -33,6 +33,10 @@ public final class ScreenSession {
     // windows or presents to them. Reading it outside is how a request thread asks for a repaint,
     // which is why the fields are volatile rather than locked.
     private volatile DisplayBackend backend;
+    /** True while the session has no window on purpose (see {@link #detached()}). */
+    private volatile boolean detached;
+    /** True when the next frame has to be the whole viewport rather than the damage. */
+    private volatile boolean fullFrame;
     /** The rectangle of the screen the window shows: the area the client's windows occupy. */
     private volatile Rectangle viewport;
     private volatile CursorSprite lastCursor;
@@ -132,6 +136,39 @@ public final class ScreenSession {
 
     public void setBackend(DisplayBackend backend) {
         this.backend = backend;
+    }
+
+    /**
+     * True while this session has no window and none may be opened (backlog D1).
+     *
+     * <p>It is a state of its own rather than "the backend is null", because null is also what a
+     * session looks like before its first window has opened: the display tick opens one as soon as
+     * the client maps something, which is exactly what must not happen while detached.
+     */
+    public boolean detached() {
+        return detached;
+    }
+
+    public void setDetached(boolean detached) {
+        this.detached = detached;
+    }
+
+    /**
+     * A frame the whole viewport has to be presented for, whatever the damage says.
+     *
+     * <p>Set when a window attaches to a screen that has been drawing with nobody to show it: the
+     * pixels are all still in the framebuffer, but the damage they were drawn with was consumed
+     * frame by frame while there was no window to present it to, so a new window that waited for
+     * damage would show the client's background until the client next drew something.
+     */
+    public boolean takeFullFrame() {
+        boolean wanted = fullFrame;
+        fullFrame = false;
+        return wanted;
+    }
+
+    public void setFullFrame(boolean fullFrame) {
+        this.fullFrame = fullFrame;
     }
 
     public Rectangle viewport() {

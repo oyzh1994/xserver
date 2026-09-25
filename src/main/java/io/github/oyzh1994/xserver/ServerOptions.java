@@ -73,6 +73,23 @@ public final class ServerOptions {
     /** How long clients get to close themselves after the host window is closed. */
     private int closeGraceMillis = 2000;
 
+    /**
+     * Whether closing the host window ends the session or only its window (backlog D1).
+     *
+     * <p>Off by default, which is what this server has always done and what a user who closes a
+     * forwarded application's window expects: the application was in that window. On, the clients
+     * keep running with no window and {@code --control-port} can bring one back.
+     */
+    private boolean detachOnClose;
+
+    /**
+     * The loopback port that answers {@code attach}, {@code detach} and {@code status}: -1 for no
+     * control port (the default), 0 for any free one, which is what a test or an embedder wants.
+     * Loopback only: it is a way for the user to say something to a server they started, not a
+     * service.
+     */
+    private int controlPort = -1;
+
     public static ServerOptions parse(String[] args) {
         ServerOptions options = new ServerOptions();
         List<String> positional = new ArrayList<>();
@@ -103,6 +120,8 @@ public final class ServerOptions {
                 case "--tick-rate" -> options.tickRate = Integer.parseInt(next(args, ++i));
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
+                case "--detach-on-close" -> options.detachOnClose = true;
+                case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
@@ -183,6 +202,11 @@ public final class ServerOptions {
                   --tick-rate N         screen refresh rate (default 60)
                   --close-grace-ms N    time clients get to close themselves once the window is
                                         closed, before the server disconnects them (default 2000)
+                  --detach-on-close     closing the window leaves the clients running with no
+                                        window instead of ending the session; bring one back with
+                                        --control-port
+                  --control-port N      listen on 127.0.0.1:N for the commands attach, detach and
+                                        status (default: no control port)
                   --single-window       render every client into one window, as a plain X screen
                                         (default: one window per client connection)
                   --scale N             put N framebuffer pixels in each logical pixel, for a
@@ -393,5 +417,15 @@ public final class ServerOptions {
     /** How long a client has to close its windows itself once the host window has closed. */
     public int closeGraceMillis() {
         return closeGraceMillis;
+    }
+
+    /** Whether closing the host window leaves the clients running instead of ending the session. */
+    public boolean detachOnClose() {
+        return detachOnClose;
+    }
+
+    /** The loopback port the control commands are answered on, or 0 when there is none. */
+    public int controlPort() {
+        return controlPort;
     }
 }

@@ -43,6 +43,8 @@ Options:
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--scale N\|auto` | screen pixels per logical pixel: `auto` is the host's own scale, 2 on a Retina panel (default 1) |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
+| `--detach-on-close` | closing the window leaves the clients running with no window instead of ending the session |
+| `--control-port N` | listen on `127.0.0.1:N` for `attach`, `detach` and `status` (0: any free port) |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and to `headless` -
 with a line saying so - where the platform reports no display at all, since neither toolkit can open a

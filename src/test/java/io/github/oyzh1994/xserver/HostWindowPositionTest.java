@@ -38,7 +38,11 @@ class HostWindowPositionTest {
 
         try (Server first = new Server(80, store)) {
             first.client().mapWindowWithClass("Termora", "termora");
-            TestWindow window = first.awaitWindow();
+            // awaitInput and not just awaitWindow: the backend is handed to the session before it is
+            // started, so a test that takes the window the moment it appears can call `input()` on
+            // one that has no input sink yet. It passed for a week and failed once under a full
+            // suite's load, which is what a race that is a few microseconds wide does.
+            TestWindow window = first.awaitWindow().awaitInput();
             assertNull(window.rememberedPosition(),
                     "a client this server has never seen opens where the platform puts it");
 

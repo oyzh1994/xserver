@@ -514,6 +514,41 @@ Both directions used to leave the other side hanging, and both are now explicit:
 - **A client going away** closes its window and frees its screen, and leaves the other clients alone.
   In `--single-window` mode the last client going quiet stops frames rather than leaving a frozen
   empty window live.
+- **Closing the window can stop being the end of the session** (`--detach-on-close`, backlog D1). The
+  clients keep running with nobody showing them, and `--control-port` is how a window comes back:
+  `attach`, `detach` and `status`, one command per connection, over loopback.
+
+## A window that is not the session
+
+The frame around a forwarded application is not the application, and the failure that says so loudest
+is a user who closes the window of a long-running session and loses the session. `--detach-on-close`
+makes the window only a window (backlog D1), and the three things it takes to be honest about that
+were each worth measuring:
+
+- **"Detached" is a state, not "the backend is null".** The display tick opens a window whenever a
+  session has none and its client has mapped something - that is how a connection that only asks
+  questions never gets one - so a detached session has to say so, or the next tick opens a window
+  straight back up. The tick's own guard is that state, and it also closes any window the session
+  still had, at the point in the frame where the lock is released and waiting on a toolkit is allowed.
+- **The frame that comes back is the whole viewport.** A detached screen goes on drawing: the client's
+  requests are answered, its keys repeat and its framebuffer fills, but the damage each frame carried
+  was consumed by a tick that had nowhere to present it. A window that waited for *new* damage would
+  show the client's background until the client happened to draw again - so attaching sets a flag that
+  makes the next frame the whole viewport, from the same framebuffer the pixels never left.
+- **Detaching does not save CPU, and the measurement says why.** The trap the item names is "the tick
+  can idle to save CPU when nothing is presented"; measured on a real server with an idle client,
+  detached costs 1.4-2.1% of a core against 1.4-2.3% attached. Presentation was never the cost - the
+  per-frame work is the bookkeeping (which window is the identity, what the viewport is, the damage
+  take) and that runs either way. So no idling state was added: it would have been a mechanism for a
+  cost that is not there.
+- **A control port rather than a signal.** `SIGHUP` is the unix way to say "come back" and the JVM
+  cannot take it without internal API; the port can be driven from a script, from `nc`, and from a
+  test, and it answers. It is bound to loopback and has no authentication of its own - the display it
+  belongs to is on the same machine, and a control port on every interface would be a remote kill
+  switch.
+- **`attach` is per session, not per window in the protocol sense.** Every detached session gets a
+  window back; there is one window per session, so that is the same thing a user means. A control
+  command that named one session would be the next step if a server ever showed several.
 
 ## Grabs and crossing events
 
@@ -1127,13 +1162,17 @@ This is the list of things left out *on purpose*, with the measurement that sett
 wider list of what is not implemented yet - including everything a stock server has and this one
 does not - is `backlog.md`, which is written to be worked through item by item.
 
-- **XKEYBOARD is answered, not implemented.** The map, the state and the version handshake are real,
-  but a client cannot *change* the keyboard through it: `SetMap` is refused (so no layout can be
-  selected), the compatibility map and the indicator names are absent, `LatchLockState` is accepted
-  and does nothing (a client locking a modifier would be locking the machine's own keyboard for every
-  other client), and no per-client flag is supported (`PerClientFlags` says so, including detectable
-  auto-repeat). The reasoning is the one the rest of the input model is built on: there is one
-  keyboard and it is the host's.
+- **XKEYBOARD has no compiler in the server, and nothing it changes is a client's alone.** The map
+  (`GetMap`), the state (`GetState`), the controls (`GetControls`/`SetControls`, which is the only way
+  the repeat delay and rate can be changed at all) and the version handshake are real, and a client
+  that compiles its own keymap can load it (`SetMap` - `xkbcomp <file> <display>` puts a layout on this
+  keyboard, and both rails read the one table afterwards). What is deliberately not there: choosing a
+  layout **by name** (`setxkbmap` asks `GetKbdByName`, and the answer is "not loaded" because that
+  wants a keymap compiler inside a display server), the map's types, actions and behaviours, the
+  compatibility map, `GetNames`, the indicator names, the XKB events, every control other than repeat,
+  and `LatchLockState` - accepted and doing nothing, because a client locking a modifier would be
+  locking the machine's own keyboard for every other client. The per-client flags are all unsupported
+  and `PerClientFlags` says so, detectable auto-repeat included.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
 - **`CreateGlyphCursor` against a font other than the cursor font has no outlines to draw** and falls
@@ -1145,6 +1184,11 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   `--max-screen`, and the host window resizes the client's window with it; there is deliberately no
   gesture that says "and now the desktop is smaller", which is why `SetScreenConfig` and the rest of
   RandR's changing requests are refused.
+- **A session survives its window, not the server.** `--detach-on-close` keeps the clients running
+  with no window and `--control-port` puts one back (D1), but a server that is *stopped* still takes
+  its clients with it: persisting across a restart would mean journalling the framebuffer and
+  re-establishing the clients' connections, which plain X11 has no way to do. The honest answer is the
+  one D1 records - the server stays up instead.
 - **The focus does not follow the pointer, and a reference server's does not either.** With the focus
   on `PointerRoot` the *keys* follow the pointer (`InputState.focusWindow`) and no `FocusIn`/`FocusOut`
   is generated as it moves - which was verified against Xvfb rather than assumed, because the obvious

@@ -130,6 +130,8 @@ public final class XServer {
 
     private final ScreenSession masterSession;
     private ClientListener listener;
+    /** The loopback command port, or null when the server was started without one (backlog D1). */
+    private io.github.oyzh1994.xserver.net.ControlListener control;
 
     private ClientConnection serverGrabHolder;
     /**
@@ -805,6 +807,13 @@ public final class XServer {
         suggestScale();
         listener = new ClientListener(this);
         listener.start();
+        if (options.controlPort() >= 0) {
+            // Useful with or without --detach-on-close: detaching on demand is how a user gets a
+            // window out of the way without ending the session, and attaching is the only way back
+            // to one that was closed while the flag was on.
+            control = new io.github.oyzh1994.xserver.net.ControlListener(this, options.controlPort());
+            control.start();
+        }
         log.info("xserver listening on display :{} ({}x{}), {}", options.displayNumber(),
                 options.width(), options.height(),
                 options.perClientWindows() ? "one window per client" : "a single shared window");
@@ -975,6 +984,15 @@ public final class XServer {
             serverLock.unlock();
         }
 
+        if (session.detached()) {
+            // A session with no window on purpose (backlog D1): whatever window it still had is
+            // closed here, where the lock is not held and the toolkit's thread may be waited on,
+            // and no new one is opened. Everything above this line still happened - the client's
+            // requests were answered, its keys repeat, its damage was taken - so the session is
+            // alive; the frame it drew is simply not shown to anybody until one attaches.
+            closeSessionBackend(session);
+            return;
+        }
         if (session.backend() == null) {
             // Nothing mapped yet: the window is opened by the first window a client maps, so a
             // connection that only asks questions never opens one. The master screen has no window
@@ -1068,6 +1086,13 @@ public final class XServer {
             window.raise();
             log.debug("display :{} host window brought to the front for a new client window",
                     options.displayNumber());
+        }
+        if (session.takeFullFrame()) {
+            // A window has just attached to a screen that was drawing with nobody watching: the
+            // pixels are all still in the framebuffer, but the damage they were drawn with was
+            // consumed frame by frame while there was no window, so waiting for more of it would
+            // show the client's background until the client happened to draw again.
+            damage = new Rectangle(session.viewport());
         }
         if (!session.idle() && damage != null) {
             session.setFramePresented(true);
@@ -1468,6 +1493,17 @@ public final class XServer {
      * their windows and the server keeps running.
      */
     private void onWindowClosed(ScreenSession session) {
+        if (options.detachOnClose()) {
+            // The window is gone and the session is not (backlog D1): the clients keep running with
+            // nobody showing them, and the control port can put a window back. Only the flags are
+            // set here - the tick is what closes the backend, because closing one waits on the
+            // toolkit's thread and this is called from the tick with the lock already released.
+            detachSession(session);
+            log.info("display :{} window closed and --detach-on-close is on: {} client(s) keep"
+                            + " running with no window; attach again with the control port",
+                    options.displayNumber(), clients.size());
+            return;
+        }
         if (session.client() == null) {
             askClientsToClose();
             return;
@@ -1487,9 +1523,116 @@ public final class XServer {
     }
 
     /**
-     * Asks every client to close its windows, once, and starts the clock on the grace period.
+     * A session with no window, and none to be opened until something asks for one (backlog D1).
+     *
+     * <p>Only the state is set here. Closing the window that may still be up, and opening the next
+     * one, are the display tick's work: both reach into a toolkit's own thread, which must not
+     * happen while the server lock is held (this is called from a control connection's thread, or
+     * from the tick itself after it has released the lock).
      */
-    private void askClientsToClose() {
+    public void detachSession(ScreenSession session) {
+        session.setDetached(true);
+        // Nothing to bring forward, and a raise that stayed pending would fire at whatever window
+        // came back - the trap C2's raise has when there is no window at all.
+        session.setRaisePending(false);
+        session.setFullFrame(false);
+    }
+
+    /** Puts a window back on a detached session, showing the whole of what it has been drawing. */
+    public void attachSession(ScreenSession session) {
+        if (!session.detached()) {
+            return;
+        }
+        session.setDetached(false);
+        // The damage those pixels were drawn with went with the frames that had no window to present
+        // it to, so the frame this one comes back with is the whole viewport - see takeFullFrame.
+        session.setFullFrame(true);
+    }
+
+    /**
+     * The port the control commands are answered on, or 0 when the server has none: the bound one,
+     * which is what an embedder that asked for port 0 needs, or the configured one.
+     */
+    public int controlPort() {
+        return control == null ? 0 : control.boundPort();
+    }
+
+    /**
+     * One command from the control port, answered in one line (backlog D1).
+     *
+     * <p>The commands are the three things a user with no window can want: put a window back
+     * ({@code attach}), take the window away without ending the session ({@code detach}), and ask
+     * what is going on ({@code status}). They set state and return - the tick is what opens and
+     * closes windows - so the answer says what was asked for rather than what has already happened,
+     * which is the honest thing for a mechanism whose work happens on the next frame.
+     */
+    public String controlCommand(String command) {
+        String name = command == null ? "" : command.trim().toLowerCase(java.util.Locale.ROOT);
+        serverLock.lock();
+        try {
+            return switch (name) {
+                case "attach" -> {
+                    int attached = 0;
+                    for (ScreenSession session : sessions) {
+                        if (session.detached() && canHaveAWindow(session)) {
+                            attachSession(session);
+                            attached++;
+                        }
+                    }
+                    yield attached == 0
+                            ? "nothing to attach: " + clients.size() + " client(s) connected"
+                            : "opening a window for " + attached + " session(s); "
+                                    + clients.size() + " client(s) connected";
+                }
+                case "detach" -> {
+                    int detached = 0;
+                    for (ScreenSession session : sessions) {
+                        if (!session.detached() && canHaveAWindow(session)) {
+                            detachSession(session);
+                            detached++;
+                        }
+                    }
+                    yield detached == 0
+                            ? "nothing to detach: " + clients.size() + " client(s) connected"
+                            : "closing the window of " + detached + " session(s); "
+                                    + clients.size() + " client(s) keep running";
+                }
+                case "status" -> {
+                    int windows = 0;
+                    int detached = 0;
+                    for (ScreenSession session : sessions) {
+                        if (session.backend() != null) {
+                            windows++;
+                        }
+                        if (session.detached()) {
+                            detached++;
+                        }
+                    }
+                    yield "display :" + options.displayNumber() + " sessions=" + sessions.size()
+                            + " windows=" + windows + " detached=" + detached
+                            + " clients=" + clients.size();
+                }
+                case "" -> "say attach, detach or status";
+                default -> "unknown command \"" + name + "\": attach, detach or status";
+            };
+        } finally {
+            serverLock.unlock();
+        }
+    }
+
+    /**
+     * Whether a session is one a window can be opened for at all.
+     *
+     * <p>The master screen of per-client mode is not: it exists so the tests and single-window mode
+     * have a screen to build on, and its clients have windows of their own.
+     */
+    private boolean canHaveAWindow(ScreenSession session) {
+        return session.client() != null || !options.perClientWindows();
+    }
+
+    /**
+     * Asks every client to close its windows, once, and starts the clock on the grace period.
+     */    private void askClientsToClose() {
         if (masterSession.closeDeadline() != 0) {
             return;
         }
@@ -1617,6 +1760,9 @@ public final class XServer {
         }
         if (drops != null) {
             drops.stop();
+        }
+        if (control != null) {
+            control.stop();
         }
         if (listener != null) {
             listener.stop();
