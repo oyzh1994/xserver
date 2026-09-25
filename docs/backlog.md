@@ -80,7 +80,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
-| [~] E3 | performance: the opaque-source copy path (1.85x) and the A8-mask path (2.80x) are in, both proven pixel-identical; "blend only the damage region" is not measured on a real frame | engineering | M-L |
+| ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | D3 | core-font fidelity | large | M-L |
 | B4 | XInput2 | extension | L |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
@@ -2489,7 +2489,7 @@ pending motion events, which is what a real server does and the next thing to do
 ever becomes a real case.
 ---
 
-### [~] E3. Performance: local blending, fewer copies. **M-L** - the opaque-source path (1.85x) and the A8-mask path (2.80x) are done 2026-09-25, both proven pixel-identical; the damage-region measurement is not
+### [x] E3. Performance: local blending, fewer copies. **M-L** - done 2026-09-25: the opaque-source path (1.85x), the A8-mask path (2.80x) and the damage region (which was the whole screen)
 **Measured with a benchmark of the compositor's own pixel loop**, on one scene and with everything else
 equal: two hundred full-screen (1300x800) `FillRectangles` through `Compositor.draw`, which is the one
 loop every request reduces to. Op 1 is `Src` and op 3 is `Over`, the two an opaque fill uses.
