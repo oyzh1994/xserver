@@ -71,9 +71,10 @@ A prompt that starts a fresh session on this, verbatim:
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
+| [~] C11 | a server that cannot open a window: the hang and the silence are fixed; the fallback chain still ends silently | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
-| [~] B1 | XKEYBOARD: the map, the state and the handshake are in; `SetMap` and the rest are not | extension | M-L |
+| [~] B1 | XKEYBOARD: read, and set by a client that compiles its own map (`xkbcomp`); no compiler in the server, so no layout by name | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
@@ -1069,7 +1070,7 @@ fidelity gap rather than a failure a user meets.
 
 ## 3. B - Extensions a reference server has
 
-### [~] B1. XKEYBOARD. **M-L** - the reading half is done 2026-09-25; nothing can be *set* yet
+### [~] B1. XKEYBOARD. **M-L** - read and *set* 2026-09-25 (`xkbcomp` loads a layout); choosing one *by name* needs a compiler in the server
 
 **Done 2026-09-25.** `extension/XkbExtension` advertises `XKEYBOARD` and answers what a client asks
 before it will trust the keyboard: the version handshake (`UseExtension`), the keymap (`GetMap`, built
@@ -1115,42 +1116,56 @@ fixed part is **forty** bytes, not thirty-two, and each keycode's keysyms follow
 what **Num Lock** selects, not Shift: giving the keypad type a Shift entry makes Shift+KC79 type `KP_7`
 where the reference leaves it `KP_Home`.
 
-**What is left, and it is the writing half.** `SetMap` is refused, so **no layout can be selected** -
-`setxkbmap` is still a no-op and a non-US layout still cannot be chosen; the compatibility map,
-`GetNames` and the indicator names are absent; `LatchLockState` is accepted and does nothing, so a
-client cannot lock or latch a modifier (it would be locking the host's keyboard for everyone);
-`XkbSetDetectableAutoRepeat` is not honoured - `PerClientFlags` says no flag is supported, so a client
-that wants to generate its own repeats cannot be told when one would have started. `GetControls` and
-`GetDeviceInfo` are still refused, measured: no client here asks for either (`XkbProbe` sends them, and
-against Xvfb `GetDeviceInfo` is itself refused `BadLength` for the request this probe builds). The
-repeat delay and rate stay unreachable for the same reason (A11).
+**The writing half, 2026-09-25: a layout CAN be set, and by which tool was measured.** The item said
+"`SetMap` is refused, so no layout can be selected - `setxkbmap` is still a no-op". The first half was
+true and the second was the wrong tool: measured with `setxkbmap -layout de` against this server, the
+request it dies on is **`XkbGetKbdByName` (minor 23)** - `X Error of failed request: BadRequest ...
+Minor opcode 23 (XkbGetKbdByName)` - which asks the *server* to compile a keymap from a rules file.
+That is a server-side `xkbcomp`, and it is not in this project's scope. The tool that sends `SetMap`
+is `xkbcomp` itself, and **it now works**: `xkbcomp -w 0 /tmp/de.xkb <display>` exits 0, and keycode
+52 comes back `y Y` from `xmodmap -pke` against a server whose default is `z Z` - German, for a
+keymap compiled on the VM and loaded into this server. The XKB rail follows, because both rails read
+one table: `XkbProbe` shows `symmap kc52 ... = 0x79 0x59`.
 
-**The original wording, kept for the plan it describes:**
+What was added for it:
 
-**Current.** Not advertised. The keyboard is a fixed table (`Keymap`: letters, digits, modifiers) that
-`ChangeKeyboardMapping` can overwrite; `GetModifierMapping` works; there is no layout switching, no
-`xkbcomp`, no `XkbSetDetectableAutoRepeat`, and no `xset -kb`-style configuration.
+- **`SetMap` applied, keysyms only.** Each keycode's keysyms go into `Keymap` through the same
+  `assign` the core `ChangeKeyboardMapping` uses, and clients are told with the core
+  `MappingNotify`. The types, actions, behaviours, explicit components, virtual-modifier map and
+  real-modifier map are read and dropped: this server has four types of its own and one modifier
+  table, and both are what this extension publishes. A client that sets a map with types this server
+  cannot represent gets the characters right and everything else as it was.
+- **`SetMap` decoded by hand**, because the generated class cannot read a partial one: every list in
+  its builder is non-null and a part the request omits is left null, so a request that sets only the
+  key symbols - which the protocol allows - fails with `NullPointerException: types is marked
+  non-null but is null`. Measured: a one-keycode test request hit that while xkbcomp's all-parts
+  request went through. The hand-written reader takes the header, skips the type descriptors and
+  reads the symbols; the rest of the body is left unread, which is safe because the connection
+  buffers the whole request. **A byte that reads as -8 is not a loop bound**: the first version read
+  `nKeySyms` signed, so a 248-keycode map decoded as no symbols at all and the live `xkbcomp` run
+  silently changed nothing.
+- **`GetKbdByName` answered "not loaded"** instead of being refused: Xlib prints an X error and exits
+  on a refusal, so `setxkbmap` died with a protocol error before it could say anything; the protocol
+  has a reply for a server that cannot compile, and the client reports "Error loading new keyboard
+  description" and stops. Measured: the same command, before and after.
+- **`SetCompatMap`, `SetIndicatorMap`, `SetNames` and `SetGeometry` accepted** rather than refused,
+  because a keymap compiler sends them on its way to `SetMap` and there is nothing here for them to
+  set. `xkbcomp` needs all four to get as far as the map.
 
-**Why it matters.** A non-US layout cannot be selected (`setxkbmap` is a no-op against this server),
-keyboard repeat cannot be delegated to the client (see A11), and toolkits that probe XKB to decide how
-to translate keys fall back to the core table. GTK and Qt both fall back cleanly, which is why the
-applications tested so far have worked.
+**Measured 2026-09-25**: `extension/XkbTest` grew `aClientCanSetTheKeymapThroughXkbAndBothRailsAgree`
+(6 tests in the file now): a client's one-keycode `SetMap` changes what `GetMap` answers and what the
+server's table holds, and the test **fails when the request is left unhandled** (the server refuses it
+and the next request reads an error). `mvn test` 260/260. Live, as above.
 
-**Plan.** A *minimal* XKB is a better first step than a faithful one: advertise the extension, answer
-`UseExtension`/`GetState`/`GetMap`/`GetNames` with a single US-compatible map, and implement
-`XkbSetDetectableAutoRepeat` (a flag that suppresses the server's autorepeat - which is what A11's
-timer needs to consult) and `XkbSelectEvents` (deliver nothing, or the state notifications a client
-asks for). That is enough for the two clients that matter and leaves the layout machinery for later.
-
-**Traps.** XKB's wire format is the largest in the protocol; do not hand-roll the whole map - the
-`x11-protocol` fork may not even have all the request classes. A client that gets `GetMap` wrong
-crashes (Qt reads the keymap arrays by offset). Take the map layout from `xkbcomp`'s output for a US
-layout against Xvfb and replay it.
-
-**Verify.** `xdpyinfo -ext XKEYBOARD` lists it; `setxkbmap -layout us -print` does not error;
-`xev -event keyboard` shows the same keysyms as against Xvfb; a held key still repeats exactly once per
-interval with `XkbSetDetectableAutoRepeat` on (the client repeats it) and not at all when the client
-asked for that.
+**What is still not here.** *Selecting a layout by name* - `setxkbmap`, and anything else that asks
+the server to compile one - because that is a keymap compiler in the server and this is a display
+server. The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`
+requests above are accepted and dropped, so a client that sets names and reads them back gets
+nothing); `GetControls` is still refused, measured: no client here asks for it, so the repeat delay
+and rate stay unreachable the same way A11 left them; `LatchLockState` is accepted and does nothing;
+and no XKB event is ever sent, because nothing here changes a layout in a way a client would need to
+hear about. `XkbMap` publishes four types of its own whatever the client sets, so a map that relies on
+types this server has no equivalent for is applied as characters only.
 
 ---
 
@@ -1886,6 +1901,49 @@ into the forwarded window, which is what the work above is about - is answered; 
 needs that environment.
 
 ---
+
+### [~] C11. A server whose window cannot be opened. **S** - the hang and the silence are fixed 2026-09-25; the fallback chain is still silent at its end
+
+**Found while doing E2**, which is about running the suite on a machine with no display, and it is
+worse than the CI problem that led to it. With the JavaFX backend and no display - measured with
+`-Djava.awt.headless=true` on macOS - `QuantumToolkit.startup` parks on a latch whose count never
+reaches zero, because the render thread failed first (`ArrayIndexOutOfBoundsException: Index 0 out of
+bounds for length 0`, an empty screen list). Nothing in the toolkit's API reports that: no exception,
+no return value, no timeout. The tick thread calling it never came back, so:
+
+- no frame was ever shown again, and the last line in the log was
+  `nothing to show on display :95: the window holds its last frame`;
+- the request threads went on answering clients, so the server looked healthy from the outside;
+- the only explanation was a stack trace from a render thread, printed once.
+
+**What changed.** `JavaFxBackend.startupToolkit` starts the toolkit on a daemon thread and waits
+**ten seconds** for the FX thread to run the startup's own runnable, which is the one honest signal
+that JavaFX works; a wait that ends without it throws with a message that says what happened and what
+to do instead (`--backend headless`). And `XServer.tick` catches a backend that refuses to start,
+logs one line and stops the server, because a display server that cannot display has one honest thing
+to say - `HostWindowFailureTest` (2 tests) pins both halves of that: a backend that cannot open a
+window stops the server and lets its client go, and a server nobody has mapped anything on is
+untouched by the refusal it never meets. **The first fails with the guard removed.**
+
+**Measured 2026-09-25**, live: with `-Djava.awt.headless=true` and a client that maps a window, the
+server used to hang for ever; it now logs
+
+```
+WARN  i.g.o.x.BackendFactory - JavaFX is not usable (java.lang.IllegalStateException: the JavaFX
+      toolkit did not start within 10s: this machine cannot show a window, so nothing would be
+      forwarded. Run with --backend headless to serve clients without one.), falling back to the
+      swing backend
+```
+
+**What is still open, and it is the second half of the same finding.** `BackendFactory` already had a
+fallback - JavaFX failing yields a Swing backend - and the log line above is it working, but the chain
+ends there: a Swing window that cannot be opened fails *asynchronously* (its `start` posts the window
+to the event dispatch thread), so on a machine where AWT is headless too, the server carries on with a
+backend that will never show anything and no line saying so. The honest end of the chain is either the
+headless backend with a line saying nothing will be shown, or a refusal to start; what it must not be
+is a third silent failure. Not measured on a real headless host either - macOS ignores
+`java.awt.headless` for Swing's own paths, so the fallback *succeeded* here and the end of the chain
+could not be reached.
 
 ## 5. D - Large / product-level
 

@@ -11,11 +11,13 @@ import com.github.moaxcp.x11.protocol.xkb.XkbPlugin;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.input.Keymap;
 import io.github.oyzh1994.xserver.input.XkbMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.List;
 
 /**
  * XKEYBOARD, as much of it as a client needs before it will believe the keyboard is real.
@@ -37,14 +39,20 @@ import java.io.IOException;
  *       so what a client reads here and what it reads from {@code GetKeyboardMapping} cannot disagree.
  *   <li>{@code GetState}: the modifier state, as the mask this server is delivering events with.
  *   <li>{@code SelectEvents}: accepted and not answered, because this server sends no XKB events.
+ *   <li>{@code SetMap}: the keysyms of a map a client compiled, applied to the one table both rails
+ *       read - which is what lets {@code xkbcomp} put a chosen layout on this keyboard.
+ *   <li>{@code GetKbdByName}: answered "not loaded", because loading by name asks the server to
+ *       compile a keymap and there is no compiler here.
  * </ul>
  *
  * <p><b>What is not here</b>, deliberately and visibly: the map's actions, behaviours, explicit
- * components and virtual-modifier map (a {@code GetMap} reply simply does not claim them); the
- * compatibility map, {@code GetNames} and the indicator names; {@code SetMap}, so no layout can be
- * changed; and the XKB events. A client that wants to be told about a layout change is told nothing,
- * because nothing here changes one. Setting the repeat delay and rate stays where it was - the
- * core {@code ChangeKeyboardControl} path and the server's own defaults (A11).
+ * components and virtual-modifier map (a {@code GetMap} reply simply does not claim them, and a
+ * {@code SetMap} request carrying them has them dropped); the compatibility map, {@code GetNames},
+ * the indicator names and {@code GetControls}; and the XKB events. A layout can be *set* - by a client
+ * that compiles one itself, which is what {@code xkbcomp} does - but not *chosen by name*, which is
+ * what {@code setxkbmap} asks for and what needs a keymap compiler in the server. Setting the repeat
+ * delay and rate stays where it was - the core {@code ChangeKeyboardControl} path and the server's own
+ * defaults (A11).
  *
  * <p>The request bodies are decoded with the generated classes, which are correct for every request
  * here (they are fixed size and read positionally); the <em>replies</em> are written as bytes,
@@ -93,11 +101,20 @@ public final class XkbExtension implements Extension {
             throws IOException {
         return switch (minorOpcode) {
             case 0 -> UseExtension.readUseExtension(in);
-            case 1 -> Ignored.selectEvents(in);
+            // SelectEvents (1) and the four requests a keymap compiler makes on its way to SetMap -
+            // SetCompatMap (11), SetIndicatorMap (14), SetNames (18), SetGeometry (20) - are decoded
+            // only as far as the opcode: they carry tables this server has no place for, and the body
+            // is already buffered by the connection, so nothing has to be read to stay in step.
+            case 1, 11, 14, 18, 20 -> new Ignored(minorOpcode);
             case 4 -> GetState.readGetState(in);
             case 5 -> LatchLockState.readLatchLockState(in);
             case 8 -> GetMap.readGetMap(in);
+            case 9 -> SetMapRequest.read(in);
             case 21 -> PerClientFlags.readPerClientFlags(in);
+            // 23 is GetKbdByName, "load this keymap for me": the one request that asks the SERVER to
+            // compile a keymap from a rules file, which is what a server-side xkbcomp does. This
+            // server has no compiler, so the reply below says so.
+            case 23 -> GetKbdByName.readGetKbdByName(in);
             default -> null;
         };
     }
@@ -108,12 +125,11 @@ public final class XkbExtension implements Extension {
             case UseExtension r -> useExtension(client);
             case GetState r -> getState(server, client);
             case GetMap r -> getMap(client, r);
-            case Ignored r -> {
-                // SelectEvents, and whatever else is asked for and has no answer of its own. A
-                // client subscribing to events this server never sends is not an error.
-            }
+            case Ignored r -> ignored(client, r);
+            case SetMapRequest r -> setMap(server, client, r);
             case LatchLockState r -> latchLockState(client, r);
             case PerClientFlags r -> perClientFlags(client, r);
+            case GetKbdByName r -> getKbdByName(client, r);
             default -> throw ProtocolException.unimplemented(
                     "XKEYBOARD request " + request.getClass().getSimpleName());
         }
@@ -220,6 +236,84 @@ public final class XkbExtension implements Extension {
         send(client, bytes);
     }
 
+    /**
+     * {@code SetMap}: a client replacing the keymap, which is what {@code xkbcomp} sends after it has
+     * compiled one.
+     *
+     * <p><b>What is applied is the keysyms</b>, keycode by keycode, through the same table
+     * {@code GetKeyboardMapping} and this extension's {@code GetMap} answer from - so a client that
+     * sets a layout gets it back from both rails, and clients are told with the core
+     * {@code MappingNotify} the way {@code ChangeKeyboardMapping} tells them. Nothing else in the
+     * request is kept: the types, the actions, the behaviours, the explicit components, the
+     * virtual-modifier map and the real-modifier map are all read and dropped, because this server
+     * has no place for them - it has four types of its own and one modifier table, and both are what
+     * {@link XkbMap} publishes. A client that sets a map with types this server cannot represent
+     * gets the characters right and everything else as it was.
+     *
+     * <p><b>Measured, and this is the tool that matters</b>: {@code xkbcomp <file> <display>} sends
+     * SetMap (and the four requests above), which is the path to a chosen layout on a server with no
+     * compiler in it. {@code setxkbmap} does not - it asks {@code GetKbdByName}, which wants the
+     * server to run the compiler - so this item's "setxkbmap is still a no-op" was the wrong tool to
+     * measure by; see the backlog entry.
+     */
+    private void setMap(XServer server, ClientConnection client, SetMapRequest request) {
+        int first = request.firstKeySym();
+        int keycode = first;
+        int changed = 0;
+        for (int[] keysyms : request.syms()) {
+            if (keysyms.length > 0 && keycode >= (Keymap.MIN_KEYCODE & 0xFF)
+                    && keycode <= Keymap.MAX_KEYCODE) {
+                Keymap.assign(keycode, keysyms);
+                changed++;
+            }
+            keycode++;
+        }
+        if (changed > 0) {
+            server.broadcastMappingNotify((byte) 0, (byte) first, (byte) changed);
+        }
+        log.info("{} set the keymap through XKB: {} keycode(s) of keysyms applied, the types,"
+                + " actions, behaviours and modifier map dropped", client, changed);
+    }
+
+    /** A request accepted with nothing done about it, which for these is the honest answer. */
+    private void ignored(ClientConnection client, Ignored request) {
+        log.debug("{} sent XKEYBOARD request {}: accepted, nothing here to set", client,
+                request.minor());
+    }
+
+    /**
+     * {@code GetKbdByName}: "compile this rules/model/layout keymap and load it here", and the answer
+     * is that this server cannot - which is a reply, not an error.
+     *
+     * <p><b>Measured, and this is why the request is handled at all.</b> {@code setxkbmap -layout de}
+     * against this server used to die on {@code BadRequest} for this request - {@code X Error of
+     * failed request: BadRequest, Major opcode 134 (XKEYBOARD), Minor opcode 23
+     * (XkbGetKbdByName)} - because the generated decoder has no class for minor 23 and a decode
+     * failure is refused. Xlib's default handler prints an error and exits, so the client never got
+     * the chance to do anything else, and the item read as "no layout can be selected".
+     *
+     * <p>The protocol has an answer for a server that cannot: the reply's {@code loaded} flag is
+     * false, which is what a client asks for when it wants to know whether the server did the work.
+     * That is what is sent, with {@code found} and {@code reported} empty - nothing was found in the
+     * rules and nothing was reported back - so a client that has its own compiler (which
+     * {@code setxkbmap} does) can go on to {@code SetMap} instead.
+     */
+    private void getKbdByName(ClientConnection client, GetKbdByName request) {
+        log.debug("{} asked this server to load a keymap by name: there is no compiler here,"
+                + " answering \"not loaded\"", client);
+        byte[] bytes = new byte[32];
+        bytes[0] = 1;
+        bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        bytes[8] = (byte) Keymap.MIN_KEYCODE;
+        bytes[9] = (byte) Keymap.MAX_KEYCODE;
+        bytes[10] = 0;                          // loaded: no
+        bytes[11] = 0;                          // newKeyboard: no
+        putCard16(bytes, 12, 0, client.isBigEndian());   // found: nothing
+        putCard16(bytes, 14, 0, client.isBigEndian());   // reported: nothing
+        send(client, bytes);
+    }
+
     private void send(ClientConnection client, byte[] bytes) {
         try {
             client.output().writeRaw(bytes);
@@ -239,25 +333,148 @@ public final class XkbExtension implements Extension {
     }
 
     /**
+     * {@code SetMap}, decoded here because the generated class cannot read it.
+     *
+     * <p><b>Every list in the generated builder is non-null</b>, and a part the request does not
+     * carry is left null - so a {@code SetMap} that sets only the key symbols, which the protocol
+     * allows and a client changing one key's character will send, fails to decode with
+     * {@code NullPointerException: types is marked non-null but is null}. Measured: that is what
+     * happened to a test's one-keycode request while {@code xkbcomp}'s all-parts request went
+     * through. What is read here is the header, the type descriptors (skipped, because this server
+     * has four types of its own), and the key symbols; the rest of the body is left unread, which is
+     * safe because the connection buffers the whole request before it is decoded.
+     */
+    private record SetMapRequest(int firstKeySym, List<int[]> syms) implements XRequest {
+
+        private static final int KEY_TYPES = 1;
+        private static final int KEY_SYMS = 2;
+
+        static SetMapRequest read(com.github.moaxcp.x11.protocol.X11Input in) throws IOException {
+            in.readCard8();                             // the major opcode, again
+            in.readCard16();                            // length
+            in.readCard16();                            // deviceSpec
+            int present = in.readCard16();
+            in.readCard16();                            // flags
+            in.readCard8();                             // minKeyCode
+            in.readCard8();                             // maxKeyCode
+            in.readCard8();                             // firstType
+            // Unsigned: a keymap has 248 keycodes and a byte that reads as -8 is not a loop bound.
+            int nTypes = Byte.toUnsignedInt(in.readCard8());
+            int firstKeySym = Byte.toUnsignedInt(in.readCard8());
+            int nKeySyms = Byte.toUnsignedInt(in.readCard8());
+            in.readCard16();                            // totalSyms
+            in.readCard8(); in.readCard8(); in.readCard16();    // firstKeyAction, nKeyActions,
+            in.readCard8(); in.readCard8(); in.readCard8();     //   totalActions, behaviours
+            in.readCard8(); in.readCard8(); in.readCard8();     // explicit
+            in.readCard8(); in.readCard8(); in.readCard8();     // modifier map
+            in.readCard8(); in.readCard8(); in.readCard8();     // virtual modifier map
+            in.readCard16();                            // virtualMods
+            if ((present & KEY_TYPES) != 0) {
+                skipTypes(in, nTypes);
+            }
+            java.util.List<int[]> syms = new java.util.ArrayList<>();
+            if ((present & KEY_SYMS) != 0) {
+                for (int i = 0; i < nKeySyms; i++) {
+                    in.readCard8(4);                    // the four group type indices
+                    in.readCard8();                     // groupInfo
+                    in.readCard8();                     // width
+                    int nSyms = in.readCard16();
+                    int[] keysyms = new int[nSyms];
+                    for (int j = 0; j < nSyms; j++) {
+                        keysyms[j] = in.readCard32();
+                    }
+                    syms.add(keysyms);
+                }
+            }
+            return new SetMapRequest(firstKeySym, syms);
+        }
+
+        /** The type descriptors, so that the key symbols behind them can be reached. */
+        private static void skipTypes(com.github.moaxcp.x11.protocol.X11Input in, int count)
+                throws IOException {
+            for (int i = 0; i < count; i++) {
+                in.readCard8();                         // mask
+                in.readCard8();                         // realMods
+                in.readCard16();                        // virtualMods
+                in.readCard8();                         // numLevels
+                int entries = in.readCard8();
+                boolean preserve = in.readCard8() != 0;
+                in.readCard8();                         // pad
+                in.readCard8(4 * entries);              // the entries, four bytes each in a request
+                if (preserve) {
+                    in.readCard8(4 * entries);
+                }
+            }
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xkb";
+        }
+    }
+
+    /**
+     * {@code GetKbdByName}: a keymap's name, and the flags saying which parts of it to load, followed
+     * by a list of component names. The generated plugin has no class for it, so it is read here -
+     * only the fixed part, because the answer does not depend on any of it and the rest of the body
+     * is already buffered by the connection.
+     */
+    private record GetKbdByName() implements XRequest {
+
+        static GetKbdByName readGetKbdByName(com.github.moaxcp.x11.protocol.X11Input in)
+                throws IOException {
+            in.readCard8();                         // the major opcode, again
+            in.readCard16();                        // length
+            in.readCard16();                        // deviceSpec
+            in.readCard16();                        // need
+            in.readCard16();                        // want
+            in.readCard8();                         // load
+            in.readCard8();                         // pad
+            return new GetKbdByName();
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xkb";
+        }
+    }
+
+    /**
      * A request that is decoded only far enough to know it is one of the ones with no answer.
      *
      * <p>{@code SelectEvents} carries a variable number of mask words after its fixed part, sized by
      * its own {@code affectWhich}; the generated reader models that, but the reply to it is nothing
      * at all, so reading the fixed part and leaving the rest is both enough and safer.
      */
-    private record Ignored() implements XRequest {
-
-        static Ignored selectEvents(com.github.moaxcp.x11.protocol.X11Input in) throws IOException {
-            in.readCard8();                         // the major opcode, again
-            in.readCard16();                        // length
-            in.readCard16();                        // deviceSpec
-            in.readCard16();                        // affectWhich
-            in.readCard16();                        // clear
-            in.readCard16();                        // selectAll
-            in.readCard16();                        // affectMap
-            in.readCard16();                        // map
-            return new Ignored();
-        }
+    private record Ignored(int minor) implements XRequest {
 
         @Override
         public byte getOpCode() {

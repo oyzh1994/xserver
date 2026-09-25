@@ -308,8 +308,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   version handshake, the keymap (`GetMap`) and the modifier state (`GetState`) are there, the
   requests that have no answer here (`SelectEvents`, `LatchLockState`) are accepted rather than
   refused, and `PerClientFlags` answers "none supported" instead of erroring - which is what JavaFX
-  sends as an application starts. What is *not* there: the compatibility map, the indicator names,
-  `GetNames`, `SetMap` (so no layout can be selected - `setxkbmap` is still a no-op), the "detectable
+  sends as an application starts. A client can also **set** the keymap (`SetMap`), applying its
+  keycodes' keysyms to the one table both this extension and `GetKeyboardMapping` read, which is how
+  `xkbcomp <file> <display>` loads a chosen layout. What is *not* there: choosing a layout **by name**
+  (`setxkbmap` asks for `GetKbdByName`, which wants a keymap compiler inside the server - it says "not
+  loaded" instead), the map's types, actions and behaviours (a client gets its characters right and
+  everything else as it was), the compatibility map, the indicator names, `GetNames`, the "detectable
   auto-repeat" a client can ask for, and locking or latching a modifier from a client, which would
   lock the machine's own keyboard for everyone. One caveat worth knowing: a `GetMap` reply has to
   carry XKB's four mandatory key types or Xlib rejects the whole reply, so a server that offers *fewer*

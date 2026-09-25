@@ -41,6 +41,7 @@ class XkbTest {
     private static final int GET_STATE = 4;
     private static final int LATCH_LOCK_STATE = 5;
     private static final int GET_MAP = 8;
+    private static final int SET_MAP = 9;
     private static final int PER_CLIENT_FLAGS = 21;
 
     /** {@code XkbUseCoreKbd}. */
@@ -142,6 +143,70 @@ class XkbTest {
             assertEquals(1, flags[0] & 0xFF, "a reply");
             assertEquals(0, RawXClient.readInt(flags, 8), "no per-client flags are supported here");
         }
+    }
+
+    @Test
+    void aClientCanSetTheKeymapThroughXkbAndBothRailsAgree() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XKEYBOARD");
+            int keycode = Keymap.keycodeForLetter('a');
+            int[] previous = Keymap.keysymsFor(keycode).clone();
+            try {
+                client.sendRequest(setMap(opcode, keycode, new int[] {'q', 'Q'}));
+
+                // Both rails read one table, which is the property this extension is built on: what
+                // a client sets through XKB is what the core GetKeyboardMapping reports, and what
+                // the next client's XkbGetMap will carry.
+                System.out.println("DEBUG stored kc38 = " + java.util.Arrays.toString(
+                        Keymap.keysymsFor(keycode)) + "  via-request=" + java.util.Arrays.toString(
+                        keysymsOf(getMap(client, opcode, ALL_CLIENT_INFO), keycode)));
+                assertArrayEquals(new int[] {'q', 'Q'},
+                        keysymsOf(getMap(client, opcode, ALL_CLIENT_INFO), keycode));
+                // And the one table both rails read holds it, which is the property that makes the
+                // core rail follow without anything being written for it: the core reply itself is
+                // checked live instead - `xmodmap -pke` and `xkbcomp` against a running server, where
+                // a German keymap makes keycode 52 come back `y Y` on both (backlog B1).
+                assertArrayEquals(new int[] {'q', 'Q'}, Keymap.keysymsFor(keycode));
+            } finally {
+                // Keymap is the server's static table, so a test that changes it has to put it back.
+                Keymap.assign(keycode, previous);
+            }
+        }
+    }
+
+    /**
+     * A {@code SetMap} carrying one keycode's keysyms, in the layout the protocol uses: a
+     * thirty-five byte header, then one sym map with its keysyms after it. Written here rather than
+     * built with the generated writer because that writer is the same generator as the server's
+     * reader, and a mistake in it would be invisible; the wire format is pinned instead by the live
+     * check in the backlog, where {@code xkbcomp} loads a real German keymap through this server and
+     * keycode 52 comes back as {@code y Y} on both rails.
+     */
+    private static byte[] setMap(int opcode, int keycode, int[] keysyms) {
+        // Thirty-five bytes the server reads after the opcode, and the opcode itself.
+        int header = 36;
+        int body = 8 + keysyms.length * 4;
+        byte[] request = new byte[((header + body + 3) / 4) * 4];
+        request[0] = (byte) opcode;
+        request[1] = (byte) SET_MAP;
+        RawXClient.writeShortAt(request, 2, request.length / 4);
+        RawXClient.writeShortAt(request, 4, CORE_KEYBOARD);         // deviceSpec
+        RawXClient.writeShortAt(request, 6, 2);                     // present: key syms
+        RawXClient.writeShortAt(request, 8, 0);                     // flags
+        request[10] = (byte) Keymap.MIN_KEYCODE;                    // minKeyCode
+        request[11] = (byte) Keymap.MAX_KEYCODE;                    // maxKeyCode
+        request[14] = (byte) keycode;                               // firstKeySym
+        request[15] = 1;                                            // nKeySyms
+        RawXClient.writeShortAt(request, 16, keysyms.length);       // totalSyms
+        RawXClient.writeShortAt(request, 27, 0);                    // virtualMods
+        // The sym map: four type indices, the group info, the width, then the keysyms inline.
+        request[header + 4] = 1;                                    // groupInfo: one group
+        request[header + 5] = (byte) keysyms.length;                // width
+        RawXClient.writeShortAt(request, header + 6, keysyms.length);
+        for (int i = 0; i < keysyms.length; i++) {
+            RawXClient.writeIntAt(request, header + 8 + i * 4, keysyms[i]);
+        }
+        return request;
     }
 
     // ------------------------------------------------------------------

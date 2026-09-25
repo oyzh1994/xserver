@@ -183,6 +183,16 @@ Two consequences worth keeping:
 - **`Platform.exit()` is called once, at the very end** (`releaseToolkit`), never by the first window
   that closes: it is one-way, and would take every other client's window with it and stop the toolkit
   starting again.
+- **A window that cannot be opened is a failure the server acts on, not one it sits in** (C11).
+  `JavaFxBackend.startupToolkit` starts the toolkit on a daemon thread and waits ten seconds for the
+  FX thread to run the startup's runnable: where there is no display `QuantumToolkit.startup` parks on
+  a latch that never opens, with no exception and no return value to notice, and the tick thread that
+  called it used not to come back - the server went on answering clients with nothing ever shown
+  again. When it does give up, `BackendFactory` falls back to Swing (it always did), and a backend
+  whose `start` refuses makes the tick log one line and stop the server rather than serve into the
+  void. What that chain still lacks is an ending: a Swing window that cannot be opened fails on the
+  event dispatch thread rather than in `start`, so on a machine where AWT is headless too the server
+  can still end up with a backend that shows nothing and no line saying so.
 
 ## The pointer sprite
 
@@ -753,6 +763,20 @@ that reads the core mapping have to agree about what a keycode means, or the sam
 different characters depending on the toolkit. Measured with `xev` driven by the same keycodes on both
 servers: 26 lines of keysym output, identical line for line, over Escape, a letter, Shift, Caps Lock,
 Shift+Caps Lock, Return and the keypad.
+
+**A client can also *set* the keymap** (B1), and the tool that does is `xkbcomp` rather than
+`setxkbmap`: measured, `setxkbmap -layout de` dies asking for `XkbGetKbdByName`, which wants the
+*server* to compile a keymap from a rules file - a server-side `xkbcomp`, which is not something this
+project is going to grow - while `xkbcomp <file> <display>` compiles one itself and sends `SetMap`.
+That now works: the keysyms of the map a client sends are applied to the one table both rails read,
+so a German keymap loaded that way makes keycode 52 answer `y Y` from `xmodmap -pke` and `0x79 0x59`
+from `XkbProbe`. `GetKbdByName` is answered "not loaded" rather than refused, because a refusal is an X
+error and Xlib's default handler ends the process: what the client gets instead is the protocol's own
+answer for a server that cannot compile, and `setxkbmap` reports "Error loading new keyboard
+description" instead of dying. The four requests a compiler sends on its way there - `SetCompatMap`,
+`SetIndicatorMap`, `SetNames`, `SetGeometry` - are accepted and dropped, and the parts of `SetMap`
+this server has no place for (types, actions, behaviours, explicit components, modifier maps) are
+dropped too: a client gets its characters right and everything else as it was.
 
 **The four mandatory types are not optional, and that is the trap.** A `GetMap` reply has to carry at
 least `ONE_LEVEL`, `TWO_LEVEL`, `ALPHABETIC` and `KEYPAD`, and a reply with fewer is not trimmed by

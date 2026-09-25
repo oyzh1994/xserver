@@ -1268,23 +1268,67 @@ public final class JavaFxBackend implements DisplayBackend {
     // ------------------------------------------------------------------
 
     /**
-     * Brings the toolkit up if it is not up already. Starting it is asynchronous, so the wait for
-     * a task to run on the FX thread is what actually proves that JavaFX works.
+     * How long the toolkit is given to come up before the server decides it cannot show anything.
+     *
+     * <p>Generous, because a cold JavaFX startup on a loaded machine is seconds rather than
+     * milliseconds, and the cost of waiting is a delay while the cost of giving up too early is a
+     * server that refuses to run on a machine that is merely slow.
+     */
+    private static final long TOOLKIT_START_TIMEOUT_MILLIS = 10_000;
+
+    /**
+     * Brings the toolkit up if it is not up already, and gives up if it will not come up.
+     *
+     * <p><b>The wait has to be bounded, and this is what the platform does without one.</b>
+     * {@code Platform.startup} blocks until the toolkit is running, and where there is no display it
+     * can block *for ever*: measured with {@code -Djava.awt.headless=true} on macOS,
+     * {@code QuantumToolkit.startup} parks on a latch whose count never reaches zero, because the
+     * render thread failed first ({@code ArrayIndexOutOfBoundsException: Index 0 out of bounds for
+     * length 0}, an empty screen list). Nothing in the API reports that - no exception, no return
+     * value - so the server used to come up, answer clients, and never show a frame, with a stack
+     * trace from the render thread as its only explanation. The wait here is what turns that into a
+     * failure the caller can act on.
      */
     private static synchronized void startupToolkit() {
         if (toolkitStarted) {
             return;
         }
+        CountDownLatch ready = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        Thread starter = new Thread(() -> {
+            try {
+                // The runnable is what proves it: Platform.startup calls it on the FX thread once
+                // the toolkit is up, so counting it down is the difference between "the call
+                // returned" and "JavaFX works".
+                Platform.startup(ready::countDown);
+            } catch (IllegalStateException alreadyRunning) {
+                // Someone else started the runtime first, which is the state we wanted anyway.
+                ready.countDown();
+            } catch (Throwable t) {
+                failure.set(t);
+                ready.countDown();
+            }
+        }, "javafx-startup");
+        starter.setDaemon(true);
+        starter.start();
         try {
-            Platform.startup(() -> {
-            });
-        } catch (IllegalStateException alreadyRunning) {
-            // Someone else started the runtime first, which is the state we wanted anyway.
+            if (!ready.await(TOOLKIT_START_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+                throw new IllegalStateException("the JavaFX toolkit did not start within "
+                        + (TOOLKIT_START_TIMEOUT_MILLIS / 1000) + "s: this machine cannot show a"
+                        + " window, so nothing would be forwarded. Run with --backend headless to"
+                        + " serve clients without one.");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while starting the JavaFX toolkit", e);
+        }
+        if (failure.get() != null) {
+            throw new IllegalStateException("the JavaFX toolkit could not start: " + failure.get(),
+                    failure.get());
         }
         // The server decides when the process is done, not the last window being closed.
         Platform.setImplicitExit(false);
-        runOnFxThreadAndWait(() -> {
-        });
         toolkitStarted = true;
     }
 

@@ -983,7 +983,21 @@ public final class XServer {
             if (wanted == null || (session.client() == null && options.perClientWindows())) {
                 return;
             }
-            openSessionBackend(session, wanted);
+            try {
+                openSessionBackend(session, wanted);
+            } catch (RuntimeException e) {
+                // A window that cannot be opened means nothing this server does will ever be seen.
+                // Carrying on would be a display server that answers clients and shows nobody
+                // anything - measured: with the JavaFX toolkit on a machine that cannot show a
+                // window the tick thread parked for ever and the server went on serving, its only
+                // explanation a stack trace from a render thread. Stop, and say why in one line.
+                log.error("cannot show display :{} with the {} backend: {}",
+                        options.displayNumber(), options.backend(), e.getMessage());
+                System.err.println("xserver: cannot show display :" + options.displayNumber() + ": "
+                        + e.getMessage());
+                stop();
+                return;
+            }
         } else {
             if (session.takeScreenResized()) {
                 // The screen grew while the lock was held; a backend that wrapped the old pixels has
