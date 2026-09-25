@@ -1,5 +1,7 @@
 package io.github.oyzh1994.xserver.tools;
 
+import java.util.List;
+
 /**
  * Measures what a grab with {@code pointer_mode = Sync} does to the events that follow, and what each
  * {@code AllowEvents} mode releases.
@@ -34,6 +36,19 @@ public final class AllowEventsProbe {
     private static final int BUTTON_PRESS = 4;
     private static final int BUTTON_RELEASE = 5;
 
+    /**
+     * {@code GrabPointer}/{@code GrabButton}/{@code GrabKey} device modes, in X's own numbering:
+     * {@code GrabModeSync} is <b>0</b> and {@code GrabModeAsync} is <b>1</b> (`X.h`), which is the
+     * opposite way round from {@code AllowEvents}, where {@code SyncPointer} is 1.
+     *
+     * <p><b>The first version of this probe had these backwards</b>, and so measured an asynchronous
+     * grab for a whole session while printing "pointer_mode = Sync": the reference "held nothing
+     * back", which is precisely what an async grab does, and the item was closed on it. An async
+     * grab never freezes anything, so that run said nothing about the modes at all.
+     */
+    private static final int GRAB_SYNC = 0;
+    private static final int GRAB_ASYNC = 1;
+
     /** {@code AllowEvents} modes, numbered as the protocol numbers them. */
     private static final String[] ALLOW_MODES = {"AsyncPointer", "SyncPointer", "ReplayPointer",
             "AsyncKeyboard", "SyncKeyboard", "ReplayKeyboard", "AsyncBoth", "SyncBoth"};
@@ -58,15 +73,21 @@ public final class AllowEventsProbe {
         int port = Integer.parseInt(args[1]);
         boolean passive = args.length > 2 && args[2].equals("passive");
         boolean keyCase = args.length > 2 && args[2].equals("key");
+        // The key case is a method of its own and reads the flag for itself.
         boolean secondInjector = args.length > 4 && args[4].equals("injector");
         // XTEST is one way to move the pointer and a warp is another, and they take different paths
         // into the server. If a freeze were observable through one and not the other, the modes' state
         // would be real and only the injection that bypassed it; if neither shows it, the device is
         // not being frozen at all.
         boolean warpMoves = args.length > 6 && args[6].equals("warp");
+        // "asyncgrab" asks for the grab that freezes nothing, so the two can be compared. Anything
+        // else is the synchronous one, which is the mode this probe exists to measure.
+        boolean asyncGrab = java.util.Arrays.asList(args).contains("asyncgrab");
+        int grabMode = asyncGrab ? GRAB_ASYNC : GRAB_SYNC;
+        String grabName = asyncGrab ? "Async" : "Sync";
         String what = args.length > 3 ? args[3] : "sync";
         if (keyCase) {
-            keyReplay(host, port, args.length > 3 ? args[3] : "replay");
+            keyReplay(host, port, java.util.Arrays.asList(args));
             return;
         }
 
@@ -88,12 +109,13 @@ public final class AllowEventsProbe {
             drain(wire);
 
             if (passive) {
-                System.out.println("step: arm a passive button grab on the root, pointer_mode = Sync");
-                grabButton(wire, wire.root(), false, 0x4 | 0x8 | 0x40, 1, 1);
+                System.out.println("step: arm a passive button grab on the root, pointer_mode = "
+                        + grabName);
+                grabButton(wire, wire.root(), false, 0x4 | 0x8 | 0x40, grabMode, grabMode);
                 drain(wire);
             } else {
-                System.out.println("step: grab the pointer with pointer_mode = Sync");
-                int status = grabPointer(wire, window, false, 0x4 | 0x8 | 0x40, 1, 1);
+                System.out.println("step: grab the pointer with pointer_mode = " + grabName);
+                int status = grabPointer(wire, window, false, 0x4 | 0x8 | 0x40, grabMode, grabMode);
                 System.out.println("  grab status = " + status);
                 drain(wire);
             }
@@ -156,7 +178,11 @@ public final class AllowEventsProbe {
      * whether the grab fired or not, and a server that ignores the request is indistinguishable from
      * one that honoured it (which is the same trap `GrabProbe` fell into for A1).
      */
-    private static void keyReplay(String host, int port, String what) throws Exception {
+    private static void keyReplay(String host, int port, List<String> args) throws Exception {
+        boolean asyncGrab = args.contains("asyncgrab");
+        int grabMode = asyncGrab ? GRAB_ASYNC : GRAB_SYNC;
+        String grabName = asyncGrab ? "Async" : "Sync";
+        String what = args.size() > 3 ? args.get(3) : "replay";
         try (Wire graber = Wire.connect(host, port); Wire focused = Wire.connect(host, port)) {
             xtest = queryExtension(graber, "XTEST");
             int focusedWindow = focused.allocateId();
@@ -172,8 +198,9 @@ public final class AllowEventsProbe {
             drain(graber);
             drain(focused);
 
-            System.out.println("step: arm a passive key grab on the root, keyboard_mode = Sync");
-            grabKey(graber, graber.root(), false, 0x8000, 0, 1, 1);
+            System.out.println("step: arm a passive key grab on the root, keyboard_mode = "
+                    + grabName);
+            grabKey(graber, graber.root(), false, 0x8000, 0, grabMode, grabMode);
             drain(graber);
             drain(focused);
 
@@ -315,8 +342,8 @@ public final class AllowEventsProbe {
     }
 
     /**
-     * {@code GrabPointer} with both device modes given, because the mode is the whole point: 0 is Async
-     * and 1 is Sync for each device.
+     * {@code GrabPointer} with both device modes given, because the mode is the whole point - see
+     * {@link #GRAB_SYNC}.
      */
     private static int grabPointer(Wire wire, int window, boolean ownerEvents, int eventMask,
                                    int pointerMode, int keyboardMode) throws Exception {
@@ -342,8 +369,8 @@ public final class AllowEventsProbe {
     }
 
     /**
-     * {@code GrabButton} with both device modes given: 1 is Sync for each. Armed on the root it fires
-     * for a press anywhere, which is the arrangement a freeze can be seen in.
+     * {@code GrabButton} with both device modes given - see {@link #GRAB_SYNC}. Armed on the root it
+     * fires for a press anywhere, which is the arrangement a freeze can be seen in.
      */
     private static void grabButton(Wire wire, int window, boolean ownerEvents, int eventMask,
                                    int pointerMode, int keyboardMode) throws Exception {
