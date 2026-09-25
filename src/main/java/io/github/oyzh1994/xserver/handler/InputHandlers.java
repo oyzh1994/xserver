@@ -79,7 +79,6 @@ public final class InputHandlers {
 
     private final XServer server;
     /** Keycodes whose keysyms a client replaced with {@code ChangeKeyboardMapping}. */
-    private final Map<Integer, int[]> keymapOverrides = new HashMap<>();
     /** Pointer button remapping; index 0 is button 1. */
     private byte[] pointerMapping = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     /** A modifier row holds two keycodes: the left and right variant of the modifier. */
@@ -479,7 +478,7 @@ public final class InputHandlers {
         for (int i = 0; i < count; i++) {
             int[] row = new int[perKeycode];
             System.arraycopy(keysyms, i * perKeycode, row, 0, perKeycode);
-            keymapOverrides.put(first + i, row);
+            Keymap.assign(first + i, row);
         }
         // Clients are told the mapping changed so they can refresh their caches.
         server.broadcastMappingNotify((byte) 0, (byte) first, (byte) count);
@@ -499,10 +498,8 @@ public final class InputHandlers {
         int[] keysyms = new int[count * perKeycode];
         for (int i = 0; i < count; i++) {
             int keycode = first + i;
-            int[] row = keymapOverrides.get(keycode);
             for (int level = 0; level < perKeycode; level++) {
-                keysyms[i * perKeycode + level] = row != null && level < row.length
-                        ? row[level] : Keymap.keysym(keycode, level);
+                keysyms[i * perKeycode + level] = Keymap.keysym(keycode, level);
             }
         }
         client.sendReply(GetKeyboardMappingReply.builder()

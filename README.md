@@ -65,7 +65,7 @@ io.github.oyzh1994.xserver
 ├── input/        pointer/keyboard state, keymap, cursor sprite
 ├── clipboard/    the bridge between the host's clipboard and the X selections
 ├── handler/      the request implementations, grouped by area
-└── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES
+└── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA
 ```
 
 Three decisions shape everything else:
@@ -124,7 +124,8 @@ events with the full detail lattice and the grab modes, pointer and keyboard eve
 and `doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
-operations), `XTEST` (synthetic input), `XFIXES` (cursor images, regions,
+operations), `XTEST` (synthetic input), `XINERAMA` (the one screen, which is the answer a toolkit's
+startup asks for), `XFIXES` (cursor images, regions,
 `SetWindowClipRegion`, and the selection and cursor subscriptions — a client that asks to be told
 when the clipboard changes, or when the pointer moves onto a different cursor, is told, where
 before it heard nothing), and `RENDER` — pictures, formats, `Composite` with the full operator table,
@@ -311,6 +312,20 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   client's window; a drag past what the screen currently shows makes the screen bigger first, so a
   forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag
   stops, and the screen never shrinks again for the session.
+- **A file dragged from the desktop onto a forwarded application is offered to it as an XDND drag**,
+  which a toolkit application (GTK, Qt, Swing) accepts; an application from before drag and drop -
+  `xterm`, `xclock` - has no way to receive one and always will not. Dragging *out* of a forwarded
+  application is not implemented: a JavaFX window cannot start a platform drag.
+- **Text the host's input method composes reaches a forwarded application as a key press**, which is
+  the only thing an X client can be sent: the server claims a keycode for the character and tells the
+  clients the mapping changed. What is *not* bridged is the input method's own window - the candidate
+  list is the platform's, and a client-side input method (fcitx, ibus) needs `--single-window` for the
+  reason below.
+- **Each client gets a screen of its own, which anything that is not an application notices.** An X
+  input method, a window manager or a clipboard manager draws windows positioned over somebody else's
+  window - an input method's candidate list being the clearest case - and in the default mode that
+  window lands on the client's own screen, so it is shown in a host window of its own instead of over
+  the application. Run such a client with `--single-window`, where every client shares one screen.
 - **A screen grows but does not shrink.** Dragging a forwarded window past the edge of the screen
   makes the screen bigger so the client can be told about the larger window; nothing brings it back
   down when the window goes small again, so the extra framebuffer stays allocated for the session.

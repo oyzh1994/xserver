@@ -282,6 +282,40 @@ public final class SwingBackend implements DisplayBackend {
             public void keyReleased(KeyEvent event) {
                 keyChanged(event, false);
             }
+
+            @Override
+            public void keyTyped(KeyEvent event) {
+                // As on the JavaFX path: the composed character, reported separately from the key.
+                input.keyTyped(event.getKeyChar());
+            }
+        });
+
+        // The same drag, on the Swing path: the platform hands over the file list and the point it
+        // was dropped at, and the XDND side is the server's.
+        view.setTransferHandler(new javax.swing.TransferHandler() {
+            @Override
+            public boolean canImport(TransferSupport support) {
+                return support.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
+            }
+
+            @Override
+            public boolean importData(TransferSupport support) {
+                try {
+                    Object data = support.getTransferable()
+                            .getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor);
+                    java.util.List<String> paths = new java.util.ArrayList<>();
+                    for (Object file : (java.util.List<?>) data) {
+                        paths.add(file.toString());
+                    }
+                    java.awt.Point at = support.getDropLocation().getDropPoint();
+                    input.hostDrop(paths, clamp(at.x + viewport.x, screenWidth),
+                            clamp(at.y + viewport.y, screenHeight));
+                    return true;
+                } catch (Exception e) {
+                    log.debug("a drop the host offered could not be read: {}", e.toString());
+                    return false;
+                }
+            }
         });
 
         JFrame window = new JFrame(title);

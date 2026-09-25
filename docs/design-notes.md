@@ -29,6 +29,17 @@ in a screen-sized one with black around it. The screen grows when a window is dr
 "The screen grows with the window" below - and never shrinks; a window larger than the screen is
 clipped until the drag that needs the room grows it.
 
+**The cost of it is anything that is infrastructure rather than an application.** An X input method,
+a window manager, a clipboard manager and a drag-and-drop source are all X clients that draw windows
+of their own, positioned over somebody else's: an input method's pre-edit text and candidate list are
+a window placed over the application's caret. Every one of those clients gets a screen of its own
+here, so its window is drawn in its own host window - an input method's candidate list appears
+*beside* the application rather than over it, and a connection that maps anything at all gets a host
+window whether or not anybody would call it an application. The protocol parts survive the split,
+because selections, properties and sent events are server-wide rather than per screen; the pixels do
+not. `--single-window` is the mode where they can coexist, and it is the mode to run an input method
+in - `PerClientWindowTest.aClientThatIsNotAnApplicationGetsAWindowOfItsOwnToo` is what says so.
+
 `--single-window` keeps the older shape - one shared screen, every client on it - which is also the
 mode the in-process tests build on.
 
@@ -708,6 +719,55 @@ The decoration is measured when the window opens and not again: the platform app
 asynchronously, so a measurement taken right after setting one reads the old size and comes out a title
 bar wrong - once per viewport change, which walks the window down a title bar at a time. That was
 measured, and it is why the measurement lives in `openWindow` alone.
+
+## Typing a character no key has
+
+A keycode says which key was pressed, and a client turns it into a character with its own copy of the
+keyboard mapping. That covers everything printed on a keyboard and nothing else - no keyboard has a
+key per Chinese character - so text an input method composed arrives at the server as a *character*,
+and the server has to make an X client see it. It does that the only way X allows: claims a keycode no
+key carries, gives it the character as its keysym (`0x01000000 | codepoint`, X's own spelling for a
+character with no keysym of its own), sends `MappingNotify` so every client re-reads the mapping, and
+presses that keycode. A character the keyboard *does* carry is left alone - the key press has already
+delivered it, and sending it again would type it twice - and the keycode is claimed once and kept,
+because a mapping change per keystroke would be a mapping change per keystroke.
+
+This is the platform-independent half of an input method, and it is deliberately the whole of what the
+server does: which window an input method draws its candidates in, and how it composes, is the input
+method's own business. Every toolkit reports composed text the same way, and everything after the
+report is the same X protocol. What the platform reports it *through* is not the same, and that cost
+an attempt:
+
+- **JavaFX needs two hooks, and the second is the whole feature on a Mac.** `KEY_TYPED` does not carry
+  what an input method committed - measured, by typing Chinese through the host's input method and
+  watching nothing arrive at all. It comes in as `Scene.setOnInputMethodTextChanged`'s committed text,
+  which is wired up beside it. A platform fact rather than a preference, and one that would have made
+  a finished server look broken.
+- AWT reports it as `keyTyped`, which is the same event as an ordinary character and needs no second
+  hook.
+
+## A drag from the host's desktop
+
+X's drag and drop is client to client, and the *source* drives it: it takes the `XdndSelection`,
+tells the window under the pointer what it is carrying, drops, and hands the data over when that
+window asks. The target half is a forwarded application's own code, which has been dragging and
+dropping on real desktops all along - so the only thing missing is a source on the X side that speaks
+for the host's drag, which is `DropBridge`. The platform reports the drop and the files
+(`InputSink.hostDrop`); everything after that is a short conversation that has to look exactly like a
+drag a client started itself.
+
+The bridge is a **source and not a target**, so it publishes no `XdndAware` of its own and never maps
+its window: the drag the user sees is the platform's. Dragging *out* of an application is a different
+problem and is not attempted - a JavaFX window cannot start a platform drag, because the platform's
+drag is the user's gesture and the toolkit only reports one.
+
+**The bug this turned up is worth knowing about on its own.** `SendEvent` with no event mask sends the
+event to the client that *created* the window it names, whatever that client selected - it has to be
+that way round, because a target cannot select for a message it does not know is coming. The server
+treated "no mask" as "nobody is interested" and dropped the message, which silently broke every
+message of this form: all of XDND, the `WM_DELETE_WINDOW` reply an application sends back, and
+anything else in EWMH. It is one branch in `AtomHandlers.sendEvent` and two tests in
+`ClientMessageTest`, and it had been there since SendEvent was written.
 
 ## What the frame does when the client asks for something
 

@@ -452,6 +452,11 @@ public final class AtomHandlers {
                     r.getProperty(), r.getTime());
             return;
         }
+        io.github.oyzh1994.xserver.drop.DropBridge drops = server.dropBridge();
+        if (drops != null && ownerId != 0 && drops.ownsWindow(ownerId)) {
+            drops.serve(requestor, r.getSelection(), r.getTarget(), r.getProperty(), r.getTime());
+            return;
+        }
         if (ownerId == 0) {
             server.events().send(requestor.owner(), com.github.moaxcp.x11.protocol.xproto
                     .SelectionNotifyEvent.builder()
@@ -559,12 +564,33 @@ public final class AtomHandlers {
             bridge.selectionAnswered(
                     readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
         }
+        io.github.oyzh1994.xserver.drop.DropBridge drops = server.dropBridge();
+        if (drops != null && eventCode == CLIENT_MESSAGE && drops.ownsWindow(destination.id())) {
+            // The target answering the drag: XdndStatus says whether it will take the drop, and
+            // XdndFinished says the conversation is over.
+            int[] data = new int[5];
+            for (int i = 0; i < data.length; i++) {
+                data[i] = readCard32(bytes, 12 + i * 4, senderBigEndian);
+            }
+            drops.clientMessage(readCard32(bytes, 8, senderBigEndian), data, client);
+        }
 
         if (eventCode == CLIENT_MESSAGE) {
             applyWindowStateMessage(bytes, senderBigEndian);
         }
 
         int mask = r.getEventMask();
+        if (mask == 0 && !r.isPropagate()) {
+            // X's own rule, and the one every EWMH and XDND message depends on: an event sent with
+            // no event mask goes to the client that *created* the destination window, whatever that
+            // client selected. It has to be this way round - a target cannot select for a message it
+            // does not know is coming - so requiring a mask here drops all of them.
+            ClientConnection owner = destination.owner();
+            if (owner != null) {
+                server.events().send(owner, rawEvent(owner, bytes, senderBigEndian));
+            }
+            return;
+        }
         if (r.isPropagate()) {
             server.events().deliverPropagating(destination, mask, server.inputFor(client).pointerX(),
                     server.inputFor(client).pointerY(),

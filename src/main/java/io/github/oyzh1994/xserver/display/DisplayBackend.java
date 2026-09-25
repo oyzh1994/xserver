@@ -27,6 +27,31 @@ public interface DisplayBackend {
         /** A key changed state. {@code keycode} is an X keycode, not a keysym. */
         void keyChanged(int keycode, boolean pressed, int x, int y);
 
+        /**
+         * The host composed a character for the user - an input method's output, or a dead key's
+         * accent - which no keycode stands for.
+         *
+         * <p>Every platform's toolkit reports this separately from the key that produced it: JavaFX
+         * as {@code KEY_TYPED}, AWT as {@code keyTyped}, and each of them after the input method has
+         * had its turn, so what arrives here is the text the user meant rather than the keys that
+         * were pressed. The server types it with a keycode of its own - see
+         * {@code InputState.keyTyped} - because that is the only thing an X client can be sent.
+         */
+        default void keyTyped(char character) {
+        }
+
+        /**
+         * The user dropped files from the host's desktop onto this window, at a point on the
+         * screen in framebuffer coordinates.
+         *
+         * <p>The other half of the drag is XDND and belongs to the server, because X's drag and
+         * drop is client to client and the forwarded application is a target that works already:
+         * see {@code DropBridge}. This is only the platform's report that a drag ended on the
+         * window, which is the part no X client can know.
+         */
+        default void hostDrop(java.util.List<String> paths, int x, int y) {
+        }
+
         /** The window gained or lost focus; the server tracks this for the input focus. */
         void focusChanged(boolean focused);
 

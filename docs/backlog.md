@@ -66,7 +66,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| C5 | host ↔ X drag and drop (XDND) | host window | M |
+| C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
 | B2 | RandR | extension | M |
@@ -251,7 +251,29 @@ over a real display yet. The sprite appears only in the `-scene-` frame dump: di
 
 ---
 
-### [ ] A4. `xdotool` segfaults against this server. **S-M**
+### [ ] A4. `xdotool` segfaults against this server. **S-M** - worked on 2026-09-24, one cause ruled out
+
+**Where it crashes, confirmed**: `xdo_new_with_opened_display` in `libxdo.so.3`, from a gdb backtrace
+on the VM - xdotool's own library, in its startup, before any of the subcommand's own requests. Every
+subcommand dies there, `getdisplaygeometry` included.
+
+**Ruled out: Xinerama.** The obvious suspect was an extension xdotool probes at startup that this
+server lacked, and XINERAMA was the one extension Xvfb has and this server did not. It was implemented
+(see B3) and **the binary still segfaults in the same function** - so it is not the missing extension,
+and the next person does not have to try it.
+
+**What the next step is**: something the library reads out of a reply is malformed enough to crash it,
+and the tool for that is a proxy that prints reply *bodies* - `tools/XProxy.java` is a byte-level proxy
+in the kit that logs a client's stream and deliberately does not decode replies (E0 records extending
+it as this item's first step). A strace of the socket writes gets the request bytes and nothing of the
+answers, which is the wrong half.
+
+**Parked 2026-09-24** as too large for the time available: this needs a diagnostic tool before it needs
+a fix.
+
+---
+
+### [ ] A4old. `xdotool` segfaults against this server. **S-M**
 
 **Current.** `xdotool getmouselocation` aborts; a hand-written raw-protocol client issues the same
 `QueryPointer`/`WarpPointer`/`GetInputFocus` and is fine. So some reply this server sends is well
@@ -653,7 +675,25 @@ diffed against this server; a C1 resize delivers `ScreenChangeNotify` to a clien
 
 ---
 
-### [ ] B3. Xinerama. **M**/**S-M**
+### [~] B3. Xinerama. **M**/**S-M** - the part a client's startup needs, done 2026-09-24
+
+**Done**: `extension/XineramaExtension` answers the three requests a client asks before it has decided
+anything - `QueryVersion` (1.1), `IsActive` (**no**: this server is one screen per client and cannot
+span more than one) and `QueryScreens` (that one screen, at the origin, sized to the root).
+`extension/XineramaTest` (3 tests); three small replies.
+
+**Why it was done here**: `xdotool` calls `XineramaIsActive` as it starts, and a client that asks a
+question has to get an answer. Measured: with the extension present the xdotool segfault below is
+**still** there, so Xinerama was not its cause - which is what A4's investigation needed ruled out.
+
+**Not done**: Xinerama 1.1's `GetState`, `GetScreenCount` and `GetScreenSize` (for a client that
+already knows it is on a Xinerama display, which none of this one's are; they answer `BadRequest`), and
+anything to do with actually spanning screens. **Not ticked**, because this is a stub that answers "no"
+rather than an implementation of the thing.
+
+---
+
+### [ ] B3old. Xinerama (the original wording). **M**/**S-M**
 
 **Current.** Not advertised: every client sees one monitor, which is also what this server has.
 
@@ -1067,30 +1107,46 @@ content, and a client that maximises itself resizes its own window, which the sc
 
 ---
 
-### [ ] C5. Host ↔ X drag and drop. **M**
+### [ ] C5. Host ↔ X drag and drop (XDND). **M** - the host-to-X half is done 2026-09-24, not ticked
 
-**Current.** Nothing. Dragging a file from Finder onto a forwarded window does nothing; dragging out
-of it does nothing.
+**What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
-**Why it matters.** It is the second most noticed interaction after copy/paste, and it is how files
-get into a forwarded application without a shared filesystem.
+**What was built (the half that can be).** `drop/DropBridge`, a window of the server's own that speaks
+XDND as the drag's *source*: the platform reports the drop and the files, the bridge takes the
+`XdndSelection`, sends `XdndEnter`/`XdndPosition` to the window under the pointer that publishes
+`XdndAware`, waits for its `XdndStatus` (or 700 ms, whichever comes first) and sends `XdndDrop`, then
+answers the `ConvertSelection` that follows with a `text/uri-list`. The host side is a few lines of
+`DragEvent` in each backend - `InputSink.hostDrop` - because the platform's half of a drag is the only
+part no X client can know. The bridge only exists for a server that presents a window, on the same
+reasoning as the clipboard bridge.
 
-**Plan.** The X side is client-to-client: the source owns `XdndSelection`, sends `XdndEnter`/
-`XdndPosition`/`XdndDrop` as `ClientMessage`s to the window under the pointer that has the `XdndAware`
-property, and provides `text/uri-list` on request. A bridge therefore needs a *window of its own* in
-the X server (an override-redirect window that owns the selection and speaks the protocol), plus a
-macOS drag source/destination (JavaFX `DragEvent` on the host window, or a native implementation),
-plus the pasteboard file type (`NSFilenamesPboardType`/`public.file-url`).
+**Found on the way, and it is a real protocol bug: `SendEvent` with no event mask did not deliver.**
+X sends such an event to the client that *created* the window it names, whatever that client selected
+- it has to be that way round, because a target cannot select for a message it does not know is
+coming - and the server treated "no mask" as "nobody is interested", so every one of these messages
+was dropped. XDND is built entirely out of them, which is where it was found; `WM_DELETE_WINDOW`
+replies and everything else in EWMH use the same form. Fixed in `AtomHandlers.sendEvent`, pinned by
+`handler/ClientMessageTest` (2 tests).
 
-**Traps.** The bridge's X window must not be visible (it is a protocol participant, not a UI); the
-action list (`XdndActionCopy`/`Move`/`Link`) has to be negotiated or the drop is refused; the position
-must be in *root* coordinates, which in per-client mode means the client's own screen - the same
-coordinate translation the pointer already goes through (`JavaFxBackend.screenCoordinate`); and
-dragging *out* needs a pasteboard file promise that the client's `text/uri-list` request can fill in
-lazily.
+**Measured 2026-09-24**: `drop/DropBridgeTest` (3 tests, a real client playing the target): a dropped
+file is offered to the window under the pointer, with the source window, the XDND version and the type
+it carries; a target that answers `XdndStatus` is dropped on and can ask for the files, and gets
+`file:///…` one per line out of the property; a window that does not publish `XdndAware` is left
+alone. Disabling the `XdndEnter` send fails two of them.
 
-**Verify.** Drag a file from Finder into a forwarded `xterm` (it should print the path); drag a file
-out to the Desktop. Both with the same gestures against Xvfb + a real file manager as the reference.
+**What is not done, and why this is not ticked: dragging *out* of a forwarded application.** A JavaFX
+window cannot start a platform drag - the platform's drag is the user's gesture and the toolkit only
+reports one - so there is no drag to hand a client's `XdndEnter` to. That needs a native drag source
+(and on macOS a pasteboard file promise the client's `text/uri-list` request fills in lazily), which is
+the second half of this item.
+
+**Also unverified: a real application receiving a real drop.** The item's Verify says "drag a file from
+Finder into a forwarded `xterm` (it should print the path)" - but **`xterm` does not speak XDND**; it
+is a client from before drag and drop, and nothing it does will ever print a dropped path. The clients
+that take drops are toolkits - GTK, Qt, and Swing's `TransferHandler` - so a forwarded GTK application
+(or termora's terminal) is the thing to try. And the platform's half cannot be scripted here for the
+same reason C10's could not: a drag is a real mouse gesture, and neither `osascript` nor a posted
+`CGEvent` got one to reach the host window in this session.
 
 ---
 
@@ -1142,6 +1198,59 @@ explicitly whether it is in scope.
 
 **Verify.** Chinese (and Japanese/Korean) input into a forwarded `xterm` and into termora's terminal
 with an X IME running on the VM; the same against Xvfb as the reference for "the IME itself is fine".
+
+**Worked on 2026-09-24: the server half is implemented and tested; not ticked.** What a forwarded
+application can be sent is a keycode, and a keycode cannot express a character no key carries - so the
+platform's composed text has to become a keycode the server claims for it:
+
+- **`InputState.keyTyped(char)`, reached from every backend.** The host's input method composes the
+  text, the platform hands it to the backend, and the server gives a keycode no keyboard carries the
+  character as its keysym (`0x01000000 | codepoint`, X's own spelling for a character with no keysym
+  of its own), sends `MappingNotify` so the clients re-read the mapping, and presses that keycode. A
+  character the keyboard *does* carry is left alone - the key press already delivered it - and the
+  keycode is claimed once and kept, because a mapping change per keystroke would be a mapping change
+  per keystroke. Platform-independent by construction: every toolkit reports composed text the same
+  way, and everything after that is the same X protocol.
+- **`Keymap` owns the whole mapping again.** It had grown a second table in `InputHandlers` for a
+  client's `ChangeKeyboardMapping`, so two places could disagree about what a keycode means.
+- **A real bug fell out of the tests**: the server's own synthetic keycode counted as "a key that is
+  on the keyboard", so the *second* time a user typed the same character it was swallowed. Typing the
+  same character twice is two keystrokes.
+- **JavaFX needs two hooks, and the second is the whole feature on a Mac - measured.** `KEY_TYPED`
+  does not carry what an input method committed: the first live attempt produced nothing at all. It
+  arrives as `Scene.setOnInputMethodTextChanged`'s committed text, now wired up beside it. AWT needs
+  only the one, as `keyTyped`.
+
+`input/TypedCharacterTest` (4 tests): the character reaches the client as a key press whose keycode
+answers `GetKeyboardMapping` with it; the mapping change is sent; a character the keyboard carries is
+not sent twice; the same character can be typed twice; one keycode is claimed and kept.
+
+**Why it is not ticked: the live check could not be made to happen here, and not because of the
+server.** A key event cannot be injected into the host window from a script in this session -
+`osascript`'s `keystroke` fails on the process lookup, and a `CGEventKeyboardSetUnicodeString` event
+from `tools/host-type.c` (which reports "typed 2 characters") reaches nothing: the observer on the X
+side sees no key press at all. The X half is covered by the tests, so what is unverified is the two
+lines between the platform's input method and `input.keyTyped`. Finishing it needs a hand on a
+keyboard: start the server (`--single-window`, for the reason below), run an application that shows
+text, and type Chinese with the host's own input method.
+
+**And the client-side input method needs a mode, which is now measured.** An input method draws its
+pre-edit text and candidate list in a window of its own placed over the application's caret - and in
+the default one-window-per-client mode every client gets a screen of its own, so that window is drawn
+in the *input method's* host window instead. The protocol half survives the split (selections,
+properties and sent events are server-wide), the pixels do not.
+`PerClientWindowTest.aClientThatIsNotAnApplicationGetsAWindowOfItsOwnToo` drives exactly that: two
+connections, the second mapping an override-redirect window over the first client's window, and it gets
+a host window and a screen of its own. **So an X input method belongs in `--single-window` mode.** The
+same reasoning covers a window manager and a clipboard manager.
+
+**The live check is blocked on the VM, not on the server**: that machine has no `dbus-launch` and no
+D-Bus session bus, and `apt-get` has no network, so `ibus-daemon -drx` starts and exits without a word.
+The remaining work is: install `dbus` (or run the input method from a desktop session), start `ibus`
+against a `--single-window` server, and type into a forwarded application - which the VM has no
+`xterm` for either, so the client would be termora's terminal. The host-IME question - macOS composing
+into the forwarded window, which is what the work above is about - is answered; the client-side one
+needs that environment.
 
 ---
 

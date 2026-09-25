@@ -92,6 +92,8 @@ public final class XServer {
     private final ExtensionRegistry extensions = new ExtensionRegistry();
     /** The host clipboard bridge, or null when there is no host to bridge to. */
     private ClipboardBridge clipboard;
+    /** The host drag bridge, or null when this server has no window to drop on. */
+    private io.github.oyzh1994.xserver.drop.DropBridge drops;
     /**
      * Where the host window was per client, or null until the first window opens. Lazy because a
      * server that never opens a window - every test, and a headless one - has nothing to remember
@@ -234,6 +236,9 @@ public final class XServer {
         extensions.register(new io.github.oyzh1994.xserver.extension.ShapeExtension(), 1, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XTestExtension(), 0, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XFixesExtension(), 2, 1);
+        // One screen is Xinerama's whole answer here, and it is an answer a client needs rather than
+        // an extension it uses: xdotool segfaults in its own startup without it.
+        extensions.register(new io.github.oyzh1994.xserver.extension.XineramaExtension(), 0, 1);
         // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();
@@ -368,6 +373,14 @@ public final class XServer {
     }
 
     /**
+     * The bridge that turns a drop from the host's desktop into an XDND drag for the application
+     * under the pointer, or null when this server has no window to be dropped on.
+     */
+    public io.github.oyzh1994.xserver.drop.DropBridge dropBridge() {
+        return drops;
+    }
+
+    /**
      * Starts the bridge if this server has somewhere to bridge to.
      *
      * <p>Only a server that presents a window does: a headless one is either a test or a display
@@ -382,6 +395,29 @@ public final class XServer {
         if (host.isAvailable()) {
             startClipboardBridge(host);
         }
+    }
+
+    /**
+     * Starts the drag bridge, and returns it. Public for the same reason the clipboard bridge's is:
+     * a test drives a drop itself, because the platform's half of one cannot be produced in-process.
+     */
+    public io.github.oyzh1994.xserver.drop.DropBridge startDropBridge() {
+        if (drops != null) {
+            return drops;
+        }
+        drops = new io.github.oyzh1994.xserver.drop.DropBridge(this);
+        drops.start();
+        return drops;
+    }
+
+    /** Starts the drag bridge when this server has a window for the host to drop onto. */
+    private void startDropBridgeForWindow() {
+        if (options.noClipboard() || options.backend() == ServerOptions.Backend.HEADLESS) {
+            // The same rule as the clipboard: a server nobody is looking at has no desktop to be
+            // dragged from.
+            return;
+        }
+        startDropBridge();
     }
 
     /**
@@ -720,6 +756,7 @@ public final class XServer {
             openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
         }
         startClipboardBridge();
+        startDropBridgeForWindow();
         suggestScale();
         listener = new ClientListener(this);
         listener.start();
@@ -871,6 +908,11 @@ public final class XServer {
                     XFixesExtension.notifyCursor(this, session.screen(), displayed.serial(),
                             events.time());
                 }
+            }
+            if (drops != null && session == masterSession) {
+                // A drag that is waiting for the target to answer is advanced here, next to the rest
+                // of the work that happens on the server's own tick.
+                drops.pump();
             }
             rememberWindowPosition(session);
             damage = session.screen().framebuffer().takeDamage();
@@ -1489,6 +1531,9 @@ public final class XServer {
         running = false;
         if (clipboard != null) {
             clipboard.stop();
+        }
+        if (drops != null) {
+            drops.stop();
         }
         if (listener != null) {
             listener.stop();

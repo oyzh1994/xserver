@@ -361,6 +361,50 @@ public final class RawXClient implements AutoCloseable {
         return states;
     }
 
+    /**
+     * An extension request with no arguments, and its reply - the shape most of them have.
+     *
+     * <p>Four bytes: the major opcode, the minor opcode, and a length of one unit. A request that
+     * does take arguments cannot be sent this way, and the server would answer a shorter request than
+     * it expects with {@code BadLength} - which is how a probe finds out.
+     */
+    public byte[] extensionRequest(int majorOpcode, int minorOpcode) throws IOException {
+        return extensionRequest(majorOpcode, minorOpcode, 1);
+    }
+
+    /**
+     * The same, in a request of {@code units} four byte words.
+     *
+     * <p>An extension's request length is its own: Xinerama's QueryVersion carries two argument bytes
+     * and is therefore two units, and a server that reads its arguments would take the shorter one
+     * as a bad request - which is how this was found.
+     */
+    public byte[] extensionRequest(int majorOpcode, int minorOpcode, int units) throws IOException {
+        byte[] request = new byte[units * 4];
+        request[0] = (byte) majorOpcode;
+        request[1] = (byte) minorOpcode;
+        writeShort(request, 2, units);
+        send(request);
+        return readReply();
+    }
+
+    /** GetKeyboardMapping: the keysyms a keycode carries, one entry per shift level. */
+    public int[] keyboardMapping(int firstKeycode, int count) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 101;                           // GetKeyboardMapping
+        request[2] = 2;
+        request[4] = (byte) firstKeycode;
+        request[5] = (byte) count;
+        send(request);
+        byte[] reply = readReply();
+        int perKeycode = reply[1] & 0xFF;
+        int[] keysyms = new int[count * perKeycode];
+        for (int i = 0; i < keysyms.length; i++) {
+            keysyms[i] = readInt(reply, 32 + i * 4);
+        }
+        return keysyms;
+    }
+
     /** GetAtomName: what an atom is called, or "<unset>" for one the server does not know. */
     public String atomName(int atom) throws IOException {
         byte[] request = new byte[8];
@@ -458,6 +502,34 @@ public final class RawXClient implements AutoCloseable {
         writeInt(event, 16, target);
         writeInt(event, 20, property);
         sendEvent(destination, event);
+    }
+
+    /**
+     * The {@code ClientMessage} one client sends another: no event mask, so it goes to whoever
+     * created the destination window. This is the shape every EWMH and XDND message takes.
+     */
+    public void sendClientMessage(int destination, int messageType, int... data) throws IOException {
+        byte[] event = new byte[32];
+        event[0] = 33;                              // ClientMessage
+        event[1] = 32;                              // format
+        writeInt(event, 4, destination);
+        writeInt(event, 8, messageType);
+        for (int i = 0; i < Math.min(5, data.length); i++) {
+            writeInt(event, 12 + i * 4, data[i]);
+        }
+        sendEvent(destination, event);
+    }
+
+    /** SendEvent with an event mask, so it goes to whoever selected for that mask. */
+    public void sendEventWithMask(int destination, int eventMask, byte[] event) throws IOException {
+        byte[] request = new byte[44];
+        request[0] = 25;                            // SendEvent
+        request[1] = 0;
+        writeShort(request, 2, 11);
+        writeInt(request, 4, destination);
+        writeInt(request, 8, eventMask);
+        System.arraycopy(event, 0, request, 12, 32);
+        send(request);
     }
 
     /** SendEvent: {@code event} is 32 bytes in the client's own byte order, as Xlib sends it. */
@@ -763,7 +835,15 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
-    /** Interns a name and returns the atom, since the reply is the only place it is reported. */
+    /**
+     * Interns a name and returns the atom, since the reply is the only place it is reported.
+     *
+     * <p><b>Every method here that reads a reply throws away the events that arrived before it</b> -
+     * a reply is found by reading until one turns up. A test that is waiting for an event therefore
+     * asks for its atoms, its properties and its geometry *first*: done the other way round, the
+     * event being waited for is the one that disappears, and the failure looks like a server that
+     * sent nothing.
+     */
     public int internAtom(String name) throws IOException {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
         request[0] = 16;                            // InternAtom

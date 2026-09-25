@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -78,6 +79,52 @@ class PerClientWindowTest {
             assertEquals(new Rectangle(0, 0, 200, 100), firstBackend.viewport,
                     "the window is sized to the client's window, not to the whole screen");
             assertEquals(new Rectangle(0, 0, 400, 300), secondBackend.viewport);
+        } finally {
+            server.stop();
+        }
+    }
+
+    /**
+     * A second connection that maps anything gets a window of its own - which is the point of this
+     * mode, and is also what an input method cannot live with.
+     *
+     * <p>An X input method (fcitx, ibus) is an X client like any other: it is found through the
+     * {@code XIM_SERVERS} selection, it talks to the application with {@code ClientMessage}s and
+     * window properties, and it draws its pre-edit text and its candidate list in a window of its
+     * own, positioned over the application's window. Every one of those works across two screens -
+     * selections, properties and sent events are all server-wide - except the last one: the input
+     * method's window lands on the input method's screen, so it is shown in the input method's own
+     * host window rather than over the application. The same is true of anything else that is
+     * infrastructure rather than an application: a window manager, a clipboard manager, a drag-and-
+     * drop source.
+     */
+    @Test
+    void aClientThatIsNotAnApplicationGetsAWindowOfItsOwnToo() throws Exception {
+        Server server = new Server(DISPLAY);
+        try (RawXClient application = RawXClient.connect(DISPLAY);
+             RawXClient inputMethod = RawXClient.connect(DISPLAY)) {
+            int appWindow = application.allocateId();
+            application.createWindow(appWindow, application.root(), 0, 0, 400, 300);
+            application.mapWindow(appWindow);
+            application.flush();
+            waitUntil(() -> server.windows.size() == 1, "the application's window should open");
+
+            // The input method's pre-edit window: override-redirect, put over the application's
+            // window, which is exactly what an input method does with it.
+            int preedit = inputMethod.allocateId();
+            inputMethod.createWindow(preedit, inputMethod.root(), 100, 100, 200, 40);
+            inputMethod.setOverrideRedirect(preedit);
+            inputMethod.mapWindow(preedit);
+            inputMethod.flush();
+            waitUntil(() -> server.windows.size() == 2,
+                    "the input method gets a host window of its own, which is where its pre-edit "
+                            + "text ends up - not over the application");
+
+            // And it is a window showing the input method's screen, so nothing of the application
+            // is in it: the two clients cannot see each other's pixels at all.
+            assertNotSame(server.windows.get(1).screen, server.windows.get(0).screen,
+                    "two connections, two screens - so the pre-edit window cannot appear over the "
+                            + "application it belongs to");
         } finally {
             server.stop();
         }

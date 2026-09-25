@@ -1,5 +1,7 @@
 package io.github.oyzh1994.xserver.input;
 
+import java.util.Map;
+
 /**
  * The server's keyboard mapping: which keysyms each keycode produces, and which keycodes act as
  * modifiers.
@@ -26,6 +28,17 @@ public final class Keymap {
     public static final int MODIFIER_COUNT = 8;
 
     private static final int[][] KEYSYMS = new int[MAX_KEYCODE + 1][];
+
+    /**
+     * Keycodes whose keysyms have been changed after the table above was built - by a client's
+     * {@code ChangeKeyboardMapping}, or by the server itself for a character only the host could
+     * produce. One table, in this class, so that what {@code GetKeyboardMapping} answers and what a
+     * delivered keycode means cannot disagree.
+     */
+    private static final Map<Integer, int[]> ASSIGNED = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** The keycode the server types a composed character with, chosen once. */
+    private static int syntheticKeycode;
     private static final int[][] MODIFIERS = new int[MODIFIER_COUNT][];
 
     static {
@@ -139,10 +152,73 @@ public final class Keymap {
         return new int[] {a, b};
     }
 
+    /**
+     * Gives a keycode the keysyms a client's {@code ChangeKeyboardMapping}, or this server, wants it
+     * to carry. The caller is responsible for telling clients to refresh - see
+     * {@code XServer.broadcastMappingNotify}.
+     */
+    public static void assign(int keycode, int[] keysyms) {
+        ASSIGNED.put(keycode, keysyms.clone());
+    }
+
+    /**
+     * The keysym a character stands for, in X's own terms.
+     *
+     * <p>A printable Latin-1 character is its own keysym, which is why the two ranges look arbitrary
+     * and are not: 0x20..0x7E and 0xA0..0xFF are the characters a keysym can be. Everything else -
+     * every Chinese character, every accented letter outside Latin-1 - is expressed the way X
+     * expresses it, {@code 0x01000000 | codepoint}, and a client that asks for the character gets
+     * its UTF-8 bytes back.
+     */
+    public static int keysymFor(char character) {
+        if (character < 0x20) {
+            return Keysyms.NONE;
+        }
+        if (character < 0x80 || (character >= 0xA0 && character <= 0xFF)) {
+            return character;
+        }
+        return 0x01000000 | character;
+    }
+
+    /**
+     * A keycode no key on a real keyboard carries, for typing a character that has no key.
+     *
+     * <p>Chosen once and kept: a client caches the mapping it is told about, and moving the
+     * character from one keycode to another on every keystroke would mean a mapping change per
+     * character. It is the top of the keycode range a real keyboard never reaches.
+     */
+    public static synchronized int syntheticKeycode() {
+        if (syntheticKeycode == 0) {
+            int candidate = MAX_KEYCODE & 0xFF;
+            while (candidate > (MIN_KEYCODE & 0xFF) && keysym(candidate, 0) != Keysyms.NONE) {
+                candidate--;
+            }
+            syntheticKeycode = candidate;
+        }
+        return syntheticKeycode;
+    }
+
+    /** The keycode carrying a keysym, or 0 when no key does. */
+    public static int keycodeForKeysym(int keysym) {
+        for (int keycode = MIN_KEYCODE & 0xFF; keycode <= (MAX_KEYCODE & 0xFF); keycode++) {
+            if (keysym(keycode, 0) == keysym || keysym(keycode, 1) == keysym) {
+                return keycode;
+            }
+        }
+        return 0;
+    }
+
     /** Keysym for a keycode at a shift level, or {@link Keysyms#NONE} when unassigned. */
     public static int keysym(int keycode, int level) {
         if (keycode < 0 || keycode > 255) {
             return Keysyms.NONE;
+        }
+        int[] assigned = ASSIGNED.get(keycode);
+        if (assigned != null) {
+            if (level < 0) {
+                level = 0;
+            }
+            return level < assigned.length ? assigned[level] : assigned[assigned.length - 1];
         }
         int[] row = KEYSYMS[keycode];
         if (row == null) {

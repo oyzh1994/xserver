@@ -363,6 +363,65 @@ public final class InputState implements DisplayBackend.InputSink {
     }
 
     @Override
+    /**
+     * A character the host platform composed for the user: what an input method produced, or a dead
+     * key's accent.
+     *
+     * <p>This is the half of typing that a keycode cannot carry. A keycode says which key was
+     * pressed, and a client turns that into a character with its own copy of the keyboard mapping -
+     * which works for everything printed on a keyboard and for nothing else: no keyboard has a key
+     * per Chinese character. So the host's input method composes the text, the platform hands it
+     * over as a character, and the server types it by giving a keycode it has claimed the character
+     * as its keysym and telling the clients the mapping changed - which is the only way an X client
+     * learns a character that is on no key at all.
+     *
+     * <p>Nothing is sent for a character the keyboard already carries: the key press has been
+     * delivered for it, and a client would type it twice.
+     */
+    public void keyTyped(char character) {
+        int keysym = Keymap.keysymFor(character);
+        int onTheKeyboard = Keymap.keycodeForKeysym(keysym);
+        // A keycode the server claimed for an earlier character does not count as "on the keyboard":
+        // the same character typed twice is two keystrokes, and the second one has to be sent like
+        // the first.
+        boolean alreadyOnAKey = onTheKeyboard != 0 && onTheKeyboard != Keymap.syntheticKeycode();
+        if (keysym == Keysyms.NONE || alreadyOnAKey) {
+            return;
+        }
+        server.lockServer();
+        try {
+            int keycode = Keymap.syntheticKeycode();
+            // The mapping first, then the key: a client that has not re-read the mapping yet would
+            // read the keycode as whatever it used to carry.
+            Keymap.assign(keycode, new int[] {keysym, keysym});
+            server.broadcastMappingNotify((byte) 0, (byte) keycode, (byte) 1);
+            deliverKey(keycode, true);
+            deliverKey(keycode, false);
+        } finally {
+            server.unlockServer();
+        }
+    }
+
+    /**
+     * Files the user dropped on the host window, which the drag bridge turns into an XDND drag for
+     * whichever application is under the pointer. Called from the toolkit's thread, so it takes the
+     * server lock like the rest of this class.
+     */
+    @Override
+    public void hostDrop(java.util.List<String> paths, int x, int y) {
+        io.github.oyzh1994.xserver.drop.DropBridge bridge = server.dropBridge();
+        if (bridge == null) {
+            return;
+        }
+        server.lockServer();
+        try {
+            movePointer(x, y, false);
+            bridge.hostDropped(paths, x, y);
+        } finally {
+            server.unlockServer();
+        }
+    }
+
     public void keyChanged(int keycode, boolean pressed, int x, int y) {
         if (keycode < (Keymap.MIN_KEYCODE & 0xFF) || keycode > (Keymap.MAX_KEYCODE & 0xFF)) {
             return;

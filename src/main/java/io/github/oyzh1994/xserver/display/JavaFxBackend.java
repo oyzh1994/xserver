@@ -590,8 +590,49 @@ public final class JavaFxBackend implements DisplayBackend {
         });
         scene.setOnMouseReleased(event -> { hostEvent("released", event); mouseButton(event, false); });
         scene.setOnScroll(this::scrolled);
+        // A drag from the host's desktop onto this window. Accepting it on drag-over is what makes
+        // the platform report the drop at all, and the files it carries are the whole of what the X
+        // side needs - see InputSink.hostDrop.
+        scene.setOnDragOver(event -> {
+            if (event.getDragboard().hasFiles()) {
+                event.acceptTransferModes(javafx.scene.input.TransferMode.COPY);
+            }
+            event.consume();
+        });
+        scene.setOnDragDropped(event -> {
+            boolean taken = false;
+            if (event.getDragboard().hasFiles()) {
+                java.util.List<String> paths = new java.util.ArrayList<>();
+                for (java.io.File file : event.getDragboard().getFiles()) {
+                    paths.add(file.getAbsolutePath());
+                }
+                input.hostDrop(paths, screenX(event.getSceneX()), screenY(event.getSceneY()));
+                taken = true;
+            }
+            event.setDropCompleted(taken);
+            event.consume();
+        });
         scene.setOnKeyPressed(event -> keyChanged(event.getCode(), true));
         scene.setOnKeyReleased(event -> keyChanged(event.getCode(), false));
+        // The character the input method or the dead key produced, which is not the key that was
+        // pressed: JavaFX reports it here, after the platform's own composition has run.
+        scene.setOnKeyTyped(event -> input.keyTyped(event.getCharacter().isEmpty()
+                ? 0 : event.getCharacter().charAt(0)));
+        // And this is where an input method's *result* arrives - the text the user chose from the
+        // candidate list. Measured: KEY_TYPED does not carry it, so a Mac's Chinese input method
+        // typed into a forwarded window produced nothing at all until this was handled. The
+        // committed text is what the user meant to type; the composition itself is the platform's
+        // own window and never reaches the X client.
+        scene.setOnInputMethodTextChanged(event -> {
+            String committed = event.getCommitted();
+            if (committed == null || committed.isEmpty()) {
+                return;
+            }
+            log.debug("input method committed {} characters", committed.length());
+            for (int i = 0; i < committed.length(); i++) {
+                input.keyTyped(committed.charAt(i));
+            }
+        });
 
         stage = new Stage();
         stage.setTitle(title);
