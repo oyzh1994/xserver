@@ -11,6 +11,7 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Xinerama, which answers "no, I am one screen" - and has to answer.
@@ -28,6 +29,11 @@ class XineramaTest {
     private static final int QUERY_VERSION = 0;
     private static final int IS_ACTIVE = 4;
     private static final int QUERY_SCREENS = 5;
+
+    /** The three Xinerama 1.1 requests this server deliberately leaves to the dispatcher. */
+    private static final int GET_STATE = 1;
+    private static final int GET_SCREEN_COUNT = 2;
+    private static final int GET_SCREEN_SIZE = 3;
 
     private static XServer server;
 
@@ -77,6 +83,41 @@ class XineramaTest {
             assertEquals(0, RawXClient.readShort(reply, 34));
             assertEquals(600, RawXClient.readShort(reply, 36), "the screen the server has");
             assertEquals(400, RawXClient.readShort(reply, 38));
+        }
+    }
+
+    /**
+     * The three Xinerama 1.1 requests are deliberately not answered, and this is the test that says so
+     * out loud.
+     *
+     * <p>They are {@code GetState}, {@code GetScreenCount} and {@code GetScreenSize} - for a client
+     * that already knows it is on a Xinerama display, which none of this server's clients are (a
+     * client has to ask {@code IsActive} first, and this one says no). A refusal is a decision, and a
+     * decision that nothing records is one that gets re-litigated; so it is recorded here, and the
+     * measurement behind it is in {@code docs/backlog.md} B3: a reference server's own answers are
+     * **255, 255 and {@code BadLength}** - the first two are not a state or a count that means
+     * anything, and the third refuses the request this probe builds even with the window argument the
+     * other two take. Implementing them from that would be guessing, for a client that does not exist.
+     */
+    @Test
+    void theOneOneRequestsAreDeliberatelyLeftUnanswered() throws IOException {
+        int[] extras = {GET_STATE, GET_SCREEN_COUNT, GET_SCREEN_SIZE};
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XINERAMA");
+            for (int minor : extras) {
+                // The three take a window (the screen they are asking about), so a refusal from the
+                // dispatcher is what comes back - and RawXClient reports an error as an exception.
+                byte[] request = new byte[8];
+                request[0] = (byte) opcode;
+                request[1] = (byte) minor;
+                RawXClient.writeShortAt(request, 2, 2);
+                RawXClient.writeIntAt(request, 4, client.root());
+                client.sendRequest(request);
+                client.flush();
+                assertThrows(IOException.class, client::readReply,
+                        "minor " + minor + " is answered now: if that is deliberate, the decision in "
+                                + "the backlog item and in this test's javadoc goes with it");
+            }
         }
     }
 }

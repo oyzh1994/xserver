@@ -87,6 +87,19 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   answer the child of the queried window or the deepest window?" is read off (A4).
 - `GravityProbe` - creates a parent and a child with chosen gravities, resizes the parent, and prints
   where the child ended up: the harness for A12, whose whole eleven-value table it produced.
+- `XineramaProbe` - asks every question Xinerama has and prints the answers field by field, so two
+  servers are compared by their numbers rather than by "it replied". Its first version sent the three
+  1.1 requests as four bytes each and read the reference's `BadLength` as "not implemented" - they
+  take a window argument, and `GetScreenSize` refuses even that.
+- `ScreenSaverProbe` - the harness for B7: the core screen saver's settings, MIT-SCREEN-SAVER's
+  version and `QueryInfo`, and DPMS's version/capability/timeouts/power level. Run it with `core` to
+  round-trip the core settings too, and read them with the real `xset` - its own hand-built core Set
+  is refused by the reference (`BadLength`) while `xset s` works on both.
+- `AllowEventsProbe` - the harness for A13: grabs with `pointer_mode = Sync` (or a passive grab that a
+  press activates, or a `GrabKey` with `keyboard_mode = Sync`), then watches what arrives and what each
+  `AllowEvents` mode releases. `active`/`passive`/`key` for the arrangement, and `injector`/`warp` to
+  inject the input from a second connection or by `WarpPointer` instead of XTEST - the reference holds
+  nothing back in any of them, which is the measurement the item is closed on.
 - `GrabProbe` - arms a passive `GrabButton`/`GrabKey` (on the root, or a given window) and then uses
   the pointer or the keyboard, printing every event **both** connections receive. Two connections are
   the point: with the window under the pointer belonging to the *other* client, "the grab took the

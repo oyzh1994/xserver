@@ -125,7 +125,10 @@ and `doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
 operations), `XTEST` (synthetic input), `XINERAMA` (the one screen, which is the answer a toolkit's
-startup asks for), `XFIXES` (cursor images, regions,
+startup asks for), `MIT-SCREEN-SAVER` and `DPMS` (the idle state: the settings a client sets are kept
+and read back, `QueryInfo`'s countdowns count against the timeout that was set, a subscriber is told
+when the state changes, and `xset q` shows both - though nothing here blanks the display, which is the
+host window's business, and DPMS answers `Capable` = no for the same reason), `XFIXES` (cursor images, regions,
 `SetWindowClipRegion`, and the selection and cursor subscriptions — a client that asks to be told
 when the clipboard changes, or when the pointer moves onto a different cursor, is told, where
 before it heard nothing), and `RENDER` — pictures, formats, `Composite` with the full operator table,
@@ -310,6 +313,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   puzzle: the cause was not in them but under them - the client was never told it had the keyboard,
   because `SetInputFocus` generated no focus events. With those delivered the scripted gesture leaves
   the menu up 6 runs out of 6 where it closed 3 out of 3, and the design notes record what that took.
+- **The screen saver's settings and state are kept, and nothing blanks.** `MIT-SCREEN-SAVER` and
+  `DPMS` are advertised and answer honestly, so `xset s`, `xset dpms` and a client that checks before
+  blanking all get an answer rather than "extension not present" - but the display belongs to the host
+  window and the system's own screen saver is what blanks it, so the server reports and does not act.
 - **`winGravity` is applied, `bitGravity` is not.** A child moves the way its own gravity says when
   its parent is resized, matching a reference server's numbers for all eleven values (and, also like
   the reference, the child is not sent a `ConfigureNotify`). `bitGravity` - what happens to a window's

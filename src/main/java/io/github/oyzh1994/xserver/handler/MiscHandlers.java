@@ -24,6 +24,7 @@ import com.github.moaxcp.x11.protocol.xproto.QueryExtensionReply;
 import com.github.moaxcp.x11.protocol.xproto.SetAccessControl;
 import com.github.moaxcp.x11.protocol.xproto.SetCloseDownMode;
 import com.github.moaxcp.x11.protocol.xproto.SetScreenSaver;
+import io.github.oyzh1994.xserver.display.ScreenSaverState;
 import com.github.moaxcp.x11.protocol.xproto.Str;
 import com.github.moaxcp.x11.protocol.xproto.UngrabServer;
 import io.github.oyzh1994.xserver.XServer;
@@ -155,27 +156,59 @@ public final class MiscHandlers {
         // Accepted and ignored: pointer acceleration is a host concern, not the clients'.
     }
 
+    /**
+     * The settings the client last asked for, rather than constants.
+     *
+     * <p>A client that sets a timeout and reads it back has to see its own value, or it cannot tell
+     * its own change took - the same rule {@code GetKeyboardControl} follows for auto-repeat. The
+     * defaults are X's own (600 seconds), which is what a client that never calls
+     * {@code SetScreenSaver} is entitled to.
+     */
     public void getScreenSaver(ClientConnection client, GetScreenSaver r) {
+        ScreenSaverState state = server.screenSaver();
         client.sendReply(GetScreenSaverReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .timeout((short) 600)
-                .interval((short) 600)
-                .preferBlanking((byte) 1)
-                .allowExposures((byte) 1)
+                .timeout((short) state.timeoutSeconds())
+                .interval((short) state.intervalSeconds())
+                .preferBlanking((byte) (state.preferBlanking() ? 1 : 0))
+                .allowExposures((byte) (state.allowExposures() ? 1 : 0))
                 .build());
     }
 
+    /**
+     * Keeps the settings, and does not act on them: what would blank is the host window, and on this
+     * platform the system's own screen saver is what does it. They are kept because MIT-SCREEN-SAVER
+     * reports them (and counts down against them), and because a client reads them back.
+     */
     public void setScreenSaver(ClientConnection client, SetScreenSaver r) {
         if (r.getTimeout() < -1 || r.getInterval() < -1) {
             throw ProtocolException.badValue(r.getTimeout());
         }
-        // The host window owns blanking; the server accepts the settings and does nothing.
+        server.screenSaver().setSettings(Math.max(0, r.getTimeout()), Math.max(0, r.getInterval()),
+                r.getPreferBlanking() != 0, r.getAllowExposures() != 0);
     }
 
+    /**
+     * The one screen-saver state change this server has, and the one that raises MIT-SCREEN-SAVER's
+     * notification.
+     *
+     * <p>It does not blank: there is no saver window to map, and a client that subscribed is told the
+     * state changed rather than told about a window that never appeared. That is the honest report for
+     * a server whose display belongs to the host window.
+     */
     public void forceScreenSaver(ClientConnection client, ForceScreenSaver r) {
         int mode = r.getMode();
         if (mode != 0 && mode != 1) {
             throw ProtocolException.badValue(mode);
+        }
+        boolean activate = mode == 1;
+        server.screenSaver().setActive(activate);
+        int state = server.screenSaver().state();
+        for (ClientConnection subscriber : server.clients()) {
+            if (server.screenSaverExtension().wantsNotifications(subscriber)) {
+                server.screenSaverExtension().notifyState(server, subscriber,
+                        server.screenOf(subscriber).root().id(), state, (byte) 0, true);
+            }
         }
     }
 

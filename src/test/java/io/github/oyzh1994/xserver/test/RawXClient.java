@@ -414,6 +414,17 @@ public final class RawXClient implements AutoCloseable {
         return readReply();
     }
 
+    /**
+     * Sends a request that is already built, for a test that needs a layout no helper here covers.
+     *
+     * <p>One helper per extension request would double the size of this class and still miss the next
+     * one; a test that needs one builds the bytes and reads the reply, which is the same shape the
+     * hand-written probes use.
+     */
+    public void sendRequest(byte[] request) throws IOException {
+        send(request);
+    }
+
     /** GetKeyboardMapping: the keysyms a keycode carries, one entry per shift level. */
     public int[] keyboardMapping(int firstKeycode, int count) throws IOException {
         byte[] request = new byte[8];
@@ -1082,6 +1093,16 @@ public final class RawXClient implements AutoCloseable {
         } catch (java.net.SocketTimeoutException quiet) {
             return false;
         }
+    }
+
+    /** Writes a CARD32 into a request a caller is building, at a protocol offset. */
+    public static void writeIntAt(byte[] request, int offset, int value) {
+        writeInt(request, offset, value);
+    }
+
+    /** Writes a CARD16 into a request a caller is building, at a protocol offset. */
+    public static void writeShortAt(byte[] request, int offset, int value) {
+        writeShort(request, offset, value);
     }
 
     public static int readInt(byte[] bytes, int offset) {

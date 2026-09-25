@@ -380,6 +380,7 @@ public final class InputState implements DisplayBackend.InputSink {
 
     @Override
     public void pointerMoved(int x, int y) {
+        server.screenSaver().noteInput();
         server.lockServer();
         try {
             movePointer(x, y, true);
@@ -393,6 +394,10 @@ public final class InputState implements DisplayBackend.InputSink {
         if (button < 1 || button > 12) {
             return;
         }
+        // The idle countdown is about the user's own input, and a button is input as much as a motion
+        // or a key is: a machine whose pointer is still but whose buttons are being pressed is not
+        // idle, and MIT-SCREEN-SAVER's countdown has to agree.
+        server.screenSaver().noteInput();
         server.lockServer();
         try {
             movePointer(x, y, false);
@@ -485,6 +490,7 @@ public final class InputState implements DisplayBackend.InputSink {
         if (keycode < (Keymap.MIN_KEYCODE & 0xFF) || keycode > (Keymap.MAX_KEYCODE & 0xFF)) {
             return;
         }
+        server.screenSaver().noteInput();
         server.lockServer();
         try {
             movePointer(x, y, false);

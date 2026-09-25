@@ -225,6 +225,27 @@ public final class XServer {
     private static final int ROOT_DEPTH = 24;
 
     /**
+     * The display's idle state: the screen saver's settings and state, and DPMS's.
+     *
+     * <p>One per server rather than one per screen, because what would blank is the host window and
+     * there is one of them - see {@link io.github.oyzh1994.xserver.display.ScreenSaverState}.
+     */
+    private final io.github.oyzh1994.xserver.display.ScreenSaverState screenSaver =
+            new io.github.oyzh1994.xserver.display.ScreenSaverState();
+
+    private io.github.oyzh1994.xserver.extension.ScreenSaverExtension screenSaverExtension;
+
+    /** The display's idle state, which the core screen-saver requests and MIT-SCREEN-SAVER share. */
+    public io.github.oyzh1994.xserver.display.ScreenSaverState screenSaver() {
+        return screenSaver;
+    }
+
+    /** The MIT-SCREEN-SAVER extension, which the core {@code ForceScreenSaver} notifies through. */
+    public io.github.oyzh1994.xserver.extension.ScreenSaverExtension screenSaverExtension() {
+        return screenSaverExtension;
+    }
+
+    /**
      * Registers the extensions this server implements. Order matters: opcodes are handed out in
      * registration order and clients cache the assignment for the life of the connection.
      */
@@ -239,6 +260,13 @@ public final class XServer {
         // One screen is Xinerama's whole answer here, and it is an answer a client needs rather than
         // an extension it uses: xdotool segfaults in its own startup without it.
         extensions.register(new io.github.oyzh1994.xserver.extension.XineramaExtension(), 0, 1);
+        // MIT-SCREEN-SAVER defines one event - the state-change notification - and no errors; DPMS
+        // is requests and replies only. The screen saver extension is kept by name because the core
+        // ForceScreenSaver is what raises its notification.
+        this.screenSaverExtension =
+                extensions.register(new io.github.oyzh1994.xserver.extension.ScreenSaverExtension(),
+                        1, 0);
+        extensions.register(new io.github.oyzh1994.xserver.extension.DpmsExtension(), 0, 0);
         // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();

@@ -104,9 +104,28 @@ final class Wire implements AutoCloseable {
         return message;
     }
 
-    /** A reply with a {@code length} field larger than its fixed part is a reply this cannot read. */
+    /** A reply with a {@code length} field larger than its fixed part carries data after it. */
     static boolean hasExtraData(byte[] message) {
         return readInt(message, 4) != 0;
+    }
+
+    /**
+     * Reads the data a reply's {@code length} field says follows it, and gives back the whole reply.
+     *
+     * <p>{@link #readMessage} takes thirty two bytes and no more, which is right for every request
+     * whose answer fits in the fixed part - and wrong for the ones that carry a list, where the
+     * unread data stays in the stream and every message after it is read from the wrong offset. A
+     * caller that expects a list says so here.
+     */
+    byte[] withExtraData(byte[] message) throws IOException {
+        int extra = readInt(message, 4) * 4;
+        if (extra <= 0) {
+            return message;
+        }
+        byte[] whole = new byte[32 + extra];
+        System.arraycopy(message, 0, whole, 0, 32);
+        in.readFully(whole, 32, extra);
+        return whole;
     }
 
     int internAtom(String name) throws IOException {

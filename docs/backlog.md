@@ -61,7 +61,7 @@ A prompt that starts a fresh session on this, verbatim:
 | A5 | `PointerRoot` focus reporting: the premise was wrong, five measured differences remain | correctness | M |
 | A1 | passive grabs are recorded but never matched | correctness | M |
 | A9 | `IncludeInferiors`, backing store, save-unders are recorded only | correctness | M-L |
-| A13 | `AllowEvents` freeze/thaw semantics | correctness | S |
+| A13 | `AllowEvents` freeze/thaw: premise disproven (measured), nothing to do | correctness | S |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
@@ -72,9 +72,9 @@ A prompt that starts a fresh session on this, verbatim:
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
 | B2 | RandR | extension | M |
-| B3 | Xinerama | extension | S-M |
+| ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | B1 | XKEYBOARD | extension | M-L |
-| B7 | DPMS and the XScreenSaver extension | extension | S |
+| ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | E2 | continuous integration | engineering | S |
 | E4 | per-client framebuffer memory | engineering | M |
 | E5 | backpressure to a client that has stopped reading | engineering | M |
@@ -886,23 +886,55 @@ that the client was not asked to repaint (`-Dxserver.dumpFrames` plus the reques
 
 ---
 
-### [ ] A13. `AllowEvents` freeze/thaw semantics. **S**
+### [ ] A13. `AllowEvents` freeze/thaw semantics. **S** - the premise was measured, and the modes are inert on the reference too
 
-**Current.** `AllowEvents` is dispatched (`MiscHandlers`), and the modes' effect on a *frozen* device
-has not been reviewed: the server never freezes the pointer or the keyboard on a grab, so the request
-is close to a no-op (which for `AsyncPointer`/`AsyncKeyboard` is the right answer, and for the
-`Sync*`/`Replay*` modes is not).
+**What the item claimed.** That the server "never freezes the pointer or the keyboard on a grab", that
+`AllowEvents` is therefore close to a no-op, and that the `Sync*`/`Replay*` modes are where that is
+wrong. The plan was: verify first with a raw client that grabs with `pointer_mode=Sync`, presses, and
+checks that nothing arrives until `AllowEvents(SyncPointer)` - then implement freezing in `InputState`.
 
-**Why it matters.** Games and remote-desktop clients use `SyncPointer` + `AllowEvents` to replay the
-event that was queued while they were busy. Getting it wrong is invisible until one of them is used.
+**Measured 2026-09-25 with `tools/AllowEventsProbe`** (new in the kit, and written to the item's own
+plan), and **the reference holds nothing back**:
 
-**Plan.** First *verify* (a raw client that grabs with `pointer_mode=Sync`, presses, and checks that
-nothing arrives until `AllowEvents(SyncPointer)`), then implement freezing in `InputState`: a frozen
-pointer queues events, and `AllowEvents` flushes them / replays the last one, per the specification's
-table.
+```
+step: grab the pointer with pointer_mode = Sync                     grab status = 0
+step: press button 1 (the press that freezes the pointer)           ButtonPress button=1
+step: motion while frozen                                           MotionNotify
+                                                                    MotionNotify
+step: release button 1 while frozen                                 ButtonRelease button=1
+step: AllowEvents(SyncPointer)                                      (nothing)
+step: AllowEvents(AsyncPointer)                                     (nothing)
+```
 
-**Verify.** The raw client above, against Xvfb and here, event for event.
+Three arrangements, all the same: an **active** `GrabPointer` with `pointer_mode=Sync`; a **passive**
+`GrabButton` on the root with `pointer_mode=Sync`, activated by the press (which it takes - the
+`NotifyGrab`/`NotifyUngrab` crossing pair arrives exactly as A1 measured); and a passive `GrabKey`
+with `keyboard_mode=Sync`, where `AllowEvents(ReplayKeyboard)` released **nothing** - the replayed key
+did not reach the focused window of the *other* client, which is the one arrangement where a replay is
+unmistakable. The pointer case was also run with the input injected from a **second connection** and
+with the motion made by **`WarpPointer`** instead of XTEST, since those take different paths into the
+server and "the freeze is real but XTEST bypasses it" would have looked the same from one of them.
+Neither changed anything.
 
+`tools/AllowEventsProbe` against Xvfb and against this server, for all three arrangements, differs in
+**nothing but window ids** (and one stale-pointer artifact from the run before). The key replay case is
+two connections on purpose: a replay is only observable if the event could have gone to somebody else.
+
+**So there is nothing to implement, and implementing a freeze the reference does not have would be
+exactly what §7 warns about** - a device that stops delivering events is felt by every client at once,
+and none of them asked for it. The item's own Verify step is what disproved the premise.
+
+**What is *not* settled, and why the item stays open.** The measurement is XTEST-injected: the test bed
+has no hardware pointer or keyboard in front of `Xvfb` on the VM, so a freeze that the real input path
+honours and the injected one bypasses cannot be told apart here. Xorg's freeze lives in the event-
+delivery path and should apply to injected events too - it did not - but "the reference does not freeze
+this device" and "the reference does not freeze a device driven this way" are different claims. If a
+client is ever seen depending on the modes (a game, a remote-desktop client), the next step is to
+re-run this probe against a server with a real input device, or against an X server whose input is
+driven by a uinput device on the VM.
+
+**Not changed here**: `AllowEvents` still validates its mode and does nothing else, which is what the
+reference does in every case measured.
 ---
 
 ## 3. B - Extensions a reference server has
@@ -959,23 +991,39 @@ diffed against this server; a C1 resize delivers `ScreenChangeNotify` to a clien
 
 ---
 
-### [~] B3. Xinerama. **M**/**S-M** - the part a client's startup needs, done 2026-09-24
+### [x] B3. Xinerama. **S-M** - done 2026-09-25 (the part a client needs, measured)
 
-**Done**: `extension/XineramaExtension` answers the three requests a client asks before it has decided
+**Done.** `extension/XineramaExtension` answers the three requests a client asks before it has decided
 anything - `QueryVersion` (1.1), `IsActive` (**no**: this server is one screen per client and cannot
 span more than one) and `QueryScreens` (that one screen, at the origin, sized to the root).
-`extension/XineramaTest` (3 tests); three small replies.
 
-**Why it was done here**: `xdotool` calls `XineramaIsActive` as it starts, and a client that asks a
+**Measured 2026-09-25 with `tools/XineramaProbe`** (new) against Xvfb and here, field by field:
+
+```
+                     Xvfb                        here
+QueryVersion         1.1                         1.1          same
+IsActive             yes - several heads         no - one screen   deliberately different
+QueryScreens         1 head [0,0 1300x800]       1 head [0,0 1300x800]   same shape and size
+```
+
+**And live, with a real client**: `xdpyinfo -ext XINERAMA` against this server prints
+`XINERAMA version 1.1 opcode: 133, base event: 67, base error: 21` and `Xinerama is inactive`, with a
+zero exit status; against Xvfb it prints the head instead because Xvfb says it *is* active. The opcode
+and the two bases are the part a client caches, and they are there.
+
+**The three Xinerama 1.1 requests are deliberately left unanswered**, and this is the measurement that
+settles it rather than a preference: `GetState`, `GetScreenCount` and `GetScreenSize` are for a client
+that already knows it is on a Xinerama display, and **the reference's own answers are not a model** -
+255 for the state, 255 for the count (neither is a value that means anything), and `BadLength` for the
+size request even with the window argument the other two take. Both of those first two look like
+replies the reference fills in without implementing the request, and building on them would be
+guessing for a client that does not exist here. `extension/XineramaTest` (4 tests) pins the three
+answers that *are* implemented, the head's size, and the three that are refused - the last one so that
+a future session that implements them has to come back to this paragraph.
+
+**Why it exists at all**: `xdotool` calls `XineramaIsActive` as it starts, and a client that asks a
 question has to get an answer. Measured: with the extension present the xdotool segfault below is
 **still** there, so Xinerama was not its cause - which is what A4's investigation needed ruled out.
-
-**Not done**: Xinerama 1.1's `GetState`, `GetScreenCount` and `GetScreenSize` (for a client that
-already knows it is on a Xinerama display, which none of this one's are; they answer `BadRequest`), and
-anything to do with actually spanning screens. **Not ticked**, because this is a stub that answers "no"
-rather than an implementation of the thing.
-
----
 
 ### [ ] B3old. Xinerama (the original wording). **M**/**S-M**
 
@@ -1071,22 +1119,72 @@ crash rather than fall back to software rendering.
 
 ---
 
-### [ ] B7. DPMS and the XScreenSaver extension. **S**
+### [x] B7. DPMS and the XScreenSaver extension. **S** - done 2026-09-25
 
-**Current.** The core screen-saver requests are implemented (`Get/Set/ForceScreenSaver`), the
-extensions are not, so `xset s`, `xset dpms` and anything that inhibits the screen saver report
-"extension not present".
+**What it was.** The core screen-saver requests were implemented (`Get/Set/ForceScreenSaver`) and the
+two extensions were not advertised at all, so `xset q` printed no DPMS section and anything that wants
+to say "do not blank while this plays" - a video player, a presentation tool, a remote-desktop client -
+was told the extension was missing. The core handlers also answered *constants*: a client that set a
+timeout and read it back saw 600 whatever it had set.
 
-**Why it matters.** Small: a client that plays video wants to say "do not blank"; a client that wants
-the DPMS state gets nothing. A real server's answer is also what a test suite for idle behaviour
-reaches for.
+**What changed.**
 
-**Plan.** Advertise `MIT-SCREEN-SAVER` and `DPMS` with `QueryVersion`/`QueryInfo`/`GetTimeouts`/
-`SetTimeouts`/`ForceLevel`/`Info` and the `ScreenSaverNotify` event, backed by the same idle state the
-core requests already keep.
+- **`extension/ScreenSaverExtension`** (MIT-SCREEN-SAVER): `QueryVersion` (1.1, the reference's answer),
+  `QueryInfo` (state, saver window, the two countdowns, the caller's event mask and kind), `SelectInput`
+  (kept per client, for the notification), `Suspend` (kept), and `SetAttributes`/`UnsetAttributes`
+  accepted and ignored - they configure a saver *window*, and there is none to configure here. The
+  `ScreenSaverNotify` is sent to subscribers from the core `ForceScreenSaver`, which is the one state
+  change this server has.
+- **`extension/DpmsExtension`**: `GetVersion` (1.2), `Capable` (**no** - see below), `GetTimeouts`/
+  `SetTimeouts`, `Enable`/`Disable`, `ForceLevel` and `Info`, all backed by real state.
+- **`display/ScreenSaverState`**, one per server rather than per screen: what would blank is the host
+  window and there is one of them. It keeps the core settings, the saver's state, and - hooked from
+  the input path, one assignment per motion, button and key - the time of the last input, so
+  `QueryInfo`'s countdowns are real numbers rather than constants.
+- **The core handlers now keep and report what was set** (`GetScreenSaver` answers the timeout and
+  preferences a client set, `SetScreenSaver` stores them, `ForceScreenSaver` changes the state and
+  raises the notification) - the same rule the auto-repeat work set for `GetKeyboardControl`.
 
-**Verify.** `xset q` on the VM shows the extension; `xset s 60 0` does not error.
+**Measured 2026-09-25**, three ways:
 
+- **Live, with the real client, which is this item's own Verify.** On the VM against this server:
+  `xset q` prints the `DPMS (Display Power Management Signaling)` section - it printed none before -
+  and `Display is not capable of DPMS`, which is the honest answer; `xset s 60 0` returns 0 and
+  `xset q` then reads back `timeout: 60  cycle: 0`, **byte for byte what Xvfb prints for the same
+  command**; `xset s activate` and `xset s reset` are accepted and the state a probe reads through
+  `QueryInfo` goes On and back to Off, with `until_server` counting down against the timeout that was
+  set; `xset dpms force standby` is accepted. No client request was refused (`rejected` count in the
+  server log: 0).
+- **`tools/ScreenSaverProbe`** (new): against Xvfb and here, MIT-SCREEN-SAVER answers **1.1**,
+  `state=Off` before anything forces it, `kind=0`, `eventMask=0`, and two countdowns that are real
+  numbers on both. The one field that deliberately differs is the saver window: Xvfb names the black
+  window it maps to blank the display, this server answers `None` because it maps none.
+- **`extension/ScreenSaverTest`** (8 tests): both extensions advertised; both versions; DPMS's
+  `Capable` = no and the timeouts/level read back; the core settings read back as set; `QueryInfo`'s
+  countdown inside a one-minute timeout; the notification reaching a subscriber with `state` and
+  `forced` and the drawable it subscribed with; **a client that did not subscribe hearing nothing**
+  (the guard that makes the previous test mean something); and `Suspend` kept and released.
+  Removing the kept settings fails two of them; removing the extensions fails the rest.
+
+**Decisions worth keeping.**
+
+- **`Capable` is no.** The display is the host window on a machine whose power management is the
+  system's business; a client that checks capability then skips its DPMS logic, which is right here.
+  Same shape as XINERAMA's `IsActive` answering no.
+- **Nothing blanks.** The host window owns the display and on this platform the system's screen saver
+  is what blanks it, so the settings and the state are kept and reported and no black window is mapped.
+  `QueryInfo`'s saver window being `None` is that decision showing.
+- **There is no DPMS reference to diff against**: Xvfb does not have the extension at all (measured -
+  `QueryExtension` answers 0), so its replies follow the protocol and the two version numbers the
+  extension has ever had.
+
+**Traps.** `ForceScreenSaver` is a **four byte** request - a mode byte and a length - and this server
+accepts an eight byte one, which a reference server refuses with `BadLength`; the same class of
+leniency the design notes already record for `SetInputFocus`. A probe that also *forces* the saver on
+every run is measuring its own doing: the first version of `ScreenSaverProbe` sent a
+`ForceScreenSaver(activate)` before reading the state, and every reading said `On`. And the core
+opcodes are 107/108/115: a test written from memory used 116/117/124, of which 124 is
+`unsupported opcode` here - the live `xset` is what settled them.
 ---
 
 <a name="b8-mit-shm--deliberately-not-worth-doing"></a>
