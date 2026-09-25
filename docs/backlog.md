@@ -59,7 +59,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | A5 | `PointerRoot` focus reporting: the premise was wrong, five measured differences remain | correctness | M |
-| A1 | passive grabs are recorded but never matched | correctness | M |
+| ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
 | A9 | `IncludeInferiors`, backing store, save-unders are recorded only | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw: premise disproven (measured), nothing to do | correctness | S |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
@@ -774,84 +774,72 @@ the server's own model would have passed against every one of them.
 
 ---
 
-### [ ] A1. Passive grabs are recorded but never matched. **M**
+### [x] A1. Passive grabs are recorded but never matched. **M** - done 2026-09-25
 
-**Current.** `GrabButton`/`GrabKey` are added to `XServer.passiveGrabs()` and removed by the matching
-`Ungrab*`; **nothing reads the list**, so a client that arms a passive grab - a window manager, a
-toolkit's popup shortcut, a global-hotkey library - never hears about the button or key it asked for.
-Active grabs, including the implicit grab a press starts, work.
+**What it was.** `GrabButton`/`GrabKey` were added to `XServer.passiveGrabs()` and removed by the
+matching `Ungrab*`; **nothing read the list**. A client that armed one - a global shortcut, a toolkit's
+popup binding, a window manager's frame buttons - never heard about the button or the key it asked for.
+The last hole in the input model.
 
-**Why it matters.** It is the largest remaining hole in the input model, and it is what makes a
-"no window manager" server unable to host clients that put a shortcut on the root window (a very
-common way to get a global hotkey). The README lists it; it has never been used by the two
-applications tested so far, which is why it has stayed open.
+**What changed.** `InputState.matchingPassiveGrab` walks the window the event landed on and its
+ancestors, so a grab on a frame beats one on the root, and `buttonChanged`/`keyChanged` match before
+the event is delivered - a grab that fires means the input belongs to the client that armed it,
+wherever it landed. The rules, and all of them were measured against a reference server with
+`tools/GrabProbe`:
 
-**Plan.** Match in `InputState`: on a button press, before delivering to the window under the pointer,
-walk the pointer's *ancestor chain* looking for a passive grab on any of them (grabs are on a window
-and fire for its descendants) whose button/modifiers/`event_mask` match - honouring the documented
-rules: modifiers are an exact match after the "any modifier" combinations are expanded, the grab is
-only taken if no other client has grabbed first (the *last* one armed wins for `GrabButton` with the
-same modifiers), and `owner_events` decides whether the event goes to the grab window or to the window
-under the pointer. Then take the grab (it is an active grab from then until the button is released)
-and unfreeze the pointer if `pointer_mode` says `Async`.
+- **The modifiers**: `AnyModifier` (0x8000) matches any state; a specific one must match the state
+  **exactly**. Measured: a grab armed with `ShiftMask` fires with Shift held and does not fire without
+  it - and the state compared is the *modifiers*, not the whole pointer state, which carries the button
+  that was just pressed (the first version compared that, and a Shift grab never fired).
+- **The detail**: `AnyButton`/`AnyKey` (0) matches everything; a specific one only itself.
+- **Two arms that match**: the specific modifier beats `AnyModifier` (the closest match), and among
+  equals the **last armed wins** - which is what the protocol's "an existing grab with the same
+  parameters is replaced" amounts to, and why `grabButton`/`grabKey` now remove an equivalent arm
+  before adding theirs.
+- **The lifetime**: the *grab* lasts from the press to the release (a button grab holds the pointer
+  for exactly that long, a key grab the keyboard), and the *arm* lasts until the client disarms it -
+  so the next click fires it again, which is what a shortcut is. Ending the grab is reported to the
+  application as the crossing pair's second half.
+- **The crossing pair a reference server sends is sent**: `LeaveNotify(NotifyGrab)` on the window the
+  pointer is in and `EnterNotify(NotifyGrab)` on the grab window, and the reverse with `NotifyUngrab`
+  at the release. **This is the pair §7 withholds for a grab a client takes on its own request**, and
+  the measurement is what separates the two cases: a reference server sends it for a *passive* grab
+  (measured), and a shortcut's client is not a menu that can be dismissed by it.
+- **The press reported to the grabbing client names the child** of the grab window the pointer is in,
+  which is how a client that owns the whole screen tells which of its windows was clicked.
 
-Keyboard grabs are the same shape in `keyChanged`, with `keyboard_mode`, and with the extra rule that
-a key press that matches a passive grab is *consumed* (the client that armed it gets the event, the
-focused window does not).
+**Measured 2026-09-25**, three ways:
 
-**Traps.** `XGrabButton` with `AnyModifier` and `AnyButton` stores a wildcard - the protocol defines
-several overlapping candidates and a strict "closest match" order; read the specification table
-rather than inventing one. A passive grab on a window that is not mapped must not fire. The grab must
-be released on the button release even if the grab window is destroyed in between (otherwise input is
-dead until the next click - the same trap the implicit grab had). `XTestFakeInput` has to go through
-the same path or a scripted test cannot see the behaviour.
+- **`tools/GrabProbe` against Xvfb and here, line for line**: with the grab on the root and the pointer
+  over another client's window, the press and release go to the grabbing client (reported against the
+  grab window, `child` naming the window actually under the pointer), the other client gets the
+  `LeaveNotify(NotifyGrab)`/`EnterNotify(NotifyUngrab)` pair, and the two outputs differ in **nothing
+  but the window ids**.
+- **`input/PassiveGrabTest`** (5 tests): the click belongs to the client that armed the grab and the
+  client under the pointer hears nothing; the grabbing client is told the button came up; the pair
+  that says the grab is over; a specific modifier fires only with it held (and the event reports the
+  state it happened in); a key grab takes the key from the focused window; and the guard that a client
+  which armed nothing is unaffected. **Four of the five fail with the matching disabled** (the fifth is
+  the guard, and passes either way, which is the point of it).
+- `mvn test` 233/233, `MenuProbe`'s output against Xvfb and here still **identical** (§7's gate), and
+  live: EasyShell's context menu opened and survived the 6-run gesture, termora's menu opened, and the
+  server log had no ERROR lines.
 
-**Measured 2026-09-25 with `tools/GrabProbe`** (new in the kit). The grab was armed on the **root**,
-`AnyButton`/`AnyModifier`, `owner_events=false`, `event_mask = ButtonPress|ButtonRelease`, and the
-pointer was over a window belonging to a **second connection** - the only arrangement that can tell
-"the grab took the press" from "the press went where it landed":
+**Two traps, both of which cost a test rewrite.**
 
-```
-[other client]  EnterNotify win=cover detail=Ancestor mode=NotifyNormal at=200,200
-step: press the button
-[grabbing client] ButtonPress   win=root button=1 state=0x0   child=cover
-[grabbing client] ButtonRelease win=root button=1 state=0x100 child=cover
-[other client]  LeaveNotify win=cover detail=Ancestor mode=NotifyGrab   at=200,200
-[other client]  EnterNotify win=cover detail=Ancestor mode=NotifyUngrab at=200,200
-```
+- **An event *mask* is not an event *type*.** The first version read its assertions with the mask
+  values: `ButtonReleaseMask` is 8 and the event's type is 5, `KeyPressMask` is 1 and the type is 2 -
+  and `ButtonPress` is 4 in *both*, which is what hides the mistake. A test reading with the mask waits
+  for an event that never comes, and that looks exactly like a server that delivers nothing (the
+  client was being sent everything, and the debug print showed it).
+- **An armed grab is not an active one.** "The grab ends with the button" is about the *active* grab;
+  the arm stays until `UngrabButton`, so the *next* click fires it again. The first version of the test
+  expected the second click to be the application's and read as "the grab outlived the button" - the
+  implementation was right and the test was wrong.
 
-So the reference does three things this server does not:
-
-1. **The press goes to the grabbing client**, reported against the **grab window** (the root here) with
-   `child` naming the window that was actually under the pointer. This server delivers it to the
-   window under the pointer, i.e. to the other client.
-2. **The crossings a grab start and end imply are sent** - `LeaveNotify(NotifyGrab)` to the window the
-   pointer is in when the grab fires, and `EnterNotify(NotifyUngrab)` when it ends. That is the pair
-   §7 records as deliberately *not* sent here for **active** grabs, and the answer to this item's own
-   question is that a **passive** grab is a different case: the reference sends it. Whether this
-   server can send it without the §7 damage is the thing to re-measure before shipping - the pair is
-   the same shape, and `MenuProbe` plus the EasyShell/termora gesture is the gate.
-3. **A key grab** behaves the same way with the focus chain instead of the pointer chain (measured:
-   `KeyPress`/`KeyRelease` reported against the grab window for a key typed while the focus is
-   elsewhere).
-
-**Two arrangements that do not measure anything, tried first and worth not repeating.** A press inside
-the grabbing client's *own* window belongs to that client whether or not a grab fired, so a
-single-client probe cannot tell the two apart - its output is identical with the grab implemented and
-with it ignored (measured: it is, which is how the first version of `GrabProbe` passed against both
-servers). And a covering window from another client **cannot be made a child of the grab window**: the
-reference refuses the `CreateWindow` (`BadRequest`), so a grab on an ancestor of somebody else's window
-is not an arrangement a client can build at all.
-
-**What is left to measure before implementing**: the modifier rules (`AnyModifier` against a state with
-modifiers held, a specific modifier that does not match, several arms on one window - the spec's
-"closest match" table, which the item's Traps already warn about), `owner_events=true` (measured on a
-single-client arrangement only, where it is not discriminating), and what happens when the grab window
-is destroyed mid-grab.
-
-**Verify (still the item's own, with the harness now in the kit).** `tools/GrabProbe` against Xvfb and
-here, for the button and key cases, byte for byte; then `MenuProbe` (identical today) and the
-EasyShell/termora gestures, because rule 2 above puts events into the path §7 is about.
+**Also found while measuring**: `GrabProbe`'s own `UngrabButton`/`UngrabKey` put the button in the
+field the window goes in (the button is the byte right after the opcode), so the probe had been
+disarming nothing; both it and `RawXClient`'s new helpers are written from the generated reader.
 ---
 
 ### [ ] A9. `SubwindowMode.IncludeInferiors`, backing store and save-unders are recorded only. **M-L**

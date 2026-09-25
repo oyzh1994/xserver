@@ -35,6 +35,9 @@ public final class GrabProbe {
     private static final int BUTTON_RELEASE = 0x8;
     private static final int ENTER_WINDOW = 0x10;
     private static final int LEAVE_WINDOW = 0x20;
+    /** The left Shift keycode, for the modifier rule: a grab armed with a modifier needs it held. */
+    private static final int SHIFT_L = 50;
+
     private static final int KEY_PRESS = 0x1;
     private static final int KEY_RELEASE = 0x2;
 
@@ -65,8 +68,13 @@ public final class GrabProbe {
         boolean ownerEvents = args.length > 3 && args[3].equals("owner");
         int modifiers = args.length > 4 ? Integer.parseInt(args[4]) : 0x8000;   // AnyModifier
         int detail = args.length > 5 ? Integer.parseInt(args[5]) : 0;           // AnyButton / AnyKey
-        int eventMask = args.length > 6 ? Integer.parseInt(args[6])
+        int eventMask = args.length > 6 && !args[6].equals("shift") && !args[6].equals("noshift")
+                ? Integer.parseInt(args[6])
                 : keyboard ? KEY_PRESS | KEY_RELEASE : BUTTON_PRESS | BUTTON_RELEASE;
+        // Whether Shift is held while the button goes down, which is the whole of the modifier rule:
+        // a grab armed with a modifier only fires for a press that has it, and one armed with
+        // AnyModifier fires for any state at all.
+        boolean shift = java.util.Arrays.asList(args).contains("shift");
         System.out.printf("%s grab: ownerEvents=%s modifiers=0x%x detail=%d eventMask=0x%x%n",
                 keyboard ? "key" : "button", ownerEvents, modifiers, detail, eventMask);
 
@@ -111,13 +119,20 @@ public final class GrabProbe {
             fakeMotion(graber, xtest, 200, 200);
             drain(graber, other);
 
-            System.out.println(keyboard ? "step: type the key" : "step: press the button");
+            System.out.println((keyboard ? "step: type the key" : "step: press the button")
+                    + (shift ? " with Shift held" : ""));
+            if (shift) {
+                fakeKey(graber, xtest, SHIFT_L, true);
+            }
             if (keyboard) {
                 fakeKey(graber, xtest, detail == 0 ? 38 : detail, true);
                 fakeKey(graber, xtest, detail == 0 ? 38 : detail, false);
             } else {
                 fakeButton(graber, xtest, detail == 0 ? 1 : detail, true);
                 fakeButton(graber, xtest, detail == 0 ? 1 : detail, false);
+            }
+            if (shift) {
+                fakeKey(graber, xtest, SHIFT_L, false);
             }
             drain(graber, other);
 
@@ -272,10 +287,12 @@ public final class GrabProbe {
 
     private static void ungrabButton(Wire wire, int window, int modifiers, int button)
             throws Exception {
+        // button(1), length(2), window(4), modifiers(2), pad(2): the button is the byte right after
+        // the opcode, and writing it where the window goes loses the window entirely.
         byte[] request = new byte[12];
         request[0] = 29;                            // UngrabButton
+        request[1] = (byte) button;
         Wire.writeShort(request, 2, 3);
-        request[4] = (byte) button;
         Wire.writeInt(request, 4, window);
         Wire.writeShort(request, 8, modifiers);
         wire.send(request);
@@ -298,8 +315,8 @@ public final class GrabProbe {
     private static void ungrabKey(Wire wire, int window, int modifiers, int key) throws Exception {
         byte[] request = new byte[12];
         request[0] = 34;                            // UngrabKey
+        request[1] = (byte) key;
         Wire.writeShort(request, 2, 3);
-        request[4] = (byte) key;
         Wire.writeInt(request, 4, window);
         Wire.writeShort(request, 8, modifiers);
         wire.send(request);

@@ -389,11 +389,11 @@ public final class EventDispatcher {
             // The window left first, then the windows holding it, innermost outwards: a toolkit walks
             // up out of the subtree it was in, and has to hear the leaf before the window holding it.
             deliverCrossingWindow(previous, false, crossingDetail(previous, current, detailGrab), time,
-                    screenX, screenY, rootX, rootY, state, inside);
+                    screenX, screenY, rootX, rootY, state, inside, NOTIFY_MODE_NORMAL);
             if (common != previous) {
                 for (XWindow w = previous.parent(); w != null && w != common; w = w.parent()) {
                     deliverCrossingWindow(w, false, virtualDetail(w, current), time, screenX, screenY,
-                            rootX, rootY, state, inside);
+                            rootX, rootY, state, inside, NOTIFY_MODE_NORMAL);
                 }
             }
         }
@@ -409,19 +409,47 @@ public final class EventDispatcher {
                 }
                 for (int i = chain.size() - 1; i >= 0; i--) {
                     deliverCrossingWindow(chain.get(i), true, virtualDetail(chain.get(i), previous),
-                            time, screenX, screenY, rootX, rootY, state, inside);
+                            time, screenX, screenY, rootX, rootY, state, inside, NOTIFY_MODE_NORMAL);
                 }
             }
             // The window itself last, after every window holding it: a toolkit walks down into the
             // window the pointer is in, and can only do that if the chain arrives in that order.
             deliverCrossingWindow(current, true, crossingDetail(current, previous, detailGrab), time,
-                    screenX, screenY, rootX, rootY, state, inside);
+                    screenX, screenY, rootX, rootY, state, inside, NOTIFY_MODE_NORMAL);
         }
+    }
+
+    /**
+     * The crossing pair a grab's start or end implies: the pointer leaves the window it is in and
+     * enters the grab window, with the mode that says a grab did it - or, at the end, the reverse.
+     *
+     * <p><b>This is the pair §7 withholds for grabs this server takes on a client's request</b>, and
+     * that is measured: EasyShell's menus are torn down by it. A *passive* grab is the other case, and
+     * a reference server sends the pair for it - measured with {@code tools/GrabProbe}, which is why
+     * it is sent here and not there. The detail is the ordinary lattice: the window on the other side
+     * of the change is what the event says, so a pointer leaving a child for the window holding it is
+     * `Ancestor` in both directions.
+     */
+    public void deliverGrabCrossing(XWindow pointerWindow, XWindow grabWindow, byte mode) {
+        if (pointerWindow == null || grabWindow == null || pointerWindow == grabWindow) {
+            return;
+        }
+        int time = time();
+        int state = server.inputFor(grabWindow.screen()).pointerState();
+        boolean starting = mode == NOTIFY_MODE_GRAB;
+        XWindow leaving = starting ? pointerWindow : grabWindow;
+        XWindow arriving = starting ? grabWindow : pointerWindow;
+        int x = server.inputFor(grabWindow.screen()).pointerX();
+        int y = server.inputFor(grabWindow.screen()).pointerY();
+        deliverCrossingWindow(leaving, false, crossingDetail(leaving, arriving), time, x, y, x, y,
+                state, null, mode);
+        deliverCrossingWindow(arriving, true, crossingDetail(arriving, leaving), time, x, y, x, y,
+                state, null, mode);
     }
 
     private void deliverCrossingWindow(XWindow window, boolean enter, byte detail, int time,
                                        int screenX, int screenY, int rootX, int rootY, int state,
-                                       XWindow inside) {
+                                       XWindow inside, byte mode) {
         if (inside != null && inside != window && !inside.isAncestorOf(window)) {
             // A grab is held on another window: this one is outside the tree the pointer belongs to
             // for as long as the grab lasts, so it is told nothing.
@@ -471,7 +499,7 @@ public final class EventDispatcher {
                         .eventX((short) x)
                         .eventY((short) y)
                         .state((short) state)
-                        .mode((byte) 0)
+                        .mode(mode)
                         .sameScreenFocus(sameScreenFocus(focused))
                         .build();
             }
@@ -489,7 +517,7 @@ public final class EventDispatcher {
                     .eventX((short) x)
                     .eventY((short) y)
                     .state((short) state)
-                    .mode((byte) 0)
+                    .mode(mode)
                     .sameScreenFocus(sameScreenFocus(focused))
                     .build();
         });

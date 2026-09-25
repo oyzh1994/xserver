@@ -484,7 +484,9 @@ Two deliberate deviations, both measured rather than reasoned:
 - **Starting and ending a grab does not report the crossing pair Xorg sends** (LeaveNotify on the
   window the pointer is in and EnterNotify on the grab window with `mode` NotifyGrab, and the
   reverse with NotifyUngrab). It should: it is how a submenu becomes the window the pointer
-  "belongs to" the moment it opens. With the pairs in place EasyShell's context menu was torn down
+  "belongs to" the moment it opens. **This is about grabs a client takes on its own request**; a
+  *passive* grab - `GrabButton`/`GrabKey` - sends the pair, because a reference server does
+  (measured) and because a shortcut's client is not a menu that can be dismissed by it. With the pairs in place EasyShell's context menu was torn down
   within microseconds of opening in three runs out of three, against one in three for the same
   scripted gesture on this server without them; with them left out the menu behaves as it does
   against Xorg and the submenu works. Since the pointer's next move reports the same information,

@@ -15,6 +15,7 @@ import io.github.oyzh1994.xserver.event.EventDispatcher;
 import io.github.oyzh1994.xserver.event.EventDispatcher.EventFactory;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.extension.ShapeExtension;
+import io.github.oyzh1994.xserver.handler.InputHandlers;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
 
@@ -34,6 +35,9 @@ public final class InputState implements DisplayBackend.InputSink {
 
     /** X button state occupies bits 8..12 of the event state field. */
     private static final int BUTTON_MASK_SHIFT = 8;
+
+    /** {@code GrabButton}/{@code GrabKey} modifiers meaning "any": the protocol's own spelling. */
+    private static final int ANY_MODIFIER = 0x8000;
 
     /** Keycodes that only apply while held; everything else with a modifier bit latches. */
     private static final int[] MOMENTARY_KEYCODES = {
@@ -135,6 +139,21 @@ public final class InputState implements DisplayBackend.InputSink {
 
     private Grab pointerGrab;
     private Grab keyboardGrab;
+
+    /**
+     * The button or key a <em>passive</em> grab is being held for, so that its release ends the grab;
+     * 0 when the grab is one a client took for itself with {@code GrabPointer}/{@code GrabKeyboard}.
+     *
+     * <p>A passive grab becomes active when the event it was armed for happens and stops when that
+     * event ends - a button grab holds the pointer from the press to the release of the button it
+     * matched, and a key grab from the press to the release of the key. That is the whole of its
+     * lifetime, and it is the difference between it and an explicit grab, which lasts until the client
+     * says otherwise.
+     */
+    private int passiveGrabDetail;
+
+    /** The modifiers the passive grab matched with, for the crossing pair's state field. */
+    private int passiveGrabModifiers;
 
     /**
      * X11's implicit grab: the window the last button press landed on.
@@ -420,7 +439,22 @@ public final class InputState implements DisplayBackend.InputSink {
                                         + ", ownerEvents=" + pointerGrab.ownerEvents() + ")"
                                 : "");
             }
+            if (pressed) {
+                // A passive grab is matched before the event is delivered: if one fires, the press
+                // belongs to the client that armed it, wherever it landed.
+                // The *modifiers*, not the whole pointer state: the state also carries the button
+                // that was just pressed, and a grab armed for Shift must not be looking at that.
+                InputHandlers.PassiveGrab passive = matchingPassiveGrab(true, pointerWindow, button,
+                        modifierState());
+                if (passive != null) {
+                    activatePassiveGrab(passive, button, modifierState());
+                }
+            }
             deliverButton(button, pressed, mask);
+            if (!pressed && passiveGrabDetail == button) {
+                // The release has been delivered through the grab; the grab itself ends here.
+                endPassiveGrab();
+            }
         } finally {
             server.unlockServer();
         }
@@ -495,6 +529,16 @@ public final class InputState implements DisplayBackend.InputSink {
         try {
             movePointer(x, y, false);
             updateModifiers(keycode, pressed);
+            if (pressed && keyboardGrab == null) {
+                // A passive key grab fires for the focus window's chain, and it *consumes* the press:
+                // the client that armed it gets the event and the focused window does not, which is
+                // the whole point of a global shortcut.
+                InputHandlers.PassiveGrab passive = matchingPassiveGrab(false, focusWindow(), keycode,
+                        modifierState());
+                if (passive != null) {
+                    activatePassiveGrab(passive, keycode, modifierState());
+                }
+            }
             if (pressed) {
                 armRepeat(keycode);
             } else {
@@ -504,6 +548,9 @@ public final class InputState implements DisplayBackend.InputSink {
                 repeatDue.remove(keycode);
             }
             deliverKey(keycode, pressed);
+            if (!pressed && passiveGrabDetail == keycode) {
+                endPassiveGrab();
+            }
         } finally {
             server.unlockServer();
         }
@@ -988,6 +1035,135 @@ public final class InputState implements DisplayBackend.InputSink {
     }
 
     /**
+     * The passive grab a press should fire, or null when none of them matches.
+     *
+     * <p>{@code GrabButton}/{@code GrabKey} record "when this button (or key) is pressed on this window
+     * or anything inside it, I want the input", and this is where that is honoured. The window the
+     * event landed on is tried first and its ancestors after it, so a grab on a frame beats one on the
+     * root - which is how a window manager's frame buttons work.
+     *
+     * <p>The rules, and all of them were measured against a reference server with
+     * {@code tools/GrabProbe}:
+     *
+     * <ul>
+     *   <li><b>Modifiers</b>: {@code AnyModifier} (0x8000) matches any state; a specific modifier
+     *       matches only a state that equals it exactly. Measured: a grab armed with {@code ShiftMask}
+     *       fires with Shift held and does not fire without it.
+     *   <li><b>The detail</b>: {@code AnyButton}/{@code AnyKey} (0) matches every button or key; a
+     *       specific one matches only itself.
+     *   <li><b>Two arms that both match</b>: the one with a specific modifier beats {@code AnyModifier}
+     *       - the closest match - and among equals the last armed wins, which is what
+     *       {@code GrabButton}'s "an existing grab with the same parameters is replaced" amounts to.
+     *   <li><b>A window that is not mapped never fires</b>: a grab on a window nobody can see is not
+     *       something the user can press.
+     * </ul>
+     *
+     * @param pointer true for a button, false for a key
+     * @param from the window the event landed on, or the focus window for a key
+     */
+    private InputHandlers.PassiveGrab matchingPassiveGrab(boolean pointer, XWindow from, int detail,
+                                                          int modifiers) {
+        for (XWindow window = from; window != null; window = window.parent()) {
+            if (!window.isMapped() && !window.isRoot()) {
+                // The window itself is not on screen; its ancestors are still worth trying, which is
+                // what continuing the walk does.
+                continue;
+            }
+            InputHandlers.PassiveGrab best = null;
+            for (InputHandlers.PassiveGrab grab : server.passiveGrabs()) {
+                if (grab.pointer() != pointer || grab.window() != window) {
+                    continue;
+                }
+                if (grab.detail() != 0 && grab.detail() != detail) {
+                    continue;
+                }
+                if (!modifiersMatch(grab.modifiers(), modifiers)) {
+                    continue;
+                }
+                if (best == null || closerMatch(grab.modifiers(), best.modifiers())) {
+                    best = grab;
+                }
+            }
+            if (best != null) {
+                return best;
+            }
+            if (window.isRoot()) {
+                break;
+            }
+        }
+        return null;
+    }
+
+    /** A modifier list matches when it is AnyModifier, or when the state equals it exactly. */
+    private static boolean modifiersMatch(int wanted, int state) {
+        return wanted == ANY_MODIFIER || wanted == state;
+    }
+
+    /**
+     * Which of two matching arms is the closer one. A specific modifier beats {@code AnyModifier}, and
+     * two of the same kind are equally close - the last one armed then wins, which is the order the
+     * list is in.
+     */
+    private static boolean closerMatch(int candidate, int current) {
+        return candidate != ANY_MODIFIER && current == ANY_MODIFIER;
+    }
+
+    /**
+     * Takes the grab a passive one asks for: it is an ordinary active grab from the press to the
+     * release, and the clients are told the crossing pair a reference server sends for it.
+     */
+    private void activatePassiveGrab(InputHandlers.PassiveGrab passive, int detail, int modifiers) {
+        Grab grab = new Grab(passive.client(), passive.window(), passive.ownerEvents(),
+                passive.eventMask(), !passive.pointer());
+        passiveGrabDetail = detail;
+        passiveGrabModifiers = modifiers;
+        if (passive.pointer()) {
+            pointerGrab = grab;
+        } else {
+            keyboardGrab = grab;
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("passive {} grab on 0x{} fired by {}: the input belongs to {} until the release",
+                    passive.pointer() ? "button" : "key",
+                    Integer.toHexString(passive.window().id()), detail, passive.client());
+        }
+        // The pair a grab's start implies: the pointer leaves the window it was in and enters the
+        // grab window, with the mode that says a grab did it. A reference server sends this for a
+        // passive grab (measured), and §7's deliberate silence is about *active* ones.
+        if (passive.pointer()) {
+            server.events().deliverGrabCrossing(pointerWindow, passive.window(), grabCrossing(true));
+        }
+    }
+
+    /** Gives back the grab a passive one took, and reports the crossing pair that ends it. */
+    private void endPassiveGrab() {
+        Grab grab = passiveGrabDetail == 0 ? null
+                : (pointerGrab != null && !pointerGrab.keyboard() ? pointerGrab
+                        : keyboardGrab != null && keyboardGrab.keyboard() ? keyboardGrab : null);
+        passiveGrabDetail = 0;
+        if (grab == null) {
+            return;
+        }
+        if (grab.keyboard()) {
+            keyboardGrab = null;
+        } else {
+            pointerGrab = null;
+            server.events().deliverGrabCrossing(pointerWindow, grab.window(), grabCrossing(false));
+        }
+    }
+
+    /**
+     * The mode of an event a grab's own crossings carry, numbered as the protocol numbers them.
+     *
+     * <p>{@code NotifyGrab} on the way in and {@code NotifyUngrab} on the way out: a client that reads
+     * the mode tells "the pointer entered because somebody grabbed it" from "because the user moved
+     * it", and a menu that grabs the pointer depends on the difference.
+     */
+    private static byte grabCrossing(boolean starting) {
+        return starting ? EventDispatcher.NOTIFY_MODE_GRAB : EventDispatcher.NOTIFY_MODE_UNGRAB;
+    }
+
+    /**
      * Starts the implicit grab when a press lands with no button yet down, and ends it when the last
      * button comes up - the two moments X11 pins the pointer to a window and lets it go again.
      */
@@ -1178,7 +1354,11 @@ public final class InputState implements DisplayBackend.InputSink {
         XWindow window = grab.window();
         int x = pointerX - window.absoluteX();
         int y = pointerY - window.absoluteY();
-        server.events().send(grab.client(), factory.create(grab.client(), window, null, x, y));
+        // The child of the grab window the pointer is in, which is what a press reported to a client
+        // that owns the whole screen tells it *where* it was: a reference server names it, and a
+        // client that takes a global shortcut uses it to decide which of its own windows was clicked.
+        XWindow child = window.childAt(pointerX, pointerY);
+        server.events().send(grab.client(), factory.create(grab.client(), window, child, x, y));
     }
 
     // ------------------------------------------------------------------

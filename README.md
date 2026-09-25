@@ -116,8 +116,9 @@ actually produced and pads what needs padding, in one place.
 Core protocol: windows (create, map, configure, restack, reparent, circulate), the full drawing set
 (points, lines, segments, rectangles, arcs, polygons, both text requests, `PutImage`/`GetImage`,
 `CopyArea`/`CopyPlane`, `ClearArea`), GCs, pixmaps, fonts, cursors, colormaps, atoms, properties,
-selections, keyboard and pointer mapping, focus, grabs (active ones, and the implicit grab a press
-starts; a passive grab is recorded but never matched), the pointer's motion history
+selections, keyboard and pointer mapping, focus, grabs (active ones, the implicit grab a press starts,
+and passive `GrabButton`/`GrabKey` - a global shortcut fires, with the modifier, button and window
+matching the protocol's rules), the pointer's motion history
 (`GetMotionEvents`, 256 events per screen), and `SendEvent`.
 
 The keyboard's repeats are the server's own work, as they are on a real one: a held key starts
@@ -304,10 +305,6 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
   feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
   screen - so a client that asks what the pointer did is answered.)
-- **Passive grabs are recorded but never matched.** `GrabButton` and `GrabKey` are stored and listed
-  by nobody: a client that arms one (a window manager, a toolkit's popup shortcut) never hears about
-  the button or key it asked for. Active grabs, including the implicit grab a press starts, are
-  honoured - see the crossing-event rules in `docs/design-notes.md`.
 - **A focus change reports FocusIn and FocusOut, but nothing moves the focus on its own.** Every
   window on the way in and out is told, with the relationship lattice in the detail, `None` is a state
   of its own, and a window that stops being viewable gives the focus up the way the last

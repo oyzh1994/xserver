@@ -433,6 +433,69 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /**
+     * Arms a passive button grab: {@code GrabButton}, which fires when the button is pressed on that
+     * window or anything inside it.
+     *
+     * @param modifiers {@code 0x8000} is {@code AnyModifier}; a specific one must match the state
+     *     exactly
+     * @param button 0 is {@code AnyButton}
+     */
+    public void grabButton(int window, boolean ownerEvents, int eventMask, int button, int modifiers,
+                           int pointerMode, int keyboardMode) throws IOException {
+        byte[] request = new byte[24];
+        request[0] = 28;                            // GrabButton
+        request[1] = (byte) (ownerEvents ? 1 : 0);
+        writeShort(request, 2, 6);
+        writeInt(request, 4, window);
+        writeShort(request, 8, eventMask);
+        request[10] = (byte) pointerMode;
+        request[11] = (byte) keyboardMode;
+        request[20] = (byte) button;
+        writeShort(request, 22, modifiers);
+        send(request);
+    }
+
+    /** Arms a passive key grab. {@code key} 0 is {@code AnyKey}. */
+    public void grabKey(int window, boolean ownerEvents, int modifiers, int key, int pointerMode,
+                        int keyboardMode) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 33;                            // GrabKey
+        request[1] = (byte) (ownerEvents ? 1 : 0);
+        writeShort(request, 2, 4);
+        writeInt(request, 4, window);
+        writeShort(request, 8, modifiers);
+        request[10] = (byte) key;
+        request[11] = (byte) pointerMode;
+        request[12] = (byte) keyboardMode;
+        send(request);
+    }
+
+    /**
+     * Disarms a passive button grab: {@code UngrabButton}. The button is the byte right after the
+     * opcode, not the field the window is in - writing it there loses the window.
+     */
+    public void ungrabButton(int window, int button, int modifiers) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = 29;                            // UngrabButton
+        request[1] = (byte) button;
+        writeShort(request, 2, 3);
+        writeInt(request, 4, window);
+        writeShort(request, 8, modifiers);
+        send(request);
+    }
+
+    /** Disarms a passive key grab: {@code UngrabKey}, on the same terms as {@link #ungrabButton}. */
+    public void ungrabKey(int window, int key, int modifiers) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = 34;                            // UngrabKey
+        request[1] = (byte) key;
+        writeShort(request, 2, 3);
+        writeInt(request, 4, window);
+        writeShort(request, 8, modifiers);
+        send(request);
+    }
+
     /** GetKeyboardMapping: the keysyms a keycode carries, one entry per shift level. */
     public int[] keyboardMapping(int firstKeycode, int count) throws IOException {
         byte[] request = new byte[8];

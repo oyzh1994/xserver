@@ -281,11 +281,23 @@ public final class InputHandlers {
                 grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false));
     }
 
+    /**
+     * Arms a button grab.
+     *
+     * <p>An arm with the same button and modifiers replaces the one before it - the protocol says so
+     * ("if a passive grab with the same button and modifiers exists, it is replaced"), and it is what
+     * makes the *last* arm the one that fires. Without the removal the list would grow and the
+     * matching rules would have to invent a tie-break the protocol already has.
+     */
     public void grabButton(ClientConnection client, GrabButton r) {
         XWindow window = window(client, r.getGrabWindow());
+        int modifiers = Short.toUnsignedInt(r.getModifiers());
+        int button = Byte.toUnsignedInt(r.getButton());
+        server.passiveGrabs().removeIf(grab -> grab.client() == client && grab.window() == window
+                && grab.pointer() && grab.detail() == button && grab.modifiers() == modifiers);
         server.passiveGrabs().add(new PassiveGrab(client, window, r.isOwnerEvents(),
-                Short.toUnsignedInt(r.getEventMask()), true, r.getButton(),
-                Short.toUnsignedInt(r.getModifiers()), Byte.toUnsignedInt(r.getPointerMode()),
+                Short.toUnsignedInt(r.getEventMask()), true, button, modifiers,
+                Byte.toUnsignedInt(r.getPointerMode()),
                 Byte.toUnsignedInt(r.getKeyboardMode())));
     }
 
@@ -323,11 +335,15 @@ public final class InputHandlers {
         }
     }
 
+    /** Arms a key grab, on the same terms as {@link #grabButton}: the last arm for a key wins. */
     public void grabKey(ClientConnection client, GrabKey r) {
         XWindow window = window(client, r.getGrabWindow());
         int modifiers = Short.toUnsignedInt(r.getModifiers());
+        int key = Byte.toUnsignedInt(r.getKey());
+        server.passiveGrabs().removeIf(grab -> grab.client() == client && grab.window() == window
+                && !grab.pointer() && grab.detail() == key && grab.modifiers() == modifiers);
         server.passiveGrabs().add(new PassiveGrab(client, window, r.isOwnerEvents(),
-                EventMasks.KEYBOARD_GRAB, false, Byte.toUnsignedInt(r.getKey()), modifiers,
+                EventMasks.KEYBOARD_GRAB, false, key, modifiers,
                 Byte.toUnsignedInt(r.getPointerMode()), Byte.toUnsignedInt(r.getKeyboardMode())));
     }
 
