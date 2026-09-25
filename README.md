@@ -295,11 +295,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 - **A focus change reports FocusIn and FocusOut, but nothing moves the focus on its own.** Every
   window on the way in and out is told, with the relationship lattice in the detail, `None` is a state
   of its own, and a window that stops being viewable gives the focus up the way the last
-  `SetInputFocus` asked for - all of it measured against a reference server. What is still missing is
-  the other half of X11's focus model: with the focus on PointerRoot, a server is supposed to move it
-  from window to window as the pointer moves and report each move. Here the keys follow the pointer
-  (which is what PointerRoot means for delivery) but no events are generated for it, and a focus
-  change made by a keyboard grab is reported as `NotifyNormal` rather than `NotifyGrab`/`NotifyUngrab`.
+  `SetInputFocus` asked for - all of it measured against a reference server. A keyboard grab is the
+  one thing that does move it: taking one reports the focus arriving on the grab window with
+  `NotifyGrab`, ending one reports it going back with `NotifyUngrab`, and a change asked for while a
+  grab is held is reported `NotifyWhileGrabbed`. With the focus on PointerRoot the keys follow the
+  pointer and no focus events are generated as it moves, which is what a reference server does too:
+  measured, and recorded in `docs/backlog.md` (A5), where an earlier claim to the contrary is
+  corrected. What is still missing there is a set of smaller reporting differences, listed in A5.
 - **A window that appears under a stationary pointer is entered by the move that follows**, not by
   the map. Xorg reports it at the map; doing so here tears EasyShell's context menus down as they are
   mapped. See the design notes for the measurement.
@@ -308,6 +310,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   puzzle: the cause was not in them but under them - the client was never told it had the keyboard,
   because `SetInputFocus` generated no focus events. With those delivered the scripted gesture leaves
   the menu up 6 runs out of 6 where it closed 3 out of 3, and the design notes record what that took.
+- **`winGravity` is applied, `bitGravity` is not.** A child moves the way its own gravity says when
+  its parent is resized, matching a reference server's numbers for all eleven values (and, also like
+  the reference, the child is not sent a `ConfigureNotify`). `bitGravity` - what happens to a window's
+  own contents when it is resized - has nothing to act on with no per-window backing store: the window
+  is painted with its background over the new area and asked to redraw, which is what `NorthWest`
+  amounts to anyway.
 - **A resize grows the screen, up to `--max-screen`.** The host window is resizable and resizes the
   client's window; a drag past what the screen currently shows makes the screen bigger first, so a
   forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag

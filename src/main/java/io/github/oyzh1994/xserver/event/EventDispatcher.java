@@ -46,10 +46,24 @@ public final class EventDispatcher {
     public static final byte NOTIFY_POINTER = 5;
 
     /**
-     * Modes: what a grab did to a change. Only Normal is ever produced, because nothing here moves
-     * the focus on a grab's behalf.
+     * Modes: what a grab did to a change, numbered as the protocol numbers them.
+     *
+     * <p>A keyboard grab puts the focus on the window it is taken on and gives it back when it ends,
+     * and those two changes are reported as {@code NotifyGrab} and {@code NotifyUngrab}; a focus
+     * change asked for *while* a grab is held is reported as {@code NotifyWhileGrabbed}. A toolkit
+     * reads the mode to tell "my window lost the focus because somebody grabbed the keyboard" from
+     * "because the user clicked elsewhere", which decides whether a menu or a dialog should keep
+     * running its own focus handling.
+     *
+     * <p>All of it was measured rather than reasoned: {@code tools/FocusProbe} against a reference
+     * server, step by step - including the two cases prose does not mention, that a grab on the
+     * window that already has the focus still reports the pair, and that a grab taken with the focus
+     * on nothing at all reports nothing.
      */
     public static final byte NOTIFY_MODE_NORMAL = 0;
+    public static final byte NOTIFY_MODE_GRAB = 1;
+    public static final byte NOTIFY_MODE_UNGRAB = 2;
+    public static final byte NOTIFY_MODE_WHILE_GRABBED = 3;
 
     private final XServer server;
 
@@ -164,7 +178,30 @@ public final class EventDispatcher {
      * are not an ordinary window have their own detail rather than being reported as a window.
      */
     public void deliverFocusChange(XWindow previous, XWindow current) {
+        deliverFocusChange(previous, current, NOTIFY_MODE_NORMAL, false);
+    }
+
+    /**
+     * The same, with the mode a grab gives the change and a way to ask for a pair a reference server
+     * sends even when the focus did not move.
+     *
+     * @param mode {@code NotifyNormal}, or what a grab did to the change - see the mode constants
+     * @param force true to report a change between two windows that are the same one, which is what a
+     *     keyboard grab taken on the window that already has the focus amounts to. A reference server
+     *     sends the pair there, and a client that grabbed to be told it has the keyboard is waiting
+     *     for it: measured with {@code tools/FocusProbe}, {@code grabkey A} with the focus already on
+     *     A reports {@code FocusOut A / FocusIn A}, both Nonlinear
+     */
+    public void deliverFocusChange(XWindow previous, XWindow current, byte mode, boolean force) {
         if (previous == current) {
+            if (!force || previous == null || previous.isRoot()) {
+                return;
+            }
+            // The two ends are one window, so there is no chain to walk: the reference sends the
+            // pair against that window and nothing else - its own ancestors are not told, which the
+            // ordinary path would do because there is no common ancestor above it to stop at.
+            deliverFocusWindow(previous, false, NOTIFY_NONLINEAR, mode);
+            deliverFocusWindow(previous, true, NOTIFY_NONLINEAR, mode);
             return;
         }
         // PointerRoot is reported against the window the pointer is in, with a detail that says so:
@@ -189,15 +226,15 @@ public final class EventDispatcher {
             // the pointer is in is told so, each with the detail that says this is about the pointer
             // rather than about another window.
             for (XWindow w = leaving; w != null; w = w.parent()) {
-                deliverFocusWindow(w, false, NOTIFY_POINTER);
+                deliverFocusWindow(w, false, NOTIFY_POINTER, mode);
             }
         } else if (leaving != null) {
             // The window losing the focus, then its ancestors up to the one the two have in common:
             // a toolkit wants to know the focus left its whole subtree, not only its leaf. Innermost
             // first, so a menu hears about the leaf before the window that holds it.
-            deliverFocusWindow(leaving, false, focusDetail(leaving, arriving));
+            deliverFocusWindow(leaving, false, focusDetail(leaving, arriving), mode);
             for (XWindow w = leaving.parent(); w != null && w != common; w = w.parent()) {
-                deliverFocusWindow(w, false, virtualDetail(w, arriving));
+                deliverFocusWindow(w, false, virtualDetail(w, arriving), mode);
             }
         }
         if (current != null && current.isRoot()) {
@@ -205,7 +242,7 @@ public final class EventDispatcher {
             // the keyboard again. There may be none at all, when nothing has said where the pointer
             // is yet.
             for (XWindow w = arriving; w != null; w = w.parent()) {
-                deliverFocusWindow(w, true, NOTIFY_POINTER);
+                deliverFocusWindow(w, true, NOTIFY_POINTER, mode);
             }
         } else if (arriving != null) {
             // Outermost first on the way in, which is the other way round from the way out: a toolkit
@@ -216,9 +253,9 @@ public final class EventDispatcher {
                 chain.add(w);
             }
             for (int i = chain.size() - 1; i >= 0; i--) {
-                deliverFocusWindow(chain.get(i), true, virtualDetail(chain.get(i), leaving));
+                deliverFocusWindow(chain.get(i), true, virtualDetail(chain.get(i), leaving), mode);
             }
-            deliverFocusWindow(arriving, true, focusDetail(arriving, leaving));
+            deliverFocusWindow(arriving, true, focusDetail(arriving, leaving), mode);
         }
     }
 
@@ -255,10 +292,10 @@ public final class EventDispatcher {
      *
      * <p>Both are selected by {@code FocusChangeMask} - there is one bit for the pair, not one each -
      * and neither propagates here, because {@code FOCUS_CHANGE} is not in {@link EventMasks#PROPAGATE}.
-     * The mode is always Normal: the focus and grab modes belong together, and this server does not
-     * let a keyboard grab move the focus.
+     *
+     * @param mode what a grab did to the change, or {@code NotifyNormal} - see the mode constants
      */
-    private void deliverFocusWindow(XWindow window, boolean gained, byte detail) {
+    private void deliverFocusWindow(XWindow window, boolean gained, byte detail, byte mode) {
         deliverToWindow(window, EventMasks.FOCUS_CHANGE, (client, w, child, x, y) -> {
             if (gained) {
                 return FocusInEvent.builder()
@@ -267,7 +304,7 @@ public final class EventDispatcher {
                         .sequenceNumber(client.sequenceNumber())
                         .event(w.id())
                         .detail(detail)
-                        .mode(NOTIFY_MODE_NORMAL)
+                        .mode(mode)
                         .build();
             }
             return FocusOutEvent.builder()
@@ -276,7 +313,7 @@ public final class EventDispatcher {
                     .sequenceNumber(client.sequenceNumber())
                     .event(w.id())
                     .detail(detail)
-                    .mode(NOTIFY_MODE_NORMAL)
+                    .mode(mode)
                     .build();
         });
     }
@@ -349,24 +386,36 @@ public final class EventDispatcher {
                 : server.inputFor(crossed.screen()).pointerState();
 
         if (previous != null) {
+            // The window left first, then the windows holding it, innermost outwards: a toolkit walks
+            // up out of the subtree it was in, and has to hear the leaf before the window holding it.
             deliverCrossingWindow(previous, false, crossingDetail(previous, current, detailGrab), time,
                     screenX, screenY, rootX, rootY, state, inside);
             if (common != previous) {
                 for (XWindow w = previous.parent(); w != null && w != common; w = w.parent()) {
-                    deliverCrossingWindow(w, false, NOTIFY_VIRTUAL, time, screenX, screenY,
+                    deliverCrossingWindow(w, false, virtualDetail(w, current), time, screenX, screenY,
                             rootX, rootY, state, inside);
                 }
             }
         }
         if (current != null) {
-            deliverCrossingWindow(current, true, crossingDetail(current, previous, detailGrab), time,
-                    screenX, screenY, rootX, rootY, state, inside);
+            // And the way in is the other way round - outermost first, the window that gained the
+            // pointer before the window inside it - which was measured and is not symmetrical with
+            // the way out: the first version of this delivered both chains innermost first, and the
+            // reference orders only the leaving one that way.
             if (common != current) {
+                java.util.List<XWindow> chain = new java.util.ArrayList<>();
                 for (XWindow w = current.parent(); w != null && w != common; w = w.parent()) {
-                    deliverCrossingWindow(w, true, NOTIFY_VIRTUAL, time, screenX, screenY,
-                            rootX, rootY, state, inside);
+                    chain.add(w);
+                }
+                for (int i = chain.size() - 1; i >= 0; i--) {
+                    deliverCrossingWindow(chain.get(i), true, virtualDetail(chain.get(i), previous),
+                            time, screenX, screenY, rootX, rootY, state, inside);
                 }
             }
+            // The window itself last, after every window holding it: a toolkit walks down into the
+            // window the pointer is in, and can only do that if the chain arrives in that order.
+            deliverCrossingWindow(current, true, crossingDetail(current, previous, detailGrab), time,
+                    screenX, screenY, rootX, rootY, state, inside);
         }
     }
 
@@ -391,16 +440,19 @@ public final class EventDispatcher {
                     Integer.toHexString(window.id()), detail);
         }
         int maskBit = enter ? EventMasks.ENTER_WINDOW : EventMasks.LEAVE_WINDOW;
-        // The focus bit of a crossing is set when the focus window is this window *or a window
-        // inside it*, not only when it is this one exactly, and the focus that counts is the one
-        // keys actually go to - so a focus of PointerRoot means the window under the pointer. Both
-        // are what a real server reports, and a toolkit reads the bit to decide whether the window
-        // it is tracking still has the focus.
+        // The focus bit of a crossing is set when this window is **inside** the focus window -
+        // the focus window itself, or a descendant of it. Measured against a reference server, which
+        // sets it for a child of the focus and clears it for an unrelated window *and for the focus
+        // window's own parent*: `focus A`, enter B (A's child) - set; `focus B`, enter A (B's
+        // parent) - clear; `focus C`, enter A - clear. The relation is the other way round from the
+        // reading the first version of this code took, and a toolkit that paints a window as active
+        // from the bit is what notices.
         XWindow focus = server.inputFor(window.screen()).inputFocus();
-        // A focus of null is None, and no window has it - which is the one case where the bit is
-        // clear for every window. A focus of the root is PointerRoot: the keys go to whatever the
-        // pointer is in, so the window being crossed is the one that has them.
-        boolean focused = focus != null && (focus.isRoot() || window.isAncestorOf(focus));
+        // A focus of null is None, and no window has it - the one case where the bit is clear for
+        // every window. A focus of the root is PointerRoot, and the reference sets the bit for every
+        // window it crosses there, leaves included; that is measured rather than derived, and it is
+        // the case this short circuit exists for.
+        boolean focused = focus != null && (focus.isRoot() || focus.isAncestorOf(window));
         deliverPropagating(window, maskBit, screenX, screenY, (client, w, child, x, y) -> {
             short sequence = client.sequenceNumber();
             int childId = child == null ? 0 : child.id();
@@ -420,7 +472,7 @@ public final class EventDispatcher {
                         .eventY((short) y)
                         .state((short) state)
                         .mode((byte) 0)
-                        .sameScreenFocus((byte) (0x01 | (focused ? 0x02 : 0)))
+                        .sameScreenFocus(sameScreenFocus(focused))
                         .build();
             }
             return LeaveNotifyEvent.builder()
@@ -438,9 +490,29 @@ public final class EventDispatcher {
                     .eventY((short) y)
                     .state((short) state)
                     .mode((byte) 0)
-                    .sameScreenFocus((byte) (0x01 | (focused ? 0x02 : 0)))
+                    .sameScreenFocus(sameScreenFocus(focused))
                     .build();
         });
+    }
+
+    /**
+     * The last byte of a crossing: **{@code same_screen} in bit 1 and the focus flag in bit 0**.
+     *
+     * <p>Which bit is which is worth writing down, because it is the opposite of what the field's
+     * name suggests, and getting it backwards is invisible from this side of the socket: a client
+     * decodes it with Xlib, which reads {@code same_screen} from bit 1. Measured, not reasoned -
+     * `xev` on a reference server and on this one, with the focus on a window and then on nothing,
+     * prints "same_screen YES, focus NO" for the byte a reference server sends there and
+     * "same_screen NO, focus YES" for the one this server used to send. This server therefore
+     * claimed the pointer was on another screen in **every** crossing it sent, and reported the
+     * focus bit inverted whenever the crossing's window was not the focus - which a toolkit that
+     * gates on {@code same_screen}, or paints a window active from the focus bit, reads as a
+     * different event than the one that happened.
+     *
+     * @param focused whether the focus window is this window or inside it
+     */
+    private static byte sameScreenFocus(boolean focused) {
+        return (byte) (0x02 | (focused ? 0x01 : 0));
     }
 
     /**

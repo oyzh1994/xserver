@@ -113,6 +113,32 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /**
+     * Creates a window with the two gravities set, which {@code CreateWindow} takes as two of its
+     * value-list attributes rather than as arguments of their own.
+     *
+     * <p>They are X's own numbers: {@code bitGravity} says what happens to the window's own contents
+     * when it is resized, {@code winGravity} where the window goes when its <em>parent</em> is.
+     */
+    public void createWindowWithGravity(int window, int parent, int x, int y, int width, int height,
+                                        int bitGravity, int winGravity) throws IOException {
+        byte[] request = new byte[44];
+        request[0] = 1;                             // CreateWindow
+        writeShort(request, 2, 11);                 // 44 bytes
+        writeInt(request, 4, window);
+        writeInt(request, 8, parent);
+        writeShort(request, 12, x);
+        writeShort(request, 14, y);
+        writeShort(request, 16, width);
+        writeShort(request, 18, height);
+        writeShort(request, 22, 1);                 // InputOutput
+        writeInt(request, 28, 0x2 | 0x10 | 0x20);   // CWBackPixel | CWBitGravity | CWWinGravity
+        writeInt(request, 32, 0xFFFFFF);            // a white background, in value-mask order
+        writeInt(request, 36, bitGravity);
+        writeInt(request, 40, winGravity);
+        send(request);
+    }
+
     /** Fills a rectangle of a window with its background pixel. */
     public void clearArea(int window, int x, int y, int width, int height) throws IOException {
         byte[] request = new byte[16];
@@ -611,6 +637,37 @@ public final class RawXClient implements AutoCloseable {
         byte[] request = new byte[8];
         request[0] = 27;                            // UngrabPointer
         request[2] = 2;
+        send(request);
+    }
+
+    /**
+     * Sends {@code GrabKeyboard} **without** reading the reply it answers with.
+     *
+     * <p>The reply is deliberately left for the caller: {@code GrabKeyboard} puts the focus on the
+     * window it is taken on, which is reported as a pair of focus events, and those events are
+     * written *after* the reply - so a caller that reads them first finds the reply, and a caller
+     * that reads the reply with {@link #readReply} and then the events finds the events, because
+     * {@code readReply} stops at the first reply and leaves everything after it alone. Read the
+     * status first, then the events: the other order reads a reply as an event of type 1.
+     */
+    public void sendGrabKeyboard(int window, boolean ownerEvents) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 31;                            // GrabKeyboard
+        request[1] = (byte) (ownerEvents ? 1 : 0);
+        writeShort(request, 2, 4);
+        writeInt(request, 4, window);
+        writeInt(request, 8, 0);                    // CurrentTime
+        request[12] = 1;                            // pointer mode: Async
+        request[13] = 1;                            // keyboard mode: Async
+        send(request);
+    }
+
+    /** {@code UngrabKeyboard}, which also answers with the focus events before anything else. */
+    public void sendUngrabKeyboard() throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 32;                            // UngrabKeyboard
+        writeShort(request, 2, 2);
+        writeInt(request, 4, 0);                    // CurrentTime
         send(request);
     }
 

@@ -181,7 +181,13 @@ public class WinTree {
         request[2] = 6;
         putInt(request, 4, window);
         putInt(request, 8, property);
-        putInt(request, 16, 1024);                  // long length
+        putInt(request, 16, 0);                     // long offset, in 4 byte units
+        putInt(request, 20, 1024);                  // long length, also in 4 byte units
+        // The two fields are adjacent and both count four byte units, and putting the length in the
+        // offset's place is a mistake that reads as a working tool: every read is answered
+        // `BadValue` (an offset 4096 bytes into a short property), the tool prints no title, and
+        // nothing says why. It is what this one did until a server log was read rather than the
+        // output.
         out.write(request);
         out.flush();
         byte[] header = new byte[32];

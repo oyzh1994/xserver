@@ -436,6 +436,24 @@ is implemented here:
   the popup it just created, and the release has to be reported against the popup. Reporting it
   against the window the press landed on is a release the menu reads as a click outside itself.
 
+**Four things about a crossing that the wire format does not tell you**, all measured against the
+reference and all wrong here until 2026-09-25 (backlog A14). They are worth keeping because each one
+is invisible from the server's own side - the server agreed with itself in every case - and only an
+independent decoder or a comparison shows them:
+
+- **The last byte of a crossing is the focus bit in bit 0 and `same_screen` in bit 1**, which is the
+  opposite order from what the field's name suggests. Sending `0x01` where the reference sends `0x02`
+  reads, through Xlib, as "same screen: no, focus: yes" - so every crossing this server sent claimed
+  the pointer was on another screen. Read it back with `xev` rather than trusting a bit test in one's
+  own probe; the probe's reading and Xlib's disagreed, and Xlib is what clients use.
+- **The focus bit is set when the crossing's window is inside the focus window** - the focus window or
+  a descendant of it - and cleared for the focus window's own parent.
+- **The enter chain arrives outermost first**, the window itself last; the leave chain is the other way
+  round, and that asymmetry is the reference's.
+- **A window in the middle of a chain reports `Virtual` when the window on the other end is above it**
+  and `NonlinearVirtual` when the other end is unrelated. `Virtual` for every chain window says the
+  pointer moved inside the subtree it just left.
+
 **Was a first-level menu that is left and re-entered dismissed** by EasyShell, where it stayed up
 against Xvfb. A scripted `right-click -> move out of the menu -> move back in` closed the menu every
 time on this server and never on Xvfb, and the crossings involved matched the reference byte for byte
@@ -525,13 +543,29 @@ focus moves - `InputState.setInputFocus` and the revert when the focused window 
   it is nowhere at all.
 - **A change that is not a change is not reported**, and neither is a window reported as losing a
   focus it did not have - which is what keeps a client from being told the same thing repeatedly.
-- **The mode is always `NotifyNormal`**, and `FOCUS_CHANGE` is not in `EventMasks.PROPAGATE`, so these
-  do not propagate. Both are deliberate and both are recorded below as the remaining gap.
+- **A keyboard grab moves the focus and says so.** Taking one reports the focus moving to the grab
+  window with mode `NotifyGrab`, ending one reports it moving back with `NotifyUngrab`, and a change
+  asked for *while* a grab is held is reported `NotifyWhileGrabbed`. Four cases were measured against
+  a reference server, and two of them are not what prose suggests: a grab taken on the window that
+  already has the focus **still reports the pair** (a client grabs to be told it holds the keyboard,
+  and a server that treats "already there" as a no-op leaves it waiting), and a grab taken while the
+  focus is on nothing at all **reports nothing**, not even to the window it grabbed - the ungrab
+  still tells that window the focus left. `input/KeyboardGrabFocusTest` pins all four.
+- **`FOCUS_CHANGE` is not in `EventMasks.PROPAGATE`**, so focus events do not propagate. That is
+  deliberate and measured.
 
-The rules were taken from a reference server, not from the specification's prose: `/tmp/FocusProbe.java`
-drives the same window tree and the same requests against Xvfb and against this server, prints every
-focus event with its detail and mode, and the two outputs are diffed. That is what settled the things
-prose does not: which windows are told, in what order, and with which detail.
+The rules were taken from a reference server, not from the specification's prose:
+`src/test/java/io/github/oyzh1994/xserver/tools/FocusProbe.java` drives the same window tree and the
+same requests against Xvfb and against this server, prints every focus event with its detail and mode
+and the server's own answer to `GetInputFocus`, and the two outputs are diffed. That is what settled
+the things prose does not: which windows are told, in what order, and with which detail - and it is
+also what turned up the three crossing differences still open in backlog item A5.
+
+**Two things about running it**, both learned the hard way: the pointer and the focus outlive every
+client, so a probe that does not park the pointer and set the focus before it maps anything gets a
+different starting state on every run (the focus, like the pointer, is whatever the last client left
+behind); and `GrabKeyboard`/`GrabPointer` answer with a reply **before** the events they cause, so a
+probe reads the status first and the events after it.
 
 - **Every window on the way in and on the way out is told**, not only the two at the ends. The window
   losing the focus hears first, then the windows holding it, innermost outwards; going the other way
@@ -850,13 +884,13 @@ does not - is `backlog.md`, which is written to be worked through item by item.
 - **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it. The host
   window is resizable, but a resize is therefore capped at the screen rather than growing it, and a
   client's window larger than `--geometry` is still clipped.
-- **The focus does not follow the pointer.** With the focus on `PointerRoot` a server is meant to move
-  it from window to window as the pointer moves and report each move; here the *keys* follow the
-  pointer (`InputState.focusWindow`) but no events are generated for it, so a client tracking focus by
-  event never sees it move. `SetInputFocus` is the only thing that produces `FocusIn`/`FocusOut`, and
-  it covers what a toolkit actually does at startup and for dialogs.
-- **A focus change made by a keyboard grab is reported as `NotifyNormal`.** The modes belong together
-  with grabs, and this server does not let a keyboard grab move the focus.
+- **The focus does not follow the pointer, and a reference server's does not either.** With the focus
+  on `PointerRoot` the *keys* follow the pointer (`InputState.focusWindow`) and no `FocusIn`/`FocusOut`
+  is generated as it moves - which was verified against Xvfb rather than assumed, because the obvious
+  reading of the specification says otherwise and an earlier version of these notes claimed it. What
+  tells a client it has the focus there is the crossing's focus bit. `SetInputFocus`, the ends of a
+  keyboard grab and a focused window going away are what produce focus events, and that covers what a
+  toolkit actually does. The reporting differences that *are* real are listed in `backlog.md` A5.
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`; its generator ignores the
   `number` on an `eventcopy`, which is why `ClientOutput.EVENT_NUMBERS` rewrites five event type
   bytes. The real fix belongs in the generator.

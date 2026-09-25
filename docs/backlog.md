@@ -46,17 +46,19 @@ A prompt that starts a fresh session on this, verbatim:
 
 | id | item | area | size |
 |----|------|------|------|
-| E0 | finish the verification kit | engineering | S |
+| ~~E0~~ | ~~finish the verification kit~~ **done 2026-09-25** | engineering | S |
+| ~~A6~~ | ~~a keyboard-grab focus change is reported `NotifyNormal`~~ **done 2026-09-25** | correctness | S |
+| ~~A14~~ | ~~crossing flags byte, focus bit, chain order and detail~~ **done 2026-09-25** | correctness | S-M |
 | ~~A7~~ | ~~`--auth` can be bypassed by offering no credentials~~ **done 2026-09-24** | security | S |
 | ~~A3~~ | ~~font cursors are drawn as a filled cell~~ **done 2026-09-24** | correctness | S |
 | A4 | `xdotool` segfaults against this server **- crash is at startup** | correctness | S-M |
 | ~~A2~~ | ~~a bounding shape does not clip drawing~~ **done 2026-09-24** | correctness | S-M |
 | ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
-| A12 | window gravity is stored but not applied | correctness | S-M |
+| ~~A12~~ | ~~`winGravity` is stored but not applied~~ **done 2026-09-25** (`bitGravity` still open) | correctness | S-M |
 | ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
-| A5 | the focus does not follow the pointer under `PointerRoot` | correctness | M |
+| A5 | `PointerRoot` focus reporting: the premise was wrong, five measured differences remain | correctness | M |
 | A1 | passive grabs are recorded but never matched | correctness | M |
 | A9 | `IncludeInferiors`, backing store, save-unders are recorded only | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw semantics | correctness | S |
@@ -92,26 +94,70 @@ A prompt that starts a fresh session on this, verbatim:
 ## 1. Verification kit (do E0 first)
 
 Every item below ends with a **Verify** step, and most of them need the same small tools and the same
-two-machine test bed. **The kit is now in this repository**: the tools live in
+two-machine test bed. **The kit is now in this repository and complete**: the tools live in
 `src/test/java/io/github/oyzh1994/xserver/tools/` (so `mvn -o test-compile` compiles them), the
-two-machine harness is `tools/vm.sh` and `tools/bed.sh`, and `tools/README.md` says what each tool is
-for, how to run it, which tools were **lost** when `/tmp` was cleaned and are still to be re-created,
-and the four measurement rules that go with them. Read that file before running any comparison: two of
-the rules exist because ignoring them produced an afternoon of chasing an imaginary rendering bug.
+two-machine harness is `tools/vm.sh` and `tools/bed.sh`, the reference display is `tools/xvfb.sh`, and
+`tools/compare.sh` runs a whole comparison as one command. `tools/README.md` says what each tool is
+for and how to run it, which tools were **lost** when `/tmp` was cleaned (and which of those came back
+in E0), and the measurement rules that go with them. Read that file before running any comparison:
+some of the rules exist because ignoring them produced an afternoon of chasing an imaginary rendering
+bug - and one of them, the pointer outliving every client, is new in E0 and has the same shape.
 
-### [ ] E0. Finish the verification kit. **S**
+### [x] E0. Finish the verification kit. **S** - done 2026-09-25
 
 Restored on 2026-09-24: `Drive`, `WinTree`, `Focus`, `Pixel`, `Xwd`, `Blocks`, `Colors`, `Shift`,
 `Rect`, `Crop`, a reconstruction of `XProxy`, a new `AuthProbe` (written for A7), and `SelectionProbe`
 with `CursorProbe` (written for A8). `RawXClient`
 grew a key driver, an auto-repeat setter and - worth more than the rest - a **reply sequence check**:
 a reply that is not the one being waited for is now an error instead of a wrong value, which is how a
-test that asked for an empty range once came back with the previous query's three events. Still missing and worth having (see
-`tools/README.md`): a typed-string driver (`Keys`), a `GetImage` capture tool, and the raw-protocol
-probes (`Probe`, `MenuProbe`, `PointProbe`) that the focus and menu measurements in the design notes
-were made with. Also worth doing here: a single script that runs a whole comparison - start both beds,
-drive the same gesture, capture both sides with the same tool, print the `Xwd diff` and `Blocks`
-summary - so that "compare against Xvfb" is one command instead of six.
+test that asked for an empty range once came back with the previous query's three events.
+
+**Written 2026-09-25** (the rest of the item), all in
+`src/test/java/io/github/oyzh1994/xserver/tools/`:
+
+- **`Keys`** - types a string through XTEST, resolving each character against `GetKeyboardMapping`
+  rather than carrying a layout; a character no key carries is reported and skipped. Measured against
+  Xvfb with `xev`: `"Hello, World 123!"` produced exactly the expected presses, shift included
+  (`Shift_L` + `keycode 25 (keysym 0x57, W)`), and 17 characters typed with none skipped. Against this
+  server the same string types 18 and reports the two Chinese characters as untypable, which is the
+  intended answer until C10's keycode claiming is in play.
+- **`Shot`** - `GetImage` of the root or a window to a PNG, with no `xwd` and nothing installed on the
+  machine that runs it. Measured against both: Xvfb's `xev` window came back white at 5,5 and this
+  server's root back as `#E8E8E8`, which is the design's root colour.
+- **`Wire`** - the bare-protocol base the probes share, which hands back *every* message as it
+  arrives. `RawXClient` cannot be used for a probe: it finds a reply by reading until one turns up,
+  and therefore eats the events a probe is counting.
+- **`FocusProbe`** - the `Probe` the design notes' focus work was measured with. A three-window tree,
+  a scripted sequence of `SetInputFocus` / warp / grab steps, and every focus and crossing event
+  printed with detail and mode. **This is the harness for A5 and A6**, and it immediately found the
+  differences recorded under A6 below.
+- **`MenuProbe`** - the menu gesture as a tool: a popup mapped under a held button, grabbing the
+  pointer, left and re-entered, with every crossing printed and an `EnterNotify` arriving in a step
+  with no motion flagged `! enter without a move` - the event shape the design notes measured to tear
+  EasyShell's menus down. **Measured 2026-09-25: its output against this server and against Xvfb is
+  identical, line for line**, so the §7 deviations are intact for this gesture and any future change
+  that breaks them shows up as a diff (or as the marker).
+- **`PointProbe`** - walks `QueryPointer` from the root down, so "the child of the queried window or
+  the deepest window?" is read off directly (A4's question). Both servers answer with the immediate
+  child.
+- **`tools/xvfb.sh`** - `start`/`stop`/`status` for the VM's reference display, because three of its
+  flags are easy to get wrong and each failure looks like something else: `-listen tcp` (a stock
+  build opens no TCP, so nothing here can reach `:98`), `-ac` (it refuses the kit's hand-written
+  clients, which offer no credentials - the failure reads as "the setup was refused", i.e. as a dead
+  display), and not `-nolisten unix` (the VM's own clients use the socket).
+- **`tools/compare.sh`** - the six steps a rendering comparison takes as one command: both beds, the
+  same gesture driven against each, `xwd -root` on the VM on both sides (rule 3), then the `Xwd` diff
+  and the `Blocks` grid.
+
+**Two traps the item itself cost, both now in `tools/README.md`:** the pointer outlives every client,
+so a probe that does not park it before mapping gets a crossing at the map on one run and not on the
+next - a diff then shows the *previous* run's difference; and the core grab opcodes are contiguous and
+easy to shift by one (`GrabKeyboard` 31, `UngrabKeyboard` 32, `GrabKey` 33, `UngrabKey` 34), where
+sending the wrong one is either silent or answered with a `BadRequest` that reads as a malformed
+request rather than a misnumbered one. A probe that sends `GrabPointer`/`GrabKeyboard` must also read
+the reply, or every event afterwards is attributed to the step before it.
+
+`mvn test` 198/198 with all of it in the tree. Full list and usage in `tools/README.md`.
 
 The kit, and what each piece is for:
 
@@ -407,28 +453,65 @@ platform's own acceleration is what the user feels.
 
 ---
 
-### [ ] A12. Window gravity is stored but not applied. **S-M**
+### [x] A12. Window gravity is stored but not applied. **S-M** - `winGravity` done 2026-09-25
 
-**Current.** `bitGravity`/`winGravity` are set, reported in `GetWindowAttributes`/`QueryTree`, and
-never used: a resize does not shift the window's contents by its bit gravity, and a parent resize does
-not move a child by its win gravity.
+**What it was.** `bitGravity`/`winGravity` were set, reported in `GetWindowAttributes`/`QueryTree`, and
+never used: a parent resize did not move a child by its win gravity. (A window's own `bitGravity` is
+the other half, and is still the model's business - see below.)
 
 **Why it matters.** Small in practice - the default is `NorthWest` and almost every toolkit leaves it
-there - but it is a documented part of the protocol, and the two gravity modes that *are* used in the
-wild (`StaticGravity` for a window whose content must not move, `EastGravity`/`SouthGravity` for
-things pinned to an edge) are exactly the ones a caller notices.
+there - but the ones *used* in the wild are exactly the ones a caller notices: `EastGravity`/
+`SouthGravity` for something pinned to an edge, `StaticGravity` for a window whose content must not
+move.
 
-**Plan.** `bitGravity` applies to the window's own pixels on a resize: this server has no per-window
-backing store (see A9), so the honest implementation is "the region that the gravity keeps in place is
-not repainted by the server, the rest is exposed" - which, for `NorthWest`, is what already happens.
-`winGravity` applies in `configure` when a *parent* is resized: move each child whose gravity says so
-before computing `coveredRegion`, so the repaint logic sees the new positions.
+**The reference's whole table, measured 2026-09-25 with `tools/GravityProbe`** (new in the kit: a
+parent 300x300, a child 100x100 at 150,150, the parent grown by 200x100, the child's `GetGeometry`
+read back). Every value, one gravity at a time, and the two halves are what make it worth pinning -
+`North` moves a child by half the *width* change and `South` by all of it:
 
-**Traps.** Doing this wrong shows up as windows jumping on a resize - the reference is easy to check
-with a two-window raw client against Xvfb (create a parent and a child with `EastGravity`, resize the
-parent, print the child's `GetGeometry`).
+```
+gravity        1 NW  2 N      3 NE     4 W     5 Center   6 E      7 SW    8 S      9 SE   10 Static  0 Forget
+moved by       +0,0  +100,0   +200,0   +0,50   +100,50   +200,50  +0,100  +100,100 +200,100 +0,0   +0,0
+```
 
-**Verify.** The two-window raw client above, against Xvfb and against this server, same numbers.
+The grid is a three by three: the row says which vertical edge's distance is kept (north keeps the
+top, centre splits it, south keeps the bottom) and the column the same horizontally - so the shift is
+none, half or all of the change. `Forget` and `Static` move nothing. Rounding is truncation toward
+zero, also measured: a change of +201 moves a centred child by +100, and one of -101 by -50.
+
+**What changed.** `WindowHandlers.applyWinGravity`, called from `applyConfigure` when a window's own
+size changed: each child is moved by its gravity's share, and the area it leaves is handed back
+through the ordinary move path (`visibilityChanged(..., moved=true)`, so the parent repaints where the
+child was and the child is asked to draw where it now is).
+
+**Two things measured that the implementation deliberately keeps:**
+
+- **The reference moves the child silently** - no `ConfigureNotify`, no expose, nothing at all to the
+  child (measured with the child selecting `StructureNotifyMask` and `ExposureMask`, with and without a
+  background). That is not as odd as it sounds: the client declared the gravity, so it can predict
+  where the child went. This server sends no `ConfigureNotify` either.
+- **It does expose the child, and that is a deliberate divergence.** There is no backing store here
+  (A9), so the alternative is a child showing whatever used to be under it. The pixels are ours to
+  keep coherent; the events are where the reference's behaviour was copied.
+
+**`bitGravity` is not implemented, and the plan for it in this item was wrong.** It is about a
+window's *own* contents on its own resize, and with no per-window backing store there is no content to
+shift: the window's pixels are wherever they were drawn, the server paints the new area with the
+window's background and sends an `Expose`. For `NorthWest` - what everything uses - that is what
+already happens; anything else would need A9's backing store first. Left open here deliberately.
+
+**Measured 2026-09-25.** `handler/WindowGravityTest` (3 tests, the whole nine-gravity grid plus the two
+that do not move and the "a move is not a resize" case). **It fails without the fix** (`+0,+0` where
+`+100,+0` is expected). `GravityProbe` now reports the same numbers against this server and against
+Xvfb for **all eleven** gravities - checked one at a time, which is how the table above was built.
+`mvn test` 210/210. Live: EasyShell connected and its context menu still opened and survived the
+out-and-back gesture, and **neither EasyShell nor termora declares a gravity at all** (the server's own
+log of gravity moves stayed empty through both sessions), so this change is inert for both of them -
+the verification is the reference diff.
+
+**Traps.** The gravity is applied when the *parent's* size changes, not when it moves: a move's delta
+is zero and nothing shifts, which the third test pins. And a child's own sub-tree follows it for free -
+positions are relative to the parent, so moving a child moves its descendants with it.
 
 ---
 
@@ -482,7 +565,7 @@ unconditionally) - neither is about notifications.
 
 ---
 
-### [ ] A6. A focus change made by a keyboard grab is reported as `NotifyNormal`. **S**
+### [x] A6. A focus change made by a keyboard grab is reported as `NotifyNormal`. **S** - done 2026-09-25
 
 **Current.** `EventDispatcher.deliverFocusChange` always reports mode `NotifyNormal`, including the
 focus changes a keyboard grab causes; a reference server reports `NotifyGrab`/`NotifyUngrab` for those.
@@ -494,39 +577,200 @@ and in dialog activation policies. Narrow, but it is a documented deviation
 
 **Plan.** Thread the mode through `deliverFocusChange` from the two call sites that can be inside a
 grab (`InputState.keyboardGrab`/`UngrabKeyboard`), and leave `NotifyNormal` everywhere else.
-`/tmp/FocusProbe.java` (described in the design notes) is the harness that diffs details and modes
-against Xvfb - re-create it as part of E0 if it is gone.
 
-**Verify.** Same probe against Xvfb and here, byte for byte, with a grab in the middle of the sequence.
+**Measured 2026-09-25 with `tools/FocusProbe`** (E0 built it), which is what the plan should actually
+be built against - the reference does more than change a mode word:
+
+```
+step: grabkey A          (GrabKeyboard on A; the focus is already A)     Xvfb: (nothing)
+step: focus C            (a focus change asked for inside the grab)
+    Xvfb: FocusOut B detail=Pointer mode=NotifyWhileGrabbed
+          FocusOut A detail=Nonlinear mode=NotifyWhileGrabbed
+          FocusIn  C detail=Nonlinear mode=NotifyWhileGrabbed
+    here: ... the same three, mode=NotifyNormal
+step: ungrabkey
+    Xvfb: FocusOut B detail=Pointer mode=NotifyUngrab
+          FocusOut A detail=Nonlinear mode=NotifyUngrab
+          FocusIn  C detail=Nonlinear mode=NotifyUngrab
+    here: (nothing)
+```
+
+So the reference's model is: **a keyboard grab moves the focus to the window it is taken on and says
+so, with `NotifyGrab`; ending it reports the way back with `NotifyUngrab`; and a change asked for
+while it is held is reported `NotifyWhileGrabbed`.** This server did none of it: `NotifyNormal`
+everywhere and nothing at all at either end of a grab.
+
+**A correction, because the first version of this measurement was wrong.** The paragraph above first
+read "a grab on a window that already has the focus reports nothing at its start", and it was written
+from a `FocusProbe` run that printed exactly that - because the probe's reply reader looked for the
+`GrabKeyboard` reply and *dropped the events it passed over*, and the reply is written before them.
+Every measurement in this area must come from a probe that prints what it passes over; the one in the
+kit does now, and the difference between the two readings is two events and a wrong model.
+
+**Traps.** The windows named in a grab's event group include the *pointer's* window with detail
+`Pointer` when the focus side is PointerRoot, so a fix for the mode word alone still leaves the diff
+short. And the whole area is the one the §7 deviations come from: a crossing or focus event that a
+client did not cause is what tears EasyShell's menus down (`MenuProbe`'s `! enter without a move`
+marker). **Re-run `MenuProbe` before and after** - its output against Xvfb and here is identical
+today, and the gesture must still match when this is done.
+
+**Verify.** `FocusProbe` against Xvfb and here, the grab steps byte for byte; **and `MenuProbe` on
+both, whose output is identical today**. Then the EasyShell menu gesture on a live server (6 runs, no
+dismissal).
+
+**Done 2026-09-25**, in `InputState.setKeyboardGrab` (which now reports the two transitions),
+`InputState.setInputFocus` (which reports `NotifyWhileGrabbed` when a grab is held) and
+`EventDispatcher.deliverFocusChange`, which grew a mode and a `force` flag - the flag is what lets a
+change between two windows that are the same one be reported, which is the grab-on-the-focused-window
+case. The reference's rule, measured four ways with `FocusProbe` first:
+
+```
+focus on X, grabkey Y     FocusOut X (NotifyGrab), FocusIn Y (NotifyGrab)
+focus on X, grabkey X     FocusOut X (NotifyGrab), FocusIn X (NotifyGrab)   - a self-pair
+focus none, grabkey Y     (nothing)
+ungrabkey                 FocusOut <grab window>, FocusIn <focus now>        - both NotifyUngrab
+focus change inside grab  reported NotifyWhileGrabbed
+```
+
+**Measured 2026-09-25.** `input/KeyboardGrabFocusTest` (5 tests) pins all four cases plus the guard
+that a change outside a grab is still `NotifyNormal`; **four of the five fail with the reporting
+disabled** (the fifth is the guard, and passes either way, which is the point of it). `FocusProbe`
+against Xvfb and here now agrees on every grab line - the two remaining differences in its default
+sequence are the crossing and `PointerRoot` differences recorded under A5, none of which is about
+this item.
+`MenuProbe`'s output on both servers is still **identical**, so the §7 menu behaviour is intact.
+`mvn test` 203/203.
+
+**Live, both clients**: with `--single-window` and a request log, **neither EasyShell nor termora
+ever calls `GrabKeyboard` or `GrabKey`** - JavaFX grabs the *pointer* for its context menu
+(`GrabPointer`/`UngrabPointer`, which is why §7's crossing deviation exists) and termora draws its
+menu as a lightweight Swing popup with a pointer grab. So this fix is currently inert for both, and
+the honest verification is the reference diff rather than a client. The menu gesture was run anyway,
+6 out-and-back passes each: EasyShell's menu (an override-redirect window) stayed up 6/6 and
+termora's stayed up 6/6 with the hovered item tracking the pointer, which is the regression check the
+item's own Verify asked for. (The request log also turned up a bug in the kit: `WinTree` wrote its
+property length into the **offset** field, so every title read was refused `BadValue` and the tool
+printed no names - fixed, and it now prints `WM_CLASS`/`WM_NAME` for both clients:
+`cn.oyzh.easyshell.EasyShellApp` and `Termora`.)
+
+**Traps worth keeping.** The grab requests answer with a reply **before** the events they cause, so a
+reader that looks for the reply first throws the events away - the first version of `FocusProbe` did
+exactly that and produced a measurement that was wrong in a way nothing else would have shown. And
+`NotifyWhileGrabbed` (3) is a mode core focus events have but EnterNotify/LeaveNotify do not: the two
+event families share the detail lattice and not the mode numbering.
 
 ---
 
-### [ ] A5. The focus does not follow the pointer under `PointerRoot`. **M**
+### [ ] A5. The focus under `PointerRoot`: the premise was wrong, the details are not. **M**
 
-**Current.** With the focus set to `PointerRoot`, keys are delivered to the window the pointer is in
-(`InputState.focusWindow`), but no `FocusIn`/`FocusOut` are generated as the pointer crosses windows.
-A client that tracks the focus by event never sees it move.
+**What the item claimed.** That with the focus on `PointerRoot` a server "is supposed to move the
+focus from window to window as the pointer moves and report each move", that this server does not, and
+that it should be implemented in the crossing path.
 
-**Why it matters.** `PointerRoot` is the default state of a server with no window manager, which is
-exactly this server's model, and "focus follows the mouse" is what some users want from a forwarded
-desktop. It is also the state EasyShell/termora start in before anything calls `SetInputFocus`.
+**Measured 2026-09-25 with `tools/FocusProbe`, and the premise is false.** Against Xvfb, with the
+focus on `PointerRoot` and three of one client's windows each selecting `FocusChangeMask`, a sequence
+of pointer warps from the root into A, into B (A's child), into C and back out produced **crossings
+only - not one `FocusIn` or `FocusOut`**:
 
-**Plan.** In the existing crossing path (`InputState.deliverCrossing` / `refreshPointerWindow`), when
-the focus is `PointerRoot`, report the focus change that the crossing implies: `FocusOut` on the
-window the pointer left, `FocusIn` on the one it entered, with `NotifyPointer` detail and the
-outermost-first/innermost-first order the delivered-focus code already implements for real focus
-changes. The rule to copy is in the design notes' focus section (which was measured against a
-reference server).
+```
+step: focus pointer                     focus = PointerRoot
+step: warp 5 5                          EnterNotify A detail=Ancestor mode=NotifyNormal focus=yes
+step: warp 50 50                        LeaveNotify A detail=Inferior, EnterNotify B detail=Ancestor   focus=yes
+step: warp 500 150                      LeaveNotify B, LeaveNotify A, EnterNotify C                    focus=yes
+step: warp 1000 600 (onto the root)     LeaveNotify C detail=Ancestor                                 focus=yes
+```
 
-**Traps.** This is the same class of change as the one that "tore EasyShell's menus down 3 runs out of
-3" before the focus work landed - **re-measure the menu gesture** (`docs/design-notes.md` describes
-the harness) before and after, and do not ship it if the menu starts being dismissed again. Two
-details a reference server is picky about: the crossing pair must not be reported *twice* (once as a
-focus change and once as a crossing), and a window that has the focus must not be told again when the
-pointer re-enters it.
+The specification agrees: "If focus is PointerRoot, the focus window is dynamically taken to be the
+root window of whatever screen the pointer is on at each keyboard event" - the root, per screen, not
+the window under the pointer, and nothing in that generates a focus event per window. What a client
+learns from a `PointerRoot` focus is carried by the **crossing's focus bit**, which the reference sets
+in every one of them. The key events themselves *do* go to the window under the pointer: measured with
+`xev` on Xvfb - focus `PointerRoot`, pointer parked over xev's window, a key sent through XTEST - xev
+printed the `KeyPress` and the `KeyRelease`. This server does the same, so that half already matches.
 
-**Verify.** `/tmp/FocusProbe`-style diff against Xvfb for a sequence of pointer warps with the focus on
-`PointerRoot`; plus the EasyShell/termora menu gesture, 6 runs, no dismissal.
+**So do not implement "focus follows the pointer".** It is not what a reference server does, and an
+event the pointer did not cause is exactly the shape §7 records as tearing EasyShell's menus down.
+"Sloppy focus" is a *window manager's* job - it watches `EnterNotify` and calls `SetInputFocus` itself
+- which is the division this server is built on.
+
+**What the same runs did turn up.** The default sequence still differs from the reference, none of it
+about the pointer moving. Two of the differences were the crossing events' own reporting and are
+**done** - see A14 below: the flags byte, the focus bit, the chain order and the chain detail. What is
+left is the `PointerRoot` and `None` corners, and one of them is a state this server does not have at
+all:
+
+1. **The detail lattice against `PointerRoot`.** Going *to* `PointerRoot`, the reference relates the
+   leaving window to the **root window** (`FocusOut C detail=Ancestor`); this server relates it to the
+   window the pointer is in (`Nonlinear`). Coming *from* `PointerRoot` the two agree - so it is the
+   leaving side that is wrong. (`FocusProbe`'s default sequence has two lines of this, the last
+   step's.)
+2. **A `FocusIn` with detail `Pointer` that the reference sends to the window the pointer is in**,
+   around a change from `None` to a window holding it - six events in the default sequence, all of
+   them around the grab steps, none of them sent here. Not explained yet: it looks like Xorg's
+   per-window "focus in" bookkeeping being kept consistent (`dix/events.c` and its `focus->focusin`),
+   and guessing at a bookkeeping rule is how the wrong model gets written down.
+3. **`SetInputFocus` on the root window is not the same as `PointerRoot`.** `FocusProbe`'s `focus
+   root` sends the root *window id*; the reference then answers `GetInputFocus` with that id
+   (`focus = 0x1ff`) and reports the transition against it, where this server folds "the root window"
+   into `PointerRoot` and answers `1`. The two behave differently - keys go to the root window in one
+   and follow the pointer in the other - and a client that focuses the root window to "hand the
+   keyboard back to the desktop" is the case that tells them apart.
+
+**Traps.** Both the pointer *and* the focus outlive the connection, so a probe that does not park the
+pointer and set the focus before its first step is measuring its own previous run: "the reference
+sends a pair here" and "the reference sends nothing at all" were both true of the same request, an
+hour apart, for exactly that reason. `FocusProbe` now parks the pointer, sets the focus to `None`, and
+prints the server's own `GetInputFocus` answer after every step - which is what made point 5 visible.
+
+**Verify.** `FocusProbe` (default sequence) against Xvfb and here, diffed line by line - **22 differing
+lines today**, and the five groups above are all of them. `MenuProbe` on both must stay identical.
+Then the EasyShell and termora menu gestures, 6 runs each.
+
+### [x] A14. The crossing events' flags byte, focus bit, chain order and chain detail. **S-M** - done 2026-09-25
+
+**What it was.** Four things a crossing event says besides the window it names, all of them measured
+wrong here and none of them visible from the server's side of the socket.
+
+- **The last byte packs the focus flag in bit 0 and `same_screen` in bit 1** - the opposite of what
+  the field's name suggests. This server sent `0x01` where a reference server sends `0x02` in the same
+  state, which **Xlib decodes as "same screen: no, focus: yes"**: every crossing this server sent
+  claimed the pointer was on another screen, and reported the focus bit inverted whenever the
+  crossing's window was not focused. Found by reading the same event with an independent decoder -
+  `xev` on both servers - after the probe's own reading of the bit had been taken at face value for an
+  hour.
+- **The focus bit is set when the crossing's window is inside the focus window** (the focus window or
+  a descendant of it). This server asked the relation the other way round
+  (`window.isAncestorOf(focus)`), so it was set for the focus window's *parents* and clear for its
+  children - the wrong answer for all three cases the measurement pins: a child of the focus (set),
+  the focus's own parent (clear), an unrelated window (clear).
+- **The `EnterNotify` chain arrives outermost-first, with the window itself last**; this server sent it
+  innermost-first. Leaving is innermost-first in both, so the two directions are genuinely
+  asymmetric - a toolkit walks *down* into the window the pointer entered, which it can only do if the
+  windows holding it are named first.
+- **A window in the middle of a chain reports `Virtual` when the window on the other end is above it**
+  and `NonlinearVirtual` when the other end is unrelated. This server reported `Virtual` for every
+  window in the chain, which tells a toolkit the pointer moved inside its own subtree when it left it.
+
+**Measured 2026-09-25.** `input/CrossingReportTest` (4 tests, a three-deep tree so that a window can
+be a *virtual* ancestor rather than a parent): the flags byte for a focused and an unfocused crossing,
+the focus bit for a child, the parent and an unrelated window, the order of a three-window enter
+chain, and both chain details. **All four fail when their own fix is reverted** - verified one family
+at a time, since three of them are one assertion away from each other. The flags-byte fix was also
+read back through Xlib: `xev` on this server now prints `same_screen YES, focus NO` for exactly the
+crossing that used to decode as `same_screen NO, focus YES`, matching the reference word for word.
+
+**And the regression check that matters**, because these four change what every popup is told:
+`tools/MenuProbe`'s output against Xvfb and here is **still identical** (it was identical before, and
+the whole point is that it stays so - §7's deviations live in this path); and live, with
+`--single-window` on a real server, **EasyShell's context menu survived the out-and-back gesture 6
+runs out of 6** with its hover highlighting working, and **termora's menu survived 6 out of 6** with
+the hovered item tracking the pointer. `mvn test` 207/207.
+
+**Traps worth keeping.** A probe that reads a bit out of a byte is asserting its own reading of the
+protocol, not the server's behaviour: the fix here was to print the **raw byte** and compare it with
+what Xlib decodes the same event into, and the two disagreed. Every one of the four was also invisible
+to the suite as it stood - the server side agreed with itself in each case - so a test written from
+the server's own model would have passed against every one of them.
 
 ---
 
@@ -562,12 +806,52 @@ be released on the button release even if the grab window is destroyed in betwee
 dead until the next click - the same trap the implicit grab had). `XTestFakeInput` has to go through
 the same path or a scripted test cannot see the behaviour.
 
-**Verify.** A raw client arms `GrabButton(AnyButton|ButtonPress, owner_events=false)` on a window,
-another client maps a window under the pointer; a click must be delivered to the grab window with
-`NotifyGrab`/`NotifyUngrab` mode crossings (which is the pair §7 says is deliberately not sent for
-*active* grabs - check what the reference does for a *passive* grab before copying that decision).
-`GrabKey` on the root with `AnyModifier`, then a key press from XTEST.
+**Measured 2026-09-25 with `tools/GrabProbe`** (new in the kit). The grab was armed on the **root**,
+`AnyButton`/`AnyModifier`, `owner_events=false`, `event_mask = ButtonPress|ButtonRelease`, and the
+pointer was over a window belonging to a **second connection** - the only arrangement that can tell
+"the grab took the press" from "the press went where it landed":
 
+```
+[other client]  EnterNotify win=cover detail=Ancestor mode=NotifyNormal at=200,200
+step: press the button
+[grabbing client] ButtonPress   win=root button=1 state=0x0   child=cover
+[grabbing client] ButtonRelease win=root button=1 state=0x100 child=cover
+[other client]  LeaveNotify win=cover detail=Ancestor mode=NotifyGrab   at=200,200
+[other client]  EnterNotify win=cover detail=Ancestor mode=NotifyUngrab at=200,200
+```
+
+So the reference does three things this server does not:
+
+1. **The press goes to the grabbing client**, reported against the **grab window** (the root here) with
+   `child` naming the window that was actually under the pointer. This server delivers it to the
+   window under the pointer, i.e. to the other client.
+2. **The crossings a grab start and end imply are sent** - `LeaveNotify(NotifyGrab)` to the window the
+   pointer is in when the grab fires, and `EnterNotify(NotifyUngrab)` when it ends. That is the pair
+   §7 records as deliberately *not* sent here for **active** grabs, and the answer to this item's own
+   question is that a **passive** grab is a different case: the reference sends it. Whether this
+   server can send it without the §7 damage is the thing to re-measure before shipping - the pair is
+   the same shape, and `MenuProbe` plus the EasyShell/termora gesture is the gate.
+3. **A key grab** behaves the same way with the focus chain instead of the pointer chain (measured:
+   `KeyPress`/`KeyRelease` reported against the grab window for a key typed while the focus is
+   elsewhere).
+
+**Two arrangements that do not measure anything, tried first and worth not repeating.** A press inside
+the grabbing client's *own* window belongs to that client whether or not a grab fired, so a
+single-client probe cannot tell the two apart - its output is identical with the grab implemented and
+with it ignored (measured: it is, which is how the first version of `GrabProbe` passed against both
+servers). And a covering window from another client **cannot be made a child of the grab window**: the
+reference refuses the `CreateWindow` (`BadRequest`), so a grab on an ancestor of somebody else's window
+is not an arrangement a client can build at all.
+
+**What is left to measure before implementing**: the modifier rules (`AnyModifier` against a state with
+modifiers held, a specific modifier that does not match, several arms on one window - the spec's
+"closest match" table, which the item's Traps already warn about), `owner_events=true` (measured on a
+single-client arrangement only, where it is not discriminating), and what happens when the grab window
+is destroyed mid-grab.
+
+**Verify (still the item's own, with the harness now in the kit).** `tools/GrabProbe` against Xvfb and
+here, for the button and key cases, byte for byte; then `MenuProbe` (identical today) and the
+EasyShell/termora gestures, because rule 2 above puts events into the path §7 is about.
 ---
 
 ### [ ] A9. `SubwindowMode.IncludeInferiors`, backing store and save-unders are recorded only. **M-L**

@@ -700,7 +700,80 @@ public final class WindowHandlers {
             visibilityChanged(window, before, visibleRegionOf(window), moved);
             server.markScreenDirty(window);
         }
+
+        // The children move with a resize of this window, each the way its own win gravity asks for.
+        // Done after this window's own repaint rather than before it: the child's move hands back the
+        // area it leaves, and the window it leaves it to has just been painted.
+        if (window.width() != oldWidth || window.height() != oldHeight) {
+            applyWinGravity(window, window.width() - oldWidth, window.height() - oldHeight);
+        }
     }
+
+    /**
+     * Moves a window's children the way their {@code win_gravity} says they follow a resize of their
+     * parent - the second half of A12, and the half that is a *server's* to do.
+     *
+     * <p>A window's position is relative to its parent, so a parent that grows leaves every child
+     * where it was unless something moves it. The gravity names the edge or the axis whose distance
+     * from the parent's is to be kept: {@code East} keeps the gap to the parent's right edge, so the
+     * child moves right by the whole of the width change, and its vertical half is `Center`, so it
+     * moves down by half the height change. {@code Forget} and {@code Static} do not move it at all.
+     * The whole table was measured against a reference server, one gravity at a time
+     * ({@code tools/GravityProbe}), because the two that are easy to get wrong are exactly the halves:
+     * {@code North} moves the child by half the width change and {@code South} by all of it.
+     *
+     * <p><b>The reference moves the child silently</b> - no {@code ConfigureNotify}, no expose - which
+     * was measured too, and it is not as odd as it sounds: the client declared the gravity, so it can
+     * predict where the child went. This server cannot copy the child's pixels along (there is no
+     * backing store, see the design notes), so it does what it does for any window that moves: hands
+     * back the area the child vacated, paints its new area with its own background and asks it to
+     * draw. That is the one divergence here, and it is deliberate - the alternative is a child
+     * showing whatever used to be under it.
+     */
+    private void applyWinGravity(XWindow window, int deltaWidth, int deltaHeight) {
+        if (deltaWidth == 0 && deltaHeight == 0) {
+            return;
+        }
+        for (XWindow child : List.copyOf(window.children())) {
+            int gravity = child.winGravity();
+            if (gravity < NORTH_WEST_GRAVITY || gravity > SOUTH_EAST_GRAVITY) {
+                // Forget (0) and Static (10): the child stays where it is. Checked as a range so that
+                // a gravity this server does not know is treated as "do not move it" rather than as
+                // an array index.
+                continue;
+            }
+            // The nine numbered gravities are a three by three grid, north to south and west to
+            // east: the row says what happens vertically and the column horizontally.
+            int row = (gravity - NORTH_WEST_GRAVITY) / 3;
+            int column = (gravity - NORTH_WEST_GRAVITY) % 3;
+            int x = child.x() + shift(deltaWidth, column);
+            int y = child.y() + shift(deltaHeight, row);
+            if (x == child.x() && y == child.y()) {
+                continue;
+            }
+            List<Rectangle> was = coveredRegionOf(child);
+            child.setPosition(x, y);
+            if (log.isDebugEnabled()) {
+                log.debug("child 0x{} moved to {},{} by win gravity {}: the parent grew by {},{}",
+                        Integer.toHexString(child.id()), x, y, gravity, deltaWidth, deltaHeight);
+            }
+            visibilityChanged(child, was, coveredRegionOf(child), true);
+            server.markScreenDirty(child);
+        }
+    }
+
+    /**
+     * How far a child moves on one axis, from its gravity's column (or row): the first third of the
+     * grid keeps the distance to the near edge, the middle centres it, and the last keeps the distance
+     * to the far edge - so the shift is none, half or all of the change.
+     */
+    private static int shift(int delta, int third) {
+        return third == 0 ? 0 : third == 1 ? delta / 2 : delta;
+    }
+
+    /** X's gravity numbers: 1 is north-west and 9 is south-east, in a three by three grid. */
+    private static final int NORTH_WEST_GRAVITY = 1;
+    private static final int SOUTH_EAST_GRAVITY = 9;
 
     private void notifyConfigure(XWindow window, ConfigureWindow r, int mask, boolean moved,
                                  boolean resized) {

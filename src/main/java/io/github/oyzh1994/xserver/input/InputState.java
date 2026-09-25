@@ -235,8 +235,13 @@ public final class InputState implements DisplayBackend.InputSink {
                     describe(previous), revertTo);
         }
         // A client that asks for the focus is waiting to be told it got it, and this is the only
-        // thing that tells it.
-        server.events().deliverFocusChange(previous, inputFocus);
+        // thing that tells it. While a keyboard grab is held the change is reported as made *by*
+        // the grab, which is what a toolkit reads the mode for: measured with tools/FocusProbe, a
+        // reference server reports every focus change made inside a grab as NotifyWhileGrabbed.
+        server.events().deliverFocusChange(previous, inputFocus,
+                keyboardGrab == null ? EventDispatcher.NOTIFY_MODE_NORMAL
+                        : EventDispatcher.NOTIFY_MODE_WHILE_GRABBED,
+                false);
     }
 
     private static String describe(XWindow window) {
@@ -272,8 +277,62 @@ public final class InputState implements DisplayBackend.InputSink {
         this.pointerGrab = grab;
     }
 
+    /**
+     * Takes or releases the keyboard grab, reporting the focus it moves the way a reference server
+     * does.
+     *
+     * <p>A keyboard grab is not only a change of where keys are delivered: the client that took it
+     * is told the focus is on the window it grabbed, and told again when the grab ends. Both are
+     * events, and this is the only place they can be raised, because this is the only thing that
+     * changes a grab.
+     */
     public void setKeyboardGrab(Grab grab) {
+        Grab previous = this.keyboardGrab;
         this.keyboardGrab = grab;
+        boolean grabbed = previous != null;
+        boolean grabbing = grab != null;
+        boolean changed = !grabbed || !grabbing || previous.window() != grab.window();
+        if (grabbed && changed) {
+            reportKeyboardGrabEnd(previous);
+        }
+        if (grabbing && changed) {
+            reportKeyboardGrabStart(grab);
+        }
+    }
+
+    /**
+     * Reports the focus the grab takes: the window the keyboard was on hears that it left, and the
+     * grab window hears that it arrived, both with mode {@code NotifyGrab}.
+     *
+     * <p>Two details are measured rather than derived from the prose: the pair is sent even when the
+     * grab window already had the focus (a client grabs to be told it holds the keyboard, and a
+     * server that treats "it is already there" as nothing to report leaves it waiting), and a grab
+     * taken while the focus is on nothing at all reports nothing - there is no window to be told it
+     * lost anything, and the reference does not tell the grab window either.
+     */
+    private void reportKeyboardGrabStart(Grab grab) {
+        if (inputFocus == null) {
+            if (log.isDebugEnabled()) {
+                log.debug("keyboard grabbed by 0x{} with the focus nowhere: nothing to report",
+                        Integer.toHexString(grab.window().id()));
+            }
+            return;
+        }
+        server.events().deliverFocusChange(inputFocus, grab.window(),
+                EventDispatcher.NOTIFY_MODE_GRAB, true);
+    }
+
+    /**
+     * Reports the focus the grab gives back: from the grab window to wherever the focus is now, with
+     * mode {@code NotifyUngrab}.
+     *
+     * <p>"Wherever the focus is now" is not the focus the grab took - a client that calls
+     * {@code SetInputFocus} while it holds the keyboard has moved it, and the reference reports the
+     * way back from the grab window to the new window rather than to the old one.
+     */
+    private void reportKeyboardGrabEnd(Grab grab) {
+        server.events().deliverFocusChange(grab.window(), inputFocus,
+                EventDispatcher.NOTIFY_MODE_UNGRAB, true);
     }
 
     public void clientDisconnected(ClientConnection client) {
