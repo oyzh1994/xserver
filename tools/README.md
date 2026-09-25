@@ -165,6 +165,18 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `WarpPointer` instead of XTEST. Its five arrangements - the three plus the two `asyncgrab` controls -
   are **identical against Xvfb and against this server now**, and none of them was before A13 was
   done.
+- `FontProbe` - the harness for D3: `QueryFont` field by field (the bounds, the ascent and descent,
+  the properties **with the string valued ones resolved** - comparing two servers' atom *numbers*
+  compares nothing - and every character's bearings, width, ascent and descent), `QueryTextExtents`
+  of a fixed string, and the pixels that string draws, read back with `GetImage` and printed as text.
+  Run it against both servers and diff: all six fonts the server has tables for are identical line
+  for line, and none of them was before.
+- `GenBitmapFont` - generates `resource/BitmapFont.java`, the font tables, **from a reference server**
+  (`tools/kit.sh GenBitmapFont <host> <port> <out.java> [font-name ...]`). It is a generator rather
+  than a probe and needs a display with the fonts, which is why its output is checked in. See the
+  design notes for why the reference rather than the font file, and for the four traps the capture
+  cost - the worst of which is that a font drawn into a one-bit pixmap comes back as its *default
+  character* for every code.
 - `GrabProbe` - arms a passive `GrabButton`/`GrabKey` (on the root, or a given window) and then uses
   the pointer or the keyboard, printing every event **both** connections receive. Two connections are
   the point: with the window under the pointer belonging to the *other* client, "the grab took the

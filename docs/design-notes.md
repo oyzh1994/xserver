@@ -1302,6 +1302,48 @@ drew, and the backend decides whether it is news.
 reduction. Raw frames are what this sends, and a viewer
 on the same machine or a LAN is what that is for.
 
+## The fonts a client asks for
+
+Core protocol text goes through a font a client opens by name, and for a long time every name was
+answered by a Java font chosen to look like it: the metrics a client measured with
+`QueryTextExtents` were the JVM's, and so were the shapes it drew. That is visible - a client that
+lays a line out from `QueryFont`'s per-character bearings gets it wrong the moment the bearings are
+not the font's, and `xterm -fn fixed` drew a proportional font - and it is the font's *own* numbers
+that a client acts on, not something it can be told about.
+
+**The tables are captured off a reference server rather than parsed out of a font file**, and that
+is the decision worth recording. A PCF reader would mean reimplementing a file format and hoping it
+agreed with the server a client is comparing against; taking `QueryFont`'s answer and each glyph's
+ink from the reference cannot disagree with it. `tools/kit.sh GenBitmapFont` does it: it opens the
+font on a reference display, reads every per-character metric and the properties, draws the whole
+table as one strip into a window, reads the strip back with `GetImage` and writes
+`resource/BitmapFont.java` - one table per font, rows packed eight pixels to a byte, expanded when a
+glyph is asked for. The generated file is checked in, like `CursorFont`, because generating it needs
+a display with those fonts.
+
+Four things about the capture were measured rather than assumed, and each of them looks like a
+working capture of a *different* font:
+
+- **Text drawn into a one-bit pixmap comes back as the font's default character** - a solid block for
+  every code, space included - on a reference server whose `xlsfonts -ll` says the font has all 256
+  codes. The capture draws into a window and reads a 32 bit image back instead, and tests for the
+  colour the text was drawn in rather than for "not black": the black the strip is painted with comes
+  back as `#000001`, so every background pixel is non-zero in its first byte.
+- **A character's right bearing is measured from the origin**, not from the end of its advance: a
+  glyph five pixels wide has `rightBearing` 5 and a character width of 6. Reading it the other way
+  makes every glyph one pixel wide, which draws a font of vertical bars.
+- **`QueryFont`'s `CHARINFO`s are padded to sixteen bytes** in the reply (the fixed part is 60 bytes,
+  not 52), and **a font's codes do not always start at zero** - 12x24's begin at one, and it answers
+  with `min-char-or-byte2` 1 and 255 metrics. A table that assumes 0..255 either reads every field
+  four bytes early or draws the wrong glyph for every character.
+- **`GetImage` of a rectangle that leaves the window is a `BadMatch`**, not a clipped answer, so the
+  capture works in batches: a 1852 pixel strip on a 1300 pixel screen is refused.
+
+**Every other name still gets the Java approximation**, which is the old behaviour kept deliberately:
+a client that opens a font nobody here has should get something it can draw with, and a server with
+no font at all is a refusal an application cannot work around. What is not pretended is the
+metrics - the approximation reports its own, and the README's limitations say which names are real.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

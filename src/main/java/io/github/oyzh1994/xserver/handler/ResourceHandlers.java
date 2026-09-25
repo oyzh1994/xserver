@@ -63,6 +63,7 @@ import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.display.VisualInfo;
 import io.github.oyzh1994.xserver.resource.XColormap;
 import io.github.oyzh1994.xserver.resource.XCursor;
+import io.github.oyzh1994.xserver.resource.BitmapFont;
 import io.github.oyzh1994.xserver.resource.XFont;
 import io.github.oyzh1994.xserver.resource.XGC;
 import io.github.oyzh1994.xserver.resource.XPixmap;
@@ -500,11 +501,11 @@ public final class ResourceHandlers {
         XFont font = requireFont(client, r.getFont());
         client.sendReply(QueryFontReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .minBounds(bounds(font, font.minWidth()))
-                .maxBounds(bounds(font, font.maxWidth()))
-                .minCharOrByte2((short) 0)
-                .maxCharOrByte2((short) 255)
-                .defaultChar((short) '?')
+                .minBounds(bounds(font, true))
+                .maxBounds(bounds(font, false))
+                .minCharOrByte2((short) font.minChar())
+                .maxCharOrByte2((short) font.maxChar())
+                .defaultChar((short) font.defaultChar())
                 .drawDirection(DRAW_DIRECTION_LTR)
                 .minByte1((byte) 0)
                 .maxByte1((byte) 0)
@@ -519,23 +520,57 @@ public final class ResourceHandlers {
     public void queryTextExtents(ClientConnection client, QueryTextExtents r) {
         XFont font = requireFont(client, r.getFont());
         org.eclipse.collections.api.list.ImmutableList<Char2b> chars = r.getString();
-        int width = 0;
         int end = chars.size() - charLength(chars);
+        int width = 0;
+        // The left edge starts at "nothing seen yet" rather than at zero: it is the minimum of the
+        // characters' left bearings, and a font whose smallest is one pixel (9x15, whose space sits
+        // a pixel in) has a string that starts one pixel right of the origin. Starting at zero
+        // reports a left edge no character in the string has.
+        int left = Integer.MAX_VALUE;
+        int right = 0;
+        int ascent = 0;
+        int descent = 0;
         for (int i = 0; i < end; i++) {
-            width += font.charWidth(charCode(chars.get(i)));
+            int code = charCode(chars.get(i));
+            BitmapFont.Metric metric = font.charMetric(code);
+            if (metric != null) {
+                // A real font's answer, measured against a reference server: the left edge is the
+                // minimum of the characters' left bearings, the right edge the maximum of their
+                // right bearings - both relative to the origin, which is why the right one grows
+                // with the string and is not the last glyph's bearing. The ascent and descent are
+                // the string's own maxima, not the font's: "Hello" is nine pixels tall where the
+                // font is eleven, and a client that reserves the font's height for every line
+                // would lay it out differently from one that reserves the reference's.
+                left = Math.min(left, width + metric.leftBearing());
+                right = Math.max(right, width + metric.rightBearing());
+                ascent = Math.max(ascent, metric.ascent());
+                descent = Math.max(descent, metric.descent());
+            } else {
+                // The Java approximation draws every glyph in its own cell and says so.
+                left = Math.min(left, 0);
+                right = Math.max(right, width + font.charWidth(code));
+                ascent = Math.max(ascent, font.ascent());
+                descent = Math.max(descent, font.descent());
+            }
+            width += font.charWidth(code);
         }
-        // Every glyph in this font model has a zero left bearing and a zero right bearing, so the
-        // string starts at the origin and ends at its own width.
+        if (end == 0) {
+            // An empty string has no characters to take the metrics from, and the font's own are
+            // what a client asking about nothing gets.
+            left = 0;
+            ascent = font.ascent();
+            descent = font.descent();
+        }
         client.sendReply(QueryTextExtentsReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .drawDirection(DRAW_DIRECTION_LTR)
                 .fontAscent((short) font.ascent())
                 .fontDescent((short) font.descent())
-                .overallAscent((short) font.ascent())
-                .overallDescent((short) font.descent())
+                .overallAscent((short) ascent)
+                .overallDescent((short) descent)
                 .overallWidth(width)
-                .overallLeft(0)
-                .overallRight(width)
+                .overallLeft(left)
+                .overallRight(right)
                 .build());
     }
 
@@ -577,11 +612,11 @@ public final class ResourceHandlers {
             XFont font = fonts.get(i);
             client.sendReply(ListFontsWithInfoReply.builder()
                     .sequenceNumber(client.sequenceNumber())
-                    .minBounds(bounds(font, font.minWidth()))
-                    .maxBounds(bounds(font, font.maxWidth()))
+                    .minBounds(bounds(font, true))
+                    .maxBounds(bounds(font, false))
                     .minCharOrByte2((short) 0)
                     .maxCharOrByte2((short) 255)
-                    .defaultChar((short) '?')
+                    .defaultChar((short) font.defaultChar())
                     .drawDirection(DRAW_DIRECTION_LTR)
                     .minByte1((byte) 0)
                     .maxByte1((byte) 0)
@@ -696,6 +731,22 @@ public final class ResourceHandlers {
     /** The font's property set, with each property name interned as an atom. */
     private ImmutableList<Fontprop> properties(XFont font) {
         List<Fontprop> properties = new ArrayList<>();
+        BitmapFont.Font bitmap = font.bitmap();
+        if (bitmap != null) {
+            // The font's own properties, in the order the font gives them, with the string valued
+            // ones interned as atoms the way {@code QueryFont} carries them. The order is not a
+            // decision a client can act on - it looks properties up by name - but it is the
+            // reference's, and this reply is compared with the reference's field by field.
+            for (int i = 0; i < bitmap.propertyNames().length; i++) {
+                String text = bitmap.propertyStrings()[i];
+                properties.add(Fontprop.builder()
+                        .name(server.atoms().intern(bitmap.propertyNames()[i]))
+                        .value(text == null ? bitmap.propertyValues()[i]
+                                : server.atoms().intern(text))
+                        .build());
+            }
+            return Lists.immutable.withAll(properties);
+        }
         for (XFont.FontProperty property : font.properties()) {
             properties.add(Fontprop.builder()
                     .name(server.atoms().intern(property.name()))
@@ -723,7 +774,18 @@ public final class ResourceHandlers {
         return "misc";
     }
 
-    private static Charinfo bounds(XFont font, int characterWidth) {
+    /**
+     * Min-bounds and max-bounds, which for a font with a table are the font's own and are <em>not</em>
+     * the extremes of its table: a character's width can equal the font's minimum and maximum at once
+     * (a fixed-pitch font is all one width), so which bound is being asked for has to be said rather
+     * than inferred from the width.
+     */
+    private static Charinfo bounds(XFont font, boolean minBounds) {
+        BitmapFont.Metric real = font.bitmapBounds(minBounds);
+        if (real != null) {
+            return charinfo(real);
+        }
+        int characterWidth = minBounds ? font.minWidth() : font.maxWidth();
         return Charinfo.builder()
                 .leftSideBearing((short) font.minLeftBearing())
                 .rightSideBearing((short) font.maxRightBearing())
@@ -751,8 +813,19 @@ public final class ResourceHandlers {
      * to guess from the bounds.
      */
     private static ImmutableList<Charinfo> charInfos(XFont font) {
-        List<Charinfo> infos = new ArrayList<>(XFont.MAX_CHAR + 1);
-        for (int ch = XFont.MIN_CHAR; ch <= XFont.MAX_CHAR; ch++) {
+        // The reply's table covers the font's own range of codes and no more, and a client indexes
+        // it from min-char-or-byte2: 255 entries starting at one is what a reference server answers
+        // for a font whose codes begin there.
+        List<Charinfo> infos = new ArrayList<>(font.maxChar() - font.minChar() + 1);
+        for (int ch = font.minChar(); ch <= font.maxChar(); ch++) {
+            // A font with a real table reports each character's own bearings: a client lays text out
+            // from these, so "zero left bearing, right bearing at the advance" - which is what this
+            // answered for a modelled font and is not true of any real one - mis-lays every string.
+            BitmapFont.Metric metric = font.charMetric(ch);
+            if (metric != null) {
+                infos.add(charinfo(metric));
+                continue;
+            }
             int width = font.charWidth(ch);
             infos.add(Charinfo.builder()
                     .leftSideBearing((short) 0)
@@ -764,6 +837,17 @@ public final class ResourceHandlers {
                     .build());
         }
         return Lists.immutable.withAll(infos);
+    }
+
+    private static Charinfo charinfo(BitmapFont.Metric metric) {
+        return Charinfo.builder()
+                .leftSideBearing((short) metric.leftBearing())
+                .rightSideBearing((short) metric.rightBearing())
+                .characterWidth((short) metric.width())
+                .ascent((short) metric.ascent())
+                .descent((short) metric.descent())
+                .attributes((short) metric.attributes())
+                .build();
     }
 
     /**

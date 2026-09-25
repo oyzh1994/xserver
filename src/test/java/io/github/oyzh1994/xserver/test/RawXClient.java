@@ -822,6 +822,73 @@ public final class RawXClient implements AutoCloseable {
         return gc;
     }
 
+    /**
+     * CreatePixmap: a drawable of its own depth, which is how a one-bit glyph mask is captured -
+     * a depth 1 pixmap answers {@code GetImage} with one bit per pixel and nothing to separate.
+     */
+    public int createPixmap(int pixmap, int drawable, int width, int height, int depth)
+            throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 53;                            // CreatePixmap
+        request[1] = (byte) depth;
+        writeShort(request, 2, 4);
+        writeInt(request, 4, pixmap);
+        writeInt(request, 8, drawable);
+        writeShort(request, 12, width);
+        writeShort(request, 14, height);
+        send(request);
+        return pixmap;
+    }
+
+    /**
+     * ChangeGC with one value: the mask says which one and the value follows it, in mask bit order.
+     * A caller that changes two things at once would have to order the values itself - none does.
+     */
+    public void changeGC(int gc, int mask, int value) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = 56;                            // ChangeGC
+        writeShort(request, 2, 4);
+        writeInt(request, 4, gc);
+        writeInt(request, 8, mask);
+        writeInt(request, 12, value);
+        send(request);
+    }
+
+    /** {@code GCFont}, the GC value that decides which font a text request draws with. */
+    public static final int GCFONT = 0x4000;
+
+    /** {@code GCForeground}. */
+    public static final int GCFOREGROUND = 0x4;
+
+    /** ImageText8: a Latin-1 string drawn with the GC's font at a baseline origin. */
+    public void imageText8(int drawable, int gc, int x, int y, byte[] text, int offset, int length)
+            throws IOException {
+        byte[] request = new byte[(16 + length + 3) & ~3];
+        request[0] = 76;                            // ImageText8
+        request[1] = (byte) length;
+        writeShort(request, 2, request.length / 4);
+        writeInt(request, 4, drawable);
+        writeInt(request, 8, gc);
+        writeShort(request, 12, x);
+        writeShort(request, 14, y);
+        System.arraycopy(text, offset, request, 16, length);
+        send(request);
+    }
+
+    /**
+     * QueryFont, whole. The reply is one of the long ones - the fixed part is 60 bytes and the
+     * properties and per-character metrics follow it - so the caller reads the fields it wants out
+     * of the bytes rather than this class guessing which they are.
+     */
+    public byte[] queryFont(int font) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 47;                            // QueryFont
+        writeShort(request, 2, 2);
+        writeInt(request, 4, font);
+        send(request);
+        return readReply();
+    }
+
     /** Fills a rectangle of a drawable with the GC's foreground. */
     public void fillRectangle(int window, int gc, int x, int y, int width, int height)
             throws IOException {
@@ -1011,6 +1078,16 @@ public final class RawXClient implements AutoCloseable {
 
     /** Reads pixels back from a drawable, as ZPixmap bytes. */
     public byte[] getImage(int drawable, int x, int y, int width, int height) throws IOException {
+        return getImage(drawable, x, y, width, height, 0xFFFFFFFF);
+    }
+
+    /**
+     * The same with the plane mask spelled out, which a <em>pixmap</em> needs: a reference server
+     * refuses a mask with bits set outside the drawable's depth ({@code BadMatch}), so reading back a
+     * one-bit glyph mask asks for plane 0 alone.
+     */
+    public byte[] getImage(int drawable, int x, int y, int width, int height, int planeMask)
+            throws IOException {
         byte[] request = new byte[20];
         request[0] = 73;                            // GetImage
         request[1] = 2;                             // ZPixmap
@@ -1020,7 +1097,7 @@ public final class RawXClient implements AutoCloseable {
         writeShort(request, 10, y);
         writeShort(request, 12, width);
         writeShort(request, 14, height);
-        writeInt(request, 16, 0xFFFFFFFF);           // plane mask: all of them
+        writeInt(request, 16, planeMask);
         send(request);
 
         return readReply();

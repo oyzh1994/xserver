@@ -1,5 +1,6 @@
 package io.github.oyzh1994.xserver.draw;
 
+import io.github.oyzh1994.xserver.resource.BitmapFont;
 import io.github.oyzh1994.xserver.resource.XFont;
 import io.github.oyzh1994.xserver.resource.XGC;
 
@@ -1122,6 +1123,18 @@ public final class Rasterizer {
     private static final int GLYPH_CACHE_LIMIT = 8192;
 
     private static Glyph glyphFor(XFont font, int ch) {
+        // A font with a real table draws its own glyph - the shape a reference server draws, which
+        // is the whole of D3's other half. When the table has no ink for the code (a space, a
+        // control character, a code the font does not have) there is nothing to draw, and nothing to
+        // approximate either: a Java font's glyph for it is not what the client asked for.
+        BitmapFont.Glyph real = font.bitmapGlyph(ch);
+        if (real != null) {
+            return new Glyph(real.originX(), real.originY(), real.width(), real.height(),
+                    real.bits());
+        }
+        if (font.bitmap() != null) {
+            return null;
+        }
         if (ch < 0x20 || ch == 0x7F) {
             // Control characters have no glyph; X fonts draw nothing for them.
             return null;

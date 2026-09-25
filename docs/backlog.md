@@ -81,7 +81,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
-| D3 | core-font fidelity | large | M-L |
+| ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
 | B4 | XInput2 | extension | L |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
 | C8 | one host window per client toplevel | host window | L |
@@ -2447,7 +2447,7 @@ browser path waits for the item above.
 
 ---
 
-### [ ] D3. Core-font fidelity. **M-L**
+### [x] D3. Core-font fidelity. **M-L** - done 2026-09-26: the standard X fonts are served from tables captured off a reference server
 
 **Current.** Fonts are Java fonts looked up by X font name (`XFont`), not rasterised X font files: the
 shapes and the metrics are the JVM's, and `SetFontPath`/`GetFontPath` are bookkeeping. Xft text (which
@@ -2468,6 +2468,58 @@ the font path.
 
 **Verify.** `xfd`/`xfontsel` and an `xterm -fn`-based comparison against Xvfb: the same glyphs and the
 same `QueryTextExtents` numbers.
+
+**Done 2026-09-26, and the shape of the answer is not the one the plan above describes.**
+
+`fixed`, `6x13`, `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD names they answer to - are now
+served from tables **captured off a reference server** (`tools/kit.sh GenBitmapFont`), so the metrics
+a client reads through `QueryFont` and `QueryTextExtents` and the glyphs it draws are the reference's
+own. Every other name falls back to the Java approximation, which is the old behaviour kept on
+purpose: a client that opens a font nobody here has should get something it can draw with.
+
+**Why the reference and not a PCF reader**, which is what the plan said: parsing the font *file* means
+reimplementing a format and hoping it agrees with the server a client is comparing against, while
+taking `QueryFont`'s answer plus each glyph's ink (drawn into a window and read back with `GetImage`)
+cannot disagree with it. The cost is that the generator needs a display with the fonts, which is why
+the generated table is checked in - like `CursorFont`, and for the same reason.
+
+**Four things about the capture were measured rather than assumed, and each one looks like a working
+capture of a different font.** All four are in the design notes and in the tool's own comments:
+
+- **Text drawn into a one-bit pixmap comes back as the font's default character** - a solid block for
+  every code, space included - on a reference server whose `xlsfonts -ll` says the font has all 256
+  codes. The capture draws into a window and reads 32 bit pixels instead. Testing "is this pixel
+  white" matters more than it sounds: the black the strip is painted with reads back as `#000001`.
+- **A character's right bearing is measured from the origin**, not from the end of its advance, so a
+  five pixel glyph has `rightBearing` 5 in a six pixel cell. Read the other way, every glyph is one
+  pixel wide and the font draws as vertical bars.
+- **`CHARINFO`s are padded to sixteen bytes in the reply** (the fixed part is 60 bytes, not 52), and
+  **a font's codes do not always begin at zero**: 12x24 starts at one and answers with
+  `min-char-or-byte2` 1 and 255 metrics. Either mistake draws a font that is quietly wrong - the
+  second one drew every glyph one character early, which looks like a slightly odd typeface.
+- **`GetImage` of a rectangle that leaves the window is a `BadMatch`**, not a clipped answer, so the
+  capture works in batches; a 1852 pixel strip on a 1300 pixel screen is refused.
+
+**Measured 2026-09-26**, three ways:
+
+- `tools/FontProbe` (new in the kit: `QueryFont` field by field, `QueryTextExtents`, and the pixels of
+  a string drawn with `ImageText8` and read back with `GetImage`) against Xvfb and here, for all six
+  fonts: **identical line for line** - every character's bearings, width, ascent, descent and
+  attributes, the properties (in the reference's own order, with the string valued ones resolved so
+  that two servers' atom *numbers* are not compared), the extents, and the rendered pixels.
+- `resource/BitmapFontTest` (4 tests, a real connection): the reference's bounds, ascent, descent,
+  min/max character codes, property count and per-character metrics; the string metrics and edges
+  (`overall-right` is the last glyph's right bearing plus its pen, and `overall-ascent` is the
+  *string's* nine pixels and not the font's eleven); the drawn shape of 'H' and 'i'; and the guard
+  that a name with no table still opens. **Three of the four fail when the tables are disabled** (the
+  fourth is the guard, which passes either way, which is the point of it).
+- `mvn test` 307/307.
+
+**What is still not there**, and the README's limitation says so: a font **file** on a font path is
+still not read - `SetFontPath`/`GetFontPath` remain bookkeeping - and a name with no table is a Java
+font. The tables are for the fonts a client is most likely to ask for by name; the item's plan
+("parse X font files for the fonts a user would put on a font path") would generalise this rather than
+replace it.
 
 ---
 

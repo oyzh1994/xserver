@@ -378,8 +378,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   flat colours into kilobytes instead of megabytes, and a client that asks for the **Cursor**
   pseudo-encoding is sent the X pointer's own shape. Not there: `Tight`/`CoRRE` (optimisations on top
   of ZRLE).
-- **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
-  metrics differ from a stock X server. Clients are told the metrics the server will actually use.
+- **The standard X fonts are the real ones, and every other name is approximated.** `fixed`, `6x13`,
+  `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD names they answer to - are served from tables
+  captured off a reference server, so the metrics a client reads through `QueryFont` and
+  `QueryTextExtents` and the glyphs it draws are that server's: measured identical to Xvfb field by
+  field and pixel by pixel with `tools/kit.sh FontProbe`. Any other name is mapped onto a Java font
+  and has the JVM's shapes and metrics, and a font **file** on a font path is still not read.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
   feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
   screen - so a client that asks what the pointer did is answered.)

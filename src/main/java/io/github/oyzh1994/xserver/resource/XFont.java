@@ -12,10 +12,16 @@ import java.util.Locale;
 /**
  * A font resource.
  *
- * <p>X has its own font system, but rasterizing X font files is not worth reimplementing here:
- * each X font name is mapped onto a Java font and glyph metrics are derived from Java's font
- * machinery. Core protocol text drawing, {@code QueryFont} and {@code QueryTextExtents} are all
- * answered from this.
+ * <p>A font a client asks for by name is served from {@link BitmapFont} when that table has it -
+ * the real X font, captured from a reference server, so a client that measures text with
+ * {@code QueryTextExtents} or lays it out from {@code QueryFont}'s metrics gets the same numbers and
+ * the same glyph shapes it would there (backlog D3).
+ *
+ * <p><b>Every other name falls back to a Java font chosen by the name</b>, which is what this class
+ * always did. That is an approximation and the README says so: the shapes and the metrics are the
+ * JVM's, and a font file on a font path is not read. The fallback is kept rather than refused
+ * because a client that opens a font nobody here has should get something it can draw with - which
+ * is also what an X server with a font path does, up to the point where it has no font at all.
  */
 public final class XFont extends XResource {
 
@@ -24,6 +30,8 @@ public final class XFont extends XResource {
     public static final int MAX_CHAR = 255;
 
     private final String name;
+    /** The real font behind this name, or null when the name only has the Java approximation. */
+    private final BitmapFont.Font bitmap;
     private final Font awtFont;
     private final FontMetrics metrics;
     private final int[] charWidths = new int[MAX_CHAR + 1];
@@ -39,9 +47,72 @@ public final class XFont extends XResource {
     public XFont(int id, ClientConnection owner, String name) {
         super(id, CLASS_FONT, owner);
         this.name = name;
+        this.bitmap = BitmapFont.forName(name);
+        if (bitmap != null) {
+            // Nothing of the approximation is needed, and not building it is not only thrift: the
+            // measurements above are the font's own and a Java font's would be a second answer.
+            this.awtFont = null;
+            this.metrics = null;
+            this.fontAscent = bitmap.ascent();
+            this.fontDescent = bitmap.descent();
+            this.minLeftBearing = bitmap.minBounds().leftBearing();
+            this.maxRightBearing = bitmap.maxBounds().rightBearing();
+            this.minWidth = bitmap.minBounds().width();
+            this.maxWidth = bitmap.maxBounds().width();
+            this.fixedPitch = minWidth == maxWidth;
+            // A font's codes do not always start at zero - 12x24's begin at one - and a character
+            // the font does not have draws as its default character, which is what its width is.
+            int defaultWidth = bitmap.metric(bitmap.defaultChar()) == null
+                    ? 0 : bitmap.metric(bitmap.defaultChar()).width();
+            for (int ch = MIN_CHAR; ch <= MAX_CHAR; ch++) {
+                BitmapFont.Metric metric = bitmap.metric(ch);
+                charWidths[ch] = metric == null ? defaultWidth : metric.width();
+            }
+            return;
+        }
         this.awtFont = resolveFont(name);
         this.metrics = new Canvas().getFontMetrics(awtFont);
         computeMetrics();
+    }
+
+    /** The character a code the font does not have draws as - {@code QueryFont}'s default-char. */
+    public int defaultChar() {
+        return bitmap != null ? bitmap.defaultChar() : '?';
+    }
+
+    /** The real font behind this name, or null when only the Java approximation has it. */
+    public BitmapFont.Font bitmap() {
+        return bitmap;
+    }
+
+    /**
+     * The glyph the font itself has for a character, or null when it has none - a space, a control
+     * code, or a name that fell back to the Java approximation.
+     */
+    public BitmapFont.Glyph bitmapGlyph(int ch) {
+        return bitmap == null ? null : bitmap.glyph(ch);
+    }
+
+    /** The font's own bounds, which {@code QueryFont} reports as min-bounds and max-bounds. */
+    public BitmapFont.Metric bitmapBounds(boolean minBounds) {
+        if (bitmap == null) {
+            return null;
+        }
+        return minBounds ? bitmap.minBounds() : bitmap.maxBounds();
+    }
+
+    /** The character's own metrics, as {@code QueryFont} reports them, or null for no table. */
+    public BitmapFont.Metric charMetric(int ch) {
+        return bitmap == null ? null : bitmap.metric(ch);
+    }
+
+    /** The font's own first and last character codes, which {@code QueryFont} reports. */
+    public int minChar() {
+        return bitmap == null ? MIN_CHAR : bitmap.minChar();
+    }
+
+    public int maxChar() {
+        return bitmap == null ? MAX_CHAR : bitmap.maxChar();
     }
 
     /**
@@ -191,6 +262,14 @@ public final class XFont extends XResource {
      */
     public List<FontProperty> properties() {
         List<FontProperty> properties = new ArrayList<>();
+        if (bitmap != null) {
+            // The font's own properties, verbatim: a client that picks a family or a spacing reads
+            // these, and inventing them was half of what "the metrics are the JVM's" meant.
+            for (String name : bitmap.numericPropertyNames()) {
+                properties.add(new FontProperty(name, bitmap.numericPropertyValue(name)));
+            }
+            return properties;
+        }
         properties.add(new FontProperty("FONT_ASCENT", fontAscent));
         properties.add(new FontProperty("FONT_DESCENT", fontDescent));
         properties.add(new FontProperty("DEFAULT_CHAR", '?'));
@@ -206,6 +285,14 @@ public final class XFont extends XResource {
     /** Properties whose value is a string; the caller interns each one as an atom. */
     public List<TextProperty> textProperties() {
         List<TextProperty> properties = new ArrayList<>();
+        if (bitmap != null) {
+            // The properties whose value is a string, including FONT - the XLFD this name resolves
+            // to, which is how a client that opened an alias learns what it actually got.
+            for (String name : bitmap.stringPropertyNames()) {
+                properties.add(new TextProperty(name, bitmap.stringPropertyValue(name)));
+            }
+            return properties;
+        }
         properties.add(new TextProperty("FAMILY_NAME", familyName()));
         properties.add(new TextProperty("FOUNDRY", "xserver"));
         return properties;
