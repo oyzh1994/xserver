@@ -2276,14 +2276,31 @@ whatever covered the window it went into - and recorded its drawn region nowhere
   inside the damage the request marked**, and the damage is smaller than the surface. A pixel changed
   outside it would be a pixel left stale on somebody's screen, with no error and no log line; that is
   what the test is for.
-- **Live**: with `--backend vnc`, EasyShell connected and drew its interface, and macOS's own Screen
-  Sharing connected to `vnc://` and **completed the VNC handshake and the DES authentication three
-  times** (the log lines name the connection and the screen it was given). What is *not* verified live
-  is the picture in a viewer: driving that client's password dialog from a script in this environment
-  cost several attempts (a stale dialog, a field that kept its old contents) and the viewer window was
-  never captured. The frames themselves are verified byte for byte by the test client instead, and the
-  browser path of the item's Verify is not attempted at all - see below.
-- `mvn test` 281/281.
+- **Live, and with two real clients** (2026-09-25/26): EasyShell connected to a `--backend vnc`
+  server and drew its interface, and **noVNC** - the standard web VNC client, run in Chrome against
+  the same server over a websockify bridge - showed it: the page's own title bar read
+  `Connected to xserver :96` and the canvas carried EasyShell's interface, welcome page, host list
+  and all. **Input went the other way too**: a click in that canvas moved the X pointer (measured
+  with `xdotool getmouselocation` on the VM), and a hand-written RFB client sending a pointer event
+  to (1000,700) and then (50,40) moved it to exactly those coordinates.
+- **macOS Screen Sharing found a real gap, and it is the reason to use a real client.** It announces
+  **RFB 003.003**, not 3.8 - captured on the wire (`RFB 003.003\n`) - and the 3.3 branch of the
+  handshake had **no test at all**: 3.3 has no security-type list and no `SecurityResult`, so a
+  server that answers a 3.3 client the 3.8 way leaves it waiting for a byte that never comes.
+  `VncBackendTest` now pins it (`aClientThatSpeaksThirtyThreeIsAnsweredInItsOwnTerms`), and with the
+  branch disabled that test **times out exactly the way the real client sat silent**. Screen Sharing
+  itself completed the handshake and the DES authentication against this server three times (the log
+  lines name the connection and the screen it was given); what it did *not* do in this environment was
+  display the picture, and a control experiment says why that is not this server: **a minimal,
+  by-the-book 3.3 server written for the occasion gets the same silence from it** (handshake, then
+  nothing at all, and it does not even read a frame pushed at it), and the reference `x11vnc` behaves
+  like this server under the same probe - nothing unprompted after `ServerInit`, frames as soon as one
+  is asked for.
+- **The browser path is demonstrated but not built**: noVNC + websockify is *client* software with a
+  bridge in front of the TCP port, not a WebSocket server inside this one. It answers the item's
+  question - "can a browser watch this screen" - with yes; building the WebSocket into the server is
+  still on the list below.
+- `mvn test` 282/282.
 
 **What is not done, and what each would take.**
 

@@ -51,6 +51,8 @@ public final class VncBackend implements DisplayBackend {
     private Screen screen;
     private InputSink input;
     private volatile int boundPort;
+    /** The X display this serves, for the name a viewer shows in its title bar. */
+    private volatile int displayNumber;
 
     /**
      * @param port         the TCP port to listen on, or 0 for any free one (which a test wants)
@@ -80,6 +82,7 @@ public final class VncBackend implements DisplayBackend {
     public void start(Screen screen, int displayNumber, InputSink input) {
         this.screen = screen;
         this.input = input;
+        this.displayNumber = displayNumber;
         try {
             ServerSocket bound = new ServerSocket();
             bound.setReuseAddress(true);
@@ -152,8 +155,11 @@ public final class VncBackend implements DisplayBackend {
         while (running.get()) {
             try {
                 Socket client = socket.accept();
+                // The name a viewer puts in its window: the X display it is watching, not the
+                // screen's index - "xserver :96" is what a user recognises, and the index is 0 for
+                // the only screen this backend serves.
                 RfbSession session = new RfbSession(client, screen, input,
-                        title + " (display " + screen.number() + ")", password);
+                        title + " :" + displayNumber, password);
                 sessions.add(session);
                 Thread thread = new Thread(() -> {
                     try {

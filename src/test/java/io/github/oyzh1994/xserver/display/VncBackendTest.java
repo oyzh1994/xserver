@@ -35,8 +35,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class VncBackendTest {
 
-    /** A display number the rest of the suite does not use. */
-    private static final int DISPLAY = 92;
+    /**
+     * A display number the rest of the suite does not use - and it has to be checked, not assumed:
+     * the first version of this test picked 92, which {@code AuthenticationTest} already had, and
+     * the two collided only when the whole suite ran (a client of one reached the other's server and
+     * the handshake it got back was a refusal).
+     */
+    private static final int DISPLAY = 94;
 
     private static final int RED = 0xFF0000;
     private static final int GREEN = 0x00FF00;
@@ -139,6 +144,31 @@ class VncBackendTest {
                 viewer.requestFullFrame();
                 assertEquals(0x0000FF, viewer.readFrame().pixel(50, 50),
                         "the right password gets the screen");
+            }
+        }
+    }
+
+    /**
+     * A client that speaks **3.3**, which is what macOS Screen Sharing announces.
+     *
+     * <p>Found by the live check, and it is the branch no test covered: 3.3 has no security-type
+     * list (a single four byte type instead) and **no SecurityResult** after it, so a server that
+     * answers a 3.3 client the 3.8 way leaves it waiting for a byte that never comes. Measured on
+     * the wire before this test existed: {@code RFB 003.003\n} from Screen Sharing, then silence.
+     */
+    @Test
+    void aClientThatSpeaksThirtyThreeIsAnsweredInItsOwnTerms() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = new VncClient(server.backend.boundPort(), null, true)) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 100, 100, 0x0000FF);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestFullFrame();
+                assertEquals(0x0000FF, viewer.readFrame().pixel(50, 50),
+                        "a 3.3 client gets the screen too, with no SecurityResult in between");
             }
         }
     }
@@ -299,6 +329,11 @@ class VncBackendTest {
         boolean wasRefused;
 
         VncClient(int port, String password) throws IOException {
+            this(port, password, false);
+        }
+
+        /** {@code thirtyThree} announces RFB 003.003, the version Apple's client speaks. */
+        VncClient(int port, String password, boolean thirtyThree) throws IOException {
             socket = new Socket();
             socket.connect(new InetSocketAddress("127.0.0.1", port), 4000);
             socket.setSoTimeout(4000);
@@ -307,8 +342,18 @@ class VncBackendTest {
 
             String version = readAscii(12);
             assertEquals("RFB 003.008\n", version, "the server announces the version it speaks");
-            out.write("RFB 003.008\n".getBytes(StandardCharsets.US_ASCII));
+            out.write((thirtyThree ? "RFB 003.003\n" : "RFB 003.008\n")
+                    .getBytes(StandardCharsets.US_ASCII));
             out.flush();
+            if (thirtyThree) {
+                // 3.3: the security type is four bytes and there is no result after the exchange.
+                assertEquals(password == null ? 1 : 2, readInt(), "the 3.3 security type");
+                if (password != null) {
+                    byte[] challenge = readBytes(16);
+                    out.write(vncEncrypt(challenge, password));
+                    out.flush();
+                }
+            } else {
             assertEquals(1, in.read(), "one security type");
             int type = in.read();
             if (password == null) {
@@ -323,12 +368,15 @@ class VncBackendTest {
                 out.write(vncEncrypt(challenge, password));
                 out.flush();
             }
+            }
+            if (!thirtyThree) {
             int result = readInt();
             if (result != 0) {
                 // Refused: the server sends the reason after the result and then closes, so there is
                 // nothing else to do here and the caller asserts on wasRefused.
                 wasRefused = true;
                 return;
+            }
             }
             out.write(1);                                   // ClientInit: shared
             out.flush();

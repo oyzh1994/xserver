@@ -1179,8 +1179,11 @@ decisions.
   meant a `PutImage` was drawn **with no clip** - over whatever covered the window it went into - and
   recorded its region on a rasterizer nobody read.
 
-**The handshake, and the one part of it that is easy to get wrong.** Version 3.8 (3.3 and 3.7 are
-answered in their own terms), security `None`, or the VNC scheme when `--vnc-password-file` is given.
+**The handshake, and the two parts of it that are easy to get wrong.** Version 3.8 (3.3 and 3.7 are
+answered in their own terms - and **macOS Screen Sharing announces 3.3**, which is worth knowing
+before writing the version branch off as legacy: 3.3 has no security-type list and no
+`SecurityResult`, so answering it the 3.8 way leaves the client waiting for a byte that never comes.
+Nothing in this server's own tests spoke 3.3 until a real client did.), security `None`, or the VNC scheme when `--vnc-password-file` is given.
 That scheme is a sixteen byte challenge encrypted with the password as a **DES key with each byte's
 bits reversed** - which is not a thing any DES library does for you, and which fails *silently*: the
 server simply refuses every password. It is pinned by a test against a vector computed with
