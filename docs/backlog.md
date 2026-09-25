@@ -79,7 +79,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
-| E3 | performance: local blending, fewer copies | engineering | M-L |
+| [~] E3 | performance: the opaque-source copy path is in (1.85x on a full-screen fill); mask paths and the image round trip are not | engineering | M-L |
 | D3 | core-font fidelity | large | M-L |
 | B4 | XInput2 | extension | L |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
@@ -2178,30 +2178,44 @@ pending motion events, which is what a real server does and the next thing to do
 ever becomes a real case.
 ---
 
-### [ ] E3. Performance: local blending, fewer copies. **M-L**
+### [~] E3. Performance: local blending, fewer copies. **M-L** - the opaque-source path 2026-09-25 (1.85x on the two operators an opaque fill uses); the mask paths and the image round trip are not done
+**Measured with a benchmark of the compositor's own pixel loop**, on one scene and with everything else
+equal: two hundred full-screen (1300x800) `FillRectangles` through `Compositor.draw`, which is the one
+loop every request reduces to. Op 1 is `Src` and op 3 is `Over`, the two an opaque fill uses.
 
-**Current.** The rasteriser blends pixel by pixel in Java (`Compositor.draw` → `blend`), the `Picture`
-sampler resolves format/repeat/alpha per pixel, and the JavaFX backend copies the framebuffer into a
-`WritableImage` per damage rectangle before the canvas draws it. It is fast enough for one 1300x800
-window at 60 Hz (the pulses log ~8 ms/frame at 120 fps, which includes the whole tick).
+```
+                       before       after
+Src   200 full fills   1795 ms      984 ms     (8.98 -> 4.92 ms/frame)
+Over  200 full fills   1770 ms      953 ms     (8.85 -> 4.77 ms/frame)
+```
 
-**Why it matters.** `--scale 2` is 4x the pixels, `--scale 3`/`4` more, and C1 makes the screen
-growable. A user with a 4K panel wants scale 2 at 60 fps, which today means 13 M pixels a tick.
+**What changed.** One branch in `Compositor.blend`: an opaque source with a full mask under `Src` or
+`Over` is the source, so the pixel loop stops doing the double-precision arithmetic for it. That is
+not an approximation of what the general path answers - it is what it answers, with `fa = 1` and
+`fb = 0`, and the arithmetic on a value that came out of eight bit channels is exact - so the two
+agree pixel for pixel by construction. It is the case most of a desktop's drawing takes: an opaque
+background paint, a `PutImage` of an opaque image, a `CopyArea`.
 
-**Plan, in order of payoff:** (a) blend only the damage region (the damage machinery exists; the
-per-request clip is computed per request already); (b) specialise the hot paths - `Over` with an
-opaque source and no transform is a copy, and `Src`/`Over` with an A8 mask is the case every toolkit's
-text and icons take - instead of the general double-precision blend; (c) skip the `WritableImage`
-round trip by writing directly into a pixel buffer the canvas can use, or present only the damage
-rectangle (already done) with a smaller buffer.
+**What the item's plan has that this does not.** (a) "Blend only the damage region": the loop is
+already given the clipped rectangle by every caller, so what was left of this was measuring it on a
+real frame rather than on a synthetic one, and that is not done. (b) The *mask* paths - `Src`/`Over`
+with an A8 mask, which is what every toolkit's text and icons take - are still the general
+double-precision blend: a fixed-point version would have to match the existing rounding exactly, and
+the item's own note says a fast path that changes rounding must not be added quietly. (c) The JavaFX
+`WritableImage` round trip is untouched.
 
-**Traps.** Every optimisation here is a pixel-exactness risk, and the current output is already within
-one unit of Xvfb's; keep `Blocks`/`Xwd` comparisons as the gate (they can show a regression that the
-test suite cannot). Do not introduce a fast path that changes rounding without saying so.
+**The live pixel gate, measured 2026-09-25.** `xlogo` (static, so the two captures are comparable -
+`xclock` is not: its hands move with the time, which cost one run) drawn on both servers at the same
+geometry, captured with the same `xwd -root` on the VM, and diffed over the logo's own area:
 
-**Verify.** Timing from the pulse log before and after, on the same scene, plus the pixel comparison
-against Xvfb for a toolbar/text screen (the depth-8/warm-up cases in `docs/design-notes.md` are the
-sensitive ones).
+- **fast path against slow path, same scene: 0 of 46656 pixels differ** - the change is
+  pixel-identical, which is what the design says it must be.
+- against Xvfb the same run differs in **377 pixels (0.8%)**, and **the slow path differs in exactly
+  the same 377** - so it is a pre-existing difference and not this change's. (Worth an item of its
+  own if it is ever chased: the deltas are full-scale, so it is geometry rather than blend rounding,
+  and the suite's `RasterizerTest` compares against Xorg pixel for pixel.)
+
+The suite is still 260/260 with the fast path in.
 
 ---
 

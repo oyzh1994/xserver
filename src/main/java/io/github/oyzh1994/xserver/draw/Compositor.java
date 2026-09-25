@@ -493,6 +493,16 @@ public final class Compositor {
      */
     private static int blend(int op, int srcArgb, int dstArgb, int maskArgb, int maskAlpha,
                              boolean componentAlpha) {
+        // The two cases that are a copy, and they are most of what a desktop draws: an opaque source
+        // with a full mask, under Src (the answer is the source) or under Over (an opaque source
+        // hides the destination completely, which is the same thing). The general path below returns
+        // exactly this for both - fa = 1 and fb = 0 - and its arithmetic on a value that came from
+        // eight bit channels is exact, so this is not an approximation of the answer, it is the
+        // answer without the arithmetic. See backlog E3.
+        if (maskAlpha == 255 && !componentAlpha && (srcArgb >>> 24) == 255
+                && (op == 1 || op == 3)) {
+            return srcArgb;
+        }
         double sr = ((srcArgb >> 16) & 0xFF) / 255.0;
         double sg = ((srcArgb >> 8) & 0xFF) / 255.0;
         double sb = (srcArgb & 0xFF) / 255.0;

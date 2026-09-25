@@ -408,6 +408,33 @@ only one that converted back; everything else already treated a depth 8 store as
 that found it is `DrawHandlers`' `PutImage landed: ... values=`, which prints the distinct bytes a
 small image put down: three values where a mask should have had a gradient is what named the cause.
 
+## The hot path in the blend
+
+The compositor's pixel loop is where every request ends up, and it was written for clarity: per pixel
+it reads a mask, the source and the destination, converts all four channels of both to doubles, picks
+an operator from a switch and blends. That is the right shape for the operators that need it, and the
+wrong cost for the one case most of a desktop's drawing takes - **an opaque source with a full mask**,
+under `Src` (a window's background paint, a `CopyArea`) or under `Over` (an opaque `PutImage`, a
+RENDER composite of an opaque picture). The answer there is the source pixel.
+
+`Compositor.blend` now returns it directly for those two operators. That is not an approximation that
+has to be checked: the general path answers `fa = 1, fb = 0` for both, and its arithmetic on values
+that came out of eight bit channels is exact, so the two agree pixel for pixel by construction -
+measured, not assumed, on a live scene: 0 of 46656 pixels differ with the fast path in and out.
+
+Measured on the loop itself, two hundred full-screen 1300x800 fills:
+
+```
+                       before       after
+Src   200 full fills   1795 ms      984 ms     (8.98 -> 4.92 ms/frame)
+Over  200 full fills   1770 ms      953 ms     (8.85 -> 4.77 ms/frame)
+```
+
+The mask paths - which is what text and icons take, an A8 mask over a source - are deliberately left
+alone (E3): a fixed-point version of those would have to reproduce the double-precision rounding
+exactly, and a fast path that changes rounding silently is the one thing that section of the backlog
+warns about.
+
 ## How close the picture is to a real server
 
 Measured against Xvfb on the same application, screenshotted from both and compared pixel for pixel
