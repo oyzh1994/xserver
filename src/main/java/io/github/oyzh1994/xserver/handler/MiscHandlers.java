@@ -216,18 +216,13 @@ public final class MiscHandlers {
         InputState input = server.inputFor(client);
         // One bit per keycode, least significant bit of each byte first. The answer is what the
         // client actually set, not a blanket "everything repeats": a client that turned a key off
-        // and reads it back has to see that it is off, or it cannot tell its own change took.
-        byte[] autoRepeats = new byte[32];
-        boolean any = false;
-        for (int keycode = 0; keycode < 256; keycode++) {
-            if (input.autoRepeats(keycode)) {
-                autoRepeats[keycode >> 3] |= (byte) (1 << (keycode & 7));
-                any = true;
-            }
-        }
+        // and reads it back has to see that it is off, or it cannot tell its own change took. The
+        // bitmap and the global flag are two different things - measured against Xvfb, `xset r off`
+        // clears the flag and leaves the bitmap alone - so they are reported separately.
+        byte[] autoRepeats = input.autoRepeatBitmap();
         client.sendReply(GetKeyboardControlReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .globalAutoRepeat((byte) (any ? 1 : 0))
+                .globalAutoRepeat((byte) (input.repeatKeysEnabled() ? 1 : 0))
                 .ledMask(0)
                 .keyClickPercent((byte) 0)
                 .bellPercent((byte) 50)
@@ -244,7 +239,9 @@ public final class MiscHandlers {
      * repeat has to be honoured, because it is how a client says "this key must not repeat": the
      * server is what generates the repeats, so a client that turns one off and is ignored gets a run
      * of characters it explicitly asked not to have. The value travels as one four byte word: the
-     * mode in the first byte, then up to three keycodes, and no keycode at all means every key.
+     * mode in the first byte, then up to three keycodes - and no keycode at all means the whole
+     * keyboard's repeat, which is a different thing from every key's bit (see
+     * {@link InputState#setAutoRepeat}, where the measurement is).
      */
     public void changeKeyboardControl(ClientConnection client, ChangeKeyboardControl r) {
         if (!Kb.AUTO_REPEAT_MODE.isEnabled(r.getValueMask())) {

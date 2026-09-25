@@ -118,12 +118,26 @@ public final class InputState implements DisplayBackend.InputSink {
     private final java.util.Map<Integer, Long> repeatDue = new java.util.HashMap<>();
 
     /**
-     * Which keycodes may repeat. Every key starts out repeating, and a client turns individual ones
-     * off with {@code ChangeKeyboardControl}'s {@code AutoRepeatMode} - which is the only repeat
-     * control the core protocol has: the delay and the rate are XKB's
-     * ({@code XkbSetAutoRepeatRate}), so a client that wants to change them needs XKB support.
+     * Which keycodes may repeat. Every key starts out repeating except the modifiers, and a client
+     * changes it with {@code ChangeKeyboardControl}'s {@code AutoRepeatMode} or with XKB's
+     * {@code SetControls}, whose {@code perKeyRepeat} is the same bitmap.
+     *
+     * <p><b>The modifiers repeat for nobody by default, and the bitmap is where that lives</b>, not a
+     * rule applied at press time: measured against Xvfb, whose own {@code auto_repeats} list is
+     * exactly the keys the modifier map names - {@code Shift_L}/{@code Shift_R}, both Controls, both
+     * Alts, both Supers, Caps Lock, Num Lock. A client that puts a modifier back in the bitmap gets it
+     * to repeat, which is what a reference server does too; the default is what a stock keymap's
+     * compatibility section asks for.
      */
     private final boolean[] autoRepeats = new boolean[256];
+
+    /**
+     * Whether the keyboard repeats at all - XKB's {@code XkbRepeatKeysMask}, the one control bit this
+     * server honours. Core {@code ChangeKeyboardControl} has no request for it; XKB's
+     * {@code SetControls} does, and a client that turns it off means "no key repeats, whatever the
+     * bitmap says".
+     */
+    private boolean repeatKeysEnabled = true;
 
     private int repeatDelayMillis = DEFAULT_REPEAT_DELAY_MILLIS;
     private int repeatIntervalMillis = DEFAULT_REPEAT_INTERVAL_MILLIS;
@@ -180,8 +194,12 @@ public final class InputState implements DisplayBackend.InputSink {
         this.server = server;
         this.screen = screen;
         this.inputFocus = screen.root();
-        // Every key repeats until a client says otherwise, which is what a stock server reports.
-        java.util.Arrays.fill(autoRepeats, true);
+        // Every key repeats except the modifiers, which is what a stock server's per-key repeat
+        // bitmap holds - see the field. A keycode outside the keyboard's own range repeats for
+        // nobody either, so the bitmap a client reads back has no bits set below 8.
+        for (int keycode = Keymap.MIN_KEYCODE & 0xFF; keycode <= Keymap.MAX_KEYCODE; keycode++) {
+            autoRepeats[keycode] = Keymap.modifierMaskForKeycode(keycode) == 0;
+        }
     }
 
     /** The screen whose pointer, focus and grabs this is. */
@@ -679,25 +697,16 @@ public final class InputState implements DisplayBackend.InputSink {
     /**
      * Arms the repeat for a key that has just gone down.
      *
-     * <p>A modifier does not repeat: a stock server repeats the keys that produce characters, and a
-     * held Shift that repeated would be reported as a run of presses no toolkit expects (its own
-     * `auto_repeats` answer is not the whole story - XKB decides which keys repeat, and the modifier
-     * keys are not among them).
+     * <p>Two things decide it, and both are the client's to change: the keyboard's repeat control
+     * (XKB's {@code RepeatKeys}) and the key's own bit in the per-key bitmap - which is where "a
+     * modifier does not repeat" comes from, rather than a rule applied here. A held Shift repeating
+     * would be a run of presses no toolkit expects.
      */
     private void armRepeat(int keycode) {
-        if (!autoRepeats[keycode] || isModifier(keycode)) {
+        if (!repeatKeysEnabled || !autoRepeats[keycode]) {
             return;
         }
         repeatDue.put(keycode, System.currentTimeMillis() + repeatDelayMillis);
-    }
-
-    private static boolean isModifier(int keycode) {
-        for (int modifier : MOMENTARY_KEYCODES) {
-            if (modifier == keycode) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -728,24 +737,105 @@ public final class InputState implements DisplayBackend.InputSink {
         }
     }
 
-    /** Whether a keycode repeats when it is held. */
+    /** Whether a keycode repeats when it is held, and the keyboard is repeating at all. */
     public boolean autoRepeats(int keycode) {
+        return repeatKeysEnabled && keycode >= 0 && keycode < autoRepeats.length
+                && autoRepeats[keycode];
+    }
+
+    /** Whether the per-key bitmap says this keycode repeats, whatever the keyboard's control is. */
+    public boolean autoRepeatBit(int keycode) {
         return keycode >= 0 && keycode < autoRepeats.length && autoRepeats[keycode];
+    }
+
+    /** Whether the keyboard repeats at all: XKB's {@code RepeatKeys} control. */
+    public boolean repeatKeysEnabled() {
+        return repeatKeysEnabled;
+    }
+
+    /**
+     * Turns the whole keyboard's repeat on or off, which is XKB's {@code RepeatKeys} control.
+     *
+     * <p>The per-key bitmap is left alone, because a client that disables RepeatKeys is not saying
+     * "forget which keys repeat" - it is saying "not now", and a client that enables it again expects
+     * the keys it configured.
+     */
+    public void setRepeatKeysEnabled(boolean on) {
+        repeatKeysEnabled = on;
+        if (!on) {
+            repeatDue.clear();
+        }
+    }
+
+    /** How long a key is held before it repeats, in milliseconds. */
+    public int repeatDelayMillis() {
+        return repeatDelayMillis;
+    }
+
+    /** How long between repeats, in milliseconds. */
+    public int repeatIntervalMillis() {
+        return repeatIntervalMillis;
+    }
+
+    /**
+     * Changes how fast a held key repeats: XKB's {@code XkbSetAutoRepeatRate}, and the only way a
+     * client can reach these - the core protocol has no request for either.
+     *
+     * <p>A key that is already repeating keeps its current due time: the new rate applies from the
+     * next repeat on, which is what a reference server does.
+     */
+    public void setRepeatRate(int delayMillis, int intervalMillis) {
+        if (delayMillis > 0) {
+            repeatDelayMillis = delayMillis;
+        }
+        if (intervalMillis > 0) {
+            repeatIntervalMillis = intervalMillis;
+        }
+    }
+
+    /**
+     * The per-key repeat bitmap in the wire's own form: 32 bytes, one bit per keycode, the least
+     * significant bit of each byte first. This is the same array {@code GetKeyboardControl} and
+     * XKB's {@code GetControls} both carry.
+     */
+    public byte[] autoRepeatBitmap() {
+        byte[] bits = new byte[32];
+        for (int keycode = 0; keycode < autoRepeats.length; keycode++) {
+            if (autoRepeats[keycode]) {
+                bits[keycode >> 3] |= (byte) (1 << (keycode & 7));
+            }
+        }
+        return bits;
+    }
+
+    /**
+     * Replaces the per-key repeat bitmap from the wire's form, which is what XKB's
+     * {@code SetControls} carries. A key that has just stopped repeating stops at once rather than
+     * finishing its run.
+     */
+    public void setAutoRepeatBitmap(byte[] bits) {
+        for (int keycode = 0; keycode < autoRepeats.length; keycode++) {
+            int index = keycode >> 3;
+            autoRepeats[keycode] = index < bits.length && (bits[index] & (1 << (keycode & 7))) != 0;
+        }
+        repeatDue.keySet().removeIf(keycode -> !autoRepeats[keycode]);
     }
 
     /**
      * Turns repeating on or off, for one keycode or for every key.
      *
-     * @param keycode the key, or -1 for all of them (which is what a client that names no keycode
-     *                means)
+     * <p>The two are different things, and that was measured rather than assumed: naming no keycode
+     * is the keyboard's own repeat control, not a per-key bit - against Xvfb, {@code xset r off}
+     * clears the {@code enabledControls} RepeatKeys bit and leaves the per-key bitmap exactly as it
+     * was, so a client that turns repeat off and on again gets back the keys it had configured.
+     *
+     * @param keycode the key, or -1 for the whole keyboard (which is what a client that names no
+     *                keycode means)
      * @param on      true for repeat, false for a key that presses once however long it is held
      */
     public void setAutoRepeat(int keycode, boolean on) {
         if (keycode < 0) {
-            java.util.Arrays.fill(autoRepeats, on);
-            if (!on) {
-                repeatDue.clear();
-            }
+            setRepeatKeysEnabled(on);
             return;
         }
         if (keycode >= autoRepeats.length) {

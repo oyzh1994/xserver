@@ -431,10 +431,23 @@ Src   200 full fills   1795 ms      984 ms     (8.98 -> 4.92 ms/frame)
 Over  200 full fills   1770 ms      953 ms     (8.85 -> 4.77 ms/frame)
 ```
 
-The mask paths - which is what text and icons take, an A8 mask over a source - are deliberately left
-alone (E3): a fixed-point version of those would have to reproduce the double-precision rounding
-exactly, and a fast path that changes rounding silently is the one thing that section of the backlog
-warns about.
+**The mask paths came later and the same way** (2026-09-25): an A8 mask over an opaque source, under
+`Src` or under `Over` onto an opaque destination, which is what a glyph or an icon is. The condition
+is that a fast path of this kind changes no rounding - and the way to make that true rather than
+hopeful is to *show* it: the double-precision body was split out as `blendGeneral`, and
+`BlendFastPathTest` compares the two over everything the fast path claims - every one of the 256 mask
+alphas against both ends of every channel and the values either side of a rounding boundary, both
+operators, twenty thousand random pixels, and the component-alpha case - so a future edit that makes
+them disagree by one unit fails a test instead of changing one pixel of somebody's text. It is not a
+proof, it is a bound: the two fast paths are the same rational number in integers, and a rounding tie
+would need `2A = 255 * odd`, which has no solution.
+
+```
+masked Over, opaque source, A8 mask, 1040000 pixels    fast 2 ms    general 5 ms    (2.80x)
+```
+
+and on a real client, because this is the path its text takes: EasyShell rendered with the fast path
+in and with it short-circuited is **the same picture, 0 of 910000 pixels different**.
 
 ## How close the picture is to a real server
 
@@ -457,6 +470,17 @@ Measured against Xvfb on the same application, screenshotted from both and compa
   The measurement only means anything with both applications in the same state: the first version of
   this comparison had the pointer parked over the toolbar in one capture and not the other, which
   lights up hover states and reads as a large, entirely imaginary difference.
+- **A filled polygon's scanline crossings are taken at `y`, not at the pixel's centre.** This is the
+  one rasterisation rule in this server that was *wrong* rather than approximated, and it was found by
+  a whole-window comparison rather than by reading the code: `xlogo` differed in 377 of 46656 pixels
+  (0.8%) with full-scale deltas, and the cause was half a pixel - `FillPoly` computed each edge's
+  intersection with the scanline at `y + 0.5` where a reference server takes it at `y`. Half a pixel of
+  slope is a quarter of a pixel in x for a 45-degree edge and a whole one for a slope of two, and on a
+  concave shape it changes the *area*. Measured over four triangles and a star, every row: with the
+  crossing at `y` the two servers' fills agree pixel for pixel, and `xlogo`'s window is now **0 of
+  48400 pixels** different. The horizontal rule was right all along (a span is `ceil(xl)` to
+  `ceil(xr) - 1`), so this half pixel is the whole of it - see backlog A15 for how the probe that found
+  it nearly reported the opposite.
 - **Scan for a shift before believing a rendering difference.** A whole-window scan over offsets of
   +/-4 pixels is cheap and says whether the two renders disagree in place or are the same picture moved,
   which are very different bugs.
@@ -779,16 +803,25 @@ deletes one character however long Backspace is held.
 - **One repeat per key per tick, never a catch-up burst.** A tick that was late - a stalled screen, a
   machine that slept - would otherwise deliver a run of presses at once, which a client prints as
   characters nobody typed.
-- **A modifier does not repeat.** On a stock server that is XKB's decision, and a repeating Shift is a
-  run of presses no toolkit expects.
+- **A modifier does not repeat, and that lives in the per-key bitmap** rather than in a rule applied
+  when the key goes down: the bitmap's default is "every key the modifier map does not name", which is
+  what a stock server's own `auto_repeats` list holds, and a client that puts one back gets it to
+  repeat. A repeating Shift is a run of presses no toolkit expects, which is why the default matters.
 - **A release stops it and a second press starts a fresh delay**, or a tapped key repeats immediately
   on the next tap.
-- **`ChangeKeyboardControl`'s `AutoRepeatMode` is honoured** (one keycode, or every key when it names
-  none) and `GetKeyboardControl` reports what was actually set rather than a blanket "everything
-  repeats".
-- The **delay and the rate themselves are XKB's** (`XkbSetAutoRepeatRate`), not the core protocol's, so
-  a client that wants different ones cannot have them: the XKB here answers questions, it does not
-  configure repeat (backlog B1).
+- **There are two separate things on this keyboard and X keeps them apart**, measured against Xvfb
+  before either was implemented here: a *flag* - XKB's `RepeatKeys` control, which is what
+  `ChangeKeyboardControl` with no keycode and XKB's `SetControls` both turn on and off - and the
+  *per-key bitmap*. `xset r off` clears the flag and leaves the table exactly as it was, so turning
+  repeat off and on again gives a client back the keys it had configured; both rails report the two
+  separately.
+- **The delay and the rate are XKB's** (`SetControls`, behind `XkbSetAutoRepeatRate`) - the core
+  protocol has no request for either - and they are read back through `GetControls`. Their reply is the
+  extension's long one (92 bytes), and the two settings sit at offsets 20 and 22, which is where
+  changing the rate through `xset r rate` moves the bytes.
+- **The per-key bitmap in an XKB `SetControls` is ignored, because the reference ignores it** -
+  measured three ways, all zeros, all ones, and beside a rate change. Per-key repeat is the core
+  protocol's (`ChangeKeyboardControl`) on both servers.
 
 ## The keymap a client reads through XKB
 

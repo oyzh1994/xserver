@@ -883,8 +883,21 @@ public final class Rasterizer {
     // ---------------------------------------------------------------- polygons
 
     /**
-     * Scan converts a polygon with the even-odd or the non-zero winding rule, sampling the centre
-     * of each pixel the way X11's span filling does.
+     * Scan converts a polygon with the even-odd or the non-zero winding rule.
+     *
+     * <p><b>The scanline's crossings are taken at {@code y}, not at the pixel's centre {@code y +
+     * 0.5}}</b>, and that half pixel is not a detail: it is worth up to half a pixel of slope in x,
+     * which is a whole pixel on any edge steeper than forty five degrees. Measured against Xvfb
+     * over four triangles whose hypotenuses have slopes of 2, 44/21, 44/17 and 44/45 - every row of
+     * each, with no exceptions: the reference's last filled pixel is {@code ceil(xr)} taking
+     * {@code xr} at {@code y}, and taking it at {@code y + 0.5} reproduces this server's old output
+     * exactly. It was found chasing the 0.8% difference between the two servers' {@code xlogo},
+     * whose five polygons all have steep edges.
+     *
+     * <p>The horizontal rule matches the reference as it stands: a span starts at {@code ceil(xl)}
+     * and ends at {@code ceil(xr) - 1}. So an edge that crosses a scanline exactly on an integer
+     * lands one pixel differently from the centre rule, which is the case the probe's first triangle
+     * (slope 2, which puts every crossing on an integer at these scanlines) is there to pin.
      *
      * @param winding true for {@code FillWinding}, false for {@code FillEvenOdd}
      */
@@ -908,7 +921,7 @@ public final class Rasterizer {
         double[] xs = new double[n];
         int[] dirs = new int[n];
         for (int y = firstRow; y <= lastRow; y++) {
-            double sy = y + 0.5;
+            double sy = y;
             int count = 0;
             for (int i = 0; i < n; i++) {
                 int j = (i + 1) % n;

@@ -100,6 +100,15 @@ public final class RawXClient implements AutoCloseable {
     /** Creates a window, optionally with a background pixel - which a ClearArea then paints it in. */
     public void createWindow(int window, int parent, int x, int y, int width, int height,
                              int backgroundPixel) throws IOException {
+        createWindow(window, parent, x, y, width, height, backgroundPixel, 0);
+    }
+
+    /**
+     * The same with a border width, which is a window's own thing and not the parent's: {@code xlogo}
+     * asks for one, and the fill difference the probe was built for only shows up in its window.
+     */
+    public void createWindow(int window, int parent, int x, int y, int width, int height,
+                             int backgroundPixel, int borderWidth) throws IOException {
         boolean withBackground = backgroundPixel >= 0;
         byte[] request = new byte[withBackground ? 36 : 32];
         request[0] = 1;                             // CreateWindow
@@ -111,7 +120,7 @@ public final class RawXClient implements AutoCloseable {
         writeShort(request, 14, y);
         writeShort(request, 16, width);
         writeShort(request, 18, height);
-        writeShort(request, 20, 0);                 // border width
+        writeShort(request, 20, borderWidth);       // border width
         writeShort(request, 22, 1);                 // InputOutput
         writeInt(request, 24, 0);                   // visual: copy from the parent
         writeInt(request, 28, withBackground ? 0x2 : 0);        // CWBackPixel
@@ -780,6 +789,39 @@ public final class RawXClient implements AutoCloseable {
         writeShort(request, 14, y);
         writeShort(request, 16, width);
         writeShort(request, 18, height);
+        send(request);
+    }
+
+    /**
+     * FillPoly, the request every filled shape a toolkit draws reduces to: a closed path, filled by
+     * the GC's fill rule (which is where even-odd and winding are chosen - the request's own
+     * {@code shape} field is only a hint to the server).
+     *
+     * <p>Added for the polygon-fill investigation the xlogo difference led to: the fill is where a
+     * server's scan conversion shows, and a hand-written client is the only way to ask both servers
+     * the same question.
+     */
+    public void fillPolygon(int window, int gc, int[] points) throws IOException {
+        int count = points.length / 2;
+        // FillPoly is the odd request out: the shape byte and the coordinate mode come *after* the
+        // drawable and the GC rather than in the data byte every other drawing request has, and there
+        // is no point count at all - the server derives it from the length. Written from the server's
+        // own decoder (VariableLengthDecoders.readFillPoly), which is the only reading that is right:
+        // the first version of this helper put the shape at byte 1 and a count at byte 16, and the
+        // request was accepted, drew nothing, and read as "the two servers' polygon fills agree".
+        int body = 16 + count * 4;
+        byte[] request = new byte[(body + 3) & ~3];
+        request[0] = 69;                            // FillPoly
+        request[1] = 0;                             // pad
+        writeShort(request, 2, request.length / 4);
+        writeInt(request, 4, window);
+        writeInt(request, 8, gc);
+        request[12] = 0;                            // shape: Complex
+        request[13] = 0;                            // coordinate mode: Origin
+        for (int i = 0; i < count; i++) {
+            writeShort(request, 16 + i * 4, points[2 * i]);
+            writeShort(request, 18 + i * 4, points[2 * i + 1]);
+        }
         send(request);
     }
 

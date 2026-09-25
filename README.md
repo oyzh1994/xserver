@@ -127,9 +127,11 @@ matching the protocol's rules), the pointer's motion history
 
 The keyboard's repeats are the server's own work, as they are on a real one: a held key starts
 repeating 660 ms after it goes down and then every 40 ms until it comes up, a modifier never repeats,
-and `ChangeKeyboardControl`'s `AutoRepeatMode` is honoured for one key or for every key. The delay and
-the rate themselves are only settable through XKB, and the XKB this server has answers the question
-rather than configuring it - see `docs/backlog.md` B1 for what of it is still missing.
+and `ChangeKeyboardControl`'s `AutoRepeatMode` is honoured for one key or for the keyboard as a
+whole. The delay and the rate themselves are XKB's (`SetControls`, behind `XkbSetAutoRepeatRate` -
+the core protocol has no request for either) and are read back through `GetControls`; the per-key
+bitmap is on both rails, and it is the same table in both. See `docs/backlog.md` B1 for what of
+XKEYBOARD is still missing.
 
 Events: structure notifications, exposes, property and colormap notifications, crossing and focus
 events with the full detail lattice and the grab modes, pointer and keyboard events with propagation
@@ -307,19 +309,24 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   to announce before. A request to *change* the screen, or anything about providers and leases, is
   refused with `BadImplementation`: the screen belongs to the host window.
 - **XKEYBOARD answers what a client asks before it will trust the keyboard, and no more.** The
-  version handshake, the keymap (`GetMap`) and the modifier state (`GetState`) are there, the
-  requests that have no answer here (`SelectEvents`, `LatchLockState`) are accepted rather than
-  refused, and `PerClientFlags` answers "none supported" instead of erroring - which is what JavaFX
-  sends as an application starts. A client can also **set** the keymap (`SetMap`), applying its
-  keycodes' keysyms to the one table both this extension and `GetKeyboardMapping` read, which is how
-  `xkbcomp <file> <display>` loads a chosen layout. What is *not* there: choosing a layout **by name**
-  (`setxkbmap` asks for `GetKbdByName`, which wants a keymap compiler inside the server - it says "not
-  loaded" instead), the map's types, actions and behaviours (a client gets its characters right and
-  everything else as it was), the compatibility map, the indicator names, `GetNames`, the "detectable
-  auto-repeat" a client can ask for, and locking or latching a modifier from a client, which would
-  lock the machine's own keyboard for everyone. One caveat worth knowing: a `GetMap` reply has to
-  carry XKB's four mandatory key types or Xlib rejects the whole reply, so a server that offers *fewer*
-  is not gracefully degraded, it is a `null` keymap the client will fault on.
+  version handshake, the keymap (`GetMap`), the modifier state (`GetState`) and the keyboard's
+  controls (`GetControls`/`SetControls`) are there, the requests that have no answer here
+  (`SelectEvents`, `LatchLockState`) are accepted rather than refused, and `PerClientFlags` answers
+  "none supported" instead of erroring - which is what JavaFX sends as an application starts. A client
+  can also **set** the keymap (`SetMap`), applying its keycodes' keysyms to the one table both this
+  extension and `GetKeyboardMapping` read, which is how `xkbcomp <file> <display>` loads a chosen
+  layout. **The repeat delay and rate are settable through XKB and no other way** - the core protocol
+  has no request for either - so `SetControls` with `RepeatKeys` changes them, and a client that wants
+  a 200 ms delay gets one. What is *not* there: choosing a layout **by name** (`setxkbmap` asks for
+  `GetKbdByName`, which wants a keymap compiler inside the server - it says "not loaded" instead), the
+  map's types, actions and behaviours (a client gets its characters right and everything else as it
+  was), the compatibility map, the indicator names, `GetNames`, every keyboard control other than
+  repeat (slow keys, mouse keys, AccessX and the rest are accepted and not applied, and reported as
+  not enabled), the "detectable auto-repeat" a client can ask for, and locking or latching a modifier
+  from a client, which would lock the machine's own keyboard for everyone. One caveat worth knowing: a
+  `GetMap` reply has to carry XKB's four mandatory key types or Xlib rejects the whole reply, so a
+  server that offers *fewer* is not gracefully degraded, it is a `null` keymap the client will fault
+  on.
 - **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an

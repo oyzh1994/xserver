@@ -60,6 +60,7 @@ A prompt that starts a fresh session on this, verbatim:
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | ~~A5~~ | ~~`PointerRoot` focus reporting: the premise was wrong, five measured differences remain~~ **done 2026-09-25** | correctness | M |
 | ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
+| ~~A15~~ | ~~a filled polygon's scanline crossings are taken half a pixel low~~ **done 2026-09-25**: the `xlogo` difference is now 0 pixels | correctness | S |
 | ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
 | A13 | `AllowEvents` freeze/thaw: the premise is **real** (the probe had the grab modes backwards); semantics measured, not yet modelled | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
@@ -74,12 +75,12 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
-| [~] B1 | XKEYBOARD: read, and set by a client that compiles its own map (`xkbcomp`); no compiler in the server, so no layout by name | extension | M-L |
+| [~] B1 | XKEYBOARD: read, set by a client that compiles its own map (`xkbcomp`), and the controls (repeat delay/rate, `RepeatKeys`); no compiler in the server, so no layout by name | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
-| [~] E3 | performance: the opaque-source copy path is in (1.85x on a full-screen fill); mask paths and the image round trip are not | engineering | M-L |
+| [~] E3 | performance: the opaque-source copy path (1.85x) and the A8-mask path (2.80x) are in, both proven pixel-identical; "blend only the damage region" is not measured on a real frame | engineering | M-L |
 | D3 | core-font fidelity | large | M-L |
 | B4 | XInput2 | extension | L |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
@@ -453,10 +454,14 @@ rather than a blanket "everything repeats".
   through XTEST: **27 `KeyPressEvent` deliveries and 1 release**, against 1 and 1 before.
 
 **What is still missing** is the rest of X's repeat vocabulary, and it is XKB's (B1): the *delay* and
-the *rate* are only settable through `XkbSetControls`/`XkbSetAutoRepeatRate`, so a client that wants a
-200 ms delay cannot have one, and `XkbSetDetectableAutoRepeat` - where the client generates the repeats
-itself and only needs to be told when a repeat would have started - is not there either. Until then the
-defaults are what every client gets.
+the *rate* are only settable through `XkbSetControls`/`XkbSetAutoRepeatRate` - **done 2026-09-25**,
+with `GetControls` to read them back, so a client that wants a 200 ms delay asks for one and gets it
+(see B1's "controls half") - and `XkbSetDetectableAutoRepeat` is still not there: that is where the
+client generates the repeats itself and only needs to be told when a repeat would have started, and it
+is the one of the five `PerClientFlags` that changes the *shape* of the events this server sends, so
+it would have to come first if any of them is ever implemented. On the core rail, `GetKeyboardControl`
+now reports the bitmap and the keyboard's repeat flag separately, which is what the measurement above
+showed the reference does - `xset r off` clears the flag and leaves the table alone.
 
 ---
 
@@ -886,6 +891,77 @@ the server's own model would have passed against every one of them.
 
 ---
 
+### [x] A15. A filled polygon's scanline crossings were taken half a pixel low. **S** - done 2026-09-25
+
+**What it was**, and it is one character of code: `Rasterizer.fillPolygon` computed each edge's
+intersection with the scanline at `y + 0.5` (the pixel's centre) where a reference server takes it at
+`y`. The horizontal rule was right on both - a span runs from `ceil(xl)` to `ceil(xr) - 1` - so what
+moved was *where the edge crosses*, by half a pixel of the edge's slope: a quarter of a pixel in x for
+a slope of one, and a whole pixel for a slope of two. On a nearly straight edge it shows on the rows
+where the crossing lands near an integer; on a concave shape it changes the area.
+
+**How it was found, and it was not by reading the code.** E3 recorded a live pixel gate - `xlogo`
+drawn on both servers, captured the same way, diffed over the logo's own area - and it left **377 of
+46656 pixels differing (0.8%)** with full-scale deltas, checked to be the same with E3's fast path in
+and out, so pre-existing and unowned. Chasing it meant answering "which primitive", because the first
+guess (a wide diagonal *stroke*) was wrong: with `--log-requests` on, `xlogo` turns out to send **five
+`FillPoly` and no lines or arcs at all**.
+
+So the harness is `tools/PolyProbe` (new): it fills a fixed table of polygons into a window and reads
+the pixels back with `GetImage`, printing them as text, so the two servers' scan conversion can be
+diffed line by line. The polygons are chosen so that the crossings land on every kind of fraction -
+slopes of 1 (a control, where every rule agrees), 2, 44/21, 44/17 and 44/45, a quadrilateral with no
+axis-aligned edge, a sixteen-gon, and the five-pointed star from the suite - because a fractional part
+below a half is the only place the two candidate rules differ at all.
+
+**The first version of the probe proved nothing, and that is the trap worth keeping.** It drew no ink
+- twice over, for two independent reasons:
+- **`FillPoly` is the one drawing request whose bytes are not where you would guess.** Its shape and
+  coordinate-mode bytes come *after* the drawable and the GC, not in the data byte every other request
+  has, and it carries **no point count at all** - the server derives it from the request length. The
+  first version put the shape at byte 1 and a count at byte 16; the server accepted it and drew
+  nothing. The layout is in `VariableLengthDecoders.readFillPoly`, and reading it *first* is what
+  would have saved the hour.
+- **A window paints its background when it is mapped**, so anything drawn before the map is painted
+  over.
+
+Neither failure announces itself: the probe printed a clean grid of dots on both servers and the
+diff was **zero differing lines**. A probe that draws nothing reports agreement, so the tool now
+prints ink counts and the run is only read when they are non-zero - the same shape as E0's "reply
+sequence check" trap, and the reason the first xlogo comparison here was re-run rather than believed.
+
+**Measured 2026-09-25**, three ways:
+
+- **`tools/PolyProbe` against Xvfb and here, line for line: 226 differing lines before the fix and
+  zero after**, over the ten polygons. The ink counts per cell agree too - the star fills **34**
+  pixels on both, where this server used to fill 28.
+- **`xlogo` against Xvfb, over the logo's own 220x220: 377 of 46656 pixels before (0.8%), 0 of 48400
+  after.** The whole window is now pixel-identical, not "close".
+- `draw/RasterizerTest` grew `polygonCrossingsAreSampledAtTheScanlineAndNotAtItsCentre`, which pins
+  the two cases from the probe's own triangle (slope 2, so its crossings land on an integer at every
+  scanline): row 2's span ends at 45 and row 12's at 25. **Both assertions fail with the sampling put
+  back at `y + 0.5`.** The suite's existing star assertion had to change with it, and the way it had
+  been written is the reason this is worth recording: it asserted **28 and 41** - *this server's own
+  answers* - while its comment already said "Xorg answers 34 and 47 for the same star". The numbers
+  were known and the test was pinned to the wrong ones, so nothing failed when the code was wrong.
+  `mvn test` 264/264.
+
+**Live, and this is a rendering change so both clients were looked at**: EasyShell connected, drew its
+window and its interface, and its context menu opened and survived the six out-and-back passes **6/6**;
+termora connected, drew its window with the menu bar and its Chinese
+labels, and its menu survived **6/6**, with **no ERROR lines** in the server log either time. An
+A/B of EasyShell's own rendering against Xvfb was attempted and is *not* part of this record: the
+second EasyShell cannot start while the first holds `~/.easyshell/db.mv.db` (the H2 lock E0 records),
+so the two runs have to be strictly sequential - which `tools/compare.sh` does and a hand-run does not.
+
+**Traps worth keeping.** The half pixel is invisible to every test written from the server's own
+model, which is why the star assertion passed for a week while being wrong: a scan-conversion rule can
+only be checked against another implementation. And the xlogo difference was attributed once before -
+E3's note guessed "geometry rather than blend rounding" and was right, but the geometry it meant was
+the *stroke*; a request log is what says which primitive a client actually uses.
+
+---
+
 ### [x] A1. Passive grabs are recorded but never matched. **M** - done 2026-09-25
 
 **What it was.** `GrabButton`/`GrabKey` were added to `XServer.passiveGrabs()` and removed by the
@@ -1184,15 +1260,94 @@ What was added for it:
 server's table holds, and the test **fails when the request is left unhandled** (the server refuses it
 and the next request reads an error). `mvn test` 260/260. Live, as above.
 
+**The controls half, 2026-09-25: `GetControls` and `SetControls`, and the repeat delay and rate are
+reachable at last.** This is A11's leftover: the core protocol has a request for the per-key repeat
+bitmap (`ChangeKeyboardControl`) and *none* for the delay or the rate - those are XKB's, through
+`XkbSetAutoRepeatRate`, which is a `SetControls` with one bit set. So before this, a client that
+wanted a 200 ms delay could not ask for one, and every client got the server's defaults.
+
+**Measured first, with `XkbProbe` extended** (it decodes a `GetControls` reply field by field and can
+send a `SetControls` of its own), against Xvfb and here:
+
+- **The reply's layout was read off a reference reply rather than derived.** It is 92 bytes - the
+  long one of the extension - and its length field says 15, which is the core rule (`32 + 15*4`). The
+  repeat delay and interval are two byte fields at offsets **20** and **22**: measured by changing the
+  rate through `xset r rate 200 50` and watching the bytes move, which is also what fixed the probe's
+  own first version - it had `SetControls`' fields four bytes out, so the request looked well formed
+  and changed nothing, which is exactly what a request for a control the server *does not* implement
+  looks like. The enabled-controls word is at 56 and the per-key bitmap is the last thirty two bytes.
+- **`changeControls`' RepeatKeys bit is what makes the request's delay and rate take**, and
+  `affectEnabledControls`' same bit is what turns the keyboard's repeat on or off: measured, the
+  reference's `enabledControls` goes `0x13a1` → `0x13a0` → `0x13a1` (RepeatKeys is bit 0) with the
+  per-key bitmap untouched each time. `xset r off` does the same thing on the core rail, which is
+  where the two halves meet: the bitmap and the control are separate, and turning repeat off must not
+  wipe the table.
+- **The `perKeyRepeat` array in the request is ignored, because the reference ignores it** - measured
+  three ways (all zeros, all ones, and beside a rate change) and its bitmap never moved. So per-key
+  repeat stays the core protocol's business, which is where this server has had it since A11.
+
+What was built: `InputState` grew the control bit (`repeatKeysEnabled`), the delay and the rate as
+settable fields, and one place that packs and unpacks the bitmap (`autoRepeatBitmap` /
+`setAutoRepeatBitmap`), which `GetKeyboardControl` and XKB's reply now both read. **The default bitmap
+changed with it, and this is the half worth knowing**: it used to be "every key", with "a modifier does
+not repeat" applied at press time; it is now "every key the modifier map does not name", which is
+what a stock server's own `auto_repeats` list holds, and the press-time rule is gone - so a client that
+puts a modifier back into the bitmap gets it to repeat, as it would on a reference server. The
+remaining difference from Xvfb's list is this server's own keymap showing through: it names Scroll
+Lock and Mode switch as modifiers where the reference's does not, and the reference excludes KP_Enter
+and one media key where this one excludes nothing beyond the modifier map.
+
+**Measured 2026-09-25**, three ways:
+
+- `tools/XkbProbe` against Xvfb and here, field by field: every field of the reply decodes the same
+  except the three this server answers deliberately differently - the delay and rate are its own
+  defaults, `enabledControls` is `0x1` where Xvfb's is `0x13a1` (a control this server does not
+  implement is reported as *not enabled*, and its delay as zero, rather than publishing the
+  reference's own numbers for behaviour that is not here), and the bitmap differs only where the two
+  keymaps do.
+- `extension/XkbControlsTest` (3 tests): the delay and rate read back as 660/40 and change to 250/30
+  through `SetControls`, with a zero meaning "leave it alone"; the per-key bitmap is byte for byte the
+  same on the core and the XKB rail and has the modifier keycodes clear while 'a' is set; and - the
+  end-to-end one - a client turns repeat off through XKB, holds a key, and gets **one** press, then
+  turns it back on and gets a run again. **All three fail with the two requests left unhandled** (the
+  server refuses them and the next request reads the error).
+- Live, with both forwarded applications on a `--single-window` server. **EasyShell**: its window
+  mapped at 1300x700 and the interface rendered, and its context menu survived the six out-and-back
+  passes **6/6**. **termora**: window and content mapped, the interface rendered, menu 6/6. Before
+  those, `xset r rate 200 50` from the VM (the table above) and
+  `xkbcomp -w 0 /tmp/de.xkb <display>` still exit 0 with keycode 52 coming back `y Y` on both rails.
+  `MenuProbe`'s output against Xvfb and here is still **identical**, which is §7's gate for anything
+  near the input path - the change is where the repeat decision is made, and that gate is what says it
+  did not move anything else. The request log has no new `rejected` lines: the three there are the
+  ones already recorded (RandR's `GetOutputProperty` and JavaFX's two asks about window `0x0`).
+  `mvn test` 263/263.
+- Live, and **the client that needs it is `xset`, not `xkbcomp`** - which is worth recording because
+  the note this item was picked up from said the opposite. `xkbcomp`'s whole request list against
+  this server, from a `--log-requests` run, is `UseExtension`, `SetMap`, `SetCompatMap`,
+  `SetIndicatorMap`, `SetNames`, `SetGeometry`, plus the core `GetKeyboardMapping` and
+  `GetModifierMapping`: **it never asks for `GetMap` or `GetControls`**. `xset` does, and in exactly
+  the order that makes `GetControls` the prerequisite rather than a nicety - Xlib's own
+  `XkbSetAutoRepeatRate` is a Get-modify-Set:
+
+  ```
+  xset r rate 200 50   ->  GetControls (minor 6)
+                           SetControls (minor 7)
+  before: repeatDelay=660 repeatInterval=40     after: repeatDelay=200 repeatInterval=20
+  ```
+
+  So the item's original "no client here asks for it" was right about `xkbcomp` and wrong about
+  clients in general - and the delay and the rate could not be changed at all before this.
+
 **What is still not here.** *Selecting a layout by name* - `setxkbmap`, and anything else that asks
 the server to compile one - because that is a keymap compiler in the server and this is a display
 server. The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`
 requests above are accepted and dropped, so a client that sets names and reads them back gets
-nothing); `GetControls` is still refused, measured: no client here asks for it, so the repeat delay
-and rate stay unreachable the same way A11 left them; `LatchLockState` is accepted and does nothing;
-and no XKB event is ever sent, because nothing here changes a layout in a way a client would need to
-hear about. `XkbMap` publishes four types of its own whatever the client sets, so a map that relies on
-types this server has no equivalent for is applied as characters only.
+nothing); every keyboard control other than repeat - slow keys, bounce keys, sticky keys, mouse keys,
+AccessX, the two internal modifier maps - is accepted by `SetControls` and not applied, and reported
+by `GetControls` as not enabled; `LatchLockState` is accepted and does nothing; and no XKB event is
+ever sent, because nothing here changes a layout in a way a client would need to hear about.
+`XkbMap` publishes four types of its own whatever the client sets, so a map that relies on types this
+server has no equivalent for is applied as characters only.
 
 ---
 
@@ -2211,7 +2366,7 @@ pending motion events, which is what a real server does and the next thing to do
 ever becomes a real case.
 ---
 
-### [~] E3. Performance: local blending, fewer copies. **M-L** - the opaque-source path 2026-09-25 (1.85x on the two operators an opaque fill uses); the mask paths and the image round trip are not done
+### [~] E3. Performance: local blending, fewer copies. **M-L** - the opaque-source path (1.85x) and the A8-mask path (2.80x) are done 2026-09-25, both proven pixel-identical; the damage-region measurement is not
 **Measured with a benchmark of the compositor's own pixel loop**, on one scene and with everything else
 equal: two hundred full-screen (1300x800) `FillRectangles` through `Compositor.draw`, which is the one
 loop every request reduces to. Op 1 is `Src` and op 3 is `Over`, the two an opaque fill uses.
@@ -2229,13 +2384,37 @@ not an approximation of what the general path answers - it is what it answers, w
 agree pixel for pixel by construction. It is the case most of a desktop's drawing takes: an opaque
 background paint, a `PutImage` of an opaque image, a `CopyArea`.
 
-**What the item's plan has that this does not.** (a) "Blend only the damage region": the loop is
-already given the clipped rectangle by every caller, so what was left of this was measuring it on a
-real frame rather than on a synthetic one, and that is not done. (b) The *mask* paths - `Src`/`Over`
-with an A8 mask, which is what every toolkit's text and icons take - are still the general
-double-precision blend: a fixed-point version would have to match the existing rounding exactly, and
-the item's own note says a fast path that changes rounding must not be added quietly. (c) The JavaFX
-`WritableImage` round trip is untouched.
+**The masked path, done 2026-09-25.** The other half of the same idea, and the one the item warned
+about: `Src`/`Over` with an **A8 mask** - which is what every toolkit's text and icons take - was the
+general double-precision blend, and "a fast path that changes rounding must not be added quietly".
+
+It is not quiet, and that is what makes it safe to add. `Compositor` now splits into `blend` - the
+one the pixel loop calls, fast paths included - and `blendGeneral`, the double-precision form, and
+**`draw/BlendFastPathTest` compares the two over the space the fast paths claim**: all 256 mask alphas
+against both ends of every channel, the values either side of a rounding boundary (1, 2, 127, 128,
+253, 254), both operators, and twenty thousand random pixels including the component-alpha case. The
+property is that they never disagree, and the reason they cannot is worth writing down: both fast
+paths are the same rational number in integers, `(src*m + dst*(255-m)) / 255`, and a rounding tie
+there would need `2A = 255 * odd`, which has no solution. The test is what says so rather than the
+argument. Two cases are deliberately *not* taken - a translucent source, and `Over` onto a
+translucent destination, which is not a pixel this server composites text onto - and there are tests
+that they still come out of the general path.
+
+```
+masked Over, 1040000 pixels    fast 2 ms    general 5 ms    (2.80x)
+```
+
+**Measured on a real client, because this is the path its text takes.** EasyShell rendered twice
+through the same capture - once with the masked fast path in and once with it short-circuited - and
+the two are **identical: 0 of 910000 pixels differ** over its window. That is the check the identity
+test cannot make: the test compares two functions, this compares a JVM's worth of glyph compositing.
+
+**What the item's plan still has.** (a) "Blend only the damage region": the loop is already given the
+clipped rectangle by every caller, so what was left of this was measuring it on a real frame rather
+than on a synthetic one, and that is not done. (b) The JavaFX `WritableImage` round trip turns out
+not to exist: `JavaFxBackend.present` copies nothing - the `PixelBuffer` wraps the framebuffer's own
+`int[]` and only the union of the damage is handed to the FX thread - so the third bullet of the
+plan was answered by looking rather than by changing anything.
 
 **The live pixel gate, measured 2026-09-25.** `xlogo` (static, so the two captures are comparable -
 `xclock` is not: its hands move with the time, which cost one run) drawn on both servers at the same
@@ -2246,9 +2425,12 @@ geometry, captured with the same `xwd -root` on the VM, and diffed over the logo
 - against Xvfb the same run differs in **377 pixels (0.8%)**, and **the slow path differs in exactly
   the same 377** - so it is a pre-existing difference and not this change's. (Worth an item of its
   own if it is ever chased: the deltas are full-scale, so it is geometry rather than blend rounding,
-  and the suite's `RasterizerTest` compares against Xorg pixel for pixel.)
+  and the suite's `RasterizerTest` compares against Xorg pixel for pixel.) **Chased and fixed
+  2026-09-25 - see A15**: the geometry was the polygon filler's scanline rule, not the blend, and the
+  same `xlogo` comparison is now **0 of 48400 pixels** over the logo's own window.
 
-The suite is still 260/260 with the fast path in.
+The suite is 268/268 with both fast paths in, and `mvn test` is the only place the blend's identity
+property is checked - there is no client that can be made to exercise every mask alpha.
 
 ---
 
@@ -2271,6 +2453,21 @@ definition.
 ---
 
 ### [ ] E6. Keep the three documents in step. **S, ongoing**
+
+**Swept 2026-09-25.** The three documents were read against the items that are done, which is what
+this item is for, and the sweep is worth recording because it found exactly the drift it warns about:
+
+- **`§7`'s "Deliberate deviations" still listed `IncludeInferiors` as behaving like
+  `ClipByChildren`**, with "(A9 is the item)" against it - a week after A9 stopped being true. That
+  list is the one a change has to re-measure before it is proposed, so a fixed entry there is worse
+  than a missing one: it tells the next reader that something is deliberate which is simply done. The
+  bullet is removed, and A9 keeps the record.
+- **The design notes' "Deliberately not done" had two more of the same**: "SHAPE's bounding shape
+  does not clip drawing" (A2) and "Screen auto-size is not implemented" (C1). Both were corrected in
+  this session rather than left for the next one.
+- The README's "Known limitations" was checked bullet by bullet and is current: every entry there is
+  still true, and the ones this session changed (backing store, XKEYBOARD, the fallback chain) were
+  updated with their items.
 
 `README.md` (what a user sees), `docs/design-notes.md` (why it is built this way) and this file (what
 is missing) answer three different questions and each duplicates part of the others. When an item here
@@ -2307,7 +2504,6 @@ measurement *before* it is proposed, not after.
   and gets its pixels back with no `Expose` (A9, done), and the attribute is advertised as
   `WhenMapped` in the setup reply, which is what a reference server advertises. `save_under` stays
   unadvertised and unimplemented deliberately - the reference does not implement it either, measured.
-- **`IncludeInferiors` behaves as `ClipByChildren`** (A9 is the item).
 - **The pointer cannot leave the host window's viewport** and is clamped to the screen: the sprite is
   hidden outside it, and a warp beyond it is clamped rather than moving the platform pointer.
 

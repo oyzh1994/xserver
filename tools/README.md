@@ -85,7 +85,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
 - `Wire` - not a tool: the bare-protocol base the probes share, which hands back **every** message in
   the order the server sent it. `RawXClient` cannot be used for a probe, because it finds a reply by
   reading until one turns up and so eats the events a probe is counting.
-- `FocusProbe` - drives a three-window tree through a sequence of `SetInputFocus`, pointer warps and
+- `FocusProbe` - its steps include `kill A|B|C` and `unmap A|B|C`, which are how the focus *revert*
+  rules are exercised: the window holding the focus goes away, and where the focus lands depends on
+  what the last `SetInputFocus` asked for. That pair was added for A5's leftover corner and found a
+  real ordering bug in the destroy path on the first sequence tried. It drives a three-window tree
+  through a sequence of `SetInputFocus`, pointer warps and
   grabs, printing every focus and crossing event with its detail and mode. This is the `Probe` the
   design notes' focus measurements were made with, and the harness for backlog items A5 and A6.
 - `MenuProbe` - the same idea for the menu gesture: maps a popup under a held button, grabs the
@@ -119,7 +123,22 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   dumped** (`XkbProbe <host> <port> 7 dump <file>`), which is how its wire layout was read: the fixed
   part is forty bytes rather than thirty-two, and each keycode's keysyms follow its own descriptor
   inline. Run it against Xvfb for the reference - the two replies differ in the maps and nowhere
-  else.
+  else. **The controls half** (B1's `GetControls`/`SetControls`) is decoded field by field too - the
+  92 byte reply with the repeat delay and interval at 20 and 22, the enabled-controls word at 56 and
+  the per-key bitmap at 60 - and the probe can *send* a `SetControls` of its own:
+  `XkbProbe <host> <port> setrate <delay> <interval>` (the `XkbSetAutoRepeatRate` case),
+  `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
+  `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
+  beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `PolyProbe` - the harness for A15, and the tool that turned the 0.8% `xlogo` difference into a rule:
+  it fills a fixed table of polygons - a control at 45 degrees, slopes of 2, 44/21, 44/17 and 44/45,
+  a quadrilateral with no axis-aligned edge, a sixteen-gon, and the star the suite uses - into a
+  window, reads the pixels back with `GetImage` and prints them as text, so the two servers' scan
+  conversion can be diffed line by line. `PolyProbe <host> <port> xlogo` instead draws the five
+  polygons `xlogo` itself sends (read off this server's request log) in a window at the same place
+  with the same border. **A probe that draws nothing reports agreement**, so both failures it had on
+  the way - the `FillPoly` wire layout, which is unlike every other drawing request, and drawing
+  before the map - are recorded in the backlog; read the ink counts before believing a zero diff.
 - `ScreenSaverProbe` - the harness for B7: the core screen saver's settings, MIT-SCREEN-SAVER's
   version and `QueryInfo`, and DPMS's version/capability/timeouts/power level. Run it with `core` to
   round-trip the core settings too, and read them with the real `xset` - its own hand-built core Set

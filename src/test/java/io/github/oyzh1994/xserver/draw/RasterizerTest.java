@@ -309,11 +309,45 @@ class RasterizerTest {
         new Rasterizer(evenOdd, gc()).fillPolygon(star, false);
         XPixmap winding = pixmap(16, 12, 0xFF000000);
         new Rasterizer(winding, gc()).fillPolygon(star, true);
-        // Xorg answers 34 and 47 for the same star: a concave polygon whose spans start or end
-        // on a fractional crossing can differ by a pixel at the boundary.
-        assertEquals(28, lit(evenOdd));
-        assertEquals(41, lit(winding));
+        // **Xorg's own numbers, and this is the assertion that caught the half-pixel scanline**: the
+        // filler here used to take each scanline's crossings at the pixel centre (y + 0.5) where the
+        // reference takes them at y, which on a concave shape whose edges cross at every kind of
+        // fraction changes the *area* by six pixels. The old test proved it: it asserted 28 and 41 -
+        // this server's own answers - while its comment already recorded that the reference answers
+        // 34 and 47. Both numbers are now measured against Xvfb over the whole star (tools/PolyProbe,
+        // whose eighth cell is this shape and whose output is identical on the two servers).
+        assertEquals(34, lit(evenOdd));
+        assertEquals(47, lit(winding));
         assertTrue(lit(winding) > lit(evenOdd));
+    }
+
+    /**
+     * The scanline's crossings are taken at {@code y}, not at the pixel's centre {@code y + 0.5}.
+     *
+     * <p>That half pixel is worth up to half a pixel of slope in x, and the two cases below are the
+     * two ways it shows. Both numbers are Xvfb's, read off {@code tools/PolyProbe} - whose second
+     * cell is this triangle - and the shape is the one the 0.8% {@code xlogo} difference came down
+     * to: a triangle whose hypotenuse has slope 2, so its crossings land on an integer at every
+     * scanline (the first case) and on a fraction just above one (the second).
+     */
+    @Test
+    void polygonCrossingsAreSampledAtTheScanlineAndNotAtItsCentre() {
+        // (2,2) (46,2) (2,23): the hypotenuse runs from (46,2) to (2,23), 44 across and 21 down.
+        int[] triangle = {2, 2, 46, 2, 2, 23};
+        XPixmap target = pixmap(48, 24, 0xFF000000);
+        new Rasterizer(target, gc()).fillPolygon(triangle, false);
+
+        // Row 2: the crossing is x = 46 exactly, and the reference fills through x 45. A crossing
+        // taken half a scanline lower is at 43.9, whose span stops at 43 - two pixels short.
+        assertEquals(0xFFFFFFFF, target.pixel(45, 2), "the reference's last pixel on row 2");
+        assertEquals(0xFF000000, target.pixel(46, 2), "and nothing past it");
+        // Row 12: the crossing is x = 24 exactly, and the reference fills through x 25.
+        assertEquals(0xFFFFFFFF, target.pixel(25, 12), "the reference's last pixel on row 12");
+        assertEquals(0xFF000000, target.pixel(26, 12), "and nothing past it");
+        // The left edge is vertical, so both conventions agree there - which is what makes the two
+        // assertions above about the hypotenuse rather than about a shifted shape.
+        assertEquals(0xFFFFFFFF, target.pixel(2, 12));
+        assertEquals(0xFF000000, target.pixel(1, 12));
     }
 
     @Test

@@ -2,15 +2,18 @@ package io.github.oyzh1994.xserver.extension;
 
 import com.github.moaxcp.x11.protocol.XProtocolPlugin;
 import com.github.moaxcp.x11.protocol.XRequest;
+import com.github.moaxcp.x11.protocol.xkb.GetControls;
 import com.github.moaxcp.x11.protocol.xkb.GetMap;
 import com.github.moaxcp.x11.protocol.xkb.GetState;
 import com.github.moaxcp.x11.protocol.xkb.LatchLockState;
 import com.github.moaxcp.x11.protocol.xkb.PerClientFlags;
+import com.github.moaxcp.x11.protocol.xkb.SetControls;
 import com.github.moaxcp.x11.protocol.xkb.UseExtension;
 import com.github.moaxcp.x11.protocol.xkb.XkbPlugin;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.input.Keymap;
 import io.github.oyzh1994.xserver.input.XkbMap;
 import org.slf4j.Logger;
@@ -41,6 +44,11 @@ import java.util.List;
  *   <li>{@code SelectEvents}: accepted and not answered, because this server sends no XKB events.
  *   <li>{@code SetMap}: the keysyms of a map a client compiled, applied to the one table both rails
  *       read - which is what lets {@code xkbcomp} put a chosen layout on this keyboard.
+ *   <li>{@code GetControls}: the keyboard's controls - the repeat delay, the rate, whether repeat is
+ *       on, and the per-key bitmap - which is the only place a client can read them.
+ *   <li>{@code SetControls}: how a client *changes* them ({@code XkbSetAutoRepeatRate} is this
+ *       request), which is what A11 left open: the core protocol has no request for the delay or the
+ *       rate at all.
  *   <li>{@code GetKbdByName}: answered "not loaded", because loading by name asks the server to
  *       compile a keymap and there is no compiler here.
  * </ul>
@@ -48,11 +56,12 @@ import java.util.List;
  * <p><b>What is not here</b>, deliberately and visibly: the map's actions, behaviours, explicit
  * components and virtual-modifier map (a {@code GetMap} reply simply does not claim them, and a
  * {@code SetMap} request carrying them has them dropped); the compatibility map, {@code GetNames},
- * the indicator names and {@code GetControls}; and the XKB events. A layout can be *set* - by a client
- * that compiles one itself, which is what {@code xkbcomp} does - but not *chosen by name*, which is
- * what {@code setxkbmap} asks for and what needs a keymap compiler in the server. Setting the repeat
- * delay and rate stays where it was - the core {@code ChangeKeyboardControl} path and the server's own
- * defaults (A11).
+ * the indicator names and the XKB events; and every keyboard control other than repeat - slow keys,
+ * bounce keys, sticky keys, mouse keys, AccessX, the internal modifier maps - each of which
+ * {@code SetControls} accepts and does not apply, and {@code GetControls} reports as not enabled. A
+ * layout can be *set* - by a client that compiles one itself, which is what {@code xkbcomp} does - but
+ * not *chosen by name*, which is what {@code setxkbmap} asks for and what needs a keymap compiler in
+ * the server.
  *
  * <p>The request bodies are decoded with the generated classes, which are correct for every request
  * here (they are fixed size and read positionally); the <em>replies</em> are written as bytes,
@@ -68,6 +77,13 @@ public final class XkbExtension implements Extension {
 
     /** {@code XkbUseCoreKbd}; the only keyboard there is. */
     private static final int CORE_KEYBOARD = 0x0100;
+
+    /**
+     * {@code XkbRepeatKeysMask}: the one control bit this server honours, and it is the one a
+     * keyboard has by default - a reference server's {@code enabledControls} carries it and twelve
+     * more.
+     */
+    private static final int REPEAT_KEYS = 0x1;
 
     private final XkbPlugin plugin = new XkbPlugin();
 
@@ -108,6 +124,8 @@ public final class XkbExtension implements Extension {
             case 1, 11, 14, 18, 20 -> new Ignored(minorOpcode);
             case 4 -> GetState.readGetState(in);
             case 5 -> LatchLockState.readLatchLockState(in);
+            case 6 -> GetControls.readGetControls(in);
+            case 7 -> SetControls.readSetControls(in);
             case 8 -> GetMap.readGetMap(in);
             case 9 -> SetMapRequest.read(in);
             case 21 -> PerClientFlags.readPerClientFlags(in);
@@ -124,6 +142,8 @@ public final class XkbExtension implements Extension {
         switch (request) {
             case UseExtension r -> useExtension(client);
             case GetState r -> getState(server, client);
+            case GetControls r -> getControls(server, client);
+            case SetControls r -> setControls(server, client, r);
             case GetMap r -> getMap(client, r);
             case Ignored r -> ignored(client, r);
             case SetMapRequest r -> setMap(server, client, r);
@@ -172,6 +192,89 @@ public final class XkbExtension implements Extension {
         bytes[17] = 0;
         putCard16(bytes, 24, server.inputFor(client).pointerState(), client.isBigEndian());
         send(client, bytes);
+    }
+
+    /**
+     * {@code GetControls}: the keyboard's controls, of which this server has one - repeat, its delay,
+     * its rate and the per-key bitmap.
+     *
+     * <p><b>The layout was read off a reference reply, not derived.</b> The reply is 92 bytes, the
+     * long one of the extension: the two settings are at 20 and 22 - which is where changing the rate
+     * through {@code xset r rate 200 50} moves the bytes, a two byte field each - the enabled-controls
+     * word is at 56, and the per-key bitmap is the last thirty two bytes, one bit per keycode. A field
+     * in the wrong place is not an error here, it is a plausible wrong number, so the probe
+     * ({@code XkbProbe}, which prints the same fields for both servers) is what checks it.
+     *
+     * <p><b>The controls this server does not implement are reported as not implemented</b> rather
+     * than with the reference's own numbers: {@code enabledControls} carries
+     * {@code XkbRepeatKeysMask} and nothing else - no slow keys, no mouse keys, no AccessX - and the
+     * delays that belong to them are zero. Publishing a slow-keys delay of 300 ms while nothing on
+     * that path is implemented would describe behaviour this server does not have (the same rule
+     * DPMS's {@code Capable} and Xinerama's {@code IsActive} follow).
+     */
+    private void getControls(XServer server, ClientConnection client) {
+        InputState input = server.inputFor(client);
+        byte[] bytes = new byte[92];
+        bytes[0] = 1;
+        bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        putCard32(bytes, 4, 15, client.isBigEndian());      // length: (92 - 32) / 4
+        bytes[8] = 1;                                       // mouseKeysDfltBtn: the stock default
+        bytes[9] = 1;                                       // numGroups: there is one layout
+        bytes[10] = 1;                                      // groupsWrap: XkbWrapIntoRange
+        // 11..19: the internal and ignore-lock modifier pairs, which are zero on a stock server too.
+        putCard16(bytes, 20, input.repeatDelayMillis(), client.isBigEndian());
+        putCard16(bytes, 22, input.repeatIntervalMillis(), client.isBigEndian());
+        putCard32(bytes, 56, input.repeatKeysEnabled() ? REPEAT_KEYS : 0, client.isBigEndian());
+        System.arraycopy(input.autoRepeatBitmap(), 0, bytes, 60, 32);
+        send(client, bytes);
+    }
+
+    /**
+     * {@code SetControls}: how a client changes the repeat - {@code XkbSetAutoRepeatRate} and
+     * {@code XkbSetAutoRepeatControls} are both this request, and it is the only way to reach the
+     * delay and the rate at all, which is what A11 left open.
+     *
+     * <p>Three things are applied, and each was measured against Xvfb first:
+     *
+     * <ul>
+     *   <li>{@code changeControls}'s RepeatKeys bit means the request's repeat delay and interval are
+     *       to be taken. Measured: a request with that bit and 250/30 changed what GetControls
+     *       answered on the reference.
+     *   <li>{@code affectEnabledControls}'s RepeatKeys bit means the keyboard's repeat is being
+     *       turned on or off, according to the same bit in {@code enabledControls}. Measured: the
+     *       reference's {@code enabledControls} went from {@code 0x13a1} to {@code 0x13a0} and back,
+     *       with the per-key bitmap untouched either way.
+     *   <li><b>The per-key bitmap in the request is ignored, because the reference ignores it.</b>
+     *       Measured three ways - all zeros, all ones, and alongside a repeat-rate change - and
+     *       Xvfb's bitmap never moved, so per-key repeat stays the core protocol's business
+     *       ({@code ChangeKeyboardControl}), where this server has had it since A11. What is logged
+     *       rather than silently dropped, because a client that sends one means it.
+     * </ul>
+     *
+     * <p>Everything else in the request - slow keys, bounce keys, sticky keys, mouse keys, AccessX,
+     * the internal modifier maps, the group wrap - is read and not applied, since none of it is
+     * implemented here. There is no reply: a client reads the result back through GetControls, which
+     * is also how a change with no effect (a control this server does not have) is told apart from
+     * one that took.
+     */
+    private void setControls(XServer server, ClientConnection client, SetControls request) {
+        InputState input = server.inputFor(client);
+        boolean enabledChanged = (request.getAffectEnabledControls() & REPEAT_KEYS) != 0;
+        if (enabledChanged) {
+            input.setRepeatKeysEnabled((request.getEnabledControls() & REPEAT_KEYS) != 0);
+        }
+        boolean rateChanged = (request.getChangeControls() & REPEAT_KEYS) != 0;
+        if (rateChanged) {
+            input.setRepeatRate(request.getRepeatDelay() & 0xFFFF,
+                    request.getRepeatInterval() & 0xFFFF);
+        }
+        log.debug("{} set XKB controls: enabledControls 0x{} (repeat {}), changeControls 0x{},"
+                        + " repeat delay {} interval {}; the per-key bitmap and every other control"
+                        + " are ignored, as the reference ignores them",
+                client, Integer.toHexString(request.getEnabledControls()),
+                input.repeatKeysEnabled(), Integer.toHexString(request.getChangeControls()),
+                input.repeatDelayMillis(), input.repeatIntervalMillis());
     }
 
     /**
@@ -319,6 +422,20 @@ public final class XkbExtension implements Extension {
             client.output().writeRaw(bytes);
         } catch (IOException e) {
             client.close();
+        }
+    }
+
+    private static void putCard32(byte[] bytes, int offset, int value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 24);
+            bytes[offset + 1] = (byte) (value >> 16);
+            bytes[offset + 2] = (byte) (value >> 8);
+            bytes[offset + 3] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+            bytes[offset + 2] = (byte) (value >> 16);
+            bytes[offset + 3] = (byte) (value >> 24);
         }
     }
 

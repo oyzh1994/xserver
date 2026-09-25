@@ -484,25 +484,66 @@ public final class Compositor {
         this.blocked = blocked;
     }
 
+    /** {@code Src} and {@code Over}, the two operators every fast path below is about. */
+    private static final int SRC = 1;
+    private static final int OVER = 3;
+
     /**
      * Applies one operator to one pixel.
+     *
+     * <p>The two {@code return} statements before the general path are the same answer computed
+     * without the arithmetic, and each is defined by a measurement rather than by an argument: they
+     * cover the cases a desktop actually draws, and {@code draw/BlendFastPathTest} checks every one
+     * of them against {@link #blendGeneral} over the whole range of mask alphas and both ends of
+     * every channel, so "the fast path does not change the answer" is a property the suite holds
+     * rather than a claim in a comment. See backlog E3.
      *
      * @param maskArgb the mask's colour, whose channels are separate alpha values when
      *                 {@code componentAlpha} is set
      * @param maskAlpha the mask's alpha, already extracted because every path needs it
      */
-    private static int blend(int op, int srcArgb, int dstArgb, int maskArgb, int maskAlpha,
-                             boolean componentAlpha) {
+    static int blend(int op, int srcArgb, int dstArgb, int maskArgb, int maskAlpha,
+                     boolean componentAlpha) {
         // The two cases that are a copy, and they are most of what a desktop draws: an opaque source
         // with a full mask, under Src (the answer is the source) or under Over (an opaque source
         // hides the destination completely, which is the same thing). The general path below returns
         // exactly this for both - fa = 1 and fb = 0 - and its arithmetic on a value that came from
         // eight bit channels is exact, so this is not an approximation of the answer, it is the
-        // answer without the arithmetic. See backlog E3.
+        // answer without the arithmetic.
         if (maskAlpha == 255 && !componentAlpha && (srcArgb >>> 24) == 255
-                && (op == 1 || op == 3)) {
+                && (op == SRC || op == OVER)) {
             return srcArgb;
         }
+        // **A mask with a partly transparent pixel, which is what a glyph or an icon is**: an opaque
+        // source through an alpha mask. Under Src the answer is the source's colour carrying the
+        // mask's alpha, whatever is underneath; under Over with an *opaque* destination - which the
+        // framebuffer always is - the answer is the source and the destination weighted by the mask,
+        // with the result still opaque.
+        //
+        // Both are integer arithmetic here, and they are not approximations of the general path: its
+        // answer is the same rational number, and the only way the two could disagree is a rounding
+        // tie, which cannot happen - the unrounded value is `(src*m + dst*(255-m)) / 255` with
+        // integers throughout, and a tie there would need `2A = 255 * odd`, which has no solution.
+        // The test is what says so.
+        if (maskAlpha != 0 && !componentAlpha && (srcArgb >>> 24) == 255
+                && (op == SRC || (op == OVER && (dstArgb >>> 24) == 255))) {
+            if (op == SRC) {
+                return (maskAlpha << 24) | (srcArgb & 0xFFFFFF);
+            }
+            int inverse = 255 - maskAlpha;
+            int red = (((srcArgb >> 16) & 0xFF) * maskAlpha + ((dstArgb >> 16) & 0xFF) * inverse
+                    + 127) / 255;
+            int green = (((srcArgb >> 8) & 0xFF) * maskAlpha + ((dstArgb >> 8) & 0xFF) * inverse
+                    + 127) / 255;
+            int blue = ((srcArgb & 0xFF) * maskAlpha + (dstArgb & 0xFF) * inverse + 127) / 255;
+            return 0xFF000000 | (red << 16) | (green << 8) | blue;
+        }
+        return blendGeneral(op, srcArgb, dstArgb, maskArgb, maskAlpha, componentAlpha);
+    }
+
+    /** The blend, in the general form the fast paths above are checked against. */
+    static int blendGeneral(int op, int srcArgb, int dstArgb, int maskArgb, int maskAlpha,
+                            boolean componentAlpha) {
         double sr = ((srcArgb >> 16) & 0xFF) / 255.0;
         double sg = ((srcArgb >> 8) & 0xFF) / 255.0;
         double sb = (srcArgb & 0xFF) / 255.0;
