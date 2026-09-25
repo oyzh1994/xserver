@@ -62,7 +62,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
 | ~~A15~~ | ~~a filled polygon's scanline crossings are taken half a pixel low~~ **done 2026-09-25**: the `xlogo` difference is now 0 pixels | correctness | S |
 | ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
-| A13 | `AllowEvents` freeze/thaw: the premise is **real** (the probe had the grab modes backwards); semantics measured, not yet modelled | correctness | M |
+| ~~A13~~ | ~~`AllowEvents` freeze/thaw: a `Sync` grab stops the device, `AllowEvents` starts it again~~ **done 2026-09-26** (X's grab states, the held queue, the replay, and the pointer's two positions) | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | ~~C2~~ | ~~raise/activate the host window when a client window appears~~ **done 2026-09-25** (the live A/B is inconclusive: the bed activates it either way) | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
@@ -1118,7 +1118,7 @@ takes a *point*, so a pixel is sampled at its centre (`x + 0.5`); sampling its c
 neighbour.
 ---
 
-### [ ] A13. `AllowEvents` freeze/thaw semantics. **M** - the premise is real: the reference freezes, and this server does not
+### [x] A13. `AllowEvents` freeze/thaw semantics. **M** - done 2026-09-26: X's grab states, the held queue and the replay
 **Corrected 2026-09-25: this item was closed on a measurement of the wrong experiment.** `tools/AllowEventsProbe`
 had the grab modes **backwards**. X's `GrabModeSync` is **0** and `GrabModeAsync` is **1** (`X.h`:
 `#define GrabModeSync 0` / `#define GrabModeAsync 1` - the opposite way round from `AllowEvents`, where
@@ -1153,17 +1153,94 @@ So a `Sync` grab freezes the device, the events that follow are not delivered un
 reprocesses them as if the grab had not fired - which is only observable with a second client, the
 arrangement the keyboard case uses.
 
-**Why it is open rather than implemented.** The measurements do not fit one rule: with an active grab
-`SyncPointer` delivered **one** event (the press) and the rest waited for `AsyncPointer`, while with a
-passive grab the same call delivered **all** of them. The protocol spec's own wording - `SyncThisDevice`
-"continues processing normally until the next key/button event is reported, at which point the device
-again appears to freeze" - does not distinguish the two either, and Xorg's implementation is known to
-be delicate (`othersFrozen` was patched in 2009 because it was being cleared wrongly; a frozen device's
-queue needed its own `FreePendingFrozenDeviceEvents`; `FreezeThisEventIfNeededForSyncGrab` has been the
-5th most common Xorg crash on Ubuntu). Guessing is what §7 warns about here - **a device that stops
-delivering events is felt by every client at once** - and both live clients grab. The next step is to
-model the queue from the source (`dix/events.c`: `AllowSome`, `FreezeThisEventIfNeededForSyncGrab`,
-`FreezeDevice`) and only then change `InputState`.
+**Done 2026-09-26: modelled from the source, then measured.**
+
+**The puzzle the item was opened on has an answer, and it is X's own**: the states are not a boolean.
+`FREEZE_NEXT_EVENT` means "start again, and stop on the *next key or button*" - and a **motion is not
+one of those**. So an active grab taken with `Sync` (which starts at `FROZEN_NO_EVENT`) releases
+everything up to and including the first button and nothing after it, while a passive grab (which
+freezes *on* its triggering press) has already used that event up and releases the rest. The rules came
+off `include/inputstr.h` (`GRAB_STATE_*`, with `FROZEN` a *sentinel* that `FREEZE_NEXT_EVENT` sits
+deliberately below) and `dix/events.c` (`AllowSome`, `CheckGrabForSyncs`,
+`FreezeThisEventIfNeededForSyncGrab`, `ComputeFreezes`, `PlayReleasedEvents`, `EnqueueEvent`,
+`ActivateGrabNoDelivery`), and every one of them was then confirmed against the reference server.
+
+What `InputState` grew, following X: a per-device sync state (X's `GrabInfoRec.sync`), a queue of the
+events a frozen device holds back, a replay slot, and the two transitions that fill them -
+`grabActivated` (a grab's two modes decide which device freezes, and whether it does so on the *other*
+device's behalf) and `freezeThisEvent` (the event that arrives while a device was told to freeze on the
+next one is what it freezes on, and what a `Replay*` later reprocesses).
+
+**Four things the source settled that guessing would have got wrong, all of them measured:**
+
+- **The pointer has two positions while a device is frozen**, and a client can read both: `QueryPointer`
+  answers where the pointer was when it stopped, and the events released afterwards carry where the
+  device went (`EnqueueEvent` advances the sprite's *physical* position and not the one clients see).
+  Measured with a purpose-built probe: frozen at (200,200) with motions to 220,220 and 400,400 waiting,
+  `QueryPointer` says (200,200) and **every** released event carries 400,400 - the second motion's
+  position, because the delivered events are stamped with where the device is now. That is the whole
+  point of the mode for both of its real clients (a game re-centring the cursor, a remote-desktop
+  client redelivering a click), so it is modelled rather than approximated.
+- **A replay is not a second grab**: the grab is ended and the event reprocessed as if it had not
+  fired, and the search for a passive grab starts **below** the window the replayed grab was held on,
+  so the same arm cannot take it again. Measured: the replayed press reaches the window underneath with
+  no second `NotifyGrab`, and the replayed key reaches the window that has the focus.
+- **A key's repeat follows the device, not the delivery**: X cancels the repeat as a release is
+  *enqueued*. Measured the hard way - with the bookkeeping left where it was (at delivery), a device
+  frozen with a released key repeated into the queue at 25 events a second and reached **372 events**.
+- **A passive grab freezes on the event that fired it**, which is why the press that activates one is
+  delivered to the grabbing client and can still be replayed afterwards.
+
+**The queue is bounded** (1024 events, the oldest dropped with a line in the log). The reference has no
+bound here; this server refuses to grow without limit, for the same reason its output queue to a client
+does (E5).
+
+**Found on the way, and it was contaminating the measurements**: a disconnecting client's *passive*
+grabs were never dropped - `releaseGrabs` cleared only active ones - so an arm outlived its client and
+kept firing on the root for whoever pressed next. A reference server drops them with the client, and
+until this was fixed two runs of the same probe disagreed with each other. Fixed in the same commit.
+
+**Measured 2026-09-26**, three ways:
+
+- `tools/AllowEventsProbe` against Xvfb and here: **all five arrangements - `active`, `passive`,
+  `key replay`, and the two `asyncgrab` controls - are identical line for line.** (Window ids are
+  mapped to the order they first appear, which `tools/probe-diff.py` now does.) Before the change every
+  one of the five differed.
+- `input/AllowEventsTest` (5 tests, two clients, XTEST, the display loop running): the freeze holds the
+  press, the motions and the release, and `SyncPointer` releases exactly the one event it then stops on
+  again; a frozen pointer does not move for `QueryPointer` while what it releases carries the new
+  position; a replayed button press reaches the window underneath and the grab does not fire again on
+  it; a replayed key reaches the window that has the focus; and the guard that an *async* grab holds
+  nothing back. **Four of the five fail with `AllowEvents` put back as a no-op and the freeze disabled**
+  - the fifth is the guard, and passes either way, which is the point of it.
+- `mvn test` 303/303; `MenuProbe` against Xvfb and here still **identical** (§7's gate); and live, with
+  both real clients on a `--single-window` server: **EasyShell's context menu survived the six
+  out-and-back passes 6/6** and closed on a click outside it, **termora's 6/6** with the hovered item
+  tracking the pointer. The request log has the same three rejected requests as before (RandR's
+  `GetOutputProperty` and JavaFX's two asks about window `0x0`) and **not one held event** - neither
+  client grabs with `Sync`, which is what makes this change inert for both of them. The only way to
+  tell the difference for those two is the reference diff.
+
+**Traps worth keeping, and the first one cost an hour.**
+
+- **The button state outlives the client, exactly as the pointer does** (already a rule in
+  `tools/README.md`). A probe run that leaves a button *down* makes the next run's press a duplicate
+  the server drops, and the measurement then reads as "the press was never queued" - a whole wrong
+  model of the queue was built on it before it was spotted, and the throwaway probe that chased the
+  coordinates had to be taught to release the buttons first.
+- **An event's coordinates are a decision, not a detail.** "The event's own position" and "where the
+  device is now" differ for every held motion, and there is nothing on this server's side of the
+  socket that can tell them apart - only the reference server can.
+- `GrabModeSync` is **0** and `GrabModeAsync` is **1**, the opposite way round from `AllowEvents`,
+  where `SyncPointer` is 1. The probe had them backwards once already (see the correction above), and
+  the same mistake reads as a plausible measurement rather than as a bug.
+
+**Still not modelled**: the protocol's time check on `AllowEvents` (a request older than the grab is
+ignored) - this server keeps no per-grab timestamp to compare against, and the only clients that send
+a time send `CurrentTime`; and Xorg's motion compression in the held queue, which merges consecutive
+motions. Measured with the reference: two held motions are delivered as **two** events, both carrying
+the last position, so nothing here needs the merge - it would change the count of events a client
+sees, and the measurement says not to.
 
 **Unchanged**: `AllowEvents` still validates its mode and does nothing else. Neither EasyShell nor
 termora depends on a freeze - A1's `GrabProbe` measured both grabbing with `Async` - so this is a

@@ -50,7 +50,18 @@ def normalise(line):
 
 def load(path):
     with open(path, encoding="utf-8") as handle:
-        return [normalise(line) for line in handle]
+        lines = [normalise(line) for line in handle]
+    # Window ids are handed out of the id space the *server* gives a client, so the same probe run
+    # against two servers names the same windows with different numbers - 0xc00001 here, 0x200001
+    # there. They are mapped to the order they first appear in, which is what the probe controls:
+    # "the window the grab is reported against" is the decision, its number is not.
+    roles, numbered = {}, []
+    for line in lines:
+        def role(match):
+            name = match.group(0)
+            return "win=" + roles.setdefault(name, "W%d" % len(roles))
+        numbered.append(re.sub(r"win=0x[0-9a-f]+", role, line))
+    return numbered
 
 
 def main(argv):

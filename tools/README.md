@@ -125,6 +125,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   them is the whole feature: `none` and `save` send one expose on both servers (the reference
   advertises `save-unders NO` and does not implement it), and `backing` sends one here and **zero** on
   a reference server, which does keep the pixels. Run it against both and diff the table.
+- `probe-diff.py` - diff two probe runs, ignoring what each server assigns for itself. `python3
+  tools/probe-diff.py xvfb-run.txt ours-run.txt` prints `IDENTICAL` or a unified diff, and the point
+  is that a difference here is a behaviour difference and not a formatting one. It normalises the
+  extension opcodes and event bases, atom ids, cursor serials and event times - and, since A13,
+  **window ids**, which it maps to the order they first appear (`win=W0`, `win=W1`): a server hands a
+  client its id space, so the same probe run names the same windows `0xc00001` on Xvfb and `0x200001`
+  here, and which window an event is *reported against* is the decision while its number is not.
 - `XkbProbe` - the harness for B1, and the tool that found A4's cause: the two `XkbUseExtension` calls
   and the `XkbGetMap(which=0x7)` that `xdotool` makes, plus `GetState`, `GetControls`,
   `PerClientFlags` and `GetDeviceInfo`. The GetMap reply is printed field by field **and can be
@@ -153,9 +160,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   is refused by the reference (`BadLength`) while `xset s` works on both.
 - `AllowEventsProbe` - the harness for A13: grabs with `pointer_mode = Sync` (or a passive grab that a
   press activates, or a `GrabKey` with `keyboard_mode = Sync`), then watches what arrives and what each
-  `AllowEvents` mode releases. `active`/`passive`/`key` for the arrangement, and `injector`/`warp` to
-  inject the input from a second connection or by `WarpPointer` instead of XTEST - the reference holds
-  nothing back in any of them, which is the measurement the item is closed on.
+  `AllowEvents` mode releases. `active`/`passive`/`key` for the arrangement, `sync`/`async`/`replay`/
+  `all` for what it sends, and `injector`/`warp` to inject the input from a second connection or by
+  `WarpPointer` instead of XTEST. Its five arrangements - the three plus the two `asyncgrab` controls -
+  are **identical against Xvfb and against this server now**, and none of them was before A13 was
+  done.
 - `GrabProbe` - arms a passive `GrabButton`/`GrabKey` (on the root, or a given window) and then uses
   the pointer or the keyboard, printing every event **both** connections receive. Two connections are
   the point: with the window under the pointer belonging to the *other* client, "the grab took the
@@ -237,7 +246,13 @@ These cost hours each, the first time:
    crossing at the map on one run and not on the next, and a diff between two servers then shows the
    *previous* run's difference. `FocusProbe` and `MenuProbe` warp to a point no window of theirs
    reaches before they map, for exactly this reason - and it was found the hard way.
-6. **Xvfb needs three flags to be usable as the reference**: `-listen tcp` (a stock build opens no
+6. **The *button* state outlives every client too, and it is worse than the pointer.** A probe run
+   that ends with a button down makes the next run's press a duplicate the server drops - and the
+   measurement then reads as "the press was never delivered", not as "the state was dirty". It cost
+   an hour while A13 was being measured, and produced a whole wrong model of the held queue before it
+   was spotted. A probe that presses anything has to release it before it exits, and one that is
+   *chasing* a press/motion question has to release the buttons before its first step.
+7. **Xvfb needs three flags to be usable as the reference**: `-listen tcp` (a stock build opens no
    TCP at all, so nothing here can reach `:98`), `-ac` (it refuses the kit's hand-written clients,
    which offer no credentials - the failure reads as "the connection setup was refused", i.e. as if
    the display were not running), and *not* `-nolisten unix` (the VM's own clients reach it through
@@ -253,7 +268,7 @@ happens), and sending `UngrabKey`'s opcode with `UngrabKeyboard`'s shorter body 
 
 **Display numbers, and the trap that costs a confusing test failure.** The suite binds 10 and
 66-99: `MotionHistoryTest` takes 90, `GrabCrossingTest` takes **95**, `FocusEventTest` 98,
-`KeyboardGrabFocusTest` 83, and others in between. Two consequences:
+`KeyboardGrabFocusTest` 83, `PassiveGrabTest` 70, `AllowEventsTest` 71, and others in between. Two consequences:
 
 * a server started by hand for probes should take a display the suite does not - `:91` is what the
   kit's own runs use;

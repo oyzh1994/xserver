@@ -20,6 +20,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  */
 public class ImplicitGrabTest {
 
+    /** {@code GrabModeSync} and {@code GrabModeAsync}, as {@code X.h} numbers them. */
+    private static final int GRAB_SYNC = 0;
+    private static final int GRAB_ASYNC = 1;
+
     private static XWindow window(Screen screen, XWindow parent, int id, int x, int y, int w,
                                   int h) {
         return new XWindow(id, null, screen, parent, 24, XWindow.INPUT_OUTPUT,
@@ -83,7 +87,8 @@ public class ImplicitGrabTest {
         XServer server = serverWithAWindow();
         InputState input = server.input();
         XWindow window = (XWindow) server.resources().get(0x400001);
-        input.setPointerGrab(new InputState.Grab(null, window, false, EventMasks.ALL, false));
+        input.setPointerGrab(new InputState.Grab(null, window, false, EventMasks.ALL, false,
+                GRAB_ASYNC, GRAB_ASYNC));
 
         input.forgetGrabWindow(window);
 

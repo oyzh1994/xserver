@@ -667,6 +667,52 @@ Two deliberate deviations, both measured rather than reasoned:
   the pointer is reported at once, because the alternative there is a pointer pinned to a window
   that no longer exists and a next click that is reported against nothing.
 
+## A synchronous grab stops the device
+
+A grab taken with `GrabModeSync` is a client asking the server to **stop the device** after the event
+that triggered it, so it can decide what happens to what comes next - a game that re-centres the
+cursor after every motion, a remote-desktop client that redelivers a click from somewhere else. The
+events a stopped device produces wait in a queue, and `AllowEvents` starts it again or reprocesses the
+event it stopped on. This server delivered everything immediately and validated `AllowEvents`' mode and
+did nothing else, which made every `Sync` and `Replay` mode a no-op (backlog A13).
+
+**The rules are X's, read off `include/inputstr.h` and `dix/events.c` rather than guessed**, because
+the protocol's own prose does not describe them and the measurements do not fit a simple reading:
+
+- **The states are not a boolean.** `FREEZE_NEXT_EVENT` sits *below* X's `FROZEN` sentinel on purpose:
+  a device told to freeze on the next event is still delivering until one arrives. So `Sync` means
+  "start again, and stop on the next **key or button**" - and a motion is not one of those, which is
+  why a `SyncPointer` release lets through everything up to and including the first button and nothing
+  after it.
+- **A grab names a mode for each device**, and the mode named for the *other* one freezes that device
+  on the grab's behalf (`CheckGrabForSyncs`). Both live clients here grab with `Async`/`Async`, so the
+  freeze is inert for them - the only way to tell the difference is the reference diff, and
+  `tools/AllowEventsProbe`'s five arrangements are identical to Xvfb.
+- **A replay is not a second grab.** The grab is ended and the event reprocessed *as if it had not
+  fired*, and the search for a passive grab starts below the window the replayed grab was held on - so
+  the same arm cannot take it again. Measured: a replayed press reaches the window underneath with no
+  second `NotifyGrab`, and a replayed key reaches the window that has the focus.
+
+**The pointer has two positions while a device is frozen, and a client can read both.** `QueryPointer`
+answers where the pointer was when it stopped; the events released afterwards carry where the device
+went. X does the same (`EnqueueEvent` advances the sprite's *physical* position, and the events are
+stamped from it). Measured with a purpose-built probe: frozen at (200,200) with motions to 220,220 and
+400,400 waiting, `QueryPointer` says (200,200) and every released event carries 400,400 - the *last*
+position, so two held motions arrive as two events both reporting it. That is not an accident of the
+queue: it is what a client that froze the pointer to re-centre it is reading, and it is why the two
+positions are separate fields here rather than one.
+
+**Two things the queue owes that are easy to leave out.** A key's repeat follows the *device*, not the
+delivery: X cancels a repeat as a release is enqueued, and with the bookkeeping left at delivery time a
+device frozen with a released key repeated into the queue at 25 events a second (measured: 372 events).
+And the queue is bounded (1024, oldest dropped with a log line) - the reference has no bound, and this
+server refuses to grow without limit for the same reason its output queue to a client does.
+
+**One bug in this area was found by the measurement being irreproducible**: a disconnecting client's
+*passive* grabs were never dropped, so an arm outlived its client and kept firing on the root for
+whoever pressed next. A reference server drops them with the client. Two runs of the same probe
+disagreed with each other until that was fixed.
+
 ## The order a window tree is torn down in
 
 `WindowHandlers.destroyWindowTree` unmaps a window **before** it destroys its children, and that order

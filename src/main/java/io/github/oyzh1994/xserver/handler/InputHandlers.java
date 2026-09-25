@@ -264,7 +264,8 @@ public final class InputHandlers {
             return;
         }
         server.inputFor(client).setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                Short.toUnsignedInt(r.getEventMask()), false));
+                Short.toUnsignedInt(r.getEventMask()), false,
+                Byte.toUnsignedInt(r.getPointerMode()), Byte.toUnsignedInt(r.getKeyboardMode())));
     }
 
     public void ungrabPointer(ClientConnection client, UngrabPointer r) {
@@ -282,8 +283,11 @@ public final class InputHandlers {
         if (grab == null || grab.client() != client) {
             return;
         }
+        // The modes carry over: ChangeActivePointerGrab changes the event mask and the cursor, not
+        // what the grab does to the devices.
         server.inputFor(client).setPointerGrab(new InputState.Grab(grab.client(), grab.window(),
-                grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false));
+                grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false,
+                grab.pointerMode(), grab.keyboardMode()));
     }
 
     /**
@@ -330,7 +334,8 @@ public final class InputHandlers {
             return;
         }
         server.inputFor(client).setKeyboardGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                EventMasks.KEYBOARD_GRAB, true));
+                EventMasks.KEYBOARD_GRAB, true,
+                Byte.toUnsignedInt(r.getPointerMode()), Byte.toUnsignedInt(r.getKeyboardMode())));
     }
 
     public void ungrabKeyboard(ClientConnection client, UngrabKeyboard r) {
@@ -361,13 +366,17 @@ public final class InputHandlers {
                 && (modifiers == 0x8000 || grab.modifiers() == modifiers));
     }
 
+    /**
+     * {@code AllowEvents}: starts a device a synchronous grab stopped, or reprocesses the event it
+     * stopped on. The state machine is {@code InputState.allowEvents}; what lives here is the check
+     * that this server knows the mode at all.
+     */
     public void allowEvents(ClientConnection client, AllowEvents r) {
         int mode = r.getMode();
         if (mode < MODE_ASYNC_POINTER || mode > MODE_SYNC_BOTH) {
             throw ProtocolException.badValue(mode);
         }
-        // Events are always delivered asynchronously, so Sync and Replay modes have nothing to
-        // release: the events they would hold back have already been sent.
+        server.inputFor(client).allowEvents(client, mode);
     }
 
     private byte grabStatus(ClientConnection client, XWindow window) {

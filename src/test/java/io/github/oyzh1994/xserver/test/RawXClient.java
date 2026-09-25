@@ -712,16 +712,63 @@ public final class RawXClient implements AutoCloseable {
      *     every event reported against the grab window
      */
     public int grabPointer(int window, boolean ownerEvents, int eventMask) throws IOException {
+        return grabPointer(window, ownerEvents, eventMask, GRAB_ASYNC, GRAB_ASYNC);
+    }
+
+    /**
+     * Grabs the pointer with the device modes spelled out.
+     *
+     * <p>The modes are the whole of A13, and their numbering is the trap: {@code GrabModeSync} is
+     * <b>0</b> and {@code GrabModeAsync} is <b>1</b>, which is the opposite way round from
+     * {@code AllowEvents}, where {@code SyncPointer} is 1. A {@code Sync} grab tells the server to
+     * stop the device after the event that triggered it, and {@code AllowEvents} is what starts it
+     * again - or reprocesses the event it stopped on.
+     */
+    public int grabPointer(int window, boolean ownerEvents, int eventMask, int pointerMode,
+                           int keyboardMode) throws IOException {
         byte[] request = new byte[24];
         request[0] = 26;                            // GrabPointer
         request[1] = (byte) (ownerEvents ? 1 : 0);
         request[2] = 6;
         writeInt(request, 4, window);
         writeShort(request, 8, eventMask);
-        request[10] = 1;                            // pointer mode: Async
-        request[11] = 1;                            // keyboard mode: Async
+        request[10] = (byte) pointerMode;
+        request[11] = (byte) keyboardMode;
         send(request);
         return readReply()[1] & 0xFF;               // the grab status
+    }
+
+    /** {@code GrabModeSync}/{@code GrabModeAsync}, as {@code X.h} numbers them. */
+    public static final int GRAB_SYNC = 0;
+    public static final int GRAB_ASYNC = 1;
+
+    /**
+     * {@code AllowEvents}, with the mode numbered as the protocol numbers it: 0
+     * {@code AsyncPointer}, 1 {@code SyncPointer}, 2 {@code ReplayPointer}, 3/4/5 the keyboard's,
+     * 6 {@code AsyncBoth}, 7 {@code SyncBoth}.
+     */
+    public void allowEvents(int mode) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 35;                            // AllowEvents
+        request[1] = (byte) mode;
+        request[2] = 2;
+        send(request);
+    }
+
+    /**
+     * {@code QueryPointer} against a window: its answer is where the pointer the <em>clients</em>
+     * see is, which is not the same as where the device is while one of them is frozen.
+     *
+     * @return {rootX, rootY}
+     */
+    public int[] queryPointer(int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 38;                            // QueryPointer
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+        byte[] reply = readReply();
+        return new int[] {readShort(reply, 16), readShort(reply, 18)};
     }
 
     public void ungrabPointer() throws IOException {

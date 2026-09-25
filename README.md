@@ -146,7 +146,10 @@ Core protocol: windows (create, map, configure, restack, reparent, circulate), t
 `CopyArea`/`CopyPlane`, `ClearArea`), GCs, pixmaps, fonts, cursors, colormaps, atoms, properties,
 selections, keyboard and pointer mapping, focus, grabs (active ones, the implicit grab a press starts,
 and passive `GrabButton`/`GrabKey` - a global shortcut fires, with the modifier, button and window
-matching the protocol's rules), the pointer's motion history
+matching the protocol's rules), a **synchronous** grab and `AllowEvents` - a grab taken with
+`GrabModeSync` stops the device, the events it produces wait in a queue, and `AllowEvents` starts it
+again or reprocesses the event it stopped on, which is what a game that re-centres the cursor and a
+remote-desktop client that redelivers a click are made of - the pointer's motion history
 (`GetMotionEvents`, 256 events per screen), and `SendEvent`.
 
 The keyboard's repeats are the server's own work, as they are on a real one: a held key starts

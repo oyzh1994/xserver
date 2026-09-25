@@ -182,6 +182,107 @@ public final class InputState implements DisplayBackend.InputSink {
      */
     private XWindow implicitGrabWindow;
 
+    /**
+     * Where the device physically is, which a frozen device keeps up to date while the pointer the
+     * clients see does not move.
+     *
+     * <p>X separates the two for exactly this reason, and the reason is measured: with a device
+     * frozen, {@code QueryPointer} answers the position it had when it froze, while the events
+     * delivered when it starts again carry the position it was moved to in the meantime. A client
+     * that freezes the pointer to re-centre it - the case a game and a remote-desktop client are in
+     * - reads its own position through both of them, and a server that moves them together either
+     * lies about where the pointer is or delivers a stale position.
+     */
+    private int deviceX;
+    private int deviceY;
+
+    // ------------------------------------------------------------------
+    // Synchronous grabs: the freeze, the queue and the replay
+    // ------------------------------------------------------------------
+
+    /**
+     * A device's synchronous-grab state - X's {@code GrabInfoRec.sync}, and the whole of A13.
+     *
+     * <p>{@code GrabModeSync} is a grab asking the server to <b>stop the device</b> so the client can
+     * decide what happens to what comes next: a game that re-centres the pointer after every motion,
+     * a remote-desktop client that re-delivers a click from somewhere else. The device a {@code Sync}
+     * grab is taken on stops delivering after the event that triggered it, and {@code AllowEvents}
+     * starts it again - or reprocesses the event it stopped on.
+     *
+     * <p>The states and the transitions are Xorg's, read off {@code include/inputstr.h} and
+     * {@code dix/events.c} rather than guessed at, because the prose in the protocol specification
+     * does not describe them (see the notes on each transition below).
+     */
+    private static final class Sync {
+        /** One of the {@code GRAB_STATE_*} values below. */
+        int state = NOT_GRABBED;
+        /**
+         * The grab that has this device frozen on <em>another</em> device's behalf, or null.
+         *
+         * <p>A grab names a mode for each device - {@code GrabPointer} has a {@code pointer_mode} and
+         * a {@code keyboard_mode} - and asking for the other device's mode to be {@code Sync} freezes
+         * that device too, which is how a menu that freezes the pointer also freezes the keyboard.
+         */
+        Grab other;
+        /** The event the device froze on, kept for a {@code Replay*} mode to reprocess. */
+        Held event;
+
+        boolean frozen() {
+            return other != null || state >= FROZEN;
+        }
+    }
+
+    /**
+     * Grab states, exactly as X numbers them.
+     *
+     * <p>The numbering is load-bearing: {@code FROZEN} is a <em>sentinel</em>, not a state of its own
+     * - "any state at or above this one has the device frozen" - and {@code FREEZE_NEXT_EVENT} is
+     * deliberately <em>below</em> it, because a device told to freeze on the next event is still
+     * delivering until that event arrives.
+     */
+    private static final int NOT_GRABBED = 0;
+    private static final int THAWED = 1;
+    // 2 is X's THAWED_BOTH, and it is not a state a device is ever left in: AsyncBoth sets each
+    // device to THAWED. The gap is kept so the numbers below stay X's.
+    private static final int FREEZE_NEXT_EVENT = 3;
+    private static final int FREEZE_BOTH_NEXT_EVENT = 4;
+    private static final int FROZEN = 5;
+    private static final int FROZEN_NO_EVENT = 5;
+    private static final int FROZEN_WITH_EVENT = 6;
+
+    /** {@code GrabModeSync}, which is 0 - the opposite way round from {@code AllowEvents}. */
+    private static final int GRAB_MODE_SYNC = 0;
+
+    private final Sync pointerSync = new Sync();
+    private final Sync keyboardSync = new Sync();
+
+    /**
+     * The events that arrived while their device was frozen, in the order they arrived - X's
+     * {@code syncEvents.pending}.
+     *
+     * <p>Held rather than dropped, because that is what makes {@code AllowEvents} meaningful: the
+     * motion the user made while the device was stopped is delivered the moment the client releases
+     * it, at the position it was made. A device that silently dropped them would make a {@code Sync}
+     * grab into a way of losing input.
+     */
+    private final java.util.List<Held> held = new java.util.ArrayList<>();
+
+    /** The frozen event a {@code Replay*} mode asked to reprocess, or null when there is none. */
+    private Replay replay;
+
+    /** Set while the queue is being drained, so playing an event cannot restart the drain. */
+    private boolean playingEvents;
+
+    /**
+     * The window a replayed event must not be grabbed on again.
+     *
+     * <p>A replay means "the event is reprocessed as if the grab had not fired", so the grab the
+     * event was taken from must not simply fire again on it - measured against a reference server,
+     * which starts its search for a passive grab <em>below</em> the window the replayed grab was held
+     * on. Any other grab the event would have matched still fires.
+     */
+    private XWindow passiveGrabFloor;
+
     /** The current cursor's pixels, copied once per cursor because the backend asks every frame. */
     private int[] cursorPixels;
     private XCursor cursorPixelsFor;
@@ -207,9 +308,44 @@ public final class InputState implements DisplayBackend.InputSink {
         return screen;
     }
 
-    /** An active pointer or keyboard grab. */
+    /**
+     * An active pointer or keyboard grab.
+     *
+     * <p>The two modes are the ones the client asked for in {@code GrabPointer}/{@code GrabKey}:
+     * {@code GrabModeSync} (0) stops the device, and the mode named for the <em>other</em> device
+     * stops that one as well. They are kept here because a grab's lifetime is the only thing that
+     * decides which device freezes - see {@link #grabActivated}.
+     */
     public record Grab(ClientConnection client, XWindow window, boolean ownerEvents, int eventMask,
-                       boolean keyboard) {
+                       boolean keyboard, int pointerMode, int keyboardMode) {
+
+        /** The mode this grab names for the device it is held on. */
+        int ownMode() {
+            return keyboard ? keyboardMode : pointerMode;
+        }
+
+        /** The mode this grab names for the other device. */
+        int otherMode() {
+            return keyboard ? pointerMode : keyboardMode;
+        }
+    }
+
+    /**
+     * One device event, in the form the queue holds it.
+     *
+     * <p>An event here is what a caller handed the server - a motion, a button, a key - with
+     * everything needed to process it later: {@link #deliver} runs it through the ordinary path when
+     * the device is running, and {@link #playHeld} does the same for one the queue held back.
+     */
+    private record Held(boolean pointer, int kind, int detail, boolean pressed, int x, int y) {
+    }
+
+    private static final int KIND_MOTION = 0;
+    private static final int KIND_BUTTON = 1;
+    private static final int KIND_KEY = 2;
+
+    /** A frozen event a {@code Replay*} mode asked to reprocess, and the window it was grabbed on. */
+    private record Replay(Held event, XWindow window) {
     }
 
     // ------------------------------------------------------------------
@@ -353,7 +489,14 @@ public final class InputState implements DisplayBackend.InputSink {
     }
 
     public void setPointerGrab(Grab grab) {
+        Grab previous = this.pointerGrab;
         this.pointerGrab = grab;
+        if (previous != null && previous != grab) {
+            grabReleased(previous);
+        }
+        if (grab != null && grab != previous) {
+            grabActivated(pointerSync, keyboardSync, grab);
+        }
     }
 
     /**
@@ -377,6 +520,348 @@ public final class InputState implements DisplayBackend.InputSink {
         if (grabbing && changed) {
             reportKeyboardGrabStart(grab);
         }
+        if (previous != null && previous != grab) {
+            grabReleased(previous);
+        }
+        if (grab != null && grab != previous) {
+            grabActivated(keyboardSync, pointerSync, grab);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Freezing, the held queue and the replay (A13)
+    // ------------------------------------------------------------------
+
+    /**
+     * X's {@code CheckGrabForSyncs}: a grab's two device modes decide which devices it freezes and
+     * when.
+     *
+     * <p>The device the grab is held on is frozen outright when its own mode is {@code Sync} - from
+     * then on nothing it produces is delivered until the client releases it - and is left running
+     * otherwise. The <em>other</em> device is frozen only if its mode says so, and it is frozen
+     * <em>on this grab's behalf</em>: the client that owns the grab is the one that can release it,
+     * and the device does not count as grabbed by anybody in the meantime.
+     */
+    private void grabActivated(Sync sync, Sync paired, Grab grab) {
+        int thisMode = grab.ownMode();
+        int otherMode = grab.otherMode();
+        if (thisMode == GRAB_MODE_SYNC) {
+            sync.state = FROZEN_NO_EVENT;
+        } else {
+            sync.state = THAWED;
+            if (sync.other != null && sync.other.client() == grab.client()) {
+                sync.other = null;
+            }
+        }
+        if (otherMode == GRAB_MODE_SYNC) {
+            paired.other = grab;
+        } else if (paired.other != null && paired.other.client() == grab.client()) {
+            paired.other = null;
+        }
+        computeFreezes();
+    }
+
+    /**
+     * X's {@code DeactivatePointerGrab}/{@code DeactivateKeyboardGrab}: the grab is gone, so the
+     * device it froze stops being frozen and anything held on its behalf is let go.
+     *
+     * <p>Without the second half a client that froze the other device and then disconnected - or
+     * simply let go of its own grab - would leave that device stopped for ever, with no client able
+     * to start it again: {@code AllowEvents} only speaks for the device the caller holds.
+     */
+    private void grabReleased(Grab grab) {
+        if (grab.keyboard()) {
+            keyboardSync.state = NOT_GRABBED;
+        } else {
+            pointerSync.state = NOT_GRABBED;
+        }
+        if (pointerSync.other == grab) {
+            pointerSync.other = null;
+        }
+        if (keyboardSync.other == grab) {
+            keyboardSync.other = null;
+        }
+        computeFreezes();
+    }
+
+    /**
+     * X's {@code FreezeThisEventIfNeededForSyncGrab}, called after an event has been delivered: the
+     * event that arrives while its device was told to freeze on the next one is what the device
+     * freezes <em>on</em>, and it is the event a {@code Replay*} mode would later reprocess.
+     *
+     * <p><b>Only a key or a button does it</b>, and that asymmetry is not an accident of this code:
+     * a motion goes on being delivered while a frozen device waits for one of them, which is why
+     * {@code AllowEvents(SyncPointer)} on a device frozen from a grab with no event yet releases
+     * everything up to and including the first button, and nothing after it.
+     */
+    private void freezeThisEvent(Sync sync, Held event) {
+        if (event.kind() == KIND_MOTION) {
+            return;
+        }
+        boolean pointer = sync == pointerSync;
+        Sync paired = pointer ? keyboardSync : pointerSync;
+        Grab grab = pointer ? pointerGrab : keyboardGrab;
+        Grab pairedGrab = pointer ? keyboardGrab : pointerGrab;
+        switch (sync.state) {
+            case FREEZE_NEXT_EVENT -> {
+                sync.state = FROZEN_WITH_EVENT;
+                sync.event = event;
+            }
+            case FREEZE_BOTH_NEXT_EVENT -> {
+                // The paired device is frozen too, and told the same thing: it waits for its own
+                // next event unless the same client asked both to freeze, in which case there is
+                // nothing left for it to wait for.
+                if (paired.state == FREEZE_BOTH_NEXT_EVENT && pairedGrab != null && grab != null
+                        && pairedGrab.client() == grab.client()) {
+                    paired.state = FROZEN_NO_EVENT;
+                } else if (grab != null) {
+                    paired.other = grab;
+                }
+                sync.state = FROZEN_WITH_EVENT;
+                sync.event = event;
+            }
+            default -> {
+            }
+        }
+    }
+
+    /**
+     * The one way an input event reaches the server: held back when its device is frozen, delivered
+     * otherwise, with the freeze the delivery itself may ask for applied after it.
+     */
+    private void deliver(Held event) {
+        Sync sync = event.pointer() ? pointerSync : keyboardSync;
+        if (event.kind() == KIND_MOTION) {
+            // The device moves whether or not it is frozen; only its events wait. X's own enqueue
+            // path does the same - it stamps the sprite's physical position for every motion it
+            // holds - and that is the position the events carry once the client lets them through.
+            deviceX = clampX(event.x());
+            deviceY = clampY(event.y());
+        }
+        if (sync.frozen()) {
+            held.add(event);
+            if (held.size() > MAX_HELD_EVENTS) {
+                // The reference has no bound here either, and pays for it with an unbounded queue
+                // when a client freezes a device and never starts it again; this server refuses to
+                // grow without limit, for the same reason its output queue to a client does (E5).
+                Held dropped = held.remove(0);
+                log.warn("dropped a {} held for a frozen {}: {} events were waiting for a client"
+                                + " that has not released it", kindName(dropped.kind()),
+                        dropped.pointer() ? "pointer" : "keyboard", MAX_HELD_EVENTS);
+            }
+            if (log.isDebugEnabled()) {
+                log.debug("held a {} for a frozen {}: {} event(s) waiting", kindName(event.kind()),
+                        event.pointer() ? "pointer" : "keyboard", held.size());
+            }
+            return;
+        }
+        play(event, false);
+        freezeThisEvent(sync, event);
+    }
+
+    /** How many events one frozen device may hold before the oldest is dropped. */
+    private static final int MAX_HELD_EVENTS = 1024;
+
+    private int clampX(int x) {
+        return Math.max(0, Math.min(x, screen.width() - 1));
+    }
+
+    private int clampY(int y) {
+        return Math.max(0, Math.min(y, screen.height() - 1));
+    }
+
+    /**
+     * Where an event is stamped: the device's own position, not the pointer the clients see.
+     *
+     * <p>The two are the same except while a device is frozen, and there the difference is the whole
+     * of what a client that froze the pointer to re-centre it is reading: it gets events at the
+     * position the pointer was moved to, while {@code QueryPointer} still says where it froze.
+     */
+    private int reportedX() {
+        return deviceX;
+    }
+
+    private int reportedY() {
+        return deviceY;
+    }
+
+    /**
+     * Processes one event through the ordinary path, whatever the device's sync state is.
+     *
+     * <p>{@code fromQueue} is what a held event knows and a live one does not: the device has moved
+     * on since it was held, so the event's own coordinates are no longer where the pointer is and
+     * must not drag it back. X does the same - a queued event is stamped with the device's position
+     * at delivery, and only a queued <em>motion</em> moves the sprite.
+     */
+    private void play(Held event, boolean fromQueue) {
+        switch (event.kind()) {
+            case KIND_MOTION -> moveSprite(event.x(), event.y(), true);
+            case KIND_BUTTON -> processButton(event, fromQueue);
+            default -> processKey(event, fromQueue);
+        }
+    }
+
+    private static String kindName(int kind) {
+        return switch (kind) {
+            case KIND_MOTION -> "motion";
+            case KIND_BUTTON -> "button";
+            default -> "key";
+        };
+    }
+
+    /**
+     * X's {@code ComputeFreezes}: reprocess a replayed event, then deliver what the queue holds whose
+     * device is no longer frozen.
+     *
+     * <p>Called wherever the frozen state can change - a grab starting or ending, and every
+     * {@code AllowEvents} that means anything.
+     */
+    private void computeFreezes() {
+        if (replay != null) {
+            Replay pending = replay;
+            replay = null;
+            // "Reprocessed as if the grab had not fired": the event goes through the ordinary path
+            // again - a passive grab it matches still fires - with the one exception that the grab
+            // it was taken from cannot fire on it a second time.
+            passiveGrabFloor = pending.window();
+            try {
+                play(pending.event(), true);
+            } finally {
+                passiveGrabFloor = null;
+            }
+        }
+        playHeld();
+    }
+
+    /**
+     * X's {@code PlayReleasedEvents}: delivers the held events in the order they arrived, stopping
+     * as soon as every device is frozen again.
+     *
+     * <p>The stopping rule is what makes a {@code Sync} release deliver a <em>run</em> of events
+     * rather than one: the event that freezes the device again is the first key or button played,
+     * and everything that was queued behind it waits for the next release.
+     */
+    private void playHeld() {
+        if (playingEvents || held.isEmpty()) {
+            return;
+        }
+        playingEvents = true;
+        try {
+            for (java.util.Iterator<Held> events = held.iterator(); events.hasNext(); ) {
+                Held event = events.next();
+                if ((event.pointer() ? pointerSync : keyboardSync).frozen()) {
+                    continue;
+                }
+                events.remove();
+                play(event, true);
+                freezeThisEvent(event.pointer() ? pointerSync : keyboardSync, event);
+                if (pointerSync.frozen() && keyboardSync.frozen()) {
+                    break;
+                }
+            }
+        } finally {
+            playingEvents = false;
+        }
+    }
+
+    /**
+     * X's {@code AllowSome}: {@code AllowEvents}, mode by mode.
+     *
+     * <p>Every mode is a way of starting a device a {@code Sync} grab stopped, and the client has to
+     * be the one that stopped it - a client that asks to release a device it never froze is ignored
+     * rather than refused, which is what a reference server does.
+     *
+     * <p>Not modelled: the protocol's time check (a request older than the grab is ignored) - this
+     * server has no per-grab timestamp to compare against, and the only clients that send a time
+     * send {@code CurrentTime}.
+     */
+    public void allowEvents(ClientConnection client, int mode) {
+        boolean onPointer = mode <= 2;
+        Sync sync = onPointer ? pointerSync : keyboardSync;
+        Sync paired = onPointer ? keyboardSync : pointerSync;
+        Grab grab = onPointer ? pointerGrab : keyboardGrab;
+        Grab pairedGrab = onPointer ? keyboardGrab : pointerGrab;
+        boolean thisGrabbed = grab != null && grab.client() == client;
+        boolean thisSynced = sync.other != null && sync.other.client() == client;
+        boolean othersFrozen = pairedGrab != null && pairedGrab.client() == client && paired.frozen();
+        if (!((thisGrabbed && sync.state >= FROZEN) || thisSynced)) {
+            if (log.isDebugEnabled()) {
+                log.debug("AllowEvents(mode {}) from {} ignored: it does not hold a frozen device",
+                        mode, client);
+            }
+            return;
+        }
+        switch (mode) {
+            case 0, 3 -> {                                  // AsyncPointer / AsyncKeyboard
+                if (thisGrabbed) {
+                    sync.state = THAWED;
+                }
+                if (thisSynced) {
+                    sync.other = null;
+                }
+            }
+            case 1, 4 -> {                                  // SyncPointer / SyncKeyboard
+                if (thisGrabbed) {
+                    sync.state = FREEZE_NEXT_EVENT;
+                    if (thisSynced) {
+                        sync.other = null;
+                    }
+                }
+            }
+            case 6 -> {                                     // AsyncBoth
+                if (othersFrozen) {
+                    thawBoth(client, THAWED);
+                }
+            }
+            case 7 -> {                                     // SyncBoth
+                if (othersFrozen) {
+                    thawBoth(client, FREEZE_BOTH_NEXT_EVENT);
+                }
+            }
+            default -> {                                    // ReplayPointer / ReplayKeyboard
+                if (thisGrabbed && sync.state == FROZEN_WITH_EVENT) {
+                    if (thisSynced) {
+                        sync.other = null;
+                    }
+                    // The event is handed to the replay *before* the grab goes away, because the
+                    // release is what drains the queue and the replayed event has to be first.
+                    replay = new Replay(sync.event, grab.window());
+                    endGrab(grab, passiveGrabDetail != 0 && passiveGrabDetail == sync.event.detail());
+                }
+            }
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("AllowEvents(mode {}) from {}: pointer {} keyboard {}", mode, client,
+                    syncName(pointerSync), syncName(keyboardSync));
+        }
+        computeFreezes();
+    }
+
+    /** X's {@code AsyncBoth}/{@code SyncBoth}: every device this client grabbed gets the new state. */
+    private void thawBoth(ClientConnection client, int state) {
+        if (pointerGrab != null && pointerGrab.client() == client) {
+            pointerSync.state = state;
+        }
+        if (keyboardGrab != null && keyboardGrab.client() == client) {
+            keyboardSync.state = state;
+        }
+        if (pointerSync.other != null && pointerSync.other.client() == client) {
+            pointerSync.other = null;
+        }
+        if (keyboardSync.other != null && keyboardSync.other.client() == client) {
+            keyboardSync.other = null;
+        }
+    }
+
+    private static String syncName(Sync sync) {
+        return switch (sync.state) {
+            case NOT_GRABBED -> "running";
+            case THAWED -> "thawed";
+            case FREEZE_NEXT_EVENT -> "freezes on the next event";
+            case FREEZE_BOTH_NEXT_EVENT -> "freezes both on the next event";
+            case FROZEN_WITH_EVENT -> "frozen on an event";
+            default -> "frozen";
+        };
     }
 
     /**
@@ -420,11 +905,25 @@ public final class InputState implements DisplayBackend.InputSink {
 
     /** Releases any grab held by a client, freeing the keyboard or pointer for others. */
     public void releaseGrabs(ClientConnection client) {
+        // The arms go with the client that made them, as they do on a reference server. An arm that
+        // outlived its client is worse than a missing one: it is a global shortcut that keeps
+        // matching, holding the events of whoever presses it and delivering them to a connection
+        // that is gone - measured, and it is what made two runs of the same probe disagree.
+        int arms = server.passiveGrabs().size();
+        server.passiveGrabs().removeIf(grab -> grab.client() == client);
+        if (arms != server.passiveGrabs().size() && log.isDebugEnabled()) {
+            log.debug("dropped {} passive grab(s) with the client that armed them",
+                    arms - server.passiveGrabs().size());
+        }
         if (pointerGrab != null && pointerGrab.client() == client) {
+            Grab grab = pointerGrab;
             pointerGrab = null;
+            grabReleased(grab);
         }
         if (keyboardGrab != null && keyboardGrab.client() == client) {
+            Grab grab = keyboardGrab;
             keyboardGrab = null;
+            grabReleased(grab);
         }
         if (implicitGrabWindow != null && implicitGrabWindow.owner() == client) {
             implicitGrabWindow = null;
@@ -462,7 +961,7 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
-            movePointer(x, y, true);
+            deliver(new Held(true, KIND_MOTION, 0, false, x, y));
         } finally {
             server.unlockServer();
         }
@@ -479,44 +978,59 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
-            movePointer(x, y, false);
-            int mask = 1 << (button - 1);
-            if (pressed) {
-                buttons |= mask;
-            } else {
-                buttons &= ~mask;
-            }
-            if (log.isDebugEnabled()) {
-                // Which window a click is *reported against* is otherwise invisible from the server
-                // side, and it is the first thing to check when a client behaves as if it was never
-                // clicked: while a button is down that is the window the press landed on, not the one
-                // under the pointer, and an active grab overrides both.
-                XWindow target = eventTarget();
-                log.debug("button {} {} at ({},{}) -> {}{}", button, pressed ? "down" : "up", x, y,
-                        target == null ? "no window" : "0x" + Integer.toHexString(target.id()),
-                        pointerGrab != null
-                                ? " (grab on 0x" + Integer.toHexString(pointerGrab.window().id())
-                                        + ", ownerEvents=" + pointerGrab.ownerEvents() + ")"
-                                : "");
-            }
-            if (pressed) {
-                // A passive grab is matched before the event is delivered: if one fires, the press
-                // belongs to the client that armed it, wherever it landed.
-                // The *modifiers*, not the whole pointer state: the state also carries the button
-                // that was just pressed, and a grab armed for Shift must not be looking at that.
-                InputHandlers.PassiveGrab passive = matchingPassiveGrab(true, pointerWindow, button,
-                        modifierState());
-                if (passive != null) {
-                    activatePassiveGrab(passive, button, modifierState());
-                }
-            }
-            deliverButton(button, pressed, mask);
-            if (!pressed && passiveGrabDetail == button) {
-                // The release has been delivered through the grab; the grab itself ends here.
-                endPassiveGrab();
-            }
+            // A frozen device holds the press rather than acting on it - even the button state is not
+            // updated, because the client that stopped the device has not said what to do with it yet.
+            deliver(new Held(true, KIND_BUTTON, button, pressed, x, y));
         } finally {
             server.unlockServer();
+        }
+    }
+
+    /** The button's own work, once {@link #deliver} has decided it is this device's turn. */
+    private void processButton(Held event, boolean fromQueue) {
+        int button = event.detail();
+        boolean pressed = event.pressed();
+        int x = event.x();
+        int y = event.y();
+        if (fromQueue) {
+            notePointerWindow();
+        } else {
+            movePointer(x, y, false);
+        }
+        int mask = 1 << (button - 1);
+        if (pressed) {
+            buttons |= mask;
+        } else {
+            buttons &= ~mask;
+        }
+        if (log.isDebugEnabled()) {
+            // Which window a click is *reported against* is otherwise invisible from the server
+            // side, and it is the first thing to check when a client behaves as if it was never
+            // clicked: while a button is down that is the window the press landed on, not the one
+            // under the pointer, and an active grab overrides both.
+            XWindow target = eventTarget();
+            log.debug("button {} {} at ({},{}) -> {}{}", button, pressed ? "down" : "up", x, y,
+                    target == null ? "no window" : "0x" + Integer.toHexString(target.id()),
+                    pointerGrab != null
+                            ? " (grab on 0x" + Integer.toHexString(pointerGrab.window().id())
+                                    + ", ownerEvents=" + pointerGrab.ownerEvents() + ")"
+                            : "");
+        }
+        if (pressed) {
+            // A passive grab is matched before the event is delivered: if one fires, the press
+            // belongs to the client that armed it, wherever it landed.
+            // The *modifiers*, not the whole pointer state: the state also carries the button
+            // that was just pressed, and a grab armed for Shift must not be looking at that.
+            InputHandlers.PassiveGrab passive = matchingPassiveGrab(true, pointerWindow, button,
+                    modifierState());
+            if (passive != null) {
+                activatePassiveGrab(passive, button, modifierState(), event);
+            }
+        }
+        deliverButton(button, pressed, mask);
+        if (!pressed && passiveGrabDetail == button) {
+            // The release has been delivered through the grab; the grab itself ends here.
+            endPassiveGrab();
         }
     }
 
@@ -553,8 +1067,10 @@ public final class InputState implements DisplayBackend.InputSink {
             // read the keycode as whatever it used to carry.
             Keymap.assign(keycode, new int[] {keysym, keysym});
             server.broadcastMappingNotify((byte) 0, (byte) keycode, (byte) 1);
-            deliverKey(keycode, true);
-            deliverKey(keycode, false);
+            // The key pair goes the way every key does, so a frozen keyboard holds it - the mapping
+            // change is not the client's to defer, but the keystroke is.
+            deliver(new Held(false, KIND_KEY, keycode, true, reportedX(), reportedY()));
+            deliver(new Held(false, KIND_KEY, keycode, false, reportedX(), reportedY()));
         } finally {
             server.unlockServer();
         }
@@ -587,32 +1103,44 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
-            movePointer(x, y, false);
-            updateModifiers(keycode, pressed);
-            if (pressed && keyboardGrab == null) {
-                // A passive key grab fires for the focus window's chain, and it *consumes* the press:
-                // the client that armed it gets the event and the focused window does not, which is
-                // the whole point of a global shortcut.
-                InputHandlers.PassiveGrab passive = matchingPassiveGrab(false, focusWindow(), keycode,
-                        modifierState());
-                if (passive != null) {
-                    activatePassiveGrab(passive, keycode, modifierState());
-                }
-            }
+            // The repeat follows the *device's* key state, not what was delivered: X cancels a
+            // key's repeat as the release is enqueued, and the difference is not academic - a
+            // device frozen with a released key that still repeated would fill the queue at 25
+            // events a second for as long as the client kept it frozen (measured: 372 events).
             if (pressed) {
                 armRepeat(keycode);
             } else {
-                // A key that comes up stops repeating, which is the whole of what a client has to do
-                // to stop a run of characters - and a key that is pressed again starts a fresh delay
-                // rather than inheriting the old one.
                 repeatDue.remove(keycode);
             }
-            deliverKey(keycode, pressed);
-            if (!pressed && passiveGrabDetail == keycode) {
-                endPassiveGrab();
-            }
+            deliver(new Held(false, KIND_KEY, keycode, pressed, x, y));
         } finally {
             server.unlockServer();
+        }
+    }
+
+    /** The key's own work, once {@link #deliver} has decided it is this device's turn. */
+    private void processKey(Held event, boolean fromQueue) {
+        int keycode = event.detail();
+        boolean pressed = event.pressed();
+        if (fromQueue) {
+            notePointerWindow();
+        } else {
+            movePointer(event.x(), event.y(), false);
+        }
+        updateModifiers(keycode, pressed);
+        if (pressed && keyboardGrab == null) {
+            // A passive key grab fires for the focus window's chain, and it *consumes* the press:
+            // the client that armed it gets the event and the focused window does not, which is
+            // the whole point of a global shortcut.
+            InputHandlers.PassiveGrab passive = matchingPassiveGrab(false, focusWindow(), keycode,
+                    modifierState());
+            if (passive != null) {
+                activatePassiveGrab(passive, keycode, modifierState(), event);
+            }
+        }
+        deliverKey(keycode, pressed);
+        if (!pressed && passiveGrabDetail == keycode) {
+            endPassiveGrab();
         }
     }
 
@@ -668,9 +1196,25 @@ public final class InputState implements DisplayBackend.InputSink {
     // ------------------------------------------------------------------
 
     private void movePointer(int x, int y, boolean generateMotion) {
+        // A running device's physical position and the pointer the clients see are the same thing;
+        // they only come apart while one is frozen, which is what {@link #deviceX} is for.
+        deviceX = clampX(x);
+        deviceY = clampY(y);
+        moveSprite(deviceX, deviceY, generateMotion);
+    }
+
+    /**
+     * Moves the pointer the clients see, leaving the device's own position alone.
+     *
+     * <p>What playing a held motion does: the sprite catches up with a position the device reached
+     * while it was frozen, and the events that come out of the queue are still stamped with where the
+     * device is <em>now</em> - which is what a reference server delivers, measured, and the reason
+     * two held motions both arrive carrying the last position rather than their own.
+     */
+    private void moveSprite(int x, int y, boolean generateMotion) {
         pointerKnown = true;
-        int clampedX = Math.max(0, Math.min(x, screen.width() - 1));
-        int clampedY = Math.max(0, Math.min(y, screen.height() - 1));
+        int clampedX = clampX(x);
+        int clampedY = clampY(y);
         boolean moved = clampedX != pointerX || clampedY != pointerY;
         pointerX = clampedX;
         pointerY = clampedY;
@@ -733,7 +1277,8 @@ public final class InputState implements DisplayBackend.InputSink {
                 next = nowMillis + repeatIntervalMillis;
             }
             repeatDue.put(keycode, next);
-            deliverKey(keycode, true);
+            // A repeat is a key press like any other, so a frozen keyboard holds it back too.
+            deliver(new Held(false, KIND_KEY, keycode, true, reportedX(), reportedY()));
         }
     }
 
@@ -926,6 +1471,21 @@ public final class InputState implements DisplayBackend.InputSink {
      * that opened it is still down, because the implicit grab withholds the enter, and the crossing
      * is owed until the button comes up; that is where a reference server reports it too.
      */
+    /**
+     * Recomputes what window the pointer is in, without moving it and without reporting a crossing.
+     *
+     * <p>This is what a button or key event owes when it is played out of a freeze. A live one is
+     * delivered with the pointer's own position and moves the pointer to it; a held one was made
+     * before the device moved on, and using its coordinates would drag the pointer back - measured:
+     * a replayed press stamped with its own old position reads as the server having moved the
+     * pointer, which is the one thing a client that froze it is watching for.
+     */
+    private void notePointerWindow() {
+        if (pointerKnown) {
+            pointerWindow = windowAtPointer();
+        }
+    }
+
     public void settlePointerWindow() {
         if (!pointerKnown) {
             return;
@@ -999,8 +1559,8 @@ public final class InputState implements DisplayBackend.InputSink {
                 motionFactory())) {
             return;
         }
-        server.events().deliverPropagating(grabbedWindow(), EventMasks.POINTER_MOTION, pointerX,
-                pointerY, motionFactory());
+        server.events().deliverPropagating(grabbedWindow(), EventMasks.POINTER_MOTION, reportedX(),
+                reportedY(), motionFactory());
     }
 
     /**
@@ -1096,8 +1656,8 @@ public final class InputState implements DisplayBackend.InputSink {
                 .root(screen.root().id())
                 .event(w.id())
                 .child(child == null ? 0 : child.id())
-                .rootX((short) pointerX)
-                .rootY((short) pointerY)
+                .rootX((short) reportedX())
+                .rootY((short) reportedY())
                 .eventX((short) x)
                 .eventY((short) y)
                 .state((short) pointerState())
@@ -1125,8 +1685,8 @@ public final class InputState implements DisplayBackend.InputSink {
                         .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
-                        .rootX((short) pointerX)
-                        .rootY((short) pointerY)
+                        .rootX((short) reportedX())
+                        .rootY((short) reportedY())
                         .eventX((short) x)
                         .eventY((short) y)
                         .state(state)
@@ -1142,8 +1702,8 @@ public final class InputState implements DisplayBackend.InputSink {
                         .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
-                        .rootX((short) pointerX)
-                        .rootY((short) pointerY)
+                        .rootX((short) reportedX())
+                        .rootY((short) reportedY())
                         .eventX((short) x)
                         .eventY((short) y)
                         .state(state)
@@ -1162,7 +1722,8 @@ public final class InputState implements DisplayBackend.InputSink {
             updateImplicitGrab(pressed);
             return;
         }
-        server.events().deliverPropagating(grabbedWindow(), eventMask, pointerX, pointerY, factory);
+        server.events().deliverPropagating(grabbedWindow(), eventMask, reportedX(), reportedY(),
+                factory);
         updateImplicitGrab(pressed);
     }
 
@@ -1195,7 +1756,29 @@ public final class InputState implements DisplayBackend.InputSink {
      */
     private InputHandlers.PassiveGrab matchingPassiveGrab(boolean pointer, XWindow from, int detail,
                                                           int modifiers) {
+        return matchingPassiveGrab(pointer, from, detail, modifiers, passiveGrabFloor);
+    }
+
+    /**
+     * The same, stopping below a window the search may not look at.
+     *
+     * <p>That bound is what a replay needs: the event a {@code Replay*} mode reprocesses is not
+     * allowed to fire the grab it was taken from again, so the search starts at the window
+     * <em>below</em> the one that grab was held on. A reference server does it the same way, and the
+     * reason is visible in the measurement - the replayed press reaches the window underneath as an
+     * ordinary event, without the {@code NotifyGrab} crossing a second firing would bring.
+     */
+    private InputHandlers.PassiveGrab matchingPassiveGrab(boolean pointer, XWindow from, int detail,
+                                                          int modifiers, XWindow floor) {
+        if (floor != null && !isAtOrBelow(floor, from)) {
+            // The window the replayed grab was held on is not above the event's window at all, which
+            // is what a reference server answers with "no grab can apply" rather than a wider search.
+            return null;
+        }
         for (XWindow window = from; window != null; window = window.parent()) {
+            if (window == floor) {
+                break;
+            }
             if (!window.isMapped() && !window.isRoot()) {
                 // The window itself is not on screen; its ancestors are still worth trying, which is
                 // what continuing the walk does.
@@ -1243,21 +1826,33 @@ public final class InputState implements DisplayBackend.InputSink {
     /**
      * Takes the grab a passive one asks for: it is an ordinary active grab from the press to the
      * release, and the clients are told the crossing pair a reference server sends for it.
+     *
+     * <p>{@code event} is what the client did to make it fire, and it is not only for the log: a
+     * passive grab that asked for {@code Sync} freezes the device <b>on that event</b>, and that is
+     * the event a {@code Replay*} mode reprocesses - see X's {@code ActivateGrabNoDelivery}.
      */
-    private void activatePassiveGrab(InputHandlers.PassiveGrab passive, int detail, int modifiers) {
+    private void activatePassiveGrab(InputHandlers.PassiveGrab passive, int detail, int modifiers,
+                                     Held event) {
         Grab grab = new Grab(passive.client(), passive.window(), passive.ownerEvents(),
-                passive.eventMask(), !passive.pointer());
+                passive.eventMask(), !passive.pointer(), passive.pointerMode(),
+                passive.keyboardMode());
         passiveGrabDetail = detail;
         passiveGrabModifiers = modifiers;
         if (passive.pointer()) {
-            pointerGrab = grab;
+            setPointerGrab(grab);
         } else {
-            keyboardGrab = grab;
+            setKeyboardGrab(grab);
+        }
+        Sync sync = passive.pointer() ? pointerSync : keyboardSync;
+        if (sync.state == FROZEN_NO_EVENT && event != null) {
+            sync.state = FROZEN_WITH_EVENT;
+            sync.event = event;
         }
         if (log.isDebugEnabled()) {
-            log.debug("passive {} grab on 0x{} fired by {}: the input belongs to {} until the release",
-                    passive.pointer() ? "button" : "key",
-                    Integer.toHexString(passive.window().id()), detail, passive.client());
+            log.debug("passive {} grab on 0x{} fired by {}: the input belongs to {} until the release"
+                            + " ({})", passive.pointer() ? "button" : "key",
+                    Integer.toHexString(passive.window().id()), detail, passive.client(),
+                    syncName(sync));
         }
         // The pair a grab's start implies: the pointer leaves the window it was in and enters the
         // grab window, with the mode that says a grab did it. A reference server sends this for a
@@ -1276,12 +1871,43 @@ public final class InputState implements DisplayBackend.InputSink {
         if (grab == null) {
             return;
         }
+        endGrab(grab, true);
+    }
+
+    /**
+     * Ends a grab and lets the device it froze go.
+     *
+     * <p>{@code passive} is what the grab owed its clients on the way out: a passive one reports the
+     * crossing pair that says the grab is over, an active one reports nothing (§7's deliberate
+     * silence, which is where the menus are), and the pair comes <em>before</em> the release because
+     * the release is what hands the held events back and the client has to be told the grab ended
+     * before it is sent what the grab was holding.
+     */
+    private void endGrab(Grab grab, boolean passive) {
+        if (passive) {
+            passiveGrabDetail = 0;
+            if (!grab.keyboard()) {
+                server.events().deliverGrabCrossing(pointerWindow, grab.window(),
+                        grabCrossing(false));
+            }
+        }
         if (grab.keyboard()) {
             keyboardGrab = null;
+            grabReleased(grab);
         } else {
             pointerGrab = null;
-            server.events().deliverGrabCrossing(pointerWindow, grab.window(), grabCrossing(false));
+            grabReleased(grab);
         }
+    }
+
+    /** Whether {@code window} is {@code from} itself or one of its ancestors. */
+    private static boolean isAtOrBelow(XWindow window, XWindow from) {
+        for (XWindow candidate = from; candidate != null; candidate = candidate.parent()) {
+            if (candidate == window) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -1359,8 +1985,8 @@ public final class InputState implements DisplayBackend.InputSink {
                         .root(screen.root().id())
                         .event(w.id())
                         .child(childId)
-                        .rootX((short) pointerX)
-                        .rootY((short) pointerY)
+                        .rootX((short) reportedX())
+                        .rootY((short) reportedY())
                         .eventX((short) x)
                         .eventY((short) y)
                         .state(state)
@@ -1376,8 +2002,8 @@ public final class InputState implements DisplayBackend.InputSink {
                     .root(screen.root().id())
                     .event(w.id())
                     .child(childId)
-                    .rootX((short) pointerX)
-                    .rootY((short) pointerY)
+                    .rootX((short) reportedX())
+                    .rootY((short) reportedY())
                     .eventX((short) x)
                     .eventY((short) y)
                     .state(state)
@@ -1397,7 +2023,8 @@ public final class InputState implements DisplayBackend.InputSink {
                 return;
             }
         }
-        server.events().deliverPropagating(focusWindow(), eventMask, pointerX, pointerY, factory);
+        server.events().deliverPropagating(focusWindow(), eventMask, reportedX(), reportedY(),
+                factory);
     }
 
     /**
@@ -1491,12 +2118,12 @@ public final class InputState implements DisplayBackend.InputSink {
             return;
         }
         XWindow window = grab.window();
-        int x = pointerX - window.absoluteX();
-        int y = pointerY - window.absoluteY();
+        int x = reportedX() - window.absoluteX();
+        int y = reportedY() - window.absoluteY();
         // The child of the grab window the pointer is in, which is what a press reported to a client
         // that owns the whole screen tells it *where* it was: a reference server names it, and a
         // client that takes a global shortcut uses it to decide which of its own windows was clicked.
-        XWindow child = window.childAt(pointerX, pointerY);
+        XWindow child = window.childAt(reportedX(), reportedY());
         server.events().send(grab.client(), factory.create(grab.client(), window, child, x, y));
     }
 
