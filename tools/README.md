@@ -87,6 +87,10 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   answer the child of the queried window or the deepest window?" is read off (A4).
 - `GravityProbe` - creates a parent and a child with chosen gravities, resizes the parent, and prints
   where the child ended up: the harness for A12, whose whole eleven-value table it produced.
+- `RandrProbe` - the harness for B2: the RandR questions `xrandr` asks, with the replies printed as
+  **bytes** as well as fields. RandR's replies are read positionally, so a field the server put in the
+  wrong place produces a plausible wrong number or a client that dies in its own library - the reply
+  count that was left at zero here is what `xrandr --listmonitors` crashed on.
 - `XineramaProbe` - asks every question Xinerama has and prints the answers field by field, so two
   servers are compared by their numbers rather than by "it replied". Its first version sent the three
   1.1 requests as four bytes each and read the reference's `BadLength` as "not implemented" - they

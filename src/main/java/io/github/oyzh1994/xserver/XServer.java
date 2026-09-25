@@ -235,6 +235,8 @@ public final class XServer {
 
     private io.github.oyzh1994.xserver.extension.ScreenSaverExtension screenSaverExtension;
 
+    private io.github.oyzh1994.xserver.extension.RandRExtension randrExtension;
+
     /** The display's idle state, which the core screen-saver requests and MIT-SCREEN-SAVER share. */
     public io.github.oyzh1994.xserver.display.ScreenSaverState screenSaver() {
         return screenSaver;
@@ -243,6 +245,11 @@ public final class XServer {
     /** The MIT-SCREEN-SAVER extension, which the core {@code ForceScreenSaver} notifies through. */
     public io.github.oyzh1994.xserver.extension.ScreenSaverExtension screenSaverExtension() {
         return screenSaverExtension;
+    }
+
+    /** The RandR extension, which the screen-growth path notifies through. */
+    public io.github.oyzh1994.xserver.extension.RandRExtension randrExtension() {
+        return randrExtension;
     }
 
     /**
@@ -267,6 +274,11 @@ public final class XServer {
                 extensions.register(new io.github.oyzh1994.xserver.extension.ScreenSaverExtension(),
                         1, 0);
         extensions.register(new io.github.oyzh1994.xserver.extension.DpmsExtension(), 0, 0);
+        // RandR defines two events (the screen change and the generic notify) and four errors
+        // (BadCrtc, BadMode, BadOutput, BadProvider, in the order the plugin reads them back). It is
+        // kept by name because the screen-growth path is what raises its notification.
+        this.randrExtension = extensions.register(
+                new io.github.oyzh1994.xserver.extension.RandRExtension(), 2, 4);
         // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();
@@ -1237,12 +1249,14 @@ public final class XServer {
     /**
      * Tells the clients that asked to hear it that the root is a different size.
      *
-     * <p>There is no RandR here, so a client that watches the screen - a toolkit laying out against
-     * the display, a terminal that wants to reflow - has no other way to learn this. A real server
-     * sends the same event for the same reason: the root window is a window, and its geometry
-     * changed.
+     * <p>Two ways, because there are two kinds of client: the root window's own {@code ConfigureNotify}
+     * - the root is a window and its geometry changed - and RandR's {@code ScreenChangeNotify}, which
+     * is the one a modern toolkit, browser or terminal listens for. Until RandR was implemented the
+     * first was all there was, which is why a client that had asked RandR about the display was never
+     * told it had changed.
      */
     private void tellClientsTheScreenChanged(Screen screen) {
+        randrExtension.screenChanged(this, screen);
         events.deliverToWindow(screen.root(), EventMasks.STRUCTURE_NOTIFY,
                 (client, w, child, x, y) -> ConfigureNotifyEvent.builder()
                         .firstEventOffset((byte) 0)

@@ -149,6 +149,19 @@ public final class Screen {
         root.setSize(width, height);
     }
 
+    /**
+     * The screen's physical size in millimetres, which is what the connection setup reports and what
+     * RandR has to agree with: a client computing a DPI reads both, and two answers that disagree are
+     * worse than none.
+     */
+    public int widthMillimeters() {
+        return widthMillimeters;
+    }
+
+    public int heightMillimeters() {
+        return heightMillimeters;
+    }
+
     public int width() {
         return width;
     }

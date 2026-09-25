@@ -148,6 +148,27 @@ final class Wire implements AutoCloseable {
         }
     }
 
+    /** What an atom is called, or a hex id when the server does not know it. */
+    String atomName(int atom) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = 17;                            // GetAtomName
+        writeShort(request, 2, 2);
+        writeInt(request, 4, atom);
+        send(request);
+        while (true) {
+            byte[] message = readMessage();
+            if (message == null) {
+                return "0x" + Integer.toHexString(atom);
+            }
+            if ((message[0] & 0x7F) == 1) {
+                byte[] whole = withExtraData(message);
+                int length = readShort(whole, 8);
+                return length == 0 ? "0x" + Integer.toHexString(atom)
+                        : new String(whole, 32, length, java.nio.charset.StandardCharsets.ISO_8859_1);
+            }
+        }
+    }
+
     static int readInt(byte[] bytes, int offset) {
         return (bytes[offset] & 0xFF) | ((bytes[offset + 1] & 0xFF) << 8)
                 | ((bytes[offset + 2] & 0xFF) << 16) | ((bytes[offset + 3] & 0xFF) << 24);

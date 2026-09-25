@@ -65,7 +65,8 @@ io.github.oyzh1994.xserver
 ├── input/        pointer/keyboard state, keymap, cursor sprite
 ├── clipboard/    the bridge between the host's clipboard and the X selections
 ├── handler/      the request implementations, grouped by area
-└── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA
+└── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
+                  RANDR, MIT-SCREEN-SAVER and DPMS
 ```
 
 Three decisions shape everything else:
@@ -124,7 +125,9 @@ events with the full detail lattice and the grab modes, pointer and keyboard eve
 and `doNotPropagateMask`, and `ClientMessage` in both directions.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
-operations), `XTEST` (synthetic input), `XINERAMA` (the one screen, which is the answer a toolkit's
+operations), `XTEST` (synthetic input), `RANDR` (one CRTC, output and mode over the whole screen, with
+the screen-change notification - `xrandr` prints it and `xrandr --listmonitors` names it, both byte for
+byte as a reference server does), `XINERAMA` (the one screen, which is the answer a toolkit's
 startup asks for), `MIT-SCREEN-SAVER` and `DPMS` (the idle state: the settings a client sets are kept
 and read back, `QueryInfo`'s countdowns count against the timeout that was set, a subscriber is told
 when the state changes, and `xset q` shows both - though nothing here blanks the display, which is the
@@ -150,8 +153,9 @@ can do for it. The server logs a line saying so when it is running unscaled on a
 The screen grows with the window it shows: dragging the frame's edge past what the screen can show
 makes the screen bigger - the framebuffer, the root and the size clients are told all follow, up to
 `--max-screen` - so a forwarded application can be given a window bigger than `--geometry`. The screen
-never shrinks. A client that watches its root is sent a `ConfigureNotify` for the new size; there is no
-RandR here, so that event is the only way it hears.
+never shrinks. A client that watches its root is sent a `ConfigureNotify` for the new size, and one
+that listens through RandR is sent `ScreenChangeNotify` - which is what a modern toolkit, browser or
+terminal actually waits for.
 
 The host window answers the two things an application asks its window manager for: a client that
 goes full screen (`_NET_WM_STATE_FULLSCREEN`) gets the platform's full screen, and a client that sets
@@ -274,8 +278,13 @@ order (only the glyphset-switch item is always most-significant-byte first), and
 The list below is what a user notices; the working list of everything still missing, item by
 item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog.md).
 
-- **No Composite, DAMAGE, RandR or XInput2.** `xeyes` prints a warning about the missing
+- **No Composite, DAMAGE or XInput2.** `xeyes` prints a warning about the missing
   `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
+  **RandR is there**, in the shape this server has: one CRTC, one output and one mode covering the
+  whole screen, a real physical size (so a client can compute a DPI), and a `ScreenChangeNotify` to
+  the clients that asked for one when the screen grows - which is what C1's screen growth had no way
+  to announce before. A request to *change* the screen, or anything about providers and leases, is
+  refused with `BadImplementation`: the screen belongs to the host window.
 - **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an

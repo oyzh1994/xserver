@@ -71,7 +71,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
-| B2 | RandR | extension | M |
+| ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | B1 | XKEYBOARD | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
@@ -968,27 +968,73 @@ asked for that.
 
 ---
 
-### [ ] B2. RandR. **M**
+### [x] B2. RandR. **M** - done 2026-09-25
 
-**Current.** Not advertised. There is one screen of a fixed pixel size, reported through the core
-protocol; nothing can tell a client the size changed, and a client cannot ask for a mode.
+**What it was.** Not advertised at all: a client could not learn the monitor's geometry or its device
+pixel ratio, and the screen growth C1 landed had no way to tell anybody - the core protocol's only
+answer is a `ConfigureNotify` for the root, which no modern client listens for.
 
-**Why it matters.** Browsers and Electron read RandR to decide the device pixel ratio and monitor
-geometry; HiDPI-aware toolkits use it to pick a scale; and "the screen grows with the window" (C1)
-needs a way to tell the clients that it did - RandR's `ScreenChangeNotify`/`CrtcChangeNotify` is it.
+**The model: one CRTC, one output and one mode covering the whole screen**, with the three ids drawn
+from the server's own resource space so a client can pass them back. `QueryVersion` (1.6, capped at
+what the client asks for), `GetScreenSizeRange`, `GetScreenResources`/`Current`, `GetCrtcInfo`,
+`GetOutputInfo`, `GetCrtcGammaSize`/`GetCrtcGamma`, `GetCrtcTransform`, `GetPanning`, `GetScreenInfo`,
+`GetMonitors`, `GetOutputPrimary`, `ListOutputProperties` and `SelectInput` with `ScreenChangeNotify`.
+Anything that would *change* the screen - `SetScreenConfig`, `SetCrtcConfig`, `CreateMode`, the panning
+setters, providers and leases - is refused with `BadImplementation`, and so is `GetOutputProperty`
+(see below).
 
-**Plan.** A minimal implementation: `QueryVersion` (1.6), `GetScreenResources`/`GetScreenResourcesCurrent`,
-`GetCrtcInfo`/`GetCrtcGammaSize`, `GetOutputInfo`, `GetScreenInfo`, `GetMonitors` and the
-`SelectInput`/notifications path, with one CRTC and one output that mirror the screen. Phases 1-4 of
-RandR are mostly bookkeeping over "the screen is N x M".
+**Measured 2026-09-25**, with the real client and with the kit, and **it is the client that found every
+bug in this one** - each of these was a visible failure rather than a wrong number:
 
-**Traps.** The reply sizes are version-dependent and clients parse them positionally; take the exact
-field sets from a capture against Xvfb (`XProxy`) rather than from prose. `--scale N` already changes
-what the client is told - RandR must agree with the setup reply or a client computes a nonsense DPI.
+- **`xrandr` against this server** prints the same three lines as against Xvfb, byte for byte apart
+  from the numbers that are deliberately ours:
+  `Screen 0: minimum 1300 x 800, current 1300 x 800, maximum 1300 x 800` /
+  `screen connected 1300x800+0+0 344mm x 212mm panning 1300x800+0+0` / `1300x800 0.00*+`.
+  **Getting there was one request at a time, because a refusal does not degrade - it crashes the
+  client**: `xrandr` died with SIGSEGV on a `BadImplementation` for `RRGetPanning`, and again for
+  `GetOutputPrimary`, so `GetPanning`, `GetCrtcTransform`, `GetOutputPrimary` and
+  `ListOutputProperties` are there because a real client asked for them and could not carry on without
+  an answer. (`GetCrtcGammaSize` answering **0** - the honest "there is no ramp" - made `xrandr` print
+  "Failed to get size of gamma" and give up on the output's detail, so the ramp is a real 256-entry
+  identity.)
+- **`xrandr --listmonitors`** printed nothing and died (`free(): invalid pointer`) until the reply's
+  own `nOutputs` was set: it was left at zero, and a client reads that count to know how far the
+  monitor array reaches. Found by dumping the reply's bytes next to Xvfb's
+  (`tools/RandrProbe`, new). **`xrandr --verbose`** prints the whole block - gamma `1.0:1.0:1.0`, the
+  identity transform, the mode, the mm size.
+- **`tools/RandrProbe`** against Xvfb and here, field by field: the version, the size range, the one
+  CRTC/output/mode, the mode's name length, the output's status/crtc/preferred/counts, the CRTC's
+  geometry/mode/rotation/output, and the monitor's atom name/geometry/mm size - all the same. **Two
+  differences, both deliberate**: this server reports a real physical size where Xvfb reports `0mm`
+  (the core setup reply already tells clients a real one, and the two must agree or a client computes a
+  nonsense DPI - the item's own trap), and its size range does not reach down to `1x1` because this
+  screen never shrinks.
+- **`extension/RandRTest`** (7 tests): the version answered in the client's own terms, the output and
+  CRTC both answering about the ids the resource list gave out (including the mm size against the
+  screen's own accessor), the size range, the identity gamma ramp, the monitor with a *resolvable* atom
+  name, **the `ScreenChangeNotify` a resize delivers to a client that selected it** - the half of C1
+  that was missing - and the guard that a client which did not select hears nothing. Removing the
+  extension fails five of the seven.
 
-**Verify.** `xrandr` on the VM prints one output at the right size; `xrandr --query` against Xvfb
-diffed against this server; a C1 resize delivers `ScreenChangeNotify` to a client that selected it.
+**Live, and this is the part that matters for a forwarded application**: **JavaFX asks RandR seven
+times** as EasyShell starts - `QueryVersion`, `GetScreenResourcesCurrent`, `GetCrtcInfo`,
+`GetOutputInfo`, `GetMonitors`, `GetOutputProperty`, `SelectInput` - so this is not a protocol for
+hypothetical clients. With the extension in, EasyShell's window and its context menu are exactly as
+they were, and the log has **no ERROR lines**: the one request it makes that is not implemented
+(`GetOutputProperty`) is answered with a clean `BadImplementation` that the application carries on
+past. `mvn test` 226/226.
 
+**Traps.** RandR's replies are read positionally and some of them are long, so a field in the wrong
+place is not an error but a plausible wrong number - or a client that dies in its own library, which is
+how the missing `nOutputs` and the refused `GetPanning` showed up. A reply can be longer than thirty
+two bytes (`GetMonitors`' array follows twelve bytes of padding), and a probe that reads only the fixed
+part leaves the rest of the stream out of step. `xrandr` asks for `GetCrtcTransform`, `GetPanning` and
+`GetOutputPrimary` *before* printing anything, and `--verbose` adds `ListOutputProperties` - a
+half-implemented extension is not "mostly working", it is a crash. And **`GetOutputProperty` is left
+unanswered on purpose**: this server's outputs have no properties (an empty `ListOutputProperties` is
+the honest answer), the reference could not be used as a model for the refusal because the request this
+probe builds is itself refused by it (`BadLength`), and no client here needs it - JavaFX asks once and
+carries on.
 ---
 
 ### [x] B3. Xinerama. **S-M** - done 2026-09-25 (the part a client needs, measured)
