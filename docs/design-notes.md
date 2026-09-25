@@ -1156,6 +1156,43 @@ the host window is sized to the client's windows and dragging its edge resizes t
 a client that cares how big it is remembers that itself and asks for it next time. A window opened
 larger than its content is the failure mode the frame's maximum size exists to prevent.
 
+## Serving the screen over the network
+
+`--backend vnc` (backlog D2) is the fourth backend, and the only one whose screen leaves the machine.
+It fits the contract the other three already meet - the display tick calls `present` with the
+rectangle that changed, which is what an RFB update *is* - and everything about it follows from two
+decisions.
+
+- **The client sets the pace.** RFB is request-driven: a viewer asks for an update and the server
+  answers when the area it asked about has changed. So `present` only records the damage (one
+  rectangle per session, unioned), the socket is written from that session's own thread, and a viewer
+  that stops reading is a viewer that stops being served. That is E5's rule - no other client waits
+  for a slow one - and the protocol's own backpressure, which is why a viewer costs nothing when
+  nothing is happening.
+- **What a viewer gets is the damage, not the screen.** The item warned that "the damage rectangles
+  are what make it usable", and until this work they were the whole screen after every draw: a
+  keystroke cost four megabytes, because `afterDrawing` marked everything the screen could have
+  changed rather than what the request did change. `Rasterizer.drawnBounds` is the fix - the region a
+  request really wrote - and `draw/DamageTrackingTest` is its proof. Two misses on the way are worth
+  keeping: the older whole-screen mark was left *under* the new precise one for one round of testing
+  (so the precision appeared to do nothing), and `ImageCodec` built a rasterizer of its own, which
+  meant a `PutImage` was drawn **with no clip** - over whatever covered the window it went into - and
+  recorded its region on a rasterizer nobody read.
+
+**The handshake, and the one part of it that is easy to get wrong.** Version 3.8 (3.3 and 3.7 are
+answered in their own terms), security `None`, or the VNC scheme when `--vnc-password-file` is given.
+That scheme is a sixteen byte challenge encrypted with the password as a **DES key with each byte's
+bits reversed** - which is not a thing any DES library does for you, and which fails *silently*: the
+server simply refuses every password. It is pinned by a test against a vector computed with
+`openssl`, because a test that used this server's own encryption to check this server's encryption
+would agree with it on any mistake they shared. Apple's Screen Sharing is why it exists at all: it
+prompts for a password whatever the server offers, so a `None` server cannot be reached from the Mac
+it runs on.
+
+**What is not there** (the item keeps the list): the compressed encodings, the browser path, the RFB
+clipboard, the `Cursor` pseudo-encoding, and any colour-depth reduction. Raw frames are what this
+sends, and a viewer on the same machine or a LAN is what that is for.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

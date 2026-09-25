@@ -43,7 +43,8 @@ public class ArgbAlphaTest {
         // Two ARGB pixels in little endian byte order: half transparent red, then nothing at all.
         byte[] data = {(byte) 0x33, (byte) 0x22, (byte) 0x11, (byte) 0x80, 0, 0, 0, 0};
 
-        ImageCodec.putImage(pixmap, gc, 0, 0, 2, 1, ImageCodec.ZPIXMAP, 0, 32, data, 0, false);
+        ImageCodec.putImage(pixmap, new Rasterizer(pixmap, gc), 0, 0, 2, 1,
+                ImageCodec.ZPIXMAP, 0, 32, data, 0, false);
 
         assertEquals(0x80112233, pixmap.pixel(0, 0));
         assertEquals(0x00000000, pixmap.pixel(1, 0));

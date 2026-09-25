@@ -17,15 +17,25 @@ public final class ServerOptions {
         /** Swing window with a {@code BufferedImage}. Used when JavaFX cannot start. */
         SWING,
         /** No window at all: the framebuffer still exists and clients can connect. */
-        HEADLESS;
+        HEADLESS,
+        /**
+         * No window on this machine either: the screen is served to VNC clients instead
+         * (backlog D2). The framebuffer, the clients and the input all work exactly as they do
+         * under the other backends - what changes is who is looking and how they type.
+         *
+         * <p>It implies {@code --single-window}: a viewer watches one screen, and one port per
+         * client connection is not what a VNC client can be pointed at.
+         */
+        VNC;
 
         public static Backend parse(String value) {
             return switch (value.toLowerCase()) {
                 case "javafx", "fx" -> JAVAFX;
                 case "swing", "awt" -> SWING;
                 case "headless", "none", "xvfb" -> HEADLESS;
+                case "vnc", "rfb" -> VNC;
                 default -> throw new IllegalArgumentException(
-                        "unknown backend '" + value + "', expected one of javafx|swing|headless");
+                        "unknown backend '" + value + "', expected one of javafx|swing|headless|vnc");
             };
         }
     }
@@ -90,6 +100,22 @@ public final class ServerOptions {
      */
     private int controlPort = -1;
 
+    /**
+     * The port the {@code vnc} backend listens on. 5900 is the registered one, so a client can be
+     * pointed at a machine and nothing else; 0 asks for any free port, which is what a test wants.
+     */
+    private int vncPort = 5900;
+
+    /**
+     * The password a VNC client must type, read from a file, or null for none (backlog D2).
+     *
+     * <p>A file rather than the command line: a password in an argument is a password in
+     * {@code ps}. With none, the server offers RFB's security type "None" and any client that
+     * accepts it is in - which is what every VNC client but Apple's does, and what a loopback
+     * server wants. Apple's Screen Sharing insists on a password, which is why this exists.
+     */
+    private File vncPasswordFile;
+
     public static ServerOptions parse(String[] args) {
         ServerOptions options = new ServerOptions();
         List<String> positional = new ArrayList<>();
@@ -121,6 +147,8 @@ public final class ServerOptions {
                 case "--close-grace-ms" -> options.closeGraceMillis =
                         Integer.parseInt(next(args, ++i));
                 case "--detach-on-close" -> options.detachOnClose = true;
+                case "--vnc-port" -> options.vncPort = Integer.parseInt(next(args, ++i));
+                case "--vnc-password-file" -> options.vncPasswordFile = new File(next(args, ++i));
                 case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
@@ -142,6 +170,11 @@ public final class ServerOptions {
             if (value.startsWith(":")) {
                 options.displayNumber = parseDisplay(value);
             }
+        }
+        if (options.backend == Backend.VNC) {
+            // One screen, watched by whoever connects: the backend serves the whole framebuffer, and
+            // a screen per client - with a VNC port per client - is not a thing a viewer can use.
+            options.singleWindow = true;
         }
         return options;
     }
@@ -190,7 +223,7 @@ public final class ServerOptions {
 
                   --display :N          display number (default :1)
                   --geometry WxH[xD]    root window size (default 1280x800x24)
-                  --backend NAME        javafx | swing | headless (default javafx)
+                  --backend NAME        javafx | swing | headless | vnc (default javafx)
                   --title TITLE         window title
                   --max-clients N       maximum simultaneous clients (default 256)
                   --auth [FILE]         require MIT-MAGIC-COOKIE-1 using ~/.Xauthority
@@ -207,6 +240,11 @@ public final class ServerOptions {
                                         --control-port
                   --control-port N      listen on 127.0.0.1:N for the commands attach, detach and
                                         status (default: no control port)
+                  --vnc-port N          the port --backend vnc serves on, 0 for any free one
+                                        (default 5900). vnc serves the whole screen, so it implies
+                                        --single-window
+                  --vnc-password-file F  require the password in FILE (one line) from VNC clients;
+                                        without it the display is served to anyone who connects
                   --single-window       render every client into one window, as a plain X screen
                                         (default: one window per client connection)
                   --scale N             put N framebuffer pixels in each logical pixel, for a
@@ -427,5 +465,31 @@ public final class ServerOptions {
     /** The loopback port the control commands are answered on, or 0 when there is none. */
     public int controlPort() {
         return controlPort;
+    }
+
+    /** The port the VNC backend serves on, or 0 for any free one. */
+    public int vncPort() {
+        return vncPort;
+    }
+
+    /** The VNC password a client must type, read from its file, or null when there is none. */
+    public String vncPassword() {
+        if (vncPasswordFile == null) {
+            return null;
+        }
+        try {
+            String password = new String(java.nio.file.Files.readAllBytes(vncPasswordFile.toPath()),
+                    java.nio.charset.StandardCharsets.UTF_8).strip();
+            if (password.isEmpty()) {
+                // A zero password is a DES key of zeros, which is a weak key: the honest answer is to
+                // refuse rather than to serve a display that a known key opens.
+                throw new IllegalArgumentException("the VNC password file " + vncPasswordFile
+                        + " is empty");
+            }
+            return password;
+        } catch (java.io.IOException e) {
+            throw new IllegalArgumentException("cannot read the VNC password file "
+                    + vncPasswordFile + ": " + e.getMessage(), e);
+        }
     }
 }

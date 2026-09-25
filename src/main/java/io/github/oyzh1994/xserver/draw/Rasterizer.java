@@ -108,6 +108,26 @@ public final class Rasterizer {
     private final boolean simpleClip;
 
     /**
+     * The region this rasterizer has actually written, in the drawable's own coordinates, or an
+     * empty box when it wrote nothing.
+     *
+     * <p><b>Why the rasterizer keeps this.</b> The display tick presents what the framebuffer says
+     * changed, and every drawing request used to mark the *whole screen* changed - which is correct
+     * and useless: a keystroke in a terminal repainted 1300x800, and a VNC update (D2) that could
+     * have been a few hundred bytes was four megabytes. What a request can write is exactly what it
+     * is clipped to, but which of those pixels it *did* write is known here and nowhere else, so it
+     * is recorded here - two comparisons per written pixel - and the handler marks that rectangle.
+     *
+     * <p>It is a superset of what changed (a fill that stopped early still widens the box), which is
+     * the safe direction: a damage rectangle that is too big costs a repaint, one that is too small
+     * leaves a stale pixel on the screen.
+     */
+    private int drawnX0 = Integer.MAX_VALUE;
+    private int drawnY0 = Integer.MAX_VALUE;
+    private int drawnX1 = Integer.MIN_VALUE;
+    private int drawnY1 = Integer.MIN_VALUE;
+
+    /**
      * True when a filled rectangle can be handed to {@link PixelStore#fillRect} as a block: the
      * function ignores the destination and the fill style is a solid colour, so no per pixel work
      * is needed. That path also keeps damage tracking of a {@link Framebuffer} intact.
@@ -327,10 +347,32 @@ public final class Rasterizer {
         return background;
     }
 
+    /** The region written so far, or null when nothing has been. */
+    public Rectangle drawnBounds() {
+        return drawnX0 > drawnX1 ? null
+                : new Rectangle(drawnX0, drawnY0, drawnX1 - drawnX0 + 1, drawnY1 - drawnY0 + 1);
+    }
+
+    private void markDrawn(int x0, int y0, int x1, int y1) {
+        if (x0 < drawnX0) {
+            drawnX0 = x0;
+        }
+        if (y0 < drawnY0) {
+            drawnY0 = y0;
+        }
+        if (x1 > drawnX1) {
+            drawnX1 = x1;
+        }
+        if (y1 > drawnY1) {
+            drawnY1 = y1;
+        }
+    }
+
     public void writePixel(int x, int y, int src) {
         if (!clipContains(x, y)) {
             return;
         }
+        markDrawn(x, y, x, y);
         if (directCopy) {
             store.setPixel(x, y, src);
             return;
@@ -421,6 +463,7 @@ public final class Rasterizer {
             return;
         }
         if (asBlock) {
+            markDrawn(x0, y0, x1 - 1, y1 - 1);
             store.fillRect(x0, y0, x1 - x0, y1 - y0, foreground);
             return;
         }
@@ -459,6 +502,7 @@ public final class Rasterizer {
             return;
         }
         if (asBlock) {
+            markDrawn(px0, y, px1, y);
             store.fillRect(px0, y, px1 - px0 + 1, 1, foreground);
             return;
         }

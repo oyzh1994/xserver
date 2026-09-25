@@ -33,7 +33,7 @@ Options:
 | --- | --- |
 | `--display :N` | display number; listens on TCP 6000+N and `/tmp/.X11-unix/XN` |
 | `--geometry WxH[xD]` | root window size and depth (default 1280x800x24) |
-| `--backend NAME` | `javafx` (default), `swing`, or `headless` |
+| `--backend NAME` | `javafx` (default), `swing`, `headless`, or `vnc` |
 | `--auth [FILE]` | require MIT-MAGIC-COOKIE-1 from `~/.Xauthority` |
 | `--no-tcp` / `--no-unix` | restrict the transports |
 | `--log-requests` | log every request at debug level |
@@ -45,11 +45,27 @@ Options:
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 | `--detach-on-close` | closing the window leaves the clients running with no window instead of ending the session |
 | `--control-port N` | listen on `127.0.0.1:N` for `attach`, `detach` and `status` (0: any free port) |
+| `--vnc-port N` | the port `--backend vnc` serves on (default 5900; `vnc` implies `--single-window`) |
+| `--vnc-password-file F` | require the password in `F` (one line) from VNC clients |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and to `headless` -
 with a line saying so - where the platform reports no display at all, since neither toolkit can open a
 window there. `headless` itself runs the server with no window whatever, which is what tests use and
 what `xwd` needs.
+
+`vnc` presents no window either, and serves the screen to VNC clients instead:
+
+```sh
+mvn exec:java -Dexec.args="--backend vnc --vnc-port 5900 --geometry 1300x800"
+printf 'password
+' > ~/.xserver-vnc-pass     # only if you want clients to type one
+mvn exec:java -Dexec.args="--backend vnc --vnc-password-file ~/.xserver-vnc-pass"
+```
+
+Any VNC client works (`vnc://host:5900`), including the ones on phones; macOS's Screen Sharing
+**requires** a password, so use `--vnc-password-file` if that is the client. What is sent is raw
+frames of the damage since the last update, which is fine on a LAN and wasteful on a slow link; the
+compressed encodings are on the list in [docs/backlog.md](docs/backlog.md) (D2).
 
 ## Architecture
 
@@ -62,7 +78,7 @@ io.github.oyzh1994.xserver
 ├── net/          sockets: accepting clients, and encoding replies/events/errors
 ├── client/       one object per connection: handshake, request loop, dispatch, resource ids
 ├── protocol/     decoders for the requests the generated ones get wrong
-├── display/      Screen, VisualInfo, and the JavaFX/Swing/headless backends
+├── display/      Screen, VisualInfo, and the JavaFX/Swing/headless/VNC backends
 ├── draw/         Framebuffer, Rasterizer (X11 raster ops), ImageCodec (PutImage/GetImage)
 ├── resource/     windows, pixmaps, GCs, fonts, cursors, colormaps, atoms, properties
 ├── event/        event masks, propagation, crossing events, raw event assembly
@@ -344,6 +360,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   there. A window that sets `backing_store` to `WhenMapped` or `Always` has its pixels kept while it
   is covered and gets them back with no `Expose` at all, which is what a reference server does too.
   `save_under` is **not** implemented - measured, and the reference does not implement it either.
+- **The VNC backend sends raw frames, and nothing else yet.** `--backend vnc` serves the whole
+  screen (and so implies `--single-window`) to any VNC client as uncompressed damage rectangles, with
+  RFB's `None` security or a password from a file. Not there: the compressed encodings (`ZRLE`,
+  `Tight`), a clipboard between the viewer and the X selections, the cursor's *shape* (a viewer draws
+  its own pointer), and the browser path - a WebSocket and a canvas are a project of their own. A
+  viewer on the same machine or a LAN is what raw frames are for.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user

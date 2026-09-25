@@ -402,7 +402,7 @@ class RasterizerTest {
         // Little endian client: the bytes are blue, green, red, unused.
         byte[] data = {(byte) 0x33, (byte) 0x22, (byte) 0x11, 0, (byte) 0xAA, (byte) 0xBB,
                 (byte) 0xCC, 0};
-        ImageCodec.putImage(target, gc(), 0, 0, 2, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
+        ImageCodec.putImage(target, new Rasterizer(target, gc()), 0, 0, 2, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
         assertEquals(0xFF112233, target.pixel(0, 0));
         assertEquals(0xFFCCBBAA, target.pixel(1, 0));
         byte[] out = ImageCodec.getImage(target, 0, 0, 2, 1, ImageCodec.ZPIXMAP, 0xFFFFFFFF, 24,
@@ -410,7 +410,7 @@ class RasterizerTest {
         assertArrayEquals(data, out);
 
         XPixmap other = pixmap(1, 1, 0xFF000000);
-        ImageCodec.putImage(other, gc(), 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24,
+        ImageCodec.putImage(other, new Rasterizer(other, gc()), 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24,
                 new byte[]{0x00, 0x11, 0x22, 0x33}, 0, true);
         assertEquals(0xFF112233, other.pixel(0, 0));
     }
@@ -428,7 +428,7 @@ class RasterizerTest {
         XGC gc = gc();
         gc.setFunction(XGC.GX_XOR);
         byte[] data = {(byte) 0xE4, (byte) 0x0C, (byte) 0xF0, 0};
-        ImageCodec.putImage(target, gc, 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
+        ImageCodec.putImage(target, new Rasterizer(target, gc), 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
         assertEquals(0xFFF0F0F0 ^ 0xFFF00CE4, target.pixel(0, 0));
     }
 
@@ -438,7 +438,7 @@ class RasterizerTest {
         XGC gc = gc();
         gc.setPlaneMask(0x00FF0000);
         byte[] data = {(byte) 0xE4, (byte) 0x0C, (byte) 0xF0, 0};
-        ImageCodec.putImage(target, gc, 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
+        ImageCodec.putImage(target, new Rasterizer(target, gc), 0, 0, 1, 1, ImageCodec.ZPIXMAP, 0, 24, data, 0, false);
         assertEquals(0xFFF0FF00, target.pixel(0, 0));
     }
 
@@ -446,7 +446,7 @@ class RasterizerTest {
     void xyBitmapPacksBitsLeastSignificantFirst() {
         XPixmap target = pixmap(8, 2, 0xFF000000);
         byte[] data = {(byte) 0xAA, 0, 0, 0, (byte) 0xC0, 0, 0, 0};
-        ImageCodec.putImage(target, gc(), 0, 0, 8, 2, ImageCodec.XY_BITMAP, 0, 1, data, 0, false);
+        ImageCodec.putImage(target, new Rasterizer(target, gc()), 0, 0, 8, 2, ImageCodec.XY_BITMAP, 0, 1, data, 0, false);
         assertEquals(".#.#.#.#", row(target, 0));
         assertEquals("......##", row(target, 1));
         byte[] back = ImageCodec.getImage(target, 0, 0, 8, 2, ImageCodec.XY_BITMAP, 1, 1,
@@ -458,7 +458,7 @@ class RasterizerTest {
     void xyPixmapSendsTheMostSignificantPlaneFirst() {
         XPixmap target = pixmap(8, 1, 0xFF000000);
         byte[] data = {(byte) 0xAA, 0, 0, 0, (byte) 0xF0, 0, 0, 0};
-        ImageCodec.putImage(target, gc(), 0, 0, 8, 1, ImageCodec.XYPIXMAP, 0, 2, data, 0, false);
+        ImageCodec.putImage(target, new Rasterizer(target, gc()), 0, 0, 8, 1, ImageCodec.XYPIXMAP, 0, 2, data, 0, false);
         // Plane zero is the high bit of the pixel, plane one the low bit.
         assertEquals("02021313", values(target));
         byte[] back = ImageCodec.getImage(target, 0, 0, 8, 1, ImageCodec.XYPIXMAP, 0xFFFFFFFF, 2,
@@ -483,7 +483,7 @@ class RasterizerTest {
     void depthOneZPixmapUsesOneBitPerPixel() {
         XPixmap target = new XPixmap(1, null, null, 8, 1, 1, VisualInfo.staticGray1(1));
         target.fillRect(0, 0, 8, 1, 0xFF000000);
-        ImageCodec.putImage(target, gc(), 0, 0, 8, 1, ImageCodec.ZPIXMAP, 0, 1,
+        ImageCodec.putImage(target, new Rasterizer(target, gc()), 0, 0, 8, 1, ImageCodec.ZPIXMAP, 0, 1,
                 new byte[]{(byte) 0xAA, 0, 0, 0}, 0, false);
         assertEquals(0xFF000000, target.pixel(0, 0));
         assertEquals(0xFFFFFFFF, target.pixel(1, 0));

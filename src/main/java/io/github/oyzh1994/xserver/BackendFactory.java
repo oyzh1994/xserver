@@ -4,6 +4,7 @@ import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.HeadlessBackend;
 import io.github.oyzh1994.xserver.display.JavaFxBackend;
 import io.github.oyzh1994.xserver.display.SwingBackend;
+import io.github.oyzh1994.xserver.display.VncBackend;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,11 +30,15 @@ public final class BackendFactory {
     }
 
     /** Never returns null: an unusable JavaFX installation yields a Swing backend. */
-    public static DisplayBackend create(ServerOptions.Backend backend) {
-        return switch (backend) {
+    public static DisplayBackend create(ServerOptions options) {
+        return switch (options.backend()) {
             case JAVAFX -> createJavaFx();
             case SWING -> createSwing();
             case HEADLESS -> new HeadlessBackend();
+            // The only backend that needs an option of its own, and the only one whose "screen" is
+            // not a window on this machine at all (backlog D2).
+            case VNC -> new VncBackend(options.vncPort(), DEFAULT_TITLE, !options.listenAll(),
+                    options.vncPassword());
         };
     }
 

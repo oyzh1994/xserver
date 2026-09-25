@@ -50,7 +50,7 @@ class ImageCodecTest {
                 GRAY1, false);
 
         XPixmap target = pixmap(20, 3, 1, GRAY1);
-        ImageCodec.putImage(target, plainGc(), 0, 0, 20, 3, ImageCodec.ZPIXMAP, 0, 1, encoded, 0,
+        ImageCodec.putImage(target, new Rasterizer(target, plainGc()), 0, 0, 20, 3, ImageCodec.ZPIXMAP, 0, 1, encoded, 0,
                 false);
 
         for (int y = 0; y < 3; y++) {
@@ -78,7 +78,7 @@ class ImageCodecTest {
         assertEquals(37 * 4 * 5, encoded.length);
 
         XPixmap target = pixmap(37, 5, 24, TRUE_COLOR);
-        ImageCodec.putImage(target, plainGc(), 0, 0, 37, 5, ImageCodec.ZPIXMAP, 0, 24, encoded, 0,
+        ImageCodec.putImage(target, new Rasterizer(target, plainGc()), 0, 0, 37, 5, ImageCodec.ZPIXMAP, 0, 24, encoded, 0,
                 false);
         for (int y = 0; y < 5; y++) {
             for (int x = 0; x < 37; x++) {
@@ -98,7 +98,7 @@ class ImageCodecTest {
         assertNotNull(encoded);
 
         XPixmap target = pixmap(20, 2, 1, GRAY1);
-        ImageCodec.putImage(target, plainGc(), 0, 0, 20, 2, ImageCodec.XY_BITMAP, 0, 1, encoded, 0,
+        ImageCodec.putImage(target, new Rasterizer(target, plainGc()), 0, 0, 20, 2, ImageCodec.XY_BITMAP, 0, 1, encoded, 0,
                 false);
         assertEquals((source.pixel(0, 0) & 0xFFFFFF) != 0, (target.pixel(0, 0) & 0xFFFFFF) != 0);
         assertEquals((source.pixel(19, 1) & 0xFFFFFF) != 0, (target.pixel(19, 1) & 0xFFFFFF) != 0);
@@ -119,7 +119,7 @@ class ImageCodecTest {
     void depthEightPixelsKeepAllEightBitsOfTheirValue() {
         byte[] coverage = {(byte) 0x12, (byte) 0x49, (byte) 0x80, (byte) 0xFF};
         XPixmap mask = pixmap(4, 1, 8, THREE_THREE_TWO);
-        ImageCodec.putImage(mask, plainGc(), 0, 0, 4, 1, ImageCodec.ZPIXMAP, 0, 8, coverage, 0,
+        ImageCodec.putImage(mask, new Rasterizer(mask, plainGc()), 0, 0, 4, 1, ImageCodec.ZPIXMAP, 0, 8, coverage, 0,
                 false);
 
         for (int x = 0; x < 4; x++) {

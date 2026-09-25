@@ -119,7 +119,7 @@ public final class DrawHandlers {
         target.rasterizer().copyArea(storeOf(source), originXOf(source) + r.getSrcX(),
                 originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
                 Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()));
-        afterDrawing(client, gc, destination, r.getSrcDrawable());
+        afterDrawing(client, gc, destination, target, r.getSrcDrawable());
     }
 
     public void copyPlane(ClientConnection client, CopyPlane r) {
@@ -136,7 +136,7 @@ public final class DrawHandlers {
                 originYOf(source) + r.getSrcY(), target.x(r.getDstX()), target.y(r.getDstY()),
                 Short.toUnsignedInt(r.getWidth()), Short.toUnsignedInt(r.getHeight()),
                 r.getBitPlane());
-        afterDrawing(client, gc, destination, r.getSrcDrawable());
+        afterDrawing(client, gc, destination, target, r.getSrcDrawable());
     }
 
     public void putImage(ClientConnection client, PutImage r) {
@@ -169,7 +169,8 @@ public final class DrawHandlers {
         }
         int width = Short.toUnsignedInt(r.getWidth());
         int height = Short.toUnsignedInt(r.getHeight());
-        ImageCodec.putImage(target.store(), gc, target.x(r.getDstX()), target.y(r.getDstY()),
+        ImageCodec.putImage(target.store(), target.rasterizer(), target.x(r.getDstX()),
+                target.y(r.getDstY()),
                 width, height, format, Byte.toUnsignedInt(r.getLeftPad()), depthOf(drawable),
                 r.getData().toArray(), 0, client.isBigEndian());
         if (LOG.isDebugEnabled()) {
@@ -184,7 +185,7 @@ public final class DrawHandlers {
                     hex(target.store().pixel(x + width - 1, y + height - 1)),
                     values(target.store(), x, y, width, height));
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     /**
@@ -244,7 +245,7 @@ public final class DrawHandlers {
         Target target = target(drawable, gc);
         int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
         target.rasterizer().drawPoints(points);
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyLine(ClientConnection client, PolyLine r) {
@@ -253,7 +254,7 @@ public final class DrawHandlers {
         Target target = target(drawable, gc);
         int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
         target.rasterizer().drawPolyline(points);
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polySegment(ClientConnection client, PolySegment r) {
@@ -269,7 +270,7 @@ public final class DrawHandlers {
             points[i++] = segment.getY2();
         }
         target.rasterizer().drawSegments(target.points(points));
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyRectangle(ClientConnection client, PolyRectangle r) {
@@ -281,7 +282,7 @@ public final class DrawHandlers {
                     Short.toUnsignedInt(rectangle.getWidth()),
                     Short.toUnsignedInt(rectangle.getHeight()));
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyArc(ClientConnection client, PolyArc r) {
@@ -293,7 +294,7 @@ public final class DrawHandlers {
                     Short.toUnsignedInt(arc.getWidth()),
                     Short.toUnsignedInt(arc.getHeight()), arc.getAngle1(), arc.getAngle2());
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyFillRectangle(ClientConnection client, PolyFillRectangle r) {
@@ -305,7 +306,7 @@ public final class DrawHandlers {
                     Short.toUnsignedInt(rectangle.getWidth()),
                     Short.toUnsignedInt(rectangle.getHeight()));
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyFillArc(ClientConnection client, PolyFillArc r) {
@@ -317,7 +318,7 @@ public final class DrawHandlers {
                     Short.toUnsignedInt(arc.getWidth()),
                     Short.toUnsignedInt(arc.getHeight()), arc.getAngle1(), arc.getAngle2());
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void fillPoly(ClientConnection client, FillPoly r) {
@@ -327,7 +328,7 @@ public final class DrawHandlers {
         int[] points = target.points(flattenPoints(r.getPoints(), r.getCoordinateMode()));
         boolean winding = gc.fillRule() == XGC.FILL_WINDING;
         target.rasterizer().fillPolygon(points, winding);
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     // ------------------------------------------------------------------
@@ -373,7 +374,7 @@ public final class DrawHandlers {
             x += font.stringWidth8(items, index, length);
             index += length;
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void polyText16(ClientConnection client, PolyText16 r) {
@@ -419,7 +420,7 @@ public final class DrawHandlers {
             x += font.stringWidth16(chars, 0, length);
             index += bytes;
         }
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void imageText8(ClientConnection client, ImageText8 r) {
@@ -430,7 +431,7 @@ public final class DrawHandlers {
         XFont font = gc.font() != null ? gc.font() : defaultFont(client);
         target.rasterizer().drawText8(font, target.x(r.getX()), target.y(r.getY()), chars, 0,
                 chars.length);
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     public void imageText16(ClientConnection client, ImageText16 r) {
@@ -446,7 +447,7 @@ public final class DrawHandlers {
         XFont font = gc.font() != null ? gc.font() : defaultFont(client);
         target.rasterizer().drawText16(font, target.x(r.getX()), target.y(r.getY()), chars, 0,
                 chars.length);
-        afterDrawing(client, gc, drawable, 0);
+        afterDrawing(client, gc, drawable, target, 0);
     }
 
     // ------------------------------------------------------------------
@@ -589,20 +590,30 @@ public final class DrawHandlers {
      * is clipped away; a {@code NoExpose} tells the client there is nothing else coming, which is
      * what clients that set {@code graphics-exposures} on their GC are waiting to hear.
      */
-    private void afterDrawing(ClientConnection client, XGC gc, XResource drawable,
+    private void afterDrawing(ClientConnection client, XGC gc, XResource drawable, Target target,
                               int sourceDrawable) {
         // Only the screen the drawable belongs to can have changed. A pixmap is not on screen at
         // all, so it is marked on its own screen for the same reason the single screen used to be
         // marked for it: nothing that reads this knows better yet.
+        //
+        // *What* changed is the region this request wrote, which the rasterizer recorded as it
+        // wrote it. Marking the whole screen instead - which is what this did until D2 needed
+        // otherwise - is correct and useless: a keystroke in a forwarded terminal repainted the
+        // screen, and the backend that shows it over the network sent four megabytes for it.
+        Rectangle drawn = target.rasterizer().drawnBounds();
+        if (drawn != null) {
+            if (drawable instanceof XWindow window) {
+                server.markScreenDirty(window.screen(), drawn);
+            } else {
+                server.markScreenDirty(((XPixmap) drawable).screen(), drawn);
+            }
+        }
         if (drawable instanceof XWindow window) {
             // A window that has just drawn is no longer the window its backing store was captured
             // from: what it drew landed in the pixels that show, and the store does not have it. The
             // next reveal of that window paints and exposes instead of putting the saved pixels back,
             // which is the behaviour every window had before backing store existed.
             window.forgetBacking();
-            server.markScreenDirty(window);
-        } else {
-            server.markScreenDirty(((XPixmap) drawable).screen());
         }
         if (gc.graphicsExposures() && drawable instanceof XWindow window) {
             server.events().send(window.owner() == null ? client : window.owner(),

@@ -435,13 +435,26 @@ public final class XServer {
      * nobody asked for.
      */
     private void startClipboardBridge() {
-        if (options.noClipboard() || options.backend() == ServerOptions.Backend.HEADLESS) {
+        if (options.noClipboard() || presentsNoWindowHere()) {
             return;
         }
         HostClipboard host = HostClipboard.open();
         if (host.isAvailable()) {
             startClipboardBridge(host);
         }
+    }
+
+    /**
+     * True when this server's screen is not shown in a window on this machine.
+     *
+     * <p>The clipboard and drag bridges are the host's own desktop, reached through a window the
+     * user is looking at; a headless server has none, and neither has one served over VNC (D2) - a
+     * viewer's clipboard and the Mac's pasteboard are two different bridges, and the RFB one is not
+     * written yet.
+     */
+    private boolean presentsNoWindowHere() {
+        return options.backend() == ServerOptions.Backend.HEADLESS
+                || options.backend() == ServerOptions.Backend.VNC;
     }
 
     /**
@@ -459,7 +472,7 @@ public final class XServer {
 
     /** Starts the drag bridge when this server has a window for the host to drop onto. */
     private void startDropBridgeForWindow() {
-        if (options.noClipboard() || options.backend() == ServerOptions.Backend.HEADLESS) {
+        if (options.noClipboard() || presentsNoWindowHere()) {
             // The same rule as the clipboard: a server nobody is looking at has no desktop to be
             // dragged from.
             return;
@@ -796,7 +809,7 @@ public final class XServer {
         running = true;
         startTime = System.currentTimeMillis();
         if (backendFactory == null) {
-            backendFactory = () -> BackendFactory.create(options.backend());
+            backendFactory = () -> BackendFactory.create(options);
         }
         if (!options.perClientWindows()) {
             // One window for the whole screen, opened now and kept for the life of the server.
@@ -1751,6 +1764,18 @@ public final class XServer {
      */
     public void markScreenDirty(XWindow window) {
         markScreenDirty(window.screen());
+    }
+
+    /**
+     * Marks the part of a screen that a request drew into, in the drawable's own coordinates.
+     *
+     * <p>The rectangle comes from the rasterizer, which is the only thing that knows which pixels a
+     * request touched; see {@code Rasterizer.drawnBounds}. A request that drew nothing marks
+     * nothing, which is why this takes a rectangle rather than a screen.
+     */
+    public void markScreenDirty(Screen screen, Rectangle drawn) {
+        screen.framebuffer().markDirty(drawn.x, drawn.y, drawn.x + drawn.width,
+                drawn.y + drawn.height);
     }
 
     public void stop() {

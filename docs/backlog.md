@@ -87,7 +87,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
-| D2 | built-in remote transport (VNC / WebSocket / RDP) | large | L-XL |
+| [~] D2 | built-in remote transport: **VNC is in** (`--backend vnc`, raw encoding, with or without a password); the browser path, the compressed encodings and the RFB clipboard are not | large | L-XL |
 | B6 | GLX / OpenGL | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
@@ -2211,7 +2211,7 @@ that narrow looks like. One line, and the file's own helper was already there.
 
 ---
 
-### [ ] D2. Built-in remote transport. **L-XL**
+### [x] D2. Built-in remote transport. **L-XL** - the VNC backend is done 2026-09-25 (raw encoding, one screen, with or without a password); the browser path and the compressed encodings are not
 
 **Current.** The framebuffer is presented by three backends: JavaFX and Swing windows on the machine
 the server runs on, and a headless one that presents nothing. To watch a screen from elsewhere the
@@ -2233,8 +2233,82 @@ update are what make it usable, and `--scale`/colour-depth reduction are the kno
 needs a reverse of `screenCoordinate`. Authentication: RFB's own (`VNC`/`VncAuth`) or the server's
 `--auth` (A7) - and A7 must be fixed before either is offered on a network.
 
+**Done 2026-09-25: `--backend vnc`.** `display/VncBackend` is a `DisplayBackend` with no window on
+this machine, and `display/RfbSession` is the protocol: RFB 3.8 (3.3 and 3.7 are answered in their own
+terms), security `None` or the VNC scheme, **raw encoding only**, true colour only, the client's own
+pixel format honoured (8, 16 or 32 bits, either byte order, any channel maxima - a 565 client gets
+565), `DesktopSize` for C1's screen growth, and pointer and key events into the same `InputState` the
+other backends feed. `--vnc-port` (5900 by default) and `--vnc-password-file`. It implies
+`--single-window`: one screen is what a viewer watches.
+
+- **It is request-driven, and that is the whole design.** Nothing is sent until a client asks, and the
+  socket is written from that client's own thread, so a viewer that stops reading costs nothing and
+  no other client waits for it - the protocol's backpressure and this server's rule (E5) are the same
+  thing here. `present` does nothing but add the damage to each session's pending rectangle.
+- **A detached server and a VNC server are the same thing**, which is why D1 composed with this for
+  free: `isHeadless()` is true and `isClosed()` is never true, so the display tick opens no window and
+  the server runs until it is stopped.
+
+**The trap the item predicted, and it was real.** "The damage rectangles are what make it usable" -
+except the server marked the *whole screen* as damaged after every drawing request. A viewer's first
+version re-sent four megabytes for a keystroke, and 1300x800 of "damage" for a mouse move. The fix
+belongs under E3 ("blend only the damage region") and is done there: `Rasterizer` records the region
+it actually wrote, and `afterDrawing` marks that instead of the screen. Two of the three things that
+went wrong on the way are worth naming: **`afterDrawing` had a second, older whole-screen mark left
+under the new one** (so the precision looked like it did nothing for one round of testing), and
+**`ImageCodec` built its own rasterizer**, so a `PutImage` was drawn with no clip at all - over
+whatever covered the window it went into - and recorded its drawn region nowhere.
+
+**Measured 2026-09-25**, three ways:
+
+- `display/VncBackendTest` (7 tests, a real socket and a hand-written RFB *client*, because somebody
+  else's software is the thing this backend is for): a pixel an X client drew arrives in an update;
+  the whole screen comes back for a non-incremental request and **the damage, not the screen**, for an
+  incremental one - and an incremental request with nothing to send is answered with nothing at all
+  rather than by spinning; a 565 client's format is honoured; a pointer press and a key reach the X
+  client as the events they are (the keycode via `Keymap.keycodeForKeysym`); the right VNC password
+  gets the screen and a wrong one is refused before it; and the DES itself is pinned against a vector
+  computed with **openssl**, because the scheme's bit-reversed key is the part every implementation
+  gets wrong once and no library does for you.
+- `draw/DamageTrackingTest` (3 tests) is the other half and belongs to E3: for eleven primitive
+  families - block fill, stippled fill, thin and wide lines, polyline with round joins, polygon, arc
+  fill, arc outline, points, rectangle outline, text, `PutImage`, `copyArea` - **every changed pixel is
+  inside the damage the request marked**, and the damage is smaller than the surface. A pixel changed
+  outside it would be a pixel left stale on somebody's screen, with no error and no log line; that is
+  what the test is for.
+- **Live**: with `--backend vnc`, EasyShell connected and drew its interface, and macOS's own Screen
+  Sharing connected to `vnc://` and **completed the VNC handshake and the DES authentication three
+  times** (the log lines name the connection and the screen it was given). What is *not* verified live
+  is the picture in a viewer: driving that client's password dialog from a script in this environment
+  cost several attempts (a stale dialog, a field that kept its old contents) and the viewer window was
+  never captured. The frames themselves are verified byte for byte by the test client instead, and the
+  browser path of the item's Verify is not attempted at all - see below.
+- `mvn test` 281/281.
+
+**What is not done, and what each would take.**
+
+- **Compressed encodings** (`ZRLE`, `Tight`, `CoRRE`): raw is all this sends, so a slow link pays for a
+  full damage rectangle in pixels. The client's `SetEncodings` list is read and ignored - deliberately,
+  because a list is what a client *can* decode, not what it demands - so this is an optimisation and
+  not a compatibility gap.
+- **The browser path** (WebSocket + canvas) is a second presentation of the same framebuffer and is
+  not attempted. The VNC half answers "watch and drive this display from another machine"; a browser
+  needs a WebSocket server and a page, and that is a project of its own.
+- **The RFB clipboard** (`ClientCutText`/`ServerCutText`): a viewer's clipboard is read and dropped,
+  and the host clipboard bridge is off for this backend (`HostClipboard` is the *Mac's* pasteboard,
+  which is a different bridge). Copying text between a viewer and the X session therefore does nothing
+  yet, which for a forwarded terminal is the first thing a user will miss.
+- **The `Cursor` pseudo-encoding**: the X cursor's *shape* is not sent, so a viewer shows its own
+  pointer and an I-beam over a text field looks like an arrow.
+- **One port for the whole screen**, and therefore one screen: per-client mode would need a port per
+  client, which is why `--backend vnc` implies `--single-window`.
+- **`--scale`** is the HiDPI knob and works (the screen really is that many pixels), but the *colour
+  depth* reduction the item mentions as a bandwidth knob is not implemented.
+
 **Verify.** A real VNC client on another machine, and the browser path in a page with a canvas; the
-same scripted gesture on both, compared with the frame dumps.
+same scripted gesture on both, compared with the frame dumps. **Half done**: the real client is
+`display/VncBackendTest`'s RFB client plus three accepted connections from macOS Screen Sharing; the
+browser path waits for the item above.
 
 ---
 
@@ -2458,9 +2532,15 @@ through the same capture - once with the masked fast path in and once with it sh
 the two are **identical: 0 of 910000 pixels differ** over its window. That is the check the identity
 test cannot make: the test compares two functions, this compares a JVM's worth of glyph compositing.
 
-**What the item's plan still has.** (a) "Blend only the damage region": the loop is already given the
-clipped rectangle by every caller, so what was left of this was measuring it on a real frame rather
-than on a synthetic one, and that is not done. (b) The JavaFX `WritableImage` round trip turns out
+**And the damage itself, which D2 needed and which is this item's last bullet (2026-09-25).** "Blend
+only the damage region" turned out to be about *which* region: every drawing request marked the
+**whole screen**, so the presentation of a keystroke was a full frame - invisible for a local window,
+four megabytes for a VNC viewer. `Rasterizer` now records the region it actually wrote
+(`drawnBounds`) and `DrawHandlers.afterDrawing` marks that, and `draw/DamageTrackingTest` holds it to
+the only standard that matters: for eleven primitive families, **every pixel that changed is inside
+the damage**, checked by comparing the surface against a pristine copy. The two misses found on the
+way are recorded in D2 (the older whole-screen mark left under the new one, and `ImageCodec` building
+its own rasterizer, which lost both the clip and the record). (b) The JavaFX `WritableImage` round trip turns out
 not to exist: `JavaFxBackend.present` copies nothing - the `PixelBuffer` wraps the framebuffer's own
 `int[]` and only the union of the damage is handed to the FX thread - so the third bullet of the
 plan was answered by looking rather than by changing anything.

@@ -60,9 +60,9 @@ public final class ImageCodec {
      * @param offset first byte of the image inside {@code data}
      * @param bigEndian true when the client is a big endian machine
      */
-    public static void putImage(PixelStore store, XGC gc, int x, int y, int width, int height,
+    public static void putImage(PixelStore store, Rasterizer out, int x, int y, int width, int height,
             int format, int leftPad, int depth, byte[] data, int offset, boolean bigEndian) {
-        if (store == null || gc == null || data == null || width <= 0 || height <= 0 || depth <= 0
+        if (store == null || out == null || data == null || width <= 0 || height <= 0 || depth <= 0
                 || offset < 0 || offset > data.length) {
             return;
         }
@@ -70,7 +70,10 @@ public final class ImageCodec {
             return;
         }
         VisualInfo visual = visualOf(store);
-        Rasterizer out = new Rasterizer(store, gc);
+        // The *caller's* rasterizer, not a new one: it carries the clip (a put into a window that is
+        // partly covered must not paint over what covers it) and it is where the drawn region is
+        // recorded, which is what the display tick presents. Building one here - which this did -
+        // lost both, and a put image was drawn over the covering window and marked as nothing.
         // Only the part of the image that lands on the drawable is worth decoding.
         int colStart = Math.max(0, -x);
         int colEnd = Math.min(width, store.width() - x);
