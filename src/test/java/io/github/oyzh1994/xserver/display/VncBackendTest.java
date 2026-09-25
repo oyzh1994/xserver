@@ -266,6 +266,46 @@ class VncBackendTest {
     }
 
     /**
+     * A client that asks for ZRLE gets compressed frames, and they decode to the same pixels.
+     *
+     * <p>The bandwidth claim in one test: a screen of flat colours is where ZRLE wins, and the
+     * assertion is on the *decoded* picture first and the size second - a compressed frame that is
+     * smaller and wrong is worse than a raw one. The whole X-side setup is a window of one colour
+     * with a stripe of another, which drives the encoder through its solid, palette and RLE paths.
+     */
+    @Test
+    void aClientThatAsksForZrleGetsCompressedFrames() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 200, 0xFFFFFF);
+                client.mapWindow(window);
+                int gc = client.allocateId();
+                client.createGC(gc, client.root(), 0x0000FF);
+                client.fillRectangle(window, gc, 0, 0, 200, 200);      // one flat colour
+                int gc2 = client.allocateId();
+                client.createGC(gc2, client.root(), 0x00FF00);
+                client.fillRectangle(window, gc2, 0, 100, 200, 4);     // a stripe: runs and changes
+                client.flush();
+                Thread.sleep(150);
+
+                viewer.setEncodings(16, 0);
+                viewer.requestFullFrame();
+                Frame frame = viewer.readFrame();
+
+                assertEquals(0x0000FF, frame.pixel(50, 50), "the flat area");
+                assertEquals(0x00FF00, frame.pixel(50, 101), "the stripe");
+                assertEquals(0xE8E8E8, frame.pixel(250, 230), "and somewhere with no window at all");
+                int rawBytes = frame.width * frame.height * 4;
+                assertTrue(frame.encodedBytes() < rawBytes / 8,
+                        "a screen of flat colours should compress far below raw: " + frame.encodedBytes()
+                                + " of " + rawBytes);
+            }
+        }
+    }
+
+    /**
      * A client that speaks **3.3**, which is what macOS Screen Sharing announces.
      *
      * <p>Found by the live check, and it is the branch no test covered: 3.3 has no security-type
@@ -520,7 +560,7 @@ class VncBackendTest {
      * was one line wrong.
      */
     private record Frame(int x, int y, int width, int height, int bytesPerPixel, boolean bigEndian,
-                         byte[] pixels) {
+                         int encodedBytes, byte[] pixels) {
         int pixel(int px, int py) {
             int at = ((py - y) * width + (px - x)) * bytesPerPixel;
             int value = 0;
@@ -545,6 +585,8 @@ class VncBackendTest {
         private final OutputStream out;
         private int bytesPerPixel = 4;
         private boolean bigEndian;
+        /** The bytes the last update took on the wire, for the encoding tests. */
+        private int lastFrameBytes;
 
 
         boolean wasRefused;
@@ -610,6 +652,17 @@ class VncBackendTest {
             setPixelFormatBytes(readBytes(16));             // the default format
             int nameLength = readInt();
             readAscii(nameLength);
+        }
+
+        /** {@code SetEncodings}: what this viewer says it can decode, in its order of preference. */
+        void setEncodings(int... encodings) throws IOException {
+            out.write(2);
+            out.write(0);
+            writeU16(out, encodings.length);
+            for (int encoding : encodings) {
+                writeInt(out, encoding);
+            }
+            out.flush();
         }
 
         void setPixelFormat(int bpp, int depth, boolean bigEndian, boolean trueColour, int redMax,
@@ -734,12 +787,149 @@ class VncBackendTest {
                 if (encoding == -223) {                     // DesktopSize: no pixels follow it
                     continue;
                 }
-                assertEquals(0, encoding, "raw encoding");
-                byte[] data = new byte[width * height * bytesPerPixel];
-                in.readNBytes(data, 0, data.length);
-                last = new Frame(x, y, width, height, bytesPerPixel, bigEndian, data);
+                byte[] data;
+                if (encoding == 16) {                       // ZRLE: a length, then compressed tiles
+                    int compressed = readInt();
+                    byte[] zrle = readBytes(compressed);
+                    lastFrameBytes = compressed;
+                    data = decodeZrle(zrle, width, height);
+                } else {
+                    assertEquals(0, encoding, "raw encoding");
+                    data = new byte[width * height * bytesPerPixel];
+                    in.readNBytes(data, 0, data.length);
+                    lastFrameBytes = data.length;
+                }
+                last = new Frame(x, y, width, height, bytesPerPixel, bigEndian, lastFrameBytes, data);
             }
             return last;
+        }
+
+        /**
+         * A ZRLE decoder, so the test reads what a real client reads.
+         *
+         * <p>An independent implementation on purpose: the encoder and the decoder would agree if
+         * they shared a helper, and the thing worth testing is that what goes on the wire is what the
+         * *protocol* says - the CPIXEL width, the tile boundaries, the run lengths and the zlib
+         * stream. It handles the four subencodings this server emits and refuses anything else, so a
+         * future encoder that invented one fails here rather than in somebody's viewer.
+         */
+        private byte[] decodeZrle(byte[] compressed, int width, int height) throws IOException {
+            java.util.zip.Inflater inflater = new java.util.zip.Inflater();
+            inflater.setInput(compressed);
+            byte[] raw = new byte[width * height * 4 + 1024];
+            int rawLength = 0;
+            try {
+                while (!inflater.needsInput()) {
+                    if (rawLength == raw.length) {
+                        raw = java.util.Arrays.copyOf(raw, raw.length * 2);
+                    }
+                    int count = inflater.inflate(raw, rawLength, raw.length - rawLength);
+                    if (count <= 0) {
+                        break;
+                    }
+                    rawLength += count;
+                }
+            } catch (java.util.zip.DataFormatException e) {
+                throw new IOException("the ZRLE stream is not zlib", e);
+            } finally {
+                inflater.end();
+            }
+            int cpxel = bytesPerPixel == 4 ? 3 : bytesPerPixel;
+            // Each tile goes into the region at its own place: the tiles arrive in order, but the
+            // frame they make up is two dimensional and the reader above indexes it that way.
+            byte[] pixels = new byte[width * height * bytesPerPixel];
+            int at = 0;
+            for (int tileY = 0; tileY < height; tileY += 64) {
+                int tileHeight = Math.min(64, height - tileY);
+                for (int tileX = 0; tileX < width; tileX += 64) {
+                    int tileWidth = Math.min(64, width - tileX);
+                    java.io.ByteArrayOutputStream tile = new java.io.ByteArrayOutputStream();
+                    at = decodeTile(raw, at, tile, tileWidth, tileHeight, cpxel);
+                    byte[] tileBytes = tile.toByteArray();
+                    int rowBytes = tileWidth * bytesPerPixel;
+                    for (int y = 0; y < tileHeight; y++) {
+                        System.arraycopy(tileBytes, y * rowBytes, pixels,
+                                ((tileY + y) * width + tileX) * bytesPerPixel, rowBytes);
+                    }
+                }
+            }
+            return pixels;
+        }
+
+        /** One tile, its 1..16 colours already unpacked into the client's pixels. */
+        private int decodeTile(byte[] raw, int at, java.io.ByteArrayOutputStream out, int width,
+                               int height, int cpxel) throws IOException {
+            int pixels = width * height;
+            int subencoding = raw[at++] & 0xFF;
+            if (subencoding == 0) {
+                for (int i = 0; i < pixels; i++) {
+                    at = emit(raw, at, out, cpxel);
+                }
+                return at;
+            }
+            if (subencoding == 1) {
+                byte[] colour = value(raw, at, cpxel);
+                for (int i = 0; i < pixels; i++) {
+                    write(out, colour);
+                }
+                return at + cpxel;
+            }
+            if (subencoding == 128) {
+                int written = 0;
+                while (written < pixels) {
+                    byte[] colour = value(raw, at, cpxel);
+                    at += cpxel;
+                    int length = 1;
+                    int b;
+                    do {
+                        b = raw[at++] & 0xFF;
+                        length += b;
+                    } while (b == 255);
+                    for (int i = 0; i < length && written < pixels; i++, written++) {
+                        write(out, colour);
+                    }
+                }
+                return at;
+            }
+            if (subencoding >= 2 && subencoding <= 16) {
+                byte[][] palette = new byte[subencoding][];
+                for (int i = 0; i < subencoding; i++) {
+                    palette[i] = value(raw, at, cpxel);
+                    at += cpxel;
+                }
+                int bits = subencoding == 2 ? 1 : subencoding <= 4 ? 2 : 4;
+                int perByte = 8 / bits;
+                int mask = (1 << bits) - 1;
+                for (int i = 0; i < pixels; i++) {
+                    int index = i % perByte;
+                    int value = raw[at + i / perByte] & 0xFF;
+                    int shift = 8 - bits * (index + 1);
+                    write(out, palette[(value >> shift) & mask]);
+                }
+                return at + (pixels + perByte - 1) / perByte;
+            }
+            throw new IOException("unsupported ZRLE subencoding " + subencoding
+                    + ": the encoder should not be sending this");
+        }
+
+        /**
+         * One CPIXEL as the client's full pixel: a three byte CPIXEL gets the unused high byte back,
+         * which is what {@code Frame} reads. The value is the same either way - the byte is not part
+         * of any channel at a depth of 24 - so this is bookkeeping, not a colour decision.
+         */
+        private byte[] value(byte[] raw, int at, int cpxel) {
+            byte[] pixel = new byte[bytesPerPixel];
+            System.arraycopy(raw, at, pixel, 0, Math.min(cpxel, bytesPerPixel));
+            return pixel;
+        }
+
+        private void write(java.io.ByteArrayOutputStream out, byte[] pixel) {
+            out.write(pixel, 0, pixel.length);
+        }
+
+        private int emit(byte[] raw, int at, java.io.ByteArrayOutputStream out, int cpxel) {
+            write(out, value(raw, at, cpxel));
+            return at + cpxel;
         }
 
         /**

@@ -87,7 +87,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
-| [~] D2 | built-in remote transport: **VNC is in** (`--backend vnc`, raw encoding, with or without a password); the browser path, the compressed encodings and the RFB clipboard are not | large | L-XL |
+| [~] D2 | built-in remote transport: **VNC is in** (`--backend vnc`: raw and ZRLE, password or not, clipboard both ways, and a browser path with no bridge); the `Cursor` pseudo-encoding and `Tight` are not | large | L-XL |
 | B6 | GLX / OpenGL | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
@@ -2211,7 +2211,7 @@ that narrow looks like. One line, and the file's own helper was already there.
 
 ---
 
-### [x] D2. Built-in remote transport. **L-XL** - the VNC backend is done 2026-09-25 (raw encoding, one screen, with or without a password); the browser path and the compressed encodings are not
+### [x] D2. Built-in remote transport. **L-XL** - done 2026-09-26: raw and ZRLE frames, password or not, clipboard both ways, a browser path with no bridge; `Tight` and the `Cursor` pseudo-encoding are the only things left
 
 **Current.** The framebuffer is presented by three backends: JavaFX and Swing windows on the machine
 the server runs on, and a headless one that presents nothing. To watch a screen from elsewhere the
@@ -2314,18 +2314,34 @@ whatever covered the window it went into - and recorded its drawn region nowhere
   remote-desktop client makes it.
 - `mvn test` 283/283.
 
-**What is not done, and what each would take.**
+**ZRLE, done 2026-09-26.** `display/ZrleEncoder` writes the encoding every VNC client understands
+after raw: 64x64 tiles, each solid, a packed palette, plain RLE or raw, run through one zlib stream
+per session. A client that lists ZRLE (16) gets it; one that does not gets raw frames, which the
+protocol requires every client to decode.
 
-- **Compressed encodings** (`ZRLE`, `Tight`, `CoRRE`): raw is all this sends, so a slow link pays for a
-  full damage rectangle in pixels. The client's `SetEncodings` list is read and ignored - deliberately,
-  because a list is what a client *can* decode, not what it demands - so this is an optimisation and
-  not a compatibility gap.
+- **The measurement**: a 320x240 frame of flat colours and a stripe - exactly what a forwarded
+  terminal looks like - comes back under **an eighth** of raw in the test, and a full 1300x800 desktop
+  of solid colours is **1092 bytes of tiles compressed to 26**, against 4.16 MB raw. The live check is
+  noVNC over the WebSocket rendering EasyShell's interface with ZRLE in play.
+- **Four traps, and the last one was found by the live check rather than by a test.** A CPIXEL is
+  **three** bytes for the common 32bpp format, not four. The zlib stream belongs to the *connection*
+  and is flushed, never finished. A run never crosses a tile. And **the deflate loop must not treat a
+  zero-byte result as completion**: the first version stopped there and truncated the stream at
+  exactly four output buffers - invisible in every test whose frame fitted in one buffer, and a
+  client that closes the connection on a real desktop. There is a test now with a frame whose
+  compressed output spans many buffers, and it fails against the old loop.
+- **Not emitted**: palette RLE (129..255) and `Tight`/`CoRRE`. A client only has to decode what it is
+  sent, so those are optimisations rather than gaps - and the palette/RLE/solid/raw set is what a
+  screen of windows actually needs.
+
+**What is not done, and what each would take.**
 - **The page itself is not served.** The WebSocket carries RFB for a browser, but noVNC's own files
   come from somewhere else (the live check used `python3 -m http.server` for them). Serving a page
   from this server would mean HTTP file serving in a display server, which is a different product
   decision than a transport.
 - **The `Cursor` pseudo-encoding**: the X cursor's *shape* is not sent, so a viewer shows its own
-  pointer and an I-beam over a text field looks like an arrow.
+  pointer and an I-beam over a text field looks like an arrow. `Tight`/`CoRRE` are not implemented
+  either, for the reason above.
 - **One port for the whole screen**, and therefore one screen: per-client mode would need a port per
   client, which is why `--backend vnc` implies `--single-window`.
 - **`--scale`** is the HiDPI knob and works (the screen really is that many pixels), but the *colour

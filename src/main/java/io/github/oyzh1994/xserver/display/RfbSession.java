@@ -113,8 +113,9 @@ final class RfbSession implements Runnable {
      */
     private static final int IDLE_POLL_MILLIS = 500;
 
-    /** The one encoding this server sends, and the pseudo-encoding a resize is told with. */
+    /** The encodings this server sends, and the pseudo-encoding a resize is told with. */
     private static final int ENCODING_RAW = 0;
+    private static final int ENCODING_ZRLE = 16;
     private static final int ENCODING_DESKTOP_SIZE = -223;
 
     /**
@@ -166,6 +167,24 @@ final class RfbSession implements Runnable {
 
     /** True once the client listed the DesktopSize pseudo-encoding, which is how a resize is told. */
     private volatile boolean desktopSizeWanted;
+
+    /**
+     * True when the client listed ZRLE (16), which decides how every update is sent.
+     *
+     * <p>Offered and not demanded, and chosen once: a client that lists ZRLE can always decode it, so
+     * there is nothing to negotiate per update - and a client that does not list it gets raw frames,
+     * which the protocol requires every client to understand.
+     */
+    private volatile boolean zrleWanted;
+
+    /**
+     * This session's zlib stream, which outlives the updates (see {@link ZrleEncoder}).
+     *
+     * <p>Created with the session and ended with it: a {@code Deflater} holds memory outside the
+     * JVM's heap, so a viewer that comes and goes must not leave one behind.
+     */
+    private final java.util.zip.Deflater deflater = new java.util.zip.Deflater(
+            java.util.zip.Deflater.BEST_SPEED);
 
     /**
      * Damage not yet sent to this client, and the lock that makes waiting on it possible.
@@ -259,6 +278,7 @@ final class RfbSession implements Runnable {
 
     void close() {
         running = false;
+        deflater.end();
         synchronized (lock) {
             lock.notifyAll();
         }
@@ -485,6 +505,9 @@ final class RfbSession implements Runnable {
             if (encoding == ENCODING_DESKTOP_SIZE) {
                 desktopSizeWanted = true;
             }
+            if (encoding == ENCODING_ZRLE) {
+                zrleWanted = true;
+            }
         }
         // Everything else is left unsaid: a client that lists ZRLE or Tight gets raw frames, which
         // every one of them can read - the list is what a client *can* decode, not what it demands.
@@ -685,14 +708,7 @@ final class RfbSession implements Runnable {
     private void sendUpdate(Rectangle region) throws IOException {
         int width = region.width;
         int height = region.height;
-        int bytesPerPixel = Math.max(1, format.bitsPerPixel / 8);
-        int needed = width * height * bytesPerPixel;
-        if (pixels.length != needed) {
-            // One buffer per session, reused: an update that reallocated 4 MB each time would put
-            // the alliance of the collector and the socket in the way of every frame.
-            pixels = new byte[needed];
-        }
-        copyPixels(region, width, height, bytesPerPixel);
+        int[] argb = regionPixels(region, width, height);
 
         out.write(0);                                // FramebufferUpdate
         out.write(0);                                // padding
@@ -701,42 +717,84 @@ final class RfbSession implements Runnable {
         writeU16(region.y);
         writeU16(width);
         writeU16(height);
-        writeInt(ENCODING_RAW);
-        out.write(pixels);
+        if (zrleWanted) {
+            int cpxel = compressedPixelBytes();
+            byte[] zrle = ZrleEncoder.encode(argb, width, height, this::packedPixel, cpxel, deflater);
+            writeInt(ENCODING_ZRLE);
+            // The length of the compressed data, which ZRLE carries in the rectangle itself rather
+            // than in the message header - a reader that took it for pixels would lose the frame.
+            writeInt(zrle.length);
+            out.write(zrle);
+        } else {
+            int bytesPerPixel = Math.max(1, format.bitsPerPixel / 8);
+            int needed = width * height * bytesPerPixel;
+            if (pixels.length != needed) {
+                // One buffer per session, reused: an update that reallocated 4 MB each time would put
+                // the alliance of the collector and the socket in the way of every frame.
+                pixels = new byte[needed];
+            }
+            int at = 0;
+            for (int i = 0; i < argb.length; i++) {
+                at = store(packedPixel(argb[i]), at, bytesPerPixel);
+            }
+            writeInt(ENCODING_RAW);
+            out.write(pixels);
+        }
         out.flush();
     }
 
-    private void copyPixels(Rectangle region, int width, int height, int bytesPerPixel) {
+    /**
+     * How many bytes one pixel takes inside a ZRLE update.
+     *
+     * <p>The spec's compressed pixel: a 32 bit format whose channels all live in the low three bytes
+     * sheds the unused one, so the common client - 32bpp, little endian, red at 16 - sends three
+     * bytes per pixel rather than four. Getting this wrong is not an error a client reports; it is a
+     * screen full of the wrong colours.
+     */
+    private int compressedPixelBytes() {
+        int bytes = Math.max(1, format.bitsPerPixel / 8);
+        if (bytes != 4 || format.depth > 24) {
+            return bytes;
+        }
+        int highest = Math.max(Math.max(format.redShift + bitsFor(format.redMax),
+                format.greenShift + bitsFor(format.greenMax)),
+                format.blueShift + bitsFor(format.blueMax));
+        return highest <= 24 ? 3 : 4;
+    }
+
+    private static int bitsFor(int max) {
+        int bits = 0;
+        while (max > 0) {
+            bits++;
+            max >>= 1;
+        }
+        return bits;
+    }
+
+    /** One pixel in the client's format, which both the raw and the ZRLE path send. */
+    private int packedPixel(int argb) {
+        return (scale((argb >> 16) & 0xFF, format.redMax) << format.redShift)
+                | (scale((argb >> 8) & 0xFF, format.greenMax) << format.greenShift)
+                | (scale(argb & 0xFF, format.blueMax) << format.blueShift);
+    }
+
+    /** The region's pixels as ARGB, in row-major order, for whichever encoding sends them. */
+    private int[] regionPixels(Rectangle region, int width, int height) {
         io.github.oyzh1994.xserver.draw.Framebuffer framebuffer = screen.framebuffer();
+        int[] pixels = new int[width * height];
         if (!framebuffer.allocated()) {
             // Nothing has ever been drawn on this screen, and reading it through `pixels()` would
             // allocate the whole thing (E4 is about exactly that). Every pixel is the background.
-            int background = framebuffer.pixel(0, 0);
-            int at = 0;
-            for (int i = 0; i < width * height; i++) {
-                at = store(background, at, bytesPerPixel);
-            }
-            return;
+            java.util.Arrays.fill(pixels, framebuffer.pixel(0, 0));
+            return pixels;
         }
         int[] source = framebuffer.pixels();
         int stride = framebuffer.stride();
-        int redMax = format.redMax;
-        int greenMax = format.greenMax;
-        int blueMax = format.blueMax;
-        int redShift = format.redShift;
-        int greenShift = format.greenShift;
-        int blueShift = format.blueShift;
-        int at = 0;
         for (int y = 0; y < height; y++) {
             int row = (region.y + y) * stride + region.x;
-            for (int x = 0; x < width; x++) {
-                int argb = source[row + x];
-                int value = (scale((argb >> 16) & 0xFF, redMax) << redShift)
-                        | (scale((argb >> 8) & 0xFF, greenMax) << greenShift)
-                        | (scale(argb & 0xFF, blueMax) << blueShift);
-                at = store(value, at, bytesPerPixel);
-            }
+            System.arraycopy(source, row, pixels, y * width, width);
         }
+        return pixels;
     }
 
     /** One pixel into the buffer, in the client's byte order and width. */

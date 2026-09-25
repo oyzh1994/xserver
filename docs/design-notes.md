@@ -1224,7 +1224,21 @@ listener closes the connection when its handler returns**, so a handler that sta
 returns has its socket closed under the session - measured, and it looks exactly like a client that
 connects and is dropped.
 
-**What is not there** (the item keeps the list): the compressed encodings, the noVNC page itself
+**ZRLE is what a client with a narrow link gets** (D2, 2026-09-26). 64x64 tiles, each written solid,
+as a packed palette, as runs, or raw, and the whole update run through one zlib stream per session.
+A full 1300x800 desktop of solid colours is 1092 bytes of tiles and 26 bytes on the wire, against
+4.16 MB raw.
+
+Four things about the format bite, and one of them bit only on a real desktop. A **CPIXEL** is three
+bytes for the common 32bpp format, not four. The **zlib stream is the connection's** - flushed, never
+finished, so successive updates share its dictionary. A **run never crosses a tile**. And the
+**deflate loop must run until the input is consumed *and* the output buffer came back not-full**: a
+call can return zero bytes with input pending, and treating that as done truncated every stream at
+exactly four output buffers. Every test with a tile-sized frame passed while a real 1300x800 desktop
+made the client close the connection - which is why the ZRLE test set now includes one frame whose
+compressed output spans many buffers.
+
+**What is not there** (the item keeps the list): `Tight`/`CoRRE`, palette RLE, the noVNC page itself
 (the WebSocket carries RFB; the page comes from wherever the user keeps it), the `Cursor`
 pseudo-encoding, and any colour-depth reduction. Raw frames are what this sends, and a viewer
 on the same machine or a LAN is what that is for.
