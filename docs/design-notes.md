@@ -43,6 +43,23 @@ in - `PerClientWindowTest.aClientThatIsNotAnApplicationGetsAWindowOfItsOwnToo` i
 `--single-window` keeps the older shape - one shared screen, every client on it - which is also the
 mode the in-process tests build on.
 
+**A screen's pixels are allocated when something draws into it, not when it is made** (E4). The
+screen itself is still created at the handshake - it has to be, the setup reply names its root - but
+its framebuffer is a size and a colour until the first write, so a connection that only asks
+questions costs no pixels. That matters because this model gives *every* connection a screen: the
+kit's probes, `xdpyinfo`, and `xdotool`, which opens a connection per invocation, were each paying
+4 MB (16 MB at `--scale 2`) for a screen they never drew into. Measured with twenty `xdpyinfo`
+connections against the running server: 202 MB to 241 MB resident with the lazy allocation, and to
+304 MB without it.
+
+The other half - releasing a client's framebuffer when its last window goes away - is deliberately
+absent. A framebuffer is not only the windows' content: it is the root a client may have painted,
+and it is the store every picture over that screen points at, so releasing it while the client is
+still connected would either lose the root's pixels or hand the rasteriser an array that is no longer
+the screen's. Sharing one framebuffer between screens is absent for the opposite reason: in the
+default mode every client's screen shows the whole display at the same origin, so their windows are
+at the same coordinates and one store would show each client the other's windows.
+
 ## The host window is the client's window frame
 
 Three things make a forwarded application look like a window rather than a picture of one, and all
@@ -1049,9 +1066,13 @@ does not - is `backlog.md`, which is written to be worked through item by item.
 
 ## Testing notes
 
-`mvn test` runs the suite. It takes no X client and starts no display server of its own; the JavaFX
-backend test does open a real window when JavaFX is available. On the author's machine Maven is at
-`~/Documents/Tools/apache-maven-3.9.11/bin` and is not on PATH.
+`mvn test` runs the suite. It takes no X client and starts no display server of its own, and **no test
+opens a host window**: every server a test starts is given `--backend headless`, and the one test that
+touches a toolkit (`JavaFxBackendTest`) skips itself where a window cannot be opened. That was not
+true until E2 - `HighDpiTest` took the default backend, which opens a real window inside the test JVM,
+and a machine with no display parked the toolkit's startup for ever, so the suite hung rather than
+failed. On the author's machine Maven is at `~/Documents/Tools/apache-maven-3.9.11/bin` and is not on
+PATH; `ci.sh` is the suite as a continuous integration run does it, with that path built in.
 
 End-to-end checks that do need one:
 

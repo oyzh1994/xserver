@@ -50,14 +50,20 @@ class HighDpiTest {
     // ------------------------------------------------------------------
 
     private static XServer server(int display, String... extra) throws IOException {
-        String[] args = new String[6 + extra.length];
+        String[] args = new String[8 + extra.length];
         args[0] = "--display";
         args[1] = ":" + display;
         args[2] = "--geometry";
         args[3] = "400x300";
         args[4] = "--single-window";
         args[5] = "--no-unix";
-        System.arraycopy(extra, 0, args, 6, extra.length);
+        // Headless, like every other test that starts a server: without it this one took the default
+        // backend, which opens a real window - and on a machine with no display the toolkit's startup
+        // never returns, so the whole suite hung there (E2). What this test is about is the screen's
+        // own size and the property it publishes, and neither needs a window.
+        args[6] = "--backend";
+        args[7] = "headless";
+        System.arraycopy(extra, 0, args, 8, extra.length);
         XServer server = new XServer(ServerOptions.parse(args));
         server.start();
         return server;

@@ -75,8 +75,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | [~] B1 | XKEYBOARD: the map, the state and the handshake are in; `SetMap` and the rest are not | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
-| E2 | continuous integration | engineering | S |
-| E4 | per-client framebuffer memory | engineering | M |
+| [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
+| [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | E3 | performance: local blending, fewer copies | engineering | M-L |
 | D3 | core-font fidelity | large | M-L |
@@ -1977,45 +1977,103 @@ answer, and keep it out of the plan unless the product is a full remote desktop.
 
 ## 6. E - Engineering and quality
 
-### [ ] E2. Continuous integration. **S**
+### [~] E2. Continuous integration. **S** - the suite runs on a machine with no display 2026-09-25; the pipeline itself is the repository host's to configure
+**What was wrong, measured.** The item's own note - "the JavaFX backend test opens a real window when
+JavaFX is available - on a headless runner it must skip, which the test already does if written that
+way; check, and if it does not, make it" - had two halves, and neither was true:
 
-**Current.** No `.github/` at all. `mvn test` is 119 tests, most of them seconds, and it runs offline
-(`-o`) with a Maven that is not on `PATH` on the author's machine.
+- `JavaFxBackendTest.skipWithoutJavaFx` asked whether JavaFX was **on the classpath** and not whether a
+  window could be opened. JavaFX is a dependency, so the class is always there: on a runner with no
+  display the test walked straight into `Platform.startup`, and the toolkit's own startup then either
+  failed or never returned.
+- **`HighDpiTest` was the worse one, and the one nobody was looking at.** It starts a server without
+  `--backend headless`, so the server took the default backend and opened a real window *inside the
+  test JVM* - every run, on every machine, and on a machine with no display the toolkit's
+  `QuantumToolkit.startup` parks for ever. **The whole suite hung there**, not for a second but
+  indefinitely: reproduced with `-Djava.awt.headless=true`, with a thread dump showing `main` parked
+  in `QuantumToolkit.startup` and the render thread failing in Prism with
+  `ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0` (an empty screen list). CI would
+  have hit a job that never ends rather than a red build.
 
-**Why it matters.** Every item in this document ends in "the suite is still green"; a CI run is what
-makes that checkable by somebody else. It also pins the Java/Maven versions (JavaFX 25 from the
-classpath, `release 25`).
+**What changed.** `JavaFxBackendTest` now also asks `GraphicsEnvironment.isHeadless()`, which is the
+platform's own answer - true on a Linux runner with no `DISPLAY`, false on a desktop with one - and
+aborts with a message saying a window cannot be opened there. `HighDpiTest` starts its server with
+`--backend headless`, like every other test in the suite that starts one: what it is about is the
+screen's size and the property it publishes, and neither needs a window. A check over the whole test
+tree says it was the only one.
 
-**Plan.** A workflow that runs `mvn -o test` on a JDK that satisfies the pom (temurin 25 or newer) and
-publishes the surefire report. Note that the JavaFX backend test opens a real window when JavaFX is
-available - on a headless runner it must skip, which the test already does if written that way;
-check, and if it does not, make it.
+**Measured 2026-09-25**: `mvn -o test -DargLine=-Djava.awt.headless=true` **hangs before** (with the
+thread dump above) and **completes after**: `Tests run: 257, Failures: 0, Errors: 0, Skipped: 2` - the
+two skips being exactly `JavaFxBackendTest`'s toolkit tests - and `BUILD SUCCESS`. Without the flag,
+on a desktop, the same suite runs 257 with **0** skipped, so the guard skips only where skipping is
+right.
 
-**Verify.** A green run on a pull request, and a deliberately broken commit failing it.
+**`ci.sh`** is what a pipeline runs: one command, `MVN_OPTS=-Djava.awt.headless=true ci.sh` to
+reproduce a runner here, and it prints where the surefire report went. It finds Maven the way the
+other scripts do (not on `PATH` on the author's machine), and it deliberately does **not** pass `-o`:
+a runner's local repository starts empty. It also deliberately does not configure a service - this
+repository's remote is Gitee, and a workflow YAML written blind for a host nobody has tried is worse
+than no file. The two facts a pipeline needs are in the script's own comments.
+
+**Left open.** The green run on a pull request (and the deliberately broken commit failing it) cannot
+be produced here - there is no CI service in this checkout - so the item stays open until the script
+is wired to one and seen to run.
+
+**Found on the way, and not fixed: a server with no display serves into the void.** With
+`-Djava.awt.headless=true` and the default backend, a client that maps a window makes the tick thread
+call `JavaFxBackend.start`, whose toolkit startup never returns: the request threads go on answering
+clients, the tick thread is parked, and the log's last words are a raw JavaFX stack trace and
+`nothing to show on display :95: the window holds its last frame`. Nothing tells the user that nothing
+will ever be shown. That is a backend-selection question rather than a CI one - the honest behaviour
+is a line saying the toolkit could not start and either a refusal to start or a fall back to the
+headless backend - and it wants its own item.
 
 ---
 
-### [ ] E4. Per-client framebuffer memory. **M**
+### [~] E4. Per-client framebuffer memory. **M** - the allocation is lazy 2026-09-25; nothing is released while a client is connected
+**What it was.** In the default mode every connection gets a `Screen`, and every `Screen` allocated its
+`Framebuffer` at the handshake (`width * height * 4` bytes; 4.2 MB at 1300x800, 16.7 MB at
+`--scale 2`) - whether or not the connection ever drew anything. With 256 clients that is a gigabyte
+of framebuffers, and the connections that paid it include the ones that only ask questions: the kit's
+probes, `xdpyinfo`, and `xdotool`, which opens a connection per invocation.
 
-**Current.** In the default mode every client gets its own `Screen`, and every `Screen` allocates its
-own `Framebuffer` (`width * height * 4` bytes; 4.2 MB at 1300x800, 16.7 MB at `--scale 2`). The
-server allows 256 clients: at 1x that is 1.1 GB of framebuffer alone, before any window, pixmap or
-glyph.
+**What changed.** `Framebuffer` allocates its pixels on the first write and not in its constructor, so
+a screen that is never drawn into is a size and a colour. Reads do not allocate - an unallocated
+screen answers its background, which is what it would hold - and `resize` copes with an array that
+does not exist yet. The object keeps its identity, which is what the backends and every picture over
+it hold on to; that is the same rule C1's resize follows, and the reason they can be swapped under a
+caller at all.
 
-**Why it matters.** It is invisible with two clients and fatal with twenty; a "one window per client"
-server invites many.
+**Measured 2026-09-25**, two ways:
 
-**Plan.** Either share one framebuffer among screens of the same size (per-client screens already show
-a *viewport* of a shared screen in `--single-window` mode, so the mechanism exists) or allocate a
-client's framebuffer lazily and free it when its last window goes away. The second is smaller and
-keeps the isolation the per-client mode has today at the framebuffer level.
+- `IdleScreenMemoryTest` (3 tests, real connections): four clients that connect and ask nothing hold
+  no pixels; one client that maps a window allocates **its own** screen and the two others stay
+  empty; and twenty idle connections grow the used heap by ~6 MB where twenty framebuffers alone
+  would be 81 MB. **All three fail with the allocation put back in the constructor** - including the
+  heap one, which then sees the 84 MB.
+- Live, against the server on the Mac, twenty `xdpyinfo` connections from the VM: resident memory
+  went from 202 MB to **241 MB** with the lazy allocation and to **304 MB** without it - 101 MB
+  before, 39 MB after, so about 62 MB of the difference is the framebuffers that are no longer
+  touched. What is left is the connection machinery itself (a thread and its buffers each), which is
+  E5's bounded queue and not this item.
 
-**Traps.** Freeing a framebuffer while a picture, a glyph or the pointer sprite still points at its
-array is a use-after-free inside the JVM's own heap - the same array identity trap as C1. `Screen`
-holds the framebuffer as `final`.
+`mvn test` 257/257. The real clients are unaffected in the way that matters: EasyShell draws, so its
+screen is allocated as it always was, and the measurement above shows it (the run that launched it
+added a screen's worth).
 
-**Verify.** A test that connects N clients (the suite already drives real connections) and reports
-heap use, or simply asserts that two clients of the same size share/allocate as designed.
+**What is *not* done, and why.** The other half of the item's plan - *free* a client's framebuffer
+when its last window goes away - is deliberately not implemented. A framebuffer holds more than the
+windows' content: it holds the root the client may have drawn on (a wallpaper client, `xsetroot`,
+and any client that paints its desktop), and it is the store every picture over that screen points
+at. Releasing it while the client is still connected would either hide the root's content the next
+time a window appeared, or hand the rasteriser an array that is no longer the screen's - the
+use-after-free the item warns about, inside the JVM's own heap. The memory it would save is bounded
+by the clients that have drawn and then closed every window, which is not the case the item
+describes as fatal; the case it does describe, many connections that hold a screen each, is the one
+the lazy allocation takes away. **Sharing one framebuffer between screens of the same size** is the
+plan's other option and is not available either: in the default mode every client's screen shows the
+whole display at the same origin, so two clients' windows are at the same coordinates and a shared
+store would show each client the other's windows.
 
 ---
 

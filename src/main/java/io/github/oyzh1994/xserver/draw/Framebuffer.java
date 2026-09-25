@@ -20,8 +20,18 @@ public final class Framebuffer implements PixelStore {
      * array between frames has to ask again after one (see {@link #resize}). Everything else about
      * this object, its identity included, survives a resize, which is what the backends and the
      * picture store depend on.
+     *
+     * <p><b>Null until something draws</b>, which is what keeps a connection that never draws from
+     * costing a screen's worth of memory: in the default mode every connection gets a screen of its
+     * own, and the ones that only ask questions - a probe, {@code xdpyinfo}, anything that connects
+     * to look - used to allocate 4 MB each at the handshake (E4). {@link #pixels()} allocates on
+     * demand, so a caller never sees null; {@link #allocated()} is what a test asks to tell the two
+     * apart, and what a caller asks before deciding it holds the only reference.
      */
     private int[] pixels;
+
+    /** What a late allocation is filled with: the screen's own background. */
+    private final int fillArgb;
 
     private boolean dirty;
     private int dirtyX0;
@@ -32,9 +42,25 @@ public final class Framebuffer implements PixelStore {
     public Framebuffer(int width, int height, int fillArgb) {
         this.width = width;
         this.height = height;
-        this.pixels = new int[width * height];
-        java.util.Arrays.fill(this.pixels, fillArgb);
+        this.fillArgb = fillArgb;
+        // Nothing is allocated here: a screen that is never drawn into is a size and a colour, and
+        // the whole of it counts as damaged so that whatever allocates it later is presented.
         markDirty(0, 0, width, height);
+    }
+
+    /** Whether the pixels have been allocated, which is what the lazy allocation turns on. */
+    public boolean allocated() {
+        return pixels != null;
+    }
+
+    /** The pixels, allocated on the first ask and filled with the screen's background if new. */
+    private int[] allocate() {
+        if (pixels == null) {
+            pixels = new int[width * height];
+            java.util.Arrays.fill(pixels, opaque(fillArgb));
+            markDirty(0, 0, width, height);
+        }
+        return pixels;
     }
 
     /**
@@ -61,8 +87,10 @@ public final class Framebuffer implements PixelStore {
         java.util.Arrays.fill(grown, opaque(fillArgb));
         int keepWidth = Math.min(width, this.width);
         int keepHeight = Math.min(height, this.height);
-        for (int row = 0; row < keepHeight; row++) {
-            System.arraycopy(pixels, row * this.width, grown, row * width, keepWidth);
+        if (pixels != null) {
+            for (int row = 0; row < keepHeight; row++) {
+                System.arraycopy(pixels, row * this.width, grown, row * width, keepWidth);
+            }
         }
         this.pixels = grown;
         this.width = width;
@@ -82,7 +110,7 @@ public final class Framebuffer implements PixelStore {
 
     @Override
     public int[] pixels() {
-        return pixels;
+        return allocate();
     }
 
     @Override
@@ -95,7 +123,8 @@ public final class Framebuffer implements PixelStore {
         if (!contains(x, y)) {
             return 0;
         }
-        return pixels[y * width + x];
+        // A read does not allocate: the answer is the background, because nothing has drawn here.
+        return pixels == null ? opaque(fillArgb) : pixels[y * width + x];
     }
 
     @Override
@@ -103,7 +132,7 @@ public final class Framebuffer implements PixelStore {
         if (!contains(x, y)) {
             return;
         }
-        pixels[y * width + x] = opaque(argb);
+        allocate()[y * width + x] = opaque(argb);
         markDirty(x, y, x + 1, y + 1);
     }
 
@@ -130,8 +159,9 @@ public final class Framebuffer implements PixelStore {
             return;
         }
         int colour = opaque(argb);
+        int[] store = allocate();
         for (int row = y0; row < y1; row++) {
-            java.util.Arrays.fill(pixels, row * width + x0, row * width + x1, colour);
+            java.util.Arrays.fill(store, row * width + x0, row * width + x1, colour);
         }
         markDirty(x0, y0, x1, y1);
     }

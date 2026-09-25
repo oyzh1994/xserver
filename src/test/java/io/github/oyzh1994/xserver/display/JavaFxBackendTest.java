@@ -99,12 +99,26 @@ class JavaFxBackendTest {
                 "a freshly opened window must not hide the platform pointer");
     }
 
+    /**
+     * Skips on a machine that cannot show a window, which is two different machines.
+     *
+     * <p>One has no JavaFX on its classpath, and the server falls back to Swing there. The other has
+     * JavaFX and no display - a CI runner, a container, a machine reached without a window server -
+     * and that is the case this test used to walk into: JavaFX is a dependency, so the class is
+     * always there, and the toolkit's own startup then fails with "Unable to open DISPLAY" and takes
+     * the build with it. {@code GraphicsEnvironment.isHeadless()} is the question to ask, because it
+     * is the platform's answer rather than a guess: true on a Linux runner with no {@code DISPLAY},
+     * false on a desktop with one.
+     */
     private static void skipWithoutJavaFx() {
         try {
             Class.forName("javafx.scene.image.WritableImage");
         } catch (Throwable e) {
             // No JavaFX on this machine: the server falls back to Swing, and so does this test.
             throw new TestAbortedException("JavaFX is not available", e);
+        }
+        if (java.awt.GraphicsEnvironment.isHeadless()) {
+            throw new TestAbortedException("no display: a window cannot be opened here");
         }
     }
 

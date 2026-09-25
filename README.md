@@ -83,7 +83,9 @@ of its own - its own root window and framebuffer - so each forwarded application
 window sized to what it draws, and no client can draw over another's pixels. The window follows the
 client's top level windows: it is the union of their rectangles, so a dialog next to the parent
 stays inside it and a small application does not arrive in a screen-sized window with black around
-it. `--single-window` restores the older shape, one shared screen with every client on it.
+it. `--single-window` restores the older shape, one shared screen with every client on it. A
+screen's pixels are allocated when something first draws into it, so a connection that only asks
+questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
 
 **One framebuffer per screen, and windows draw straight into it.** A window's contents are not
 kept in its own buffer: drawing is clipped to the part of the window that is actually visible, and
