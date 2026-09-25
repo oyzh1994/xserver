@@ -37,8 +37,8 @@ public final class BackendFactory {
             case HEADLESS -> new HeadlessBackend();
             // The only backend that needs an option of its own, and the only one whose "screen" is
             // not a window on this machine at all (backlog D2).
-            case VNC -> new VncBackend(options.vncPort(), DEFAULT_TITLE, !options.listenAll(),
-                    options.vncPassword());
+            case VNC -> new VncBackend(options.vncPort(), options.vncWebSocketPort(), DEFAULT_TITLE,
+                    !options.listenAll(), options.vncPassword());
         };
     }
 

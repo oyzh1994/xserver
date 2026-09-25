@@ -116,6 +116,13 @@ public final class ServerOptions {
      */
     private File vncPasswordFile;
 
+    /**
+     * The port the browser path listens on: the same RFB sessions carried inside WebSocket frames,
+     * or -1 for none (backlog D2). A page cannot open a TCP socket, so this is what lets noVNC - or
+     * anything else that speaks RFB over a WebSocket - reach the display with nothing installed.
+     */
+    private int vncWebSocketPort = -1;
+
     public static ServerOptions parse(String[] args) {
         ServerOptions options = new ServerOptions();
         List<String> positional = new ArrayList<>();
@@ -149,6 +156,8 @@ public final class ServerOptions {
                 case "--detach-on-close" -> options.detachOnClose = true;
                 case "--vnc-port" -> options.vncPort = Integer.parseInt(next(args, ++i));
                 case "--vnc-password-file" -> options.vncPasswordFile = new File(next(args, ++i));
+                case "--vnc-ws-port" -> options.vncWebSocketPort =
+                        Integer.parseInt(next(args, ++i));
                 case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
@@ -245,6 +254,9 @@ public final class ServerOptions {
                                         --single-window
                   --vnc-password-file F  require the password in FILE (one line) from VNC clients;
                                         without it the display is served to anyone who connects
+                  --vnc-ws-port N       also serve the same VNC sessions over WebSocket on port N,
+                                        so a browser (noVNC) can connect with nothing installed
+                                        (default: no browser path)
                   --single-window       render every client into one window, as a plain X screen
                                         (default: one window per client connection)
                   --scale N             put N framebuffer pixels in each logical pixel, for a
@@ -470,6 +482,11 @@ public final class ServerOptions {
     /** The port the VNC backend serves on, or 0 for any free one. */
     public int vncPort() {
         return vncPort;
+    }
+
+    /** The port the browser path serves on, or -1 when there is none. */
+    public int vncWebSocketPort() {
+        return vncWebSocketPort;
     }
 
     /** The VNC password a client must type, read from its file, or null when there is none. */

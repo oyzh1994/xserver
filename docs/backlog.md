@@ -2296,10 +2296,15 @@ whatever covered the window it went into - and recorded its drawn region nowhere
   nothing at all, and it does not even read a frame pushed at it), and the reference `x11vnc` behaves
   like this server under the same probe - nothing unprompted after `ServerInit`, frames as soon as one
   is asked for.
-- **The browser path is demonstrated but not built**: noVNC + websockify is *client* software with a
-  bridge in front of the TCP port, not a WebSocket server inside this one. It answers the item's
-  question - "can a browser watch this screen" - with yes; building the WebSocket into the server is
-  still on the list below.
+- **The browser path, and no bridge in front of it** (2026-09-26): `--vnc-ws-port N` serves the same
+  sessions carried inside WebSocket frames (`net/WebSocketListener`, and `RfbSession`'s transport is
+  now an interface with a socket and a WebSocket under it - the session above cannot tell them apart).
+  noVNC in Chrome, pointed at `ws://127.0.0.1:6080` with **no websockify**, showed EasyShell's
+  interface with the page titled `Connected to xserver :96`, and a pointer event sent over that
+  WebSocket moved the X pointer to exactly the coordinates it named. `net/WebSocketTest` (5 tests) pins
+  the parts a browser checks: the RFC's own `Sec-WebSocket-Accept` vector, all three payload-length
+  encodings, fragmentation arriving as one run of bytes, a ping answered with a pong, and an unmasked
+  frame refused.
 - **The clipboard, both ways, out of process** (2026-09-26): with `--backend vnc` running, a viewer
   that sent `ClientCutText` "from the viewer" had it read back out of the X `CLIPBOARD` selection by
   the kit's own `ClipboardProbe read`, and a `ClipboardProbe write` of "from the X session" arrived
@@ -2315,9 +2320,10 @@ whatever covered the window it went into - and recorded its drawn region nowhere
   full damage rectangle in pixels. The client's `SetEncodings` list is read and ignored - deliberately,
   because a list is what a client *can* decode, not what it demands - so this is an optimisation and
   not a compatibility gap.
-- **The browser path** (WebSocket + canvas) is a second presentation of the same framebuffer and is
-  not attempted. The VNC half answers "watch and drive this display from another machine"; a browser
-  needs a WebSocket server and a page, and that is a project of its own.
+- **The page itself is not served.** The WebSocket carries RFB for a browser, but noVNC's own files
+  come from somewhere else (the live check used `python3 -m http.server` for them). Serving a page
+  from this server would mean HTTP file serving in a display server, which is a different product
+  decision than a transport.
 - **The `Cursor` pseudo-encoding**: the X cursor's *shape* is not sent, so a viewer shows its own
   pointer and an I-beam over a text field looks like an arrow.
 - **One port for the whole screen**, and therefore one screen: per-client mode would need a port per

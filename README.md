@@ -47,6 +47,7 @@ Options:
 | `--control-port N` | listen on `127.0.0.1:N` for `attach`, `detach` and `status` (0: any free port) |
 | `--vnc-port N` | the port `--backend vnc` serves on (default 5900; `vnc` implies `--single-window`) |
 | `--vnc-password-file F` | require the password in `F` (one line) from VNC clients |
+| `--vnc-ws-port N` | also carry the same sessions over WebSocket on port `N`, for a browser |
 
 The JavaFX backend falls back to Swing automatically when JavaFX cannot start, and to `headless` -
 with a line saying so - where the platform reports no display at all, since neither toolkit can open a
@@ -65,7 +66,10 @@ mvn exec:java -Dexec.args="--backend vnc --vnc-password-file ~/.xserver-vnc-pass
 ```
 
 Any VNC client works (`vnc://host:5900`), including the ones on phones; macOS's Screen Sharing
-**requires** a password, so use `--vnc-password-file` if that is the client. What is sent is raw
+**requires** a password, so use `--vnc-password-file` if that is the client. With `--vnc-ws-port`, a
+browser reaches it too - `noVNC` pointed at `ws://host:6080`, with **nothing to install and no bridge
+process**: open its `vnc.html` and put the host and port in the URL (the page itself is not served by
+this server, only the RFB inside the WebSocket). What is sent is raw
 frames of the damage since the last update, which is fine on a LAN and wasteful on a slow link; the
 compressed encodings are on the list in [docs/backlog.md](docs/backlog.md) (D2).
 
@@ -366,8 +370,8 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   screen (and so implies `--single-window`) to any VNC client as uncompressed damage rectangles, with
   RFB's `None` security or a password from a file, and **the clipboard goes both ways** - a viewer's
   copy lands in the X `CLIPBOARD` selection and on the Mac, and a copy in the session reaches the
-  viewer. Not there: the compressed encodings (`ZRLE`, `Tight`), the cursor's *shape* (a viewer draws
-  its own pointer), and the browser path - a WebSocket and a canvas are a project of their own. A
+  viewer, and a browser can be one of the clients (`--vnc-ws-port`, no bridge needed). Not there: the
+  compressed encodings (`ZRLE`, `Tight`) and the cursor's *shape* (a viewer draws its own pointer). A
   viewer on the same machine or a LAN is what raw frames are for.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.

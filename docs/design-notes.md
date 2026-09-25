@@ -1208,8 +1208,25 @@ first byte of a message only and cleared for its body, so a client that dribbles
 have it split. Measured live: `ClipboardProbe read` showed a viewer's text in the X selection, and a
 `ClipboardProbe write` arrived at the viewer as `ServerCutText`.
 
-**What is not there** (the item keeps the list): the compressed encodings, the browser path, the
-`Cursor` pseudo-encoding, and any colour-depth reduction. Raw frames are what this sends, and a viewer
+**A browser reaches it through the same sessions** (D2's other half). `--vnc-ws-port` starts a
+WebSocket listener, and the RFB session above it is *unchanged*, because the session was written
+against two streams and a transport interface now sits between it and the socket. The adapter
+(`net/WebSocketListener`) does the only translation that makes sense - message payloads are appended
+to the stream a reader sees, and a flush becomes one binary frame - so one RFB message is one frame
+without anything depending on it.
+
+Two traps in that adapter were real, and both looked like something else. **A read timeout is only
+meaningful before a frame starts**: the session sets one to do its idle work (the clipboard), and a
+timeout that arrived *inside* a frame left the reader mid-frame - which the session cannot tell from
+"the client is quiet", so the next read came from the wrong offset. The first byte of a frame is read
+with the caller's timeout and everything after it is read with the timeout retried. And **the
+listener closes the connection when its handler returns**, so a handler that starts a thread and
+returns has its socket closed under the session - measured, and it looks exactly like a client that
+connects and is dropped.
+
+**What is not there** (the item keeps the list): the compressed encodings, the noVNC page itself
+(the WebSocket carries RFB; the page comes from wherever the user keeps it), the `Cursor`
+pseudo-encoding, and any colour-depth reduction. Raw frames are what this sends, and a viewer
 on the same machine or a LAN is what that is for.
 
 ## Deliberately not done

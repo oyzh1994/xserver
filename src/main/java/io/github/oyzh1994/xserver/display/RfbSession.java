@@ -54,6 +54,28 @@ import java.net.Socket;
  */
 final class RfbSession implements Runnable {
 
+    /**
+     * Where a session's bytes come from and go to.
+     *
+     * <p>Two implementations, and that is the whole of the browser path (D2): a plain socket for a
+     * VNC client, and the same bytes inside WebSocket frames for a page. Everything below this line -
+     * the handshake, the updates, the input, the clipboard - is written against the streams and does
+     * not know which one it has.
+     */
+    interface RfbTransport {
+
+        String peer();
+
+        InputStream in() throws IOException;
+
+        OutputStream out() throws IOException;
+
+        /** A read timeout for the next byte, in milliseconds; 0 for none. */
+        void readTimeout(int millis) throws IOException;
+
+        void close();
+    }
+
     private static final Logger log = LoggerFactory.getLogger(RfbSession.class);
 
     /** What this server speaks; a client that asks for less is answered in its own terms. */
@@ -129,7 +151,7 @@ final class RfbSession implements Runnable {
     }
 
     private final VncBackend backend;
-    private final Socket socket;
+    private final RfbTransport transport;
     private final Screen screen;
     private final DisplayBackend.InputSink input;
     private final String name;
@@ -167,21 +189,20 @@ final class RfbSession implements Runnable {
 
     private byte[] pixels = new byte[0];
 
-    RfbSession(VncBackend backend, Socket socket, Screen screen, DisplayBackend.InputSink input,
-               String name, String password) throws IOException {
+    RfbSession(VncBackend backend, RfbTransport transport, Screen screen,
+               DisplayBackend.InputSink input, String name, String password) throws IOException {
         this.backend = backend;
-        this.socket = socket;
+        this.transport = transport;
         this.screen = screen;
         this.input = input;
         this.name = name;
         this.password = password;
-        socket.setTcpNoDelay(true);
-        this.in = new BufferedInputStream(socket.getInputStream(), 8192);
-        this.out = new BufferedOutputStream(socket.getOutputStream(), 64 * 1024);
+        this.in = new BufferedInputStream(transport.in(), 8192);
+        this.out = new BufferedOutputStream(transport.out(), 64 * 1024);
     }
 
     String peer() {
-        return String.valueOf(socket.getRemoteSocketAddress());
+        return transport.peer();
     }
 
     @Override
@@ -241,11 +262,7 @@ final class RfbSession implements Runnable {
         synchronized (lock) {
             lock.notifyAll();
         }
-        try {
-            socket.close();
-        } catch (IOException e) {
-            log.debug("closing the VNC socket", e);
-        }
+        transport.close();
     }
 
     // ------------------------------------------------------------------
@@ -387,7 +404,7 @@ final class RfbSession implements Runnable {
 
     private void serve() throws IOException {
         while (running) {
-            socket.setSoTimeout(IDLE_POLL_MILLIS);
+            transport.readTimeout(IDLE_POLL_MILLIS);
             int type;
             try {
                 type = in.read();
@@ -398,7 +415,7 @@ final class RfbSession implements Runnable {
                 flushPendingCutText();
                 continue;
             }
-            socket.setSoTimeout(0);                      // the rest of the message is not on a clock
+            transport.readTimeout(0);                    // the rest of the message is not on a clock
             if (type < 0) {
                 return;
             }

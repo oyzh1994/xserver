@@ -39,6 +39,8 @@ public final class VncBackend implements DisplayBackend {
     private static final Logger log = LoggerFactory.getLogger(VncBackend.class);
 
     private final int port;
+    /** The port the browser path listens on (a WebSocket carrying RFB), or -1 for none. */
+    private final int webSocketPort;
     private final String title;
     private final boolean loopbackOnly;
     /** The password a client must type, or null when the display is served to anyone. */
@@ -48,6 +50,8 @@ public final class VncBackend implements DisplayBackend {
     private final AtomicBoolean running = new AtomicBoolean();
 
     private ServerSocket socket;
+    /** The browser path, or null when the server was not asked for one. */
+    private io.github.oyzh1994.xserver.net.WebSocketListener websocket;
     private Screen screen;
     private InputSink input;
     private volatile int boundPort;
@@ -63,13 +67,16 @@ public final class VncBackend implements DisplayBackend {
     private volatile java.util.function.Consumer<String> clipboardSink;
 
     /**
-     * @param port         the TCP port to listen on, or 0 for any free one (which a test wants)
-     * @param title        what the client's window will say it is connected to
-     * @param loopbackOnly true when the server was told to listen on loopback only ({@code --local})
-     * @param password     the password a client must type, or null for none
+     * @param port          the TCP port to listen on, or 0 for any free one (which a test wants)
+     * @param webSocketPort the port a browser connects to, or -1 for no browser path
+     * @param title         what the client's window will say it is connected to
+     * @param loopbackOnly  true when the server was told to listen on loopback only ({@code --local})
+     * @param password      the password a client must type, or null for none
      */
-    public VncBackend(int port, String title, boolean loopbackOnly, String password) {
+    public VncBackend(int port, int webSocketPort, String title, boolean loopbackOnly,
+                      String password) {
         this.port = port;
+        this.webSocketPort = webSocketPort;
         this.title = title;
         this.loopbackOnly = loopbackOnly;
         this.password = password;
@@ -102,6 +109,16 @@ public final class VncBackend implements DisplayBackend {
             Thread accept = new Thread(this::accept, "xserver-vnc");
             accept.setDaemon(true);
             accept.start();
+            if (webSocketPort >= 0) {
+                // The browser path (D2): the same sessions, carried inside WebSocket frames, so a
+                // page can be pointed straight at this server - no bridge process in between.
+                websocket = new io.github.oyzh1994.xserver.net.WebSocketListener(webSocketPort,
+                        loopbackOnly, this::acceptWebSocket);
+                websocket.start();
+                log.info("VNC over WebSocket on port {}: point noVNC at ws://<this machine>:{}/ and"
+                        + " it needs nothing installed on the client machine", websocket.boundPort(),
+                        websocket.boundPort());
+            }
             log.info("VNC on port {}: connect with vnc://<this machine>:{} - {}",
                     boundPort, boundPort, password == null
                             ? "the display is served to anyone who connects, so this is for a"
@@ -117,6 +134,12 @@ public final class VncBackend implements DisplayBackend {
     /** The port actually bound, which is what a caller that asked for 0 needs to know. */
     public int boundPort() {
         return boundPort;
+    }
+
+    /** The browser path's port, or 0 when there is none. */
+    public int boundWebSocketPort() {
+        io.github.oyzh1994.xserver.net.WebSocketListener browser = websocket;
+        return browser == null ? 0 : browser.boundPort();
     }
 
     /** Where a viewer's clipboard text is handed; see {@link #clipboardSink}. */
@@ -161,6 +184,10 @@ public final class VncBackend implements DisplayBackend {
     @Override
     public void stop() {
         running.set(false);
+        io.github.oyzh1994.xserver.net.WebSocketListener browser = websocket;
+        if (browser != null) {
+            browser.stop();
+        }
         ServerSocket bound = socket;
         if (bound != null) {
             try {
@@ -184,20 +211,8 @@ public final class VncBackend implements DisplayBackend {
     private void accept() {
         while (running.get()) {
             try {
-                Socket client = socket.accept();
-                // The name a viewer puts in its window: the X display it is watching, not the
-                // screen's index - "xserver :96" is what a user recognises, and the index is 0 for
-                // the only screen this backend serves.
-                RfbSession session = new RfbSession(this, client, screen, input,
-                        title + " :" + displayNumber, password);
-                sessions.add(session);
-                Thread thread = new Thread(() -> {
-                    try {
-                        session.run();
-                    } finally {
-                        sessions.remove(session);
-                    }
-                }, "xserver-vnc-client");
+                SocketTransport transport = new SocketTransport(socket.accept());
+                Thread thread = new Thread(() -> serve(transport), "xserver-vnc-client");
                 thread.setDaemon(true);
                 thread.start();
             } catch (IOException e) {
@@ -205,6 +220,117 @@ public final class VncBackend implements DisplayBackend {
                     log.debug("accepting a VNC client failed", e);
                 }
             }
+        }
+    }
+
+    /**
+     * A browser that finished its WebSocket upgrade, served exactly like a socket client.
+     *
+     * <p>Run <b>on the listener's thread for this connection</b> and not off it: the listener closes
+     * the connection when this method returns, so a handler that spawned a thread and returned would
+     * have its socket closed under the session - measured, and it looks exactly like a client that
+     * connects and is dropped.
+     */
+    private void acceptWebSocket(io.github.oyzh1994.xserver.net.WebSocketListener.Connection
+                                         connection) {
+        serve(new WebSocketTransport(connection));
+    }
+
+    /**
+     * One RFB session, whichever transport it arrived on.
+     *
+     * <p>The name a viewer puts in its window is the X display it is watching, not the screen's index
+     * - "xserver :96" is what a user recognises, and the index is 0 for the only screen this backend
+     * serves.
+     */
+    private void serve(RfbSession.RfbTransport transport) {
+        try {
+            RfbSession session = new RfbSession(this, transport, screen, input,
+                    title + " :" + displayNumber, password);
+            sessions.add(session);
+            try {
+                session.run();
+            } finally {
+                sessions.remove(session);
+            }
+        } catch (IOException e) {
+            log.debug("a VNC client could not be started", e);
+            transport.close();
+        }
+    }
+
+    /** A VNC client on a socket. */
+    private static final class SocketTransport implements RfbSession.RfbTransport {
+
+        private final Socket socket;
+
+        SocketTransport(Socket socket) throws IOException {
+            this.socket = socket;
+            socket.setTcpNoDelay(true);
+        }
+
+        @Override
+        public String peer() {
+            return String.valueOf(socket.getRemoteSocketAddress());
+        }
+
+        @Override
+        public java.io.InputStream in() throws IOException {
+            return socket.getInputStream();
+        }
+
+        @Override
+        public java.io.OutputStream out() throws IOException {
+            return socket.getOutputStream();
+        }
+
+        @Override
+        public void readTimeout(int millis) throws IOException {
+            socket.setSoTimeout(millis);
+        }
+
+        @Override
+        public void close() {
+            try {
+                socket.close();
+            } catch (IOException e) {
+                log.debug("closing a VNC socket", e);
+            }
+        }
+    }
+
+    /** The same session, inside WebSocket frames, for a page. */
+    private static final class WebSocketTransport implements RfbSession.RfbTransport {
+
+        private final io.github.oyzh1994.xserver.net.WebSocketListener.Connection connection;
+
+        WebSocketTransport(io.github.oyzh1994.xserver.net.WebSocketListener.Connection connection) {
+            this.connection = connection;
+        }
+
+        @Override
+        public String peer() {
+            return connection.peer();
+        }
+
+        @Override
+        public java.io.InputStream in() {
+            return connection.in();
+        }
+
+        @Override
+        public java.io.OutputStream out() {
+            return connection.out();
+        }
+
+        @Override
+        public void readTimeout(int millis) throws IOException {
+            connection.readTimeout(millis);
+        }
+
+        @Override
+        public void close() {
+            connection.close();
         }
     }
 }

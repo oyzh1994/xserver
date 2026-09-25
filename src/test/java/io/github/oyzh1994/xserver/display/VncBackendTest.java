@@ -3,6 +3,7 @@ package io.github.oyzh1994.xserver.display;
 import io.github.oyzh1994.xserver.ServerOptions;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.clipboard.HostClipboard;
+import io.github.oyzh1994.xserver.test.TinyWebSocket;
 import io.github.oyzh1994.xserver.test.RawXClient;
 import org.junit.jupiter.api.Test;
 
@@ -87,12 +88,12 @@ class VncBackendTest {
                 // Nothing has changed, so an incremental request is answered with nothing at all -
                 // which is the protocol's own idle: the client waits, and so does the server.
                 viewer.requestIncrementalFrame();
-                viewer.socket.setSoTimeout(400);
+                viewer.readTimeout(400);
                 assertEquals(null, viewer.readFrameOrNull(), "no damage means no update");
 
                 // And a draw wakes it up, because the tick adds the damage to the viewer's pending
                 // rectangle whatever that viewer happens to be waiting for.
-                viewer.socket.setSoTimeout(4000);
+                viewer.readTimeout(4000);
                 int gc = client.allocateId();
                 client.createGC(gc, client.root(), GREEN);
                 client.fillRectangle(window, gc, 50, 50, 20, 20);
@@ -185,6 +186,81 @@ class VncBackendTest {
                 copy(client, window, "from the X session");
                 assertEquals("from the X session", viewer.readCutText(),
                         "what a client copied should reach the viewer");
+            }
+        }
+    }
+
+    /**
+     * A browser's whole path: RFB carried inside WebSocket frames.
+     *
+     * <p>This is what noVNC does, and until now it needed a bridge process in front of the RFB port.
+     * The handshake and the frame are asserted here rather than the browser being asked to show a
+     * picture, because everything a browser would do with them is the same code the socket tests
+     * already exercise - what is new is the transport underneath, and that is what this checks: the
+     * banner comes out of a frame, the handshake completes, and an update arrives carrying the pixel
+     * an X client drew.
+     */
+    @Test
+    void aBrowserSpeaksRfbInsideWebSocketFrames() throws Exception {
+        try (Server server = new Server()) {
+            assertTrue(server.backend.boundWebSocketPort() > 0,
+                    "the browser path should be listening");
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    TinyWebSocket ws = TinyWebSocket.connect("127.0.0.1",
+                            server.backend.boundWebSocketPort())) {
+                TinyWebSocket.Payloads rfb = ws.payloads();
+                assertEquals("RFB 003.008\n", rfb.readAscii(12),
+                        "the RFB banner arrives in the first frame");
+                ws.sendBinary("RFB 003.008\n".getBytes(StandardCharsets.US_ASCII));
+                byte[] security = rfb.read(2);
+                assertEquals(1, security[0], "one security type");
+                assertEquals(1, security[1], "and it is None");
+                ws.sendBinary(new byte[] {1});
+                assertEquals(0, RawXClient.readInt(rfb.read(4), 0), "SecurityResult: OK");
+                ws.sendBinary(new byte[] {1});                   // ClientInit
+                byte[] init = rfb.read(24);
+                int width = ((init[0] & 0xFF) << 8) | (init[1] & 0xFF);
+                int height = ((init[2] & 0xFF) << 8) | (init[3] & 0xFF);
+                assertEquals(server.screen.width(), width, "the screen the ServerInit names");
+                assertEquals(server.screen.height(), height);
+                // Big endian, which is the protocol's order for this reply - and NOT what
+                // RawXClient.readInt reads, which is little endian: the first version of this test
+                // read the name length that way, got 0x0B000000, and waited for 184 million bytes of
+                // name that never came.
+                int nameLength = ((init[20] & 0xFF) << 24) | ((init[21] & 0xFF) << 16)
+                        | ((init[22] & 0xFF) << 8) | (init[23] & 0xFF);
+                assertTrue(rfb.readAscii(nameLength).startsWith("xserver"),
+                        "and the name a browser shows in its title");
+
+                // Something to look at, then a full frame asked for the way a browser asks.
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 100, 100, 0x00FF00);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+                // FramebufferUpdateRequest: incremental, then x, y, width, height - each two bytes,
+                // in that order. The first version had the width in y and the height in width, which
+                // asked for a zero-height area and was correctly answered with nothing at all.
+                ws.sendBinary(new byte[] {3, 0, 0, 0, 0, 0, (byte) (width >> 8), (byte) width,
+                        (byte) (height >> 8), (byte) height});
+
+                // The update: FramebufferUpdate, one raw rectangle, then its pixels in the
+                // client's format - which is the default 32 bit, so BGRA.
+                assertEquals(0, rfb.read(1)[0] & 0xFF, "FramebufferUpdate");
+                rfb.read(1);                                     // padding
+                byte[] count = rfb.read(2);
+                assertEquals(1, ((count[0] & 0xFF) << 8) | (count[1] & 0xFF), "one rectangle");
+                byte[] rect = rfb.read(12);
+                int rx = ((rect[0] & 0xFF) << 8) | (rect[1] & 0xFF);
+                int ry = ((rect[2] & 0xFF) << 8) | (rect[3] & 0xFF);
+                int rw = ((rect[4] & 0xFF) << 8) | (rect[5] & 0xFF);
+                int rh = ((rect[6] & 0xFF) << 8) | (rect[7] & 0xFF);
+                assertEquals(0, RawXClient.readInt(rect, 8), "raw encoding");
+                byte[] pixels = rfb.read(rw * rh * 4);
+                int at = ((50 - ry) * rw + (50 - rx)) * 4;
+                int pixel = ((pixels[at + 2] & 0xFF) << 16) | ((pixels[at + 1] & 0xFF) << 8)
+                        | (pixels[at] & 0xFF);
+                assertEquals(0x00FF00, pixel, "the pixel the X client drew, out of a WebSocket frame");
             }
         }
     }
@@ -310,10 +386,11 @@ class VncBackendTest {
             }
             xserver = new XServer(ServerOptions.parse(password == null
                     ? new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                            "--no-unix", "--geometry", "320x240", "--no-clipboard"}
+                            "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
+                            "--no-clipboard"}
                     : new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                            "--no-unix", "--geometry", "320x240", "--vnc-password-file",
-                            passwordFile.toString(), "--no-clipboard"}));
+                            "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
+                            "--vnc-password-file", passwordFile.toString(), "--no-clipboard"}));
             xserver.start();
             xserver.startEventLoop();
             screen = xserver.screen();
@@ -469,6 +546,7 @@ class VncBackendTest {
         private int bytesPerPixel = 4;
         private boolean bigEndian;
 
+
         boolean wasRefused;
 
         VncClient(int port, String password) throws IOException {
@@ -482,7 +560,10 @@ class VncBackendTest {
             socket.setSoTimeout(4000);
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
+            runHandshake(password, thirtyThree);
+        }
 
+        private void runHandshake(String password, boolean thirtyThree) throws IOException {
             String version = readAscii(12);
             assertEquals("RFB 003.008\n", version, "the server announces the version it speaks");
             out.write((thirtyThree ? "RFB 003.003\n" : "RFB 003.008\n")
@@ -685,6 +766,11 @@ class VncBackendTest {
             } catch (java.security.GeneralSecurityException e) {
                 throw new IOException(e);
             }
+        }
+
+        /** The read timeout for the next byte, on either transport. */
+        void readTimeout(int millis) throws IOException {
+            socket.setSoTimeout(millis);
         }
 
         @Override
