@@ -58,10 +58,10 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A12~~ | ~~`winGravity` is stored but not applied~~ **done 2026-09-25** (`bitGravity` still open) | correctness | S-M |
 | ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
-| A5 | `PointerRoot` focus reporting: the premise was wrong, five measured differences remain | correctness | M |
+| ~~A5~~ | ~~`PointerRoot` focus reporting: the premise was wrong, five measured differences remain~~ **done 2026-09-25** | correctness | M |
 | ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
-| A9 | ~~`IncludeInferiors`~~ **done 2026-09-25**; backing store/save-unders still open | correctness | M-L |
-| A13 | `AllowEvents` freeze/thaw: premise disproven (measured), nothing to do | correctness | S |
+| ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
+| A13 | `AllowEvents` freeze/thaw: the premise is **real** (the probe had the grab modes backwards); semantics measured, not yet modelled | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | C2 | raise/activate the host window when a client window appears | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
@@ -695,7 +695,57 @@ event families share the detail lattice and not the mode numbering.
 
 ---
 
-### [ ] A5. The focus under `PointerRoot`: the premise was wrong, the details are not. **M**
+### [x] A5. The focus under `PointerRoot`: the premise was wrong, the details are not. **M** - done 2026-09-25
+
+**Done.** `FocusProbe`'s default sequence now prints the same lines against Xvfb and here, and so do
+twelve smaller sequences written to pin the corners. The three groups this item listed came down to
+**two states that this server kept as one**, plus a chain-order rule:
+
+- **The root window is not `PointerRoot`.** `SetInputFocus` with the root's own id is a state of its
+  own: `GetInputFocus` answers that id (where this server answered `1`), the keys stay on the root
+  window rather than following the pointer, and the events differ - measured, `"focus A" "warp 50 50"
+  "focus pointer"` and the same with `"focus root"` produce completely different sets. A reference
+  server *starts* with the root window focused (`xdpyinfo`'s "focus: window 0x1ff"), so this was
+  visible from the first request a client made. `InputState` carries the state as a flag beside the
+  window; `FocusProbe` gained the root's name (`R`) so a diff can see which of the two a server means.
+- **The chain arrives outermost first**, on the way in as well as out. This server sent the incoming
+  chain innermost first, which a case with the pointer inside a nested window shows and no other case
+  does.
+- **The `Pointer` bookkeeping**: the windows the pointer is inside are told when the focus moves into
+  or out of the focus the pointer implies - a `FocusOut` with detail `Pointer` on the way out of a
+  window, before the ordinary pair, and a `FocusIn` with the same detail on the way in, after it. The
+  rule is in `EventDispatcher.pointerLeft`/`pointerStillIn`/`pointerArrived`, and **two of its clauses
+  are measured rather than derived**, which is why they are commented there and not here: a change
+  *to* `PointerRoot` reports the window the pointer is in even when that window is the one it is
+  leaving, and a change to the *root window* does not. The item's own warning stands - "guessing at a
+  bookkeeping rule is how the wrong model gets written down" - so the clauses are written as the
+  measurements they are, with the sequences named.
+
+**Measured 2026-09-25**, with `tools/FocusProbe` against Xvfb and here: the default sequence, and
+twelve more (`"focus A" "warp 50 50" "focus root"`, `"focus A" "warp 50 50" "focus pointer"`,
+`"warp 50 50" "focus C" "focus pointer"`, the pointer outside every window, `focus root` from a
+window and from a nested one, `focus none` from a window and from PointerRoot, a pointer inside and
+outside the window being left) - **all identical line for line**. `MenuProbe` is still identical too,
+which is §7's gate for this area. `input/FocusReportingTest` (6 tests) pins the rules - **three of
+them fail** with the state folded back and the chain order reverted. `mvn test` 248/248.
+
+**Live**: EasyShell and termora, both connected to a `--single-window` server: EasyShell's context
+menu survived the six out-and-back passes 6/6, and termora's menu survived 6/6 with the two captures
+byte-identical. Neither declares a gravity and neither had an error in the server log beyond the three
+already recorded (RandR's `GetOutputProperty` and JavaFX's two asks about window `0x0`).
+
+**Two existing tests changed**, both of which had encoded the old folded model: `FocusEventTest`'s
+menu case relied on the server's initial focus being PointerRoot (it is the root window), and its
+`givingTheFocusBackToThePointerMovesItToThePointer` asserted the incoming chain innermost first.
+
+**Left open here**: the two detail values in the corner where a `RevertToParent` fails and the focus
+falls through to `PointerRoot` (recorded in the design notes) are **not re-measured** - `FocusProbe`
+has no step that destroys a focused window, so the rule now covers that corner but nothing has checked
+it. That is the first thing to test if this area is touched again.
+
+**The original wording, kept for what it measured:**
+
+### [ ] A5old. The focus under `PointerRoot`: the premise was wrong, the details are not. **M**
 
 **What the item claimed.** That with the focus on `PointerRoot` a server "is supposed to move the
 focus from window to window as the pointer moves and report each move", that this server does not, and
@@ -876,7 +926,7 @@ field the window goes in (the button is the byte right after the opcode), so the
 disarming nothing; both it and `RawXClient`'s new helpers are written from the generated reader.
 ---
 
-### [~] A9. `SubwindowMode.IncludeInferiors` done; backing store and save-unders still recorded only. **M-L**
+### [x] A9. `IncludeInferiors` and the backing store. **M-L** - done 2026-09-25
 
 **What it was.** `Picture.subwindowMode` was stored and never consulted, so every picture over a window
 behaved as `ClipByChildren`: it read the window's own pixels and stopped where a child began. For a
@@ -899,10 +949,64 @@ window answer nothing. **The one that fails without the change is the second** (
 child's colour should be, which is exactly the symptom this item is about); the other three are the
 guards that say what did not change. `mvn test` 237/237.
 
-**What is left of this item is the backing store**, and the item's own warning stands: it is "one buffer
-per window, and it changes what `obscured` means", the design notes explain why the server went without
-one, and 256 clients each keeping a full window's pixels is a memory decision rather than a fix. Treat
-it as a design change with `E4` (per-client framebuffer memory), not as a bug.
+**Done 2026-09-25: the backing store, and the save-unders half measured to be nothing to do.**
+
+**Measured first, with a new harness, `tools/backing-store-probe.py`** (Python rather than one of the
+Java tools: it needs `XChangeWindowAttributes` with a value list and `XGetImage` on the root, and a
+second opinion from *Xlib* is worth more than another hand-built request here). One red window, a blue
+one mapped over its middle, then the blue one unmapped, reading the pixel and counting the `Expose`
+events:
+
+```
+                     Xvfb        here (before)   here (after)
+window asks nothing  1 expose    1 expose       1 expose
+backing_store=WhenMapped  0 exposes  1 expose   0 exposes
+save_under           1 expose    1 expose       1 expose
+```
+
+Two things fall out of that table. **The reference implements backing store**, so a window asking for
+it is a real difference and not a hypothetical one - and its setup reply says so
+(`xdpyinfo`: `backing-store WHEN MAPPED, save-unders NO`). And **the reference does not implement
+save-unders**: it advertises `NO`, and its behaviour with a window asking for it is identical to the
+behaviour with a window asking for nothing, so this server matching it *is* the implementation.
+
+**What was built.** `XWindow` keeps a buffer for a window whose `backing_store` is `WhenMapped` or
+`Always` - allocated on demand, so the memory is the client's decision and not something spent on
+every window - and saves the window's visible pixels at the moment something covers it
+(`WindowHandlers.captureUnder`, called before the covering paint) and puts them back on the reveal
+(`repaintUnder`), which is what makes the reveal need no `Expose`. The region that needed writing
+first is `XWindow.contentRegion`: the window's own rectangle minus its children, **ignoring what is
+above it**, because at the moment of capture the covering window is already above and the pixels
+worth keeping are no longer in the visible region. Three things throw the buffer away, and each is a
+way the saved pixels stop being what the window would show: the client drew (**4**), the window moved
+or was resized, and the attribute was turned off. `Screen` now advertises `backingStores = 1`.
+
+**The memory question the item raised is answered rather than deferred**: nothing is allocated for a
+window that does not ask. The item's warning - "256 clients each keeping a full window's pixels" -
+applies to a server that keeps them for everybody, and that is not what this is.
+
+**Measured 2026-09-25**, three ways:
+
+- `tools/backing-store-probe.py` in its three modes, against Xvfb and here: the table above, matching
+  in every cell.
+- `resource/BackingStoreTest` (3 tests): a window that asked for a store is not exposed when it is
+  uncovered and its pixels come back; a window that did not ask is exposed, as before; and a window
+  that *drew* while it was covered is exposed too. **The first fails with the restore disabled**
+  (`expected: <null> but was: <Expose...>`), and the other two are the guards that say what did not
+  change.
+- `mvn test` 251/251, `MenuProbe` and `FocusProbe` still identical to Xvfb, and live: EasyShell's
+  context menu survived the six out-and-back passes 6/6 and termora's 6/6 with two byte-identical
+  captures. Neither client asks for a backing store (measured with `xwininfo -all`: both are
+  `NotUseful`), so the change is inert for them - which is the point of doing it through the
+  attribute rather than for every window.
+
+**Traps.** The capture has to happen *before* the covering window is painted, and the obvious way to
+write it - `XWindow.visibleRegion()` - is wrong at exactly that moment: the covering window is
+already mapped, so the region no longer contains the pixels about to be painted over, and the first
+version silently saved nothing (the probe's `restored=0`). `saveUnder` and `backingStore` are not
+interchangeable: the first saves what is *under* a window for the window below's benefit, the second
+saves the window's own pixels. And the advertised capability is part of the contract: a server that
+answers `backing-store NO` and then keeps the pixels anyway is lying to a client that reads it.
 
 **Traps.** `GetImage` uses `plane_mask` and its own rules, not `subwindowMode` - so the item's Verify
 (`xwd -id <frame>`) is not the check for this half, and the in-process test is. A picture's `sample`
@@ -910,55 +1014,57 @@ takes a *point*, so a pixel is sampled at its centre (`x + 0.5`); sampling its c
 neighbour.
 ---
 
-### [ ] A13. `AllowEvents` freeze/thaw semantics. **S** - the premise was measured, and the modes are inert on the reference too
+### [ ] A13. `AllowEvents` freeze/thaw semantics. **M** - the premise is real: the reference freezes, and this server does not
+**Corrected 2026-09-25: this item was closed on a measurement of the wrong experiment.** `tools/AllowEventsProbe`
+had the grab modes **backwards**. X's `GrabModeSync` is **0** and `GrabModeAsync` is **1** (`X.h`:
+`#define GrabModeSync 0` / `#define GrabModeAsync 1` - the opposite way round from `AllowEvents`, where
+`SyncPointer` is 1), and the probe passed `1` while printing "pointer_mode = Sync". So every run it
+ever made was of an **asynchronous** grab, which freezes nothing by definition: "the reference holds
+nothing back" was true of the wrong experiment. The probe now defaults to `GRAB_SYNC`, takes
+`asyncgrab` to ask for the other, and names the mode it is using in its output.
 
-**What the item claimed.** That the server "never freezes the pointer or the keyboard on a grab", that
-`AllowEvents` is therefore close to a no-op, and that the `Sync*`/`Replay*` modes are where that is
-wrong. The plan was: verify first with a raw client that grabs with `pointer_mode=Sync`, presses, and
-checks that nothing arrives until `AllowEvents(SyncPointer)` - then implement freezing in `InputState`.
-
-**Measured 2026-09-25 with `tools/AllowEventsProbe`** (new in the kit, and written to the item's own
-plan), and **the reference holds nothing back**:
+**Measured again with the fixed probe, and the reference does freeze.** Against Xvfb, in three
+arrangements:
 
 ```
-step: grab the pointer with pointer_mode = Sync                     grab status = 0
-step: press button 1 (the press that freezes the pointer)           ButtonPress button=1
-step: motion while frozen                                           MotionNotify
-                                                                    MotionNotify
-step: release button 1 while frozen                                 ButtonRelease button=1
-step: AllowEvents(SyncPointer)                                      (nothing)
-step: AllowEvents(AsyncPointer)                                     (nothing)
+active GrabPointer(pointer_mode = Sync), then press, two motions, release
+  press / motions / release   -> nothing delivered
+  AllowEvents(SyncPointer)    -> ButtonPress delivered
+  AllowEvents(AsyncPointer)   -> the two motions and the ButtonRelease delivered
+passive GrabButton on the root, pointer_mode = Sync
+  the activating press        -> LeaveNotify NotifyGrab and ButtonPress delivered *with* the grab
+  the motions and the release -> held
+  AllowEvents(SyncPointer)    -> both motions, the release, and EnterNotify NotifyUngrab
+  a second press, then AllowEvents(ReplayPointer)
+                              -> EnterNotify NotifyUngrab, then the press AND its release delivered
+                                 with no NotifyGrab - the event reprocessed as if the grab had not
+                                 fired, which is what a replay means
+passive GrabKey on the root, keyboard_mode = Sync, two connections
+  the key                     -> the grabber is told the KeyPress only; the KeyRelease is held
+  AllowEvents(ReplayKeyboard) -> the focused CLIENT is told the KeyPress and the KeyRelease
 ```
 
-Three arrangements, all the same: an **active** `GrabPointer` with `pointer_mode=Sync`; a **passive**
-`GrabButton` on the root with `pointer_mode=Sync`, activated by the press (which it takes - the
-`NotifyGrab`/`NotifyUngrab` crossing pair arrives exactly as A1 measured); and a passive `GrabKey`
-with `keyboard_mode=Sync`, where `AllowEvents(ReplayKeyboard)` released **nothing** - the replayed key
-did not reach the focused window of the *other* client, which is the one arrangement where a replay is
-unmistakable. The pointer case was also run with the input injected from a **second connection** and
-with the motion made by **`WarpPointer`** instead of XTEST, since those take different paths into the
-server and "the freeze is real but XTEST bypasses it" would have looked the same from one of them.
-Neither changed anything.
+So a `Sync` grab freezes the device, the events that follow are not delivered until `AllowEvents`,
+`Sync*` releases the held event to the grabbing client, `Async*` flushes the rest, and `Replay*`
+reprocesses them as if the grab had not fired - which is only observable with a second client, the
+arrangement the keyboard case uses.
 
-`tools/AllowEventsProbe` against Xvfb and against this server, for all three arrangements, differs in
-**nothing but window ids** (and one stale-pointer artifact from the run before). The key replay case is
-two connections on purpose: a replay is only observable if the event could have gone to somebody else.
+**Why it is open rather than implemented.** The measurements do not fit one rule: with an active grab
+`SyncPointer` delivered **one** event (the press) and the rest waited for `AsyncPointer`, while with a
+passive grab the same call delivered **all** of them. The protocol spec's own wording - `SyncThisDevice`
+"continues processing normally until the next key/button event is reported, at which point the device
+again appears to freeze" - does not distinguish the two either, and Xorg's implementation is known to
+be delicate (`othersFrozen` was patched in 2009 because it was being cleared wrongly; a frozen device's
+queue needed its own `FreePendingFrozenDeviceEvents`; `FreezeThisEventIfNeededForSyncGrab` has been the
+5th most common Xorg crash on Ubuntu). Guessing is what §7 warns about here - **a device that stops
+delivering events is felt by every client at once** - and both live clients grab. The next step is to
+model the queue from the source (`dix/events.c`: `AllowSome`, `FreezeThisEventIfNeededForSyncGrab`,
+`FreezeDevice`) and only then change `InputState`.
 
-**So there is nothing to implement, and implementing a freeze the reference does not have would be
-exactly what §7 warns about** - a device that stops delivering events is felt by every client at once,
-and none of them asked for it. The item's own Verify step is what disproved the premise.
+**Unchanged**: `AllowEvents` still validates its mode and does nothing else. Neither EasyShell nor
+termora depends on a freeze - A1's `GrabProbe` measured both grabbing with `Async` - so this is a
+fidelity gap rather than a failure a user meets.
 
-**What is *not* settled, and why the item stays open.** The measurement is XTEST-injected: the test bed
-has no hardware pointer or keyboard in front of `Xvfb` on the VM, so a freeze that the real input path
-honours and the injected one bypasses cannot be told apart here. Xorg's freeze lives in the event-
-delivery path and should apply to injected events too - it did not - but "the reference does not freeze
-this device" and "the reference does not freeze a device driven this way" are different claims. If a
-client is ever seen depending on the modes (a game, a remote-desktop client), the next step is to
-re-run this probe against a server with a real input device, or against an X server whose input is
-driven by a uinput device on the VM.
-
-**Not changed here**: `AllowEvents` still validates its mode and does nothing else, which is what the
-reference does in every case measured.
 ---
 
 ## 3. B - Extensions a reference server has
@@ -2013,9 +2119,12 @@ measurement *before* it is proposed, not after.
   (`/tmp/menu-outin.sh` and friends) and the 6/6 result.
 - **The blend rounds; Xorg's fixed-point composition truncates.** A one-unit difference in a channel is
   expected and is not a bug to chase.
-- **No backing store**: a revealed window is restored by painting the lower window's background and
-  asking it to draw (`Expose`). A client that ignores the expose shows its background there. A9 is the
-  item that would change this deliberately.
+- **No backing store for a window that does not ask for one**: such a window is restored by painting
+  the lower window's background and asking it to draw (`Expose`), and a client that ignores the expose
+  shows its background there. A window that sets `backing_store` to `WhenMapped`/`Always` is now kept
+  and gets its pixels back with no `Expose` (A9, done), and the attribute is advertised as
+  `WhenMapped` in the setup reply, which is what a reference server advertises. `save_under` stays
+  unadvertised and unimplemented deliberately - the reference does not implement it either, measured.
 - **`IncludeInferiors` behaves as `ClipByChildren`** (A9 is the item).
 - **The pointer cannot leave the host window's viewport** and is clamped to the screen: the sprite is
   hidden outside it, and a warp beyond it is clamped rather than moving the platform pointer.

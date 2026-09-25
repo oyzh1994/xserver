@@ -595,6 +595,11 @@ public final class DrawHandlers {
         // all, so it is marked on its own screen for the same reason the single screen used to be
         // marked for it: nothing that reads this knows better yet.
         if (drawable instanceof XWindow window) {
+            // A window that has just drawn is no longer the window its backing store was captured
+            // from: what it drew landed in the pixels that show, and the store does not have it. The
+            // next reveal of that window paints and exposes instead of putting the saved pixels back,
+            // which is the behaviour every window had before backing store existed.
+            window.forgetBacking();
             server.markScreenDirty(window);
         } else {
             server.markScreenDirty(((XPixmap) drawable).screen());

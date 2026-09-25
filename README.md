@@ -315,9 +315,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
   *shows* - the children painted on top of it - which is what copying the screen through a parent
   window needs. What is stacked above the window is excluded either way.
-- **A revealed window is restored by asking it to draw.** Nothing of a window's content is kept, so
-  the area under a window that goes away is repainted with the lower window's background and an
-  `Expose` - a client that ignores the expose shows its background there.
+- **A revealed window is restored by asking it to draw, unless it asked for a backing store.** With
+  the default `backing_store`, the area under a window that goes away is repainted with the lower
+  window's background and an `Expose`, and a client that ignores the expose shows its background
+  there. A window that sets `backing_store` to `WhenMapped` or `Always` has its pixels kept while it
+  is covered and gets them back with no `Expose` at all, which is what a reference server does too.
+  `save_under` is **not** implemented - measured, and the reference does not implement it either.
 - **Fonts are Java fonts keyed by X font name**, not rasterised X font files, so glyph shapes and
   metrics differ from a stock X server. Clients are told the metrics the server will actually use.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
@@ -332,7 +335,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   grab is held is reported `NotifyWhileGrabbed`. With the focus on PointerRoot the keys follow the
   pointer and no focus events are generated as it moves, which is what a reference server does too:
   measured, and recorded in `docs/backlog.md` (A5), where an earlier claim to the contrary is
-  corrected. What is still missing there is a set of smaller reporting differences, listed in A5.
+  corrected. **The root window is a third state, not PointerRoot**: `SetInputFocus` with the root's own
+  id keeps the keys on the root window and `GetInputFocus` answers that id, where PointerRoot sends
+  them to whatever the pointer is in - and the two report different events, both measured. The focus
+  this server starts with is the root *window*, which is what a reference server starts with.
 - **A window that appears under a stationary pointer is entered by the move that follows**, not by
   the map. Xorg reports it at the map; doing so here tears EasyShell's context menus down as they are
   mapped. See the design notes for the measurement.

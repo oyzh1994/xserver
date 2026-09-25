@@ -3,6 +3,7 @@ package io.github.oyzh1994.xserver.resource;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.display.VisualInfo;
 
 import java.awt.Rectangle;
@@ -56,6 +57,22 @@ public final class XWindow extends XResource {
     private int backingStore;
     private int backingPlanes = 0xFFFFFFFF;
     private int backingPixel;
+
+    /**
+     * The window's own pixels, kept while something covers it, for a client that asked for a backing
+     * store. Null until the first time it is needed, and only ever allocated for a window whose
+     * {@code backing_store} attribute asks for one: the memory is the client's decision, not
+     * something this server spends on every window of every client.
+     *
+     * <p>What is kept is the window's <em>visible</em> pixels at the moment it is covered, which is
+     * everything it had drawn: this server clips every drawing request to what shows, so an area
+     * nothing can see holds nothing to keep. That is also the gap - a client that draws while it is
+     * covered is clipped away as it always was, and {@link #forgetBacking} is what makes the reveal
+     * fall back to an {@code Expose} rather than putting stale pixels back.
+     */
+    private Framebuffer backing;
+    /** The parts of the screen {@link #backing} holds, in screen coordinates. Empty when none. */
+    private List<Rectangle> backingSaved = List.of();
 
     private int bitGravity = 0;
     private int winGravity = 0;
@@ -243,6 +260,89 @@ public final class XWindow extends XResource {
 
     public void setBackingPixel(int backingPixel) {
         this.backingPixel = backingPixel;
+    }
+
+    /**
+     * Whether the client asked for this window's contents to be kept while something covers it -
+     * {@code backing_store} of {@code WhenMapped} or {@code Always}.
+     */
+    public boolean keepsBackingStore() {
+        return backingStore != 0 && !isInputOnly();
+    }
+
+    /**
+     * Saves what the window shows now, so that uncovering it needs no {@code Expose}.
+     *
+     * <p>Called <em>before</em> the window is covered, never after: what is under another window at
+     * that moment is not this window's pixels. The parts saved accumulate, because a window can be
+     * covered from several directions, and a part captured twice is captured fresh the second time -
+     * the client may have drawn into it in between.
+     */
+    public void captureBacking(List<Rectangle> aboutToBeCovered) {
+        // What shows now, plus whatever of the window's own content is inside the area the covering
+        // window is about to paint - which its visible region no longer has, because the window
+        // doing the covering is already above it. Both are still this window's pixels at this
+        // moment, and neither is after the paint.
+        List<Rectangle> visible = ShapeState.union(visibleRegion(),
+                ShapeState.intersect(contentRegion(), aboutToBeCovered));
+        if (visible.isEmpty()) {
+            return;
+        }
+        Framebuffer screenPixels = screen().framebuffer();
+        int originX = absoluteX();
+        int originY = absoluteY();
+        for (Rectangle part : visible) {
+            buffer().copyFrom(screenPixels, part.x, part.y, part.x - originX, part.y - originY,
+                    part.width, part.height);
+        }
+        backingSaved = ShapeState.union(backingSaved, visible);
+    }
+
+    /**
+     * Puts back the pixels the window had where {@code area} uncovers it, and answers which parts of
+     * {@code area} came back - the rest has to be painted and exposed the ordinary way.
+     *
+     * <p>Nothing comes back when the window has no store, has never been captured, or has drawn since
+     * - see {@link #forgetBacking}, which the drawing paths call.
+     */
+    public List<Rectangle> restoreBacking(Rectangle area) {
+        if (backing == null || backingSaved.isEmpty()) {
+            return List.of();
+        }
+        List<Rectangle> restored = ShapeState.intersect(List.of(area), backingSaved);
+        if (restored.isEmpty()) {
+            return List.of();
+        }
+        Framebuffer screenPixels = screen().framebuffer();
+        int originX = absoluteX();
+        int originY = absoluteY();
+        for (Rectangle part : restored) {
+            screenPixels.copyFrom(backing, part.x - originX, part.y - originY, part.x, part.y,
+                    part.width, part.height);
+        }
+        return restored;
+    }
+
+    /**
+     * Throws the saved pixels away, so the next reveal paints and exposes instead of restoring.
+     *
+     * <p>Three things call it, and each is a way the saved pixels stop being what the window shows:
+     * the client drew something (which is clipped to the visible part and so is not in the store),
+     * the window moved or was resized (the store is the window's contents, and this server does not
+     * move them), and the client turned the backing store off.
+     */
+    public void forgetBacking() {
+        backingSaved = List.of();
+        backing = null;
+    }
+
+    /** The store, allocated on the first capture and re-made when the window's size changes. */
+    private Framebuffer buffer() {
+        if (backing == null || backing.width() != width() || backing.height() != height()) {
+            backing = new Framebuffer(width(), height(), 0);
+            backingSaved = List.of();
+        }
+        return backing;
     }
 
     public int bitGravity() {
@@ -502,11 +602,24 @@ public final class XWindow extends XResource {
      * after its window has gone. A moved or resized window is the same story.
      */
     public List<Rectangle> coveredRegion() {
-        return visibleRegion(outerClipRect(), true);
+        return visibleRegion(outerClipRect(), true, false);
     }
 
     private List<Rectangle> visibleRegion(Rectangle clip) {
-        return visibleRegion(clip, false);
+        return visibleRegion(clip, false, false);
+    }
+
+    /**
+     * The window's own pixels: its content rectangle minus its children, and <em>not</em> minus
+     * whatever is stacked above it.
+     *
+     * <p>This is the region the client's drawing lands in, which is what a backing store saves. The
+     * difference from {@link #visibleRegion()} matters at exactly one moment: when a window is being
+     * covered, the covering window is already above it, so its visible region no longer contains the
+     * pixels that are about to be painted over - and those are the ones worth keeping.
+     */
+    public List<Rectangle> contentRegion() {
+        return visibleRegion(clipRect(), false, true);
     }
 
     /**
@@ -515,7 +628,8 @@ public final class XWindow extends XResource {
      *                        and must be given back when it goes away, while they are not part of
      *                        its own drawing surface - which stops at the child's rectangle.
      */
-    private List<Rectangle> visibleRegion(Rectangle clip, boolean includeChildren) {
+    private List<Rectangle> visibleRegion(Rectangle clip, boolean includeChildren,
+                                          boolean ignoreObscuring) {
         if (clip.isEmpty()) {
             return List.of();
         }
@@ -539,6 +653,9 @@ public final class XWindow extends XResource {
             XWindow parent = window.parent();
             if (parent == null) {
                 break;
+            }
+            if (ignoreObscuring) {
+                continue;
             }
             List<XWindow> siblings = parent.children();
             for (int i = siblings.indexOf(window) + 1; i < siblings.size(); i++) {

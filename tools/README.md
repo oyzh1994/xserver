@@ -104,6 +104,15 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   servers are compared by their numbers rather than by "it replied". Its first version sent the three
   1.1 requests as four bytes each and read the reference's `BadLength` as "not implemented" - they
   take a window argument, and `GetScreenSize` refuses even that.
+- `backing-store-probe.py` - the harness for A9's backing store, and **Python** rather than one of the
+  Java tools for the reason `gen-cursor-font.py` is: it needs `XChangeWindowAttributes` with a value
+  list and `XGetImage` on the root, and a second opinion from *Xlib* is worth more than another
+  hand-built request. `python3 tools/backing-store-probe.py <display> [none|backing|save]` maps a blue
+  window over a red one, takes it away, and prints the pixel and the number of `Expose` events the red
+  one was sent. The three modes are the three answers a server can give, and the difference between
+  them is the whole feature: `none` and `save` send one expose on both servers (the reference
+  advertises `save-unders NO` and does not implement it), and `backing` sends one here and **zero** on
+  a reference server, which does keep the pixels. Run it against both and diff the table.
 - `XkbProbe` - the harness for B1, and the tool that found A4's cause: the two `XkbUseExtension` calls
   and the `XkbGetMap(which=0x7)` that `xdotool` makes, plus `GetState`, `GetControls`,
   `PerClientFlags` and `GetDeviceInfo`. The GetMap reply is printed field by field **and can be

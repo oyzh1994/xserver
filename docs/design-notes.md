@@ -310,6 +310,31 @@ clipped to, which is why the two are not one method.
 `WindowObscuringTest.unmappingAFrameGivesBackTheAreaItsContentWindowCovered` pins it and fails without
 the fix.
 
+**A window that asks for a backing store is not restored that way at all.** `backing_store` of
+`WhenMapped` or `Always` is a client saying "keep my pixels while I am covered", and a reference
+server does: measured with `tools/backing-store-probe.py`, uncovering such a window delivers **no
+`Expose`** and the pixels that come back are the ones that were there, where the same gesture on a
+window with the default `NotUseful` delivers one `Expose`. What is kept is the window's visible
+pixels at the moment it is covered - which is everything it had drawn, because this server clips
+every drawing request to what shows - copied out of the framebuffer into a buffer of the window's own
+and put back on the reveal. Three things throw that buffer away, and each is a way the saved pixels
+stop being what the window would show: **the client drew** (its drawing was clipped to the visible
+part, so it is not in the buffer), **the window moved or was resized** (this server does not carry a
+window's pixels along with it), and **the client turned the attribute off**. In each of those cases
+the reveal is the ordinary paint-and-`Expose`, which is what every window got before.
+
+The region this needed is a third one beside `visibleRegion` and `coveredRegion`: `contentRegion`,
+the window's own rectangle minus its children and **ignoring what is above it**. It is the region the
+client's drawing lands in, and the reason it is needed at exactly one moment is that when a window is
+being covered, the covering window is already above it - so its visible region no longer contains the
+pixels that are about to be painted over, and those are the ones worth keeping.
+
+**`save_under` is the other half and is deliberately not implemented, because the reference does not
+implement it either.** Xvfb advertises `save-unders NO` in its setup reply, and the probe's third
+mode - a window asking for `save_under` - behaves exactly as the mode where nothing is asked for:
+one `Expose`, on both servers. A client that asks (EasyShell's context menu is one, measured with
+`xwininfo -all`) gets the ordinary restore, which is what it would get from the reference.
+
 ## A depth 8 drawable holds bytes, not colours
 
 A depth 8 pixel is stored as the byte the client sent, unconverted, whether or not the drawable has a
@@ -560,8 +585,13 @@ The rules were taken from a reference server, not from the specification's prose
 `src/test/java/io/github/oyzh1994/xserver/tools/FocusProbe.java` drives the same window tree and the
 same requests against Xvfb and against this server, prints every focus event with its detail and mode
 and the server's own answer to `GetInputFocus`, and the two outputs are diffed. That is what settled
-the things prose does not: which windows are told, in what order, and with which detail - and it is
-also what turned up the three crossing differences still open in backlog item A5.
+the things prose does not: which windows are told, in what order, and with which detail. **Its default
+sequence now prints the same lines against both servers**, and so do the twelve smaller sequences that
+were written to pin the corners - a change to PointerRoot, a change to the root window, the pointer
+inside or outside the window being left, a grab on the window that already has the focus. Two of the
+rules that came out of them are not in the specification at all, and are noted where they are
+implemented: a change *to* PointerRoot reports the window the pointer is in even when that window is
+the one it is leaving, and a change to the *root window* does not.
 
 **Two things about running it**, both learned the hard way: the pointer and the focus outlive every
 client, so a probe that does not park the pointer and set the focus before it maps anything gets a
@@ -574,12 +604,25 @@ probe reads the status first and the events after it.
   the holding windows hear first, outermost inwards, and the window itself last - so a toolkit can
   walk down into the window that gained the focus. The windows in between carry `NotifyVirtual` when
   the two ends are related and `NotifyNonlinearVirtual` when they are not.
-- **A focus of the root is PointerRoot, and it is reported against the window the pointer is in**,
-  with `NotifyPointer` - that window and every window holding it, on both the gaining and the losing
-  side. It is the same window on both sides when the pointer is already in the window asking for the
-  focus, and that is not a no-op: a reference server sends the whole pair, and treating it as one
-  leaves the client that asked never told. That was the difference between a menu that is dismissed
-  and a menu that is not.
+- **`PointerRoot` and the root window are two states, and this server used to keep one.** Both are
+  reported against the window the pointer is in, with `NotifyPointer` - that window and every window
+  holding it, on both the gaining and the losing side - and it is the same window on both sides when
+  the pointer is already in the window asking for the focus, which is not a no-op: a reference server
+  sends the whole pair, and treating it as one leaves the client that asked never told. That was the
+  difference between a menu that is dismissed and a menu that is not. But `PointerRoot` is *not* the
+  root window: `GetInputFocus` answers `PointerRoot` for one and the root's own id for the other, a
+  key goes to the window under the pointer in one state and to the root in the other, and the events
+  differ - a reference server sends a chain of `FocusOut`/`FocusIn` on the way out of one and
+  something else entirely out of the other, measured with `FocusProbe` for both. A fresh server's
+  focus is the root **window** (`xdpyinfo`'s "focus: window 0x1ff"), which is what a client gets
+  before it asks for anything, and folding the two is how a client that focuses the root to hand the
+  keyboard back to the desktop was told a focus it did not ask for.
+- **The chain arrives outermost first, on the way in as well as on the way out.** A change to
+  `PointerRoot` tells the window holding the one the pointer is in before the window itself, and the
+  same for any other chain of ancestors - a toolkit walks *down* into the window that gained the
+  focus. This server sent the incoming chain innermost first until `FocusProbe` was diffed against a
+  reference server for a case where the pointer was in a nested window, which is the only kind of
+  case where the order shows at all.
 - **`None` is a state of its own**, kept as null rather than folded into PointerRoot: nothing is told
   it gained the keyboard, `GetInputFocus` answers None, and `focusWindow` returns null so the keys
   have nowhere to go. Folding it into PointerRoot reports a focus the client did not ask for.
@@ -601,11 +644,15 @@ Two traps the probe fell into, both worth an hour of somebody else's time:
   is also what a probe should print rather than skip: the first version dropped errors silently and
   looked exactly like a server that was sending no focus events at all.
 - **Known deviations from the reference, measured rather than assumed**: in the two transitions where
-  a revert lands on PointerRoot, this server relates the chain to the root where a reference server
+  a revert lands on PointerRoot, this server related the chain to the root where a reference server
   relates it to the window the pointer is in (details `0/1` where it sends `3/4`, and the reverse in
-  one other place). Sixteen of the eighteen probe steps match exactly; those two are in the corner
-  where a `RevertToParent` fails and the focus falls through to PointerRoot, and no client has been
-  seen to care. Written down so the next person does not have to re-derive them.
+  one other place). Sixteen of the eighteen probe steps matched exactly; those two were in the corner
+  where a `RevertToParent` fails and the focus falls through to PointerRoot. **That corner is now
+  covered by the new rule** - a revert to PointerRoot sets the state, and the chain is then built the
+  way the reference builds it - but it is *unverified*: the probe has no step that destroys a focused
+  window, so the two steps those details came from are still the only evidence, and they have not been
+  re-measured. Written down so the next person does not have to re-derive them, and knows what to
+  check first.
 
 ## A client that is not reading is dropped
 
@@ -961,23 +1008,24 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   keyboard and it is the host's.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
-- **SHAPE's bounding shape does not clip drawing** - only the input shape is honoured - so a shaped
-  window's corners are still painted.
 - **`CreateGlyphCursor` against a font other than the cursor font has no outlines to draw** and falls
   back to a filled cell. The cursor font's own 74 shapes are embedded (`resource/CursorFont.java`,
   generated from `cursor.pcf` by `tools/gen-cursor-font.py`), which is what `XCreateFontCursor`
   actually asks for - so `xterm`'s I-beam and every client's arrow are the real ones now; a client that
   invents a glyph set still gets the approximation.
-- **Screen auto-size is not implemented**: the screen keeps the size `--geometry` gives it. The host
-  window is resizable, but a resize is therefore capped at the screen rather than growing it, and a
-  client's window larger than `--geometry` is still clipped.
+- **A screen grows but never shrinks** (C1). A drag past the edge of the screen makes it bigger, up to
+  `--max-screen`, and the host window resizes the client's window with it; there is deliberately no
+  gesture that says "and now the desktop is smaller", which is why `SetScreenConfig` and the rest of
+  RandR's changing requests are refused.
 - **The focus does not follow the pointer, and a reference server's does not either.** With the focus
   on `PointerRoot` the *keys* follow the pointer (`InputState.focusWindow`) and no `FocusIn`/`FocusOut`
   is generated as it moves - which was verified against Xvfb rather than assumed, because the obvious
   reading of the specification says otherwise and an earlier version of these notes claimed it. What
   tells a client it has the focus there is the crossing's focus bit. `SetInputFocus`, the ends of a
   keyboard grab and a focused window going away are what produce focus events, and that covers what a
-  toolkit actually does. The reporting differences that *are* real are listed in `backlog.md` A5.
+  toolkit actually does. The reporting differences that *were* real are listed in `backlog.md` A5,
+  which is now closed: the probe's default sequence prints the same lines against both servers, and
+  the rules behind it are in "The focus is the client's to be told about" above.
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`; its generator ignores the
   `number` on an `eventcopy`, which is why `ClientOutput.EVENT_NUMBERS` rewrites five event type
   bytes. The real fix belongs in the generator.

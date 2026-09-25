@@ -242,11 +242,13 @@ public final class WindowHandlers {
             window.setWinGravity(winGravity);
         }
         if (Cw.BACKING_STORE.isEnabled(valueMask)) {
-            if (backingStore == 2) {
-                // Always: accepted, since every window keeps its content in the framebuffer.
-                window.setBackingStore(1);
-            } else {
-                window.setBackingStore(backingStore == 1 ? 1 : 0);
+            // WhenMapped and Always are both kept: this server has no state that distinguishes them,
+            // and it is the *going away* half of Always - contents kept while the window is unmapped -
+            // that is not here. See XWindow.keepsBackingStore.
+            window.setBackingStore(backingStore == 0 ? 0 : 1);
+            if (!window.keepsBackingStore()) {
+                // Turned off: whatever was saved is no longer this window's to restore.
+                window.forgetBacking();
             }
         }
         if (Cw.BACKING_PLANES.isEnabled(valueMask) && !window.isInputOnly()) {
@@ -694,6 +696,12 @@ public final class WindowHandlers {
         boolean restacked = ConfigWindow.STACK_MODE.isEnabled(mask);
 
         if (moved || resized || restacked) {
+            if (moved || resized) {
+                // The saved pixels are the window's contents at the place it was, and a move or a
+                // resize leaves them behind - this server does not copy a window's pixels along with
+                // it. Keeping them would put the old contents back at the new geometry.
+                window.forgetBacking();
+            }
             // A restack changes who is visible where just as a move does, so it is reported and
             // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
@@ -1179,6 +1187,10 @@ public final class WindowHandlers {
      */
     private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after,
                                    boolean moved) {
+        // A window that asked for a backing store has its contents saved before anything covers them,
+        // which is what lets the reveal put them back instead of sending an Expose. It has to happen
+        // before the paint below: the pixels worth keeping are the ones about to be painted over.
+        captureUnder(moved ? after : ShapeState.subtract(after, before), window);
         for (Rectangle gained : moved ? after : ShapeState.subtract(after, before)) {
             paintBackground(window, gained);
             deliverExpose(window, gained);
@@ -1235,6 +1247,7 @@ public final class WindowHandlers {
         if (!lost.isEmpty()) {
             repaintUnder(lost, window);
         }
+        captureUnder(gained, window);
         for (Rectangle area : gained) {
             paintBackground(window, area);
             deliverExpose(window, area);
@@ -1263,7 +1276,15 @@ public final class WindowHandlers {
                 for (Rectangle piece : visible) {
                     Rectangle part = area.intersection(piece);
                     if (!part.isEmpty()) {
-                        paintBackground(candidate, part);
+                        // A window that asked for a backing store and has its pixels still saved
+                        // gets them back here, and is not asked to draw what it never lost. What
+                        // could not be put back - a window with no store, or one that has drawn since
+                        // it was captured - is painted and exposed exactly as before.
+                        List<Rectangle> restored = candidate.restoreBacking(part);
+                        for (Rectangle left : ShapeState.subtract(List.of(part), restored)) {
+                            paintBackground(candidate, left);
+                            deliverExpose(candidate, left);
+                        }
                         // The border ring is outside the candidate's content, so it is the area this
                         // repaint is about that says whether any of it needs drawing - and the ring
                         // already excludes the windows above, which have just been painted.
@@ -1272,10 +1293,31 @@ public final class WindowHandlers {
                                 paintBorder(candidate, edge);
                             }
                         }
-                        deliverExpose(candidate, part);
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Saves the pixels of the windows {@code window} is about to cover, for the ones that asked for a
+     * backing store.
+     *
+     * <p>The counterpart of {@link #repaintUnder}, and it has to run before the covering paint rather
+     * than after: the pixels worth keeping are the ones that are about to be painted over. Walked the
+     * same way round, so a window that is itself covered only has what shows captured - which is all
+     * it has.
+     */
+    private void captureUnder(List<Rectangle> areas, XWindow window) {
+        if (areas.isEmpty()) {
+            return;
+        }
+        for (XWindow candidate : stackingOrder(window)) {
+            if (candidate == window || candidate.isInputOnly() || !candidate.isViewable()
+                    || candidate.isAbove(window) || !candidate.keepsBackingStore()) {
+                continue;
+            }
+            candidate.captureBacking(areas);
         }
     }
 

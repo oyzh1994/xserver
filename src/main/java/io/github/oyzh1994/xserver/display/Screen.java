@@ -320,7 +320,12 @@ public final class Screen {
                 .minInstalledMaps((short) 1)
                 .maxInstalledMaps((short) 1)
                 .rootVisual(rootVisual.id())
-                .backingStores((byte) 0)
+                // WhenMapped: a window that asks for a backing store has its contents kept while
+                // something covers it, so uncovering it needs no Expose. A reference server
+                // advertises exactly this and behaves exactly so; it advertises save-unders as *no*
+                // and never restores anything for it either, which is why the flag below stays
+                // false. Both measured - see the backlog's A9.
+                .backingStores((byte) 1)
                 .saveUnders(false)
                 .rootDepth((byte) rootDepth)
                 .allowedDepths(Lists.immutable.withAll(protocolDepths))

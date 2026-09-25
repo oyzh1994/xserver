@@ -74,6 +74,12 @@ public final class MenuProbe {
             // anything is mapped - otherwise a run starts with whatever the last one left, and the
             // first crossing is a difference between runs rather than between servers.
             fakeMotion(wire, xtest, PARK_X, PARK_Y);
+            // And so does the focus, which this probe selects for: the crossings it prints carry the
+            // focus bit, and that bit is set from *this* connection's view of the focus, so a run
+            // against a server whose last connection left the focus somewhere else prints a
+            // different answer for the same gesture. Parked to None every time, for the same reason
+            // the pointer is parked.
+            parkFocus(wire);
 
             // The application's own window, and the pointer parked inside it.
             createWindow(wire, main, wire.root(), 100, 100, 400, 300, false);
@@ -270,6 +276,32 @@ public final class MenuProbe {
         Wire.writeShort(request, 2, 2);
         Wire.writeInt(request, 4, 0);
         wire.send(request);
+    }
+
+    /**
+     * Puts the focus nowhere, so the run starts from a state the probe chose rather than from
+     * whatever the last connection left. {@code None}, with {@code RevertToPointerRoot}.
+     */
+    private static void parkFocus(Wire wire) throws Exception {
+        byte[] request = new byte[12];
+        request[0] = 42;                            // SetInputFocus
+        request[1] = 1;                             // RevertToPointerRoot
+        Wire.writeShort(request, 2, 3);
+        Wire.writeInt(request, 4, 0);               // None
+        Wire.writeInt(request, 8, 0);               // CurrentTime
+        wire.send(request);
+        // A reply is what says the server has done it, and the crossings that follow depend on it:
+        // without the round trip the first step can be measured against the state before the park.
+        byte[] sync = new byte[4];
+        sync[0] = 43;                               // GetInputFocus
+        sync[2] = 1;
+        wire.send(sync);
+        while (true) {
+            byte[] message = wire.readMessage();
+            if (message == null || (message[0] & 0x7F) == 1) {
+                return;
+            }
+        }
     }
 
     private static void fakeMotion(Wire wire, int xtest, int x, int y) throws Exception {

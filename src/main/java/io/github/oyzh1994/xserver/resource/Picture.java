@@ -455,6 +455,10 @@ public final class Picture extends XResource {
             windowClip = null;
             return;
         }
+        // RENDER's rail reaches a window through a picture, so this is where its drawings invalidate
+        // a backing store - the core rail does the same in DrawHandlers.afterDrawing. See
+        // XWindow.forgetBacking for why a drawing throws the saved pixels away.
+        window.forgetBacking();
         drawableX = window.absoluteX();
         drawableY = window.absoluteY();
         // A picture over a window reads that window's own pixels and stops where a child begins.
