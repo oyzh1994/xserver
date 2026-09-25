@@ -267,6 +267,11 @@ public final class XServer {
         // One screen is Xinerama's whole answer here, and it is an answer a client needs rather than
         // an extension it uses: xdotool segfaults in its own startup without it.
         extensions.register(new io.github.oyzh1994.xserver.extension.XineramaExtension(), 0, 1);
+        // XKEYBOARD defines one error (the keyboard error) and many events this server never sends,
+        // so none are reserved. It is here for the same reason Xinerama is: xdotool asks the
+        // keyboard for its keymap through XKB and dereferences a null pointer when told there is no
+        // such extension - see the class comment, and A4.
+        extensions.register(new io.github.oyzh1994.xserver.extension.XkbExtension(), 0, 1);
         // MIT-SCREEN-SAVER defines one event - the state-change notification - and no errors; DPMS
         // is requests and replies only. The screen saver extension is kept by name because the core
         // ForceScreenSaver is what raises its notification.

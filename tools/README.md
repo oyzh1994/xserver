@@ -64,6 +64,15 @@ returns 255 and nothing you asked for happens, with no output to say why. Write
 command that is doing the killing. (The same trap applies to any `pkill -f` whose pattern appears in
 its own command line, on either machine.)
 
+**The brackets do not save you when the path itself is on the same command line.** Launching with
+`pkill -9 -f '[E]asyShell'; ... /root/EasyShell_v1.2.2_linux_arm64_build.AppImage` still kills the
+shell it is running in, because the *path* contains `EasyShell` and the pattern matches that. The
+launcher is a script on the VM with the path inside it (`/tmp/es-start.sh`, `/tmp/termora-start.sh`),
+so the command line that runs it names no application at all. And the AppImage is not the process
+either: it mounts itself and runs `/tmp/.mount_<something>/bin/<App>`, so a stop has to match
+`mount_` as well - `pkill -9 -f mount_EasySh` - or the client is still there, still holding its
+windows, looking like a server that does not clean up after a dead client.
+
 The tools, one line each (the backlog's §1 table says what each is *for*):
 
 - `Drive` - XTEST driver: `M x y`, `P n`, `R n`, `K kc`, `KD/KU kc`, `W ms`.
@@ -95,6 +104,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   servers are compared by their numbers rather than by "it replied". Its first version sent the three
   1.1 requests as four bytes each and read the reference's `BadLength` as "not implemented" - they
   take a window argument, and `GetScreenSize` refuses even that.
+- `XkbProbe` - the harness for B1, and the tool that found A4's cause: the two `XkbUseExtension` calls
+  and the `XkbGetMap(which=0x7)` that `xdotool` makes, plus `GetState`, `GetControls`,
+  `PerClientFlags` and `GetDeviceInfo`. The GetMap reply is printed field by field **and can be
+  dumped** (`XkbProbe <host> <port> 7 dump <file>`), which is how its wire layout was read: the fixed
+  part is forty bytes rather than thirty-two, and each keycode's keysyms follow its own descriptor
+  inline. Run it against Xvfb for the reference - the two replies differ in the maps and nowhere
+  else.
 - `ScreenSaverProbe` - the harness for B7: the core screen saver's settings, MIT-SCREEN-SAVER's
   version and `QueryInfo`, and DPMS's version/capability/timeouts/power level. Run it with `core` to
   round-trip the core settings too, and read them with the real `xset` - its own hand-built core Set

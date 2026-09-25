@@ -51,7 +51,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A14~~ | ~~crossing flags byte, focus bit, chain order and detail~~ **done 2026-09-25** | correctness | S-M |
 | ~~A7~~ | ~~`--auth` can be bypassed by offering no credentials~~ **done 2026-09-24** | security | S |
 | ~~A3~~ | ~~font cursors are drawn as a filled cell~~ **done 2026-09-24** | correctness | S |
-| A4 | `xdotool` segfaults against this server **- crash is at startup** | correctness | S-M |
+| ~~A4~~ | ~~`xdotool` segfaults against this server~~ **done 2026-09-25** (the cause was B1) | correctness | S-M |
 | ~~A2~~ | ~~a bounding shape does not clip drawing~~ **done 2026-09-24** | correctness | S-M |
 | ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
@@ -73,7 +73,7 @@ A prompt that starts a fresh session on this, verbatim:
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
-| B1 | XKEYBOARD | extension | M-L |
+| [~] B1 | XKEYBOARD: the map, the state and the handshake are in; `SetMap` and the rest are not | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | E2 | continuous integration | engineering | S |
 | E4 | per-client framebuffer memory | engineering | M |
@@ -297,7 +297,41 @@ over a real display yet. The sprite appears only in the `-scene-` frame dump: di
 
 ---
 
-### [ ] A4. `xdotool` segfaults against this server. **S-M** - worked on 2026-09-24, one cause ruled out
+### [x] A4. `xdotool` segfaults against this server. **S-M** - done 2026-09-25
+
+**Done, and the cause was not in this item's plan at all: there was no XKEYBOARD.** The crash is a
+null pointer dereference of `XkbGetMap`'s answer, and Xlib's `XkbGetMap` returns null when the
+extension is absent - so "no XKEYBOARD" and "a malformed keymap" produce the *same* fault, at
+`ldr x3, [x0, #32]` with x0 zero, inside the inlined `_xdo_populate_charcode_map`. Measured three
+ways: a gdb backtrace on the VM; a trace of the XKB entry points, which shows exactly two calls
+before the fault (`XkbUseExtension`, then `XkbGetMap(which=0x7, device=0x100)`); and a `ctypes` call
+to `XkbGetMap` itself, which answers `null` here and a pointer against Xvfb. The fix is B1, and with
+it in, every subcommand is clean:
+
+```
+getdisplaygeometry        1300 800
+getmouselocation          x:100 y:100 screen:0 window:45      (after `mousemove 100 100`)
+xdotool key a             (nothing)
+search --name xterm       (nothing; no crash)
+getactivewindow           abort, with a reported error and exit status 0 - this server has no
+                          _NET_ACTIVE_WINDOW, which is the documented deviation, not a fault
+```
+
+**Why the gdb backtrace alone was not enough, and what actually found it.** `xdo.c` calls
+`XkbGetMap` and does not check it; issue #58 in xdotool's own tracker is the same crash against
+another server. The plan this item left - "extend `XProxy` to log reply bodies and diff against
+Xvfb" - was never needed: the map exists, so what was left was to compare *the reply* with Xvfb's,
+which is what `tools/XkbProbe` does. Bisecting it a section at a time found the real cause, and it
+is a trap for anyone else implementing XKB: **a `GetMap` reply has to carry XKB's four mandatory key
+types.** With three - one-level, two-level and alphabetic, which is every type this server's keymap
+uses - Xlib rejects the reply *whole* and returns null. The types section was byte-for-byte identical
+to Xvfb's for those three, which is why nothing about it looked wrong.
+
+**The rest of what was ruled out over the two sessions stays ruled out**: Xinerama (implemented in
+B3, and the crash survived it), `QueryPointer`'s answer (a real deviation, fixed in A4old, and not
+the cause).
+
+**The two sessions of investigation, kept because each dead end cost one of them:**
 
 **Where it crashes, confirmed**: `xdo_new_with_opened_display` in `libxdo.so.3`, from a gdb backtrace
 on the VM - xdotool's own library, in its startup, before any of the subcommand's own requests. Every
@@ -929,7 +963,63 @@ reference does in every case measured.
 
 ## 3. B - Extensions a reference server has
 
-### [ ] B1. XKEYBOARD. **M-L**
+### [~] B1. XKEYBOARD. **M-L** - the reading half is done 2026-09-25; nothing can be *set* yet
+
+**Done 2026-09-25.** `extension/XkbExtension` advertises `XKEYBOARD` and answers what a client asks
+before it will trust the keyboard: the version handshake (`UseExtension`), the keymap (`GetMap`, built
+by `input/XkbMap`), the modifier state (`GetState`), and the requests that have no answer here
+(`SelectEvents`, `LatchLockState` - accepted, not refused, because a refusal is an X protocol error and
+xdotool sends a latch request as part of typing a sequence). `PerClientFlags` answers "none supported".
+It is the fix for **A4**: without it, `xdotool` dereferences Xlib's null `XkbGetMap` and dies in its own
+startup.
+
+**Measured 2026-09-25**, three ways:
+
+- **`tools/XkbProbe`** (new) against Xvfb and here, field by field: the version, the size range of the
+  keycodes, the four types, each keycode's sym map and keysyms, and the modifier map as
+  `(keycode, mods)` pairs. The differences from Xvfb that remain are deliberate: three types against
+  twenty four, a two-level keymap against a four-level one, and twelve modifier keys against sixteen -
+  this server's own keymap, which is the point of building the reply from `Keymap` rather than
+  replaying the reference's.
+- **`xev` on both servers, the same keycodes driven by XTEST**: 26 lines of keysym output - Escape, a
+  letter, Shift, Caps Lock, Shift+Caps Lock, Return and the keypad - **identical line for line**. That
+  is the check that matters for a toolkit, because the keysym a toolkit shows comes from XKB's
+  translation, not from the core map.
+- **`extension/XkbTest`** (5 tests): the version handshake, **at least the four mandatory types**,
+  'a' and Escape's keysyms read out of the reply against `Keymap`'s own, the modifier map naming
+  Shift_L, the one-way requests answered with nothing rather than refused, and `PerClientFlags`
+  replying "none supported". **The four-types test fails with the keypad type removed** (`got 3`),
+  and it is the one that matters: a reply with three types is not a smaller map, it is a `null` map.
+
+**Live**: EasyShell and termora both connected and ran - windows mapped, screens rendered, EasyShell's
+context menu surviving the six out-and-back passes of the §7 gesture - with **no XKB error in the log**.
+Measured what each of them actually asks: EasyShell sends `UseExtension` four times, `SelectEvents`
+twice and `PerClientFlags` once, and **never calls `GetMap`** (JavaFX gets its keymap from the core
+request, so this item does not change how it types); `xdotool` and `xev` are the clients that read the
+map. `mvn test` 242/242.
+
+**Traps, and the first one is the item.** A `GetMap` reply must carry **XKB's four mandatory types**
+(`ONE_LEVEL`, `TWO_LEVEL`, `ALPHABETIC`, `KEYPAD`); with fewer, Xlib rejects the reply whole and
+`XkbGetMap` returns null, which the calling client cannot tell from the extension being missing. Three
+types - which is all this keymap uses - is exactly what the first version had, and its types section
+was byte-for-byte identical to Xvfb's first three. The wire layout misleads twice more: the reply's
+fixed part is **forty** bytes, not thirty-two, and each keycode's keysyms follow its own descriptor
+**inline** rather than living in one pool at the end. Read the layout off a captured reference reply
+(`XkbProbe 192.168.22.147 6098 7 dump <file>`) rather than from a header. And the keypad's digit is
+what **Num Lock** selects, not Shift: giving the keypad type a Shift entry makes Shift+KC79 type `KP_7`
+where the reference leaves it `KP_Home`.
+
+**What is left, and it is the writing half.** `SetMap` is refused, so **no layout can be selected** -
+`setxkbmap` is still a no-op and a non-US layout still cannot be chosen; the compatibility map,
+`GetNames` and the indicator names are absent; `LatchLockState` is accepted and does nothing, so a
+client cannot lock or latch a modifier (it would be locking the host's keyboard for everyone);
+`XkbSetDetectableAutoRepeat` is not honoured - `PerClientFlags` says no flag is supported, so a client
+that wants to generate its own repeats cannot be told when one would have started. `GetControls` and
+`GetDeviceInfo` are still refused, measured: no client here asks for either (`XkbProbe` sends them, and
+against Xvfb `GetDeviceInfo` is itself refused `BadLength` for the request this probe builds). The
+repeat delay and rate stay unreachable for the same reason (A11).
+
+**The original wording, kept for the plan it describes:**
 
 **Current.** Not advertised. The keyboard is a fixed table (`Keymap`: letters, digits, modifiers) that
 `ChangeKeyboardMapping` can overwrite; `GetModifierMapping` works; there is no layout switching, no

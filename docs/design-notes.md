@@ -659,7 +659,54 @@ deletes one character however long Backspace is held.
   none) and `GetKeyboardControl` reports what was actually set rather than a blanket "everything
   repeats".
 - The **delay and the rate themselves are XKB's** (`XkbSetAutoRepeatRate`), not the core protocol's, so
-  a client that wants different ones cannot have them until item B1 of the backlog exists.
+  a client that wants different ones cannot have them: the XKB here answers questions, it does not
+  configure repeat (backlog B1).
+
+## The keymap a client reads through XKB
+
+There are two ways to ask an X server what a keycode types, and this server answers both from one
+table. `GetKeyboardMapping` is the core protocol's; `XkbGetMap` is XKEYBOARD's, and a fair number of
+clients - `xdotool`, `xev`, anything built on XKB's own translation - only ever ask the second.
+`XkbMap` builds that reply out of `Keymap`, which is the point: a client that reads XKB and a client
+that reads the core mapping have to agree about what a keycode means, or the same keystroke types two
+different characters depending on the toolkit. Measured with `xev` driven by the same keycodes on both
+servers: 26 lines of keysym output, identical line for line, over Escape, a letter, Shift, Caps Lock,
+Shift+Caps Lock, Return and the keypad.
+
+**The four mandatory types are not optional, and that is the trap.** A `GetMap` reply has to carry at
+least `ONE_LEVEL`, `TWO_LEVEL`, `ALPHABETIC` and `KEYPAD`, and a reply with fewer is not trimmed by
+Xlib - it is **rejected whole**, `XkbGetMap` returns `null`, and the client goes on to dereference it.
+The first version here had three types (this server's keymap uses no more) and was byte-for-byte
+identical to a reference server's for those three; it still failed, and the failure is indistinguishable
+from the extension being absent - which is exactly what `xdotool` crashes on. It was found by bisecting
+the reply a section at a time against Xvfb's own, so the note worth keeping is this one: an XKB map is
+all-or-nothing, and "the parts this server uses" is not a smaller map, it is none.
+
+The other things measured on the way:
+
+- **The wire layout misleads twice.** The reply's fixed part is **forty** bytes rather than the usual
+  thirty-two (the tail holds the modifier map's first/count pair), and each keycode's keysyms follow
+  its own eight-byte descriptor **inline** - they are not one pool at the end. Both were read off a
+  reference reply with `tools/XkbProbe` rather than from a header, and a first reading that assumed
+  thirty-two bytes and a shared pool produced plausible nonsense.
+- **The modifier map is a list of `(keycode, mods)` pairs**, not the byte-per-key its field name
+  suggests, and its length is the reply's `totalModMapKeys` - sixteen on a reference server, twelve
+  here, while `nModMapKeys` counts the key range instead.
+- **A key's width is the number of levels it really has**: a key whose two levels are the same is one
+  level wide, which is what the reference does with Escape. Padding ours to two would put the next
+  key's keysyms in the wrong place.
+- **The keypad's digit belongs to Num Lock, not to Shift.** Giving the keypad type a Shift entry made
+  Shift+KC79 type `KP_7` where the reference leaves it `KP_Home`; the type selects on Num Lock (this
+  server's Mod2) and on nothing else.
+- **Caps Lock works through the type, not through the server.** `ALPHABETIC` carries `Lock`, so a
+  client translates Caps Lock + `a` to `A` and Caps Lock + Shift + `a` back to `a`, which is what the
+  reference does - and none of it is code here, it is the type's own table.
+- **The requests with no answer are answered with nothing, not refused.** `SelectEvents` and
+  `LatchLockState` have no reply, and a refusal is an X protocol error, which ends a client's process
+  under Xlib's default handler; `xdotool` sends a latch request as part of typing a key sequence.
+  `PerClientFlags` does have a reply and answers "none supported" (`supported = 0` where a reference
+  server says `0x1f`) - JavaFX sends it as an application starts, and an error there is a client that
+  is told its request was malformed rather than unsupported.
 
 ## The pointer's history
 
@@ -905,6 +952,13 @@ This is the list of things left out *on purpose*, with the measurement that sett
 wider list of what is not implemented yet - including everything a stock server has and this one
 does not - is `backlog.md`, which is written to be worked through item by item.
 
+- **XKEYBOARD is answered, not implemented.** The map, the state and the version handshake are real,
+  but a client cannot *change* the keyboard through it: `SetMap` is refused (so no layout can be
+  selected), the compatibility map and the indicator names are absent, `LatchLockState` is accepted
+  and does nothing (a client locking a modifier would be locking the machine's own keyboard for every
+  other client), and no per-client flag is supported (`PerClientFlags` says so, including detectable
+  auto-repeat). The reasoning is the one the rest of the input model is built on: there is one
+  keyboard and it is the host's.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
 - **SHAPE's bounding shape does not clip drawing** - only the input shape is honoured - so a shaped

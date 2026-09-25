@@ -1,0 +1,281 @@
+package io.github.oyzh1994.xserver.extension;
+
+import com.github.moaxcp.x11.protocol.XProtocolPlugin;
+import com.github.moaxcp.x11.protocol.XRequest;
+import com.github.moaxcp.x11.protocol.xkb.GetMap;
+import com.github.moaxcp.x11.protocol.xkb.GetState;
+import com.github.moaxcp.x11.protocol.xkb.LatchLockState;
+import com.github.moaxcp.x11.protocol.xkb.PerClientFlags;
+import com.github.moaxcp.x11.protocol.xkb.UseExtension;
+import com.github.moaxcp.x11.protocol.xkb.XkbPlugin;
+import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.client.ProtocolException;
+import io.github.oyzh1994.xserver.input.XkbMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+
+/**
+ * XKEYBOARD, as much of it as a client needs before it will believe the keyboard is real.
+ *
+ * <p><b>It exists because its absence segfaults a real client</b>, and this time the client does not
+ * get far enough to fall back. {@code xdotool} builds its character map from {@code XkbGetMap}'s
+ * answer and does not check it for null; Xlib's {@code XkbGetMap} returns null when the extension is
+ * not there, so the first thing xdo does with it - {@code xkb->map->key_sym_map[i]} - faults. Every
+ * subcommand died in {@code xdo_new_with_opened_display}, including ones that need nothing from the
+ * keyboard. Measured with a gdb backtrace and a trace of the XKB entry points; the same binary works
+ * against Xvfb, which has the extension. Xinerama's absence had the same shape and was ruled out
+ * first (B3).
+ *
+ * <p>What is here is the requests a client makes on the way to a usable keyboard, and no more:
+ *
+ * <ul>
+ *   <li>{@code UseExtension}: the version handshake, which is what makes Xlib's own helpers proceed.
+ *   <li>{@code GetMap}: the keymap. {@link XkbMap} builds it from {@link io.github.oyzh1994.xserver.input.Keymap},
+ *       so what a client reads here and what it reads from {@code GetKeyboardMapping} cannot disagree.
+ *   <li>{@code GetState}: the modifier state, as the mask this server is delivering events with.
+ *   <li>{@code SelectEvents}: accepted and not answered, because this server sends no XKB events.
+ * </ul>
+ *
+ * <p><b>What is not here</b>, deliberately and visibly: the map's actions, behaviours, explicit
+ * components and virtual-modifier map (a {@code GetMap} reply simply does not claim them); the
+ * compatibility map, {@code GetNames} and the indicator names; {@code SetMap}, so no layout can be
+ * changed; and the XKB events. A client that wants to be told about a layout change is told nothing,
+ * because nothing here changes one. Setting the repeat delay and rate stays where it was - the
+ * core {@code ChangeKeyboardControl} path and the server's own defaults (A11).
+ *
+ * <p>The request bodies are decoded with the generated classes, which are correct for every request
+ * here (they are fixed size and read positionally); the <em>replies</em> are written as bytes,
+ * because XKB's replies carry arrays whose shapes the generated writer does not reproduce.
+ */
+public final class XkbExtension implements Extension {
+
+    private static final Logger log = LoggerFactory.getLogger(XkbExtension.class);
+
+    /** Xlib speaks 1.0 to a server that has the extension and 1.0 is all it needs of it. */
+    private static final short MAJOR_VERSION = 1;
+    private static final short MINOR_VERSION = 0;
+
+    /** {@code XkbUseCoreKbd}; the only keyboard there is. */
+    private static final int CORE_KEYBOARD = 0x0100;
+
+    private final XkbPlugin plugin = new XkbPlugin();
+
+    @Override
+    public String name() {
+        return "XKEYBOARD";
+    }
+
+    @Override
+    public byte majorOpcode() {
+        return plugin.getMajorOpcode();
+    }
+
+    @Override
+    public byte firstEvent() {
+        return plugin.getFirstEvent();
+    }
+
+    @Override
+    public byte firstError() {
+        return plugin.getFirstError();
+    }
+
+    @Override
+    public XProtocolPlugin plugin() {
+        return plugin;
+    }
+
+    @Override
+    public XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
+            throws IOException {
+        return switch (minorOpcode) {
+            case 0 -> UseExtension.readUseExtension(in);
+            case 1 -> Ignored.selectEvents(in);
+            case 4 -> GetState.readGetState(in);
+            case 5 -> LatchLockState.readLatchLockState(in);
+            case 8 -> GetMap.readGetMap(in);
+            case 21 -> PerClientFlags.readPerClientFlags(in);
+            default -> null;
+        };
+    }
+
+    @Override
+    public void handleRequest(XServer server, ClientConnection client, XRequest request) {
+        switch (request) {
+            case UseExtension r -> useExtension(client);
+            case GetState r -> getState(server, client);
+            case GetMap r -> getMap(client, r);
+            case Ignored r -> {
+                // SelectEvents, and whatever else is asked for and has no answer of its own. A
+                // client subscribing to events this server never sends is not an error.
+            }
+            case LatchLockState r -> latchLockState(client, r);
+            case PerClientFlags r -> perClientFlags(client, r);
+            default -> throw ProtocolException.unimplemented(
+                    "XKEYBOARD request " + request.getClass().getSimpleName());
+        }
+    }
+
+    /** The version handshake: "supported", and the version this server has. */
+    private void useExtension(ClientConnection client) {
+        byte[] bytes = new byte[32];
+        bytes[0] = 1;
+        bytes[1] = 1;                               // supported
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        putCard16(bytes, 8, MAJOR_VERSION, client.isBigEndian());
+        putCard16(bytes, 10, MINOR_VERSION, client.isBigEndian());
+        send(client, bytes);
+    }
+
+    /**
+     * The keyboard's state: the modifier mask this server delivers events with, and nothing else.
+     *
+     * <p>The distinction the reply draws is between modifiers that are *held* and ones that are
+     * *locked*. This server has one mask (same as the core events carry) and no separate notion of a
+     * latch, so the mask goes in both the current and the base field and the locked field stays
+     * empty. The group is always zero because there is one layout.
+     */
+    private void getState(XServer server, ClientConnection client) {
+        int mods = server.inputFor(client).modifierState() & 0xFF;
+        byte[] bytes = new byte[32];
+        bytes[0] = 1;
+        bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        bytes[8] = (byte) mods;                     // mods
+        bytes[9] = (byte) mods;                     // baseMods
+        bytes[10] = 0;                              // latchedMods
+        bytes[11] = 0;                              // lockedMods
+        bytes[12] = 0;                              // group
+        bytes[13] = 0;                              // lockedGroup
+        bytes[14] = 0;                              // baseGroup
+        bytes[15] = 0;
+        bytes[16] = 0;                              // latchedGroup
+        bytes[17] = 0;
+        putCard16(bytes, 24, server.inputFor(client).pointerState(), client.isBigEndian());
+        send(client, bytes);
+    }
+
+    /**
+     * The keymap. The request's slicing fields are honoured for the three parts this server has -
+     * a client that asks for a range gets that range - and the parts it does not have are simply not
+     * claimed in the reply's {@code present}.
+     */
+    private void getMap(ClientConnection client, GetMap request) {
+        byte[] bytes = XkbMap.getMapReply(
+                request.getFull() & 0xFFFF,
+                request.getFirstType() & 0xFF, request.getNTypes() & 0xFF,
+                request.getFirstKeySym() & 0xFF, request.getNKeySyms() & 0xFF,
+                request.getFirstModMapKey() & 0xFF, request.getNModMapKeys() & 0xFF,
+                client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        send(client, bytes);
+    }
+
+    /**
+     * A client asking to lock or latch a modifier, or to switch group. Accepted, and that is all.
+     *
+     * <p>This server's modifier state is the mask the host's own keyboard produces: there is one
+     * keyboard, it is the machine's, and a client that locks Caps Lock here would be locking it for
+     * every other client and for the user as well. So the request is not refused - xdotool sends one
+     * as part of typing a key sequence and a refusal is an X error that ends the process - and it is
+     * not applied either. Group locking has nothing to lock: there is one layout.
+     */
+    private void latchLockState(ClientConnection client, LatchLockState request) {
+        log.debug("{} asked to latch modifiers (locks 0x{} latches 0x{} group {}): there is one"
+                        + " keyboard and it is the host's", client,
+                Integer.toHexString(request.getModLocks() & 0xFF),
+                Integer.toHexString(request.getAffectModLatches() & 0xFF),
+                request.isLockGroup());
+    }
+
+    /**
+     * {@code PerClientFlags}: what a client is allowed to change for itself, and the answer is
+     * "nothing".
+     *
+     * <p>The flags are {@code DetectableAutoRepeat}, {@code GrabsUseXKBState},
+     * {@code AutoResetControls}, {@code LookupStateWhenGrabbed} and {@code SendEventUsesXKBState} -
+     * the ways a client asks a server to treat it differently from the others. A reference server
+     * supports all five (`supported = 0x1f`, measured with {@code XkbProbe}); this one supports none,
+     * and says so rather than being silent. That matters because a client asks: JavaFX sends this
+     * request as EasyShell starts, and until it is answered the client gets a protocol **error**
+     * instead of a reply - which is the difference between "this server cannot do that" and "this
+     * request was malformed".
+     *
+     * <p>Detectable auto-repeat is the one that would have to come first if any of them are ever
+     * implemented: it changes the *shape* of the events the server sends (a release-then-press pair
+     * per repeat instead of a run of presses) and A11's repeat timer would have to consult the flag
+     * per client.
+     */
+    private void perClientFlags(ClientConnection client, PerClientFlags request) {
+        log.debug("{} asked for per-client XKB flags 0x{}: none are supported", client,
+                Integer.toHexString(request.getChange()));
+        byte[] bytes = new byte[32];
+        bytes[0] = 1;
+        bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        // supported, value, autoCtrls and autoCtrlsValues are all zero: this server can change
+        // nothing on a client's behalf, and has no automatic controls to report.
+        send(client, bytes);
+    }
+
+    private void send(ClientConnection client, byte[] bytes) {
+        try {
+            client.output().writeRaw(bytes);
+        } catch (IOException e) {
+            client.close();
+        }
+    }
+
+    private static void putCard16(byte[] bytes, int offset, int value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 8);
+            bytes[offset + 1] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+        }
+    }
+
+    /**
+     * A request that is decoded only far enough to know it is one of the ones with no answer.
+     *
+     * <p>{@code SelectEvents} carries a variable number of mask words after its fixed part, sized by
+     * its own {@code affectWhich}; the generated reader models that, but the reply to it is nothing
+     * at all, so reading the fixed part and leaving the rest is both enough and safer.
+     */
+    private record Ignored() implements XRequest {
+
+        static Ignored selectEvents(com.github.moaxcp.x11.protocol.X11Input in) throws IOException {
+            in.readCard8();                         // the major opcode, again
+            in.readCard16();                        // length
+            in.readCard16();                        // deviceSpec
+            in.readCard16();                        // affectWhich
+            in.readCard16();                        // clear
+            in.readCard16();                        // selectAll
+            in.readCard16();                        // affectMap
+            in.readCard16();                        // map
+            return new Ignored();
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xkb";
+        }
+    }
+}

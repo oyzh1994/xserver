@@ -66,7 +66,7 @@ io.github.oyzh1994.xserver
 ├── clipboard/    the bridge between the host's clipboard and the X selections
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
-                  RANDR, MIT-SCREEN-SAVER and DPMS
+                  RANDR, XKEYBOARD, MIT-SCREEN-SAVER and DPMS
 ```
 
 Three decisions shape everything else:
@@ -124,8 +124,8 @@ matching the protocol's rules), the pointer's motion history
 The keyboard's repeats are the server's own work, as they are on a real one: a held key starts
 repeating 660 ms after it goes down and then every 40 ms until it comes up, a modifier never repeats,
 and `ChangeKeyboardControl`'s `AutoRepeatMode` is honoured for one key or for every key. The delay and
-the rate themselves are only settable through XKB, which this server does not have - see
-`docs/backlog.md` B1.
+the rate themselves are only settable through XKB, and the XKB this server has answers the question
+rather than configuring it - see `docs/backlog.md` B1 for what of it is still missing.
 
 Events: structure notifications, exposes, property and colormap notifications, crossing and focus
 events with the full detail lattice and the grab modes, pointer and keyboard events with propagation
@@ -135,7 +135,11 @@ Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five c
 operations), `XTEST` (synthetic input), `RANDR` (one CRTC, output and mode over the whole screen, with
 the screen-change notification - `xrandr` prints it and `xrandr --listmonitors` names it, both byte for
 byte as a reference server does), `XINERAMA` (the one screen, which is the answer a toolkit's
-startup asks for), `MIT-SCREEN-SAVER` and `DPMS` (the idle state: the settings a client sets are kept
+startup asks for), `XKEYBOARD` (the keymap, the state, and the version handshake - built from the
+same table `GetKeyboardMapping` answers from, so a client that reads XKB and one that reads the core
+mapping cannot disagree about what a keycode means; `xdotool` needs it and dies in its own startup
+without it, and `xev` translates keycodes through it identically to a reference server),
+`MIT-SCREEN-SAVER` and `DPMS` (the idle state: the settings a client sets are kept
 and read back, `QueryInfo`'s countdowns count against the timeout that was set, a subscriber is told
 when the state changes, and `xset q` shows both - though nothing here blanks the display, which is the
 host window's business, and DPMS answers `Capable` = no for the same reason), `XFIXES` (cursor images, regions,
@@ -292,6 +296,16 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   the clients that asked for one when the screen grows - which is what C1's screen growth had no way
   to announce before. A request to *change* the screen, or anything about providers and leases, is
   refused with `BadImplementation`: the screen belongs to the host window.
+- **XKEYBOARD answers what a client asks before it will trust the keyboard, and no more.** The
+  version handshake, the keymap (`GetMap`) and the modifier state (`GetState`) are there, the
+  requests that have no answer here (`SelectEvents`, `LatchLockState`) are accepted rather than
+  refused, and `PerClientFlags` answers "none supported" instead of erroring - which is what JavaFX
+  sends as an application starts. What is *not* there: the compatibility map, the indicator names,
+  `GetNames`, `SetMap` (so no layout can be selected - `setxkbmap` is still a no-op), the "detectable
+  auto-repeat" a client can ask for, and locking or latching a modifier from a client, which would
+  lock the machine's own keyboard for everyone. One caveat worth knowing: a `GetMap` reply has to
+  carry XKB's four mandatory key types or Xlib rejects the whole reply, so a server that offers *fewer*
+  is not gracefully degraded, it is a `null` keymap the client will fault on.
 - **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
