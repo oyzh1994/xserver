@@ -18,6 +18,7 @@ if [ $# -lt 1 ]; then
     echo "       Blocks Colors Shift Rect Crop AuthProbe SelectionProbe CursorProbe" >&2
     echo "       ClipboardProbe WindowStateProbe XProxy XkbProbe RandrProbe XineramaProbe" >&2
     echo "       ScreenSaverProbe GravityProbe GrabProbe AllowEventsProbe PolyProbe" >&2
+    echo "       DamageProbe XiProbe FontProbe ChangeCursorProbe GlyphCursorProbe" >&2
     exit 2
 fi
 

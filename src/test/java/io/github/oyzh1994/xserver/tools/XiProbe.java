@@ -1,0 +1,569 @@
+package io.github.oyzh1994.xserver.tools;
+
+/**
+ * Asks a server the XInput2 questions a client asks as it starts, and prints every reply <b>as bytes
+ * as well as parsed</b>.
+ *
+ * <p>Part of the verification kit ({@code docs/backlog.md} §1) and the harness for item B4. XI2 is
+ * the one input extension modern toolkits prefer - {@code xeyes} prints a warning about the missing
+ * {@code XInputExtension} and falls back to core input, and {@code xinput} cannot list a thing
+ * without it - and its replies are positional to the byte, so a server that answers them has to
+ * answer them exactly. The requests here are the ones a client makes before it will believe the
+ * extension: the version handshake, the device list, which device a client gets, and the event
+ * selection.
+ *
+ * <pre>
+ *   XiProbe &lt;host&gt; &lt;port&gt;                query, version, client pointer, device list
+ *   XiProbe &lt;host&gt; &lt;port&gt; device &lt;id&gt;    one device (0 means every device)
+ *   XiProbe &lt;host&gt; &lt;port&gt; select &lt;mask&gt;  select XI2 events on a window and print what arrives
+ *   XiProbe &lt;host&gt; &lt;port&gt; dump            the raw bytes of every reply above
+ * </pre>
+ *
+ * <p><b>The reply layouts are read off a reference server here, not derived.</b> {@code
+ * XIQueryDevice} is the one that matters: the reply is a header whose {@code num_infos} says how many
+ * {@code XIDeviceInfo} records follow, and each record carries a variable number of {@code
+ * DeviceClass} records whose length is in the record itself. Getting any of it a byte out makes
+ * {@code xinput} print nonsense or fault, and nothing in this repository's own model says what is
+ * right - {@code tools/XkbProbe}'s lesson, which is why this tool prints bytes.
+ */
+public final class XiProbe {
+
+    private static final String EXTENSION = "XInputExtension";
+
+    // XI2 minor opcodes, from the extension's own numbering.
+    private static final int GET_CLIENT_POINTER = 45;
+    private static final int SELECT_EVENTS = 46;
+    private static final int QUERY_VERSION = 47;
+    private static final int QUERY_DEVICE = 48;
+
+    /** The XI2 version this tool asks for, which is what a toolkit asks before anything else. */
+    private static final int WANTED_MAJOR = 2;
+    private static final int WANTED_MINOR = 0;
+
+    /** {@code XIAllDevices} and {@code XIAllMasterDevices}. */
+    private static final int ALL_DEVICES = 0;
+    private static final int ALL_MASTER_DEVICES = 1;
+
+    /**
+     * {@code XI_ButtonPress | XI_ButtonRelease | XI_Motion} - the three a client watching the pointer
+     * asks for.
+     *
+     * <p><b>Which bits those are was measured, one bit at a time, and the answer is not the one a
+     * reading of the core masks suggests.</b> Selecting {@code 1<<3} delivers <em>nothing</em> and
+     * lets the core events through; {@code 1<<4} delivers an XI2 {@code ButtonPress} and suppresses
+     * the core one; {@code 1<<6} delivers a {@code Motion}. So the XI2 mask bits are one higher than
+     * the XI1/core numbering puts them, which is what the fork's own {@code XIEventMask} says:
+     * {@code DEVICE_CHANGED(0b10)}, {@code KEY_PRESS(0b100)}, {@code BUTTON_PRESS(0b10000)},
+     * {@code MOTION(0b1000000)}. Choosing them off the core values by hand gives a mask that is
+     * accepted, changes nothing, and looks exactly like a server that cannot deliver a device event.
+     */
+    private static final int BUTTON_MOTION_MASK = (1 << 4) | (1 << 5) | (1 << 6);
+
+    public static void main(String[] args) throws Exception {
+        if (args.length < 2) {
+            System.out.println("usage: XiProbe <host> <port> [device <id>] [select <mask> [deviceid]"
+                    + " [root]] [dump]");
+            return;
+        }
+        String mode = args.length > 2 ? args[2] : "query";
+        boolean dump = false;
+        int deviceId = ALL_DEVICES;
+        int selectMask = BUTTON_MOTION_MASK;
+        int selectDevice = ALL_MASTER_DEVICES;
+        boolean selectRoot = false;
+        for (int i = 2; i < args.length; i++) {
+            switch (args[i]) {
+                case "device" -> {
+                    mode = "device";
+                    deviceId = Integer.decode(args[++i]);
+                }
+                case "select" -> {
+                    mode = "select";
+                    if (i + 1 < args.length && !args[i + 1].equals("dump")
+                            && !args[i + 1].equals("root")) {
+                        selectMask = Integer.decode(args[++i]);
+                    }
+                    if (i + 1 < args.length && !args[i + 1].equals("dump")
+                            && !args[i + 1].equals("root")) {
+                        selectDevice = Integer.decode(args[++i]);
+                    }
+                    if (i + 1 < args.length && args[i + 1].equals("root")) {
+                        selectRoot = true;
+                        i++;
+                    }
+                }
+                case "dump" -> dump = true;
+                default -> {
+                }
+            }
+        }
+        try (Wire wire = Wire.connect(args[0], Integer.parseInt(args[1]))) {
+            int opcode = queryExtension(wire);
+            if (opcode == 0) {
+                System.out.println("XInputExtension is not offered by this server");
+                return;
+            }
+            System.out.println("XInputExtension opcode " + opcode);
+            if (mode.equals("select")) {
+                // The version handshake first, because that is the order a client uses and because
+                // an XISelectEvents sent before it is a request the reference accepts and then does
+                // nothing about: the run is quiet on the XI2 rail and loud on the core one, which
+                // reads as a server that cannot deliver a device event at all.
+                queryVersion(wire, opcode, dump);
+                selectEvents(wire, opcode, selectMask, selectDevice, selectRoot);
+                return;
+            }
+            queryVersion(wire, opcode, dump);
+            // A window of the client's own, because the root is refused (see getClientPointer).
+            int window = createWindow(wire);
+            getClientPointer(wire, opcode, window, dump);
+            if (mode.equals("device")) {
+                queryDevice(wire, opcode, deviceId, dump);
+            } else {
+                queryDevice(wire, opcode, ALL_DEVICES, dump);
+            }
+        }
+    }
+
+    /** {@code QueryExtension XInputExtension}, answering the extension's major opcode or 0. */
+    private static int queryExtension(Wire wire) throws Exception {
+        byte[] request = new byte[(8 + EXTENSION.length() + 3) & ~3];
+        request[0] = 98;
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, EXTENSION.length());
+        for (int i = 0; i < EXTENSION.length(); i++) {
+            request[8 + i] = (byte) EXTENSION.charAt(i);
+        }
+        wire.send(request);
+        while (true) {
+            byte[] message = wire.readMessage();
+            if (message == null) {
+                throw new java.io.IOException("no answer to QueryExtension");
+            }
+            if ((message[0] & 0xFF) == 1) {
+                // The reply is present, major-opcode, first-event, first-error - the opcode is the
+                // *second* byte of the four, which is worth saying out loud because reading the
+                // first one answers "1" and every request afterwards is then BadLength.
+                if ((message[8] & 0xFF) == 0) {
+                    return 0;
+                }
+                return message[9] & 0xFF;
+            }
+        }
+    }
+
+    private static void queryVersion(Wire wire, int opcode, boolean dump) throws Exception {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = QUERY_VERSION;
+        Wire.writeShort(request, 2, 2);
+        Wire.writeShort(request, 4, WANTED_MAJOR);
+        Wire.writeShort(request, 6, WANTED_MINOR);
+        wire.send(request);
+        byte[] reply = replyTo(wire, "XIQueryVersion");
+        System.out.println("XIQueryVersion asked " + WANTED_MAJOR + "." + WANTED_MINOR
+                + " -> " + Wire.readShort(reply, 8) + "." + Wire.readShort(reply, 10));
+        if (dump) {
+            hex("XIQueryVersion", reply);
+        }
+    }
+
+    /**
+     * {@code XIGetClientPointer}: which device this client's pointer events come from.
+     *
+     * <p><b>A reference server answers {@code BadWindow} for the root window</b> - measured, minor 45
+     * with bad value {@code 0x1ff} - so the tool asks about a window it created rather than about the
+     * root, which is what a client asks about anyway. Asking about the root here and reading the
+     * error as "this server has no XInput2" is a wrong answer with a plausible shape.
+     */
+    private static void getClientPointer(Wire wire, int opcode, int window, boolean dump)
+            throws Exception {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = GET_CLIENT_POINTER;
+        Wire.writeShort(request, 2, 2);
+        Wire.writeInt(request, 4, window);
+        wire.send(request);
+        byte[] reply = replyTo(wire, "XIGetClientPointer");
+        System.out.println("XIGetClientPointer on 0x" + Integer.toHexString(window)
+                + " -> set=" + (reply[8] & 0xFF) + " device=" + Wire.readShort(reply, 10));
+        if (dump) {
+            hex("XIGetClientPointer", reply);
+        }
+    }
+
+    private static void queryDevice(Wire wire, int opcode, int deviceId, boolean dump)
+            throws Exception {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = QUERY_DEVICE;
+        Wire.writeShort(request, 2, 2);
+        Wire.writeShort(request, 4, deviceId);
+        wire.send(request);
+        // replyTo has already read the reply whole, list and all.
+        byte[] reply = replyTo(wire, "XIQueryDevice");
+        int count = Wire.readShort(reply, 8);
+        System.out.println("XIQueryDevice " + deviceId + " -> " + count + " device(s), reply "
+                + reply.length + " bytes");
+        if (dump) {
+            hex("XIQueryDevice " + deviceId, reply);
+        }
+        int at = 32;
+        for (int i = 0; i < count && at + 12 <= reply.length; i++) {
+            at = deviceInfo(reply, at);
+        }
+    }
+
+    /**
+     * One {@code XIDeviceInfo}, printing what it holds and answering where the next one starts.
+     *
+     * <p>The record is twelve bytes of fixed fields, the name, padding to a four byte boundary, then
+     * its classes; each class is four bytes of its own followed by a body whose length the class
+     * states.
+     */
+    private static int deviceInfo(byte[] reply, int at) {
+        int id = Wire.readShort(reply, at);
+        int type = Wire.readShort(reply, at + 2);
+        int attachment = Wire.readShort(reply, at + 4);
+        int classes = Wire.readShort(reply, at + 6);
+        int nameLength = Wire.readShort(reply, at + 8);
+        int enabled = reply[at + 10] & 0xFF;
+        StringBuilder name = new StringBuilder();
+        for (int i = 0; i < nameLength; i++) {
+            name.append((char) (reply[at + 12 + i] & 0xFF));
+        }
+        int body = at + 12 + ((nameLength + 3) & ~3);
+        System.out.println("  device " + id + " '" + name + "' type " + type + " ("
+                + deviceType(type) + ") attached to " + attachment + " enabled " + enabled + ": "
+                + classes + " class(es)");
+        int classAt = body;
+        for (int c = 0; c < classes && classAt + 4 <= reply.length; c++) {
+            int classType = Wire.readShort(reply, classAt);
+            int length = Wire.readShort(reply, classAt + 2);
+            int sourceId = Wire.readShort(reply, classAt + 4);
+            StringBuilder detail = new StringBuilder();
+            // Every class body starts at the sixth byte: type, length and sourceid are the four plus
+            // two the header is made of. Reading the first field two bytes late is not a small error
+            // here - a key class then reports its *first keycode* as the number of keys.
+            if (classType == 0) {
+                int keys = Wire.readShort(reply, classAt + 6);
+                detail.append("num_keys ").append(keys).append(", keycodes ")
+                        .append(Wire.readInt(reply, classAt + 8)).append("..")
+                        .append(Wire.readInt(reply, classAt + 8 + (keys - 1) * 4));
+            } else if (classType == 1) {
+                int buttons = Wire.readShort(reply, classAt + 6);
+                detail.append("num_buttons ").append(buttons);
+            } else if (classType == 2) {
+                int number = Wire.readShort(reply, classAt + 6);
+                int label = Wire.readInt(reply, classAt + 8);
+                int value = Wire.readInt(reply, classAt + 28);
+                detail.append("number ").append(number).append(", label ").append(label)
+                        .append(", value ").append(value);
+            } else if (classType == 3) {
+                int number = Wire.readShort(reply, classAt + 6);
+                int scrollType = Wire.readShort(reply, classAt + 8);
+                detail.append("number ").append(number).append(", scroll_type ").append(scrollType);
+            }
+            System.out.println("      class " + classType + " (" + className(classType) + ") len "
+                    + length + " sourceid " + sourceId + ": " + detail);
+            // The class records are variable length but never shorter than the body they declare.
+            classAt += Math.max(8, length * 4);
+        }
+        return Math.max(body, classAt);
+    }
+
+    private static String deviceType(int type) {
+        return switch (type) {
+            case 1 -> "master pointer";
+            case 2 -> "master keyboard";
+            case 3 -> "slave pointer";
+            case 4 -> "slave keyboard";
+            case 5 -> "floating slave";
+            default -> "?";
+        };
+    }
+
+    /** The XI2 event names, numbered as the extension numbers them. */
+    private static String xiEventName(int evtype) {
+        return switch (evtype) {
+            case 1 -> "DeviceChanged";
+            case 2 -> "KeyPress";
+            case 3 -> "KeyRelease";
+            case 4 -> "ButtonPress";
+            case 5 -> "ButtonRelease";
+            case 6 -> "Motion";
+            case 7 -> "Enter";
+            case 8 -> "Leave";
+            case 9 -> "FocusIn";
+            case 10 -> "FocusOut";
+            case 11 -> "Hierarchy";
+            case 12 -> "Property";
+            case 13 -> "RawKeyPress";
+            case 14 -> "RawKeyRelease";
+            case 15 -> "RawButtonPress";
+            case 16 -> "RawButtonRelease";
+            case 17 -> "RawMotion";
+            default -> "?";
+        };
+    }
+
+    /** An {@code FP1616} fixed point value, which is how an XI2 event carries a coordinate. */
+    private static String fixed(int value) {
+        return (value >> 16) + "." + String.format("%04d", ((value & 0xFFFF) * 10000) >> 16);
+    }
+
+    private static String className(int type) {
+        return switch (type) {
+            case 0 -> "key";
+            case 1 -> "button";
+            case 2 -> "valuator";
+            case 3 -> "scroll";
+            case 8 -> "touch";
+            default -> "?";
+        };
+    }
+
+    /**
+     * Subscribes to XI2 events on a window, drives the pointer into it with XTEST and prints every
+     * message that arrives <b>as bytes as well as parsed</b>.
+     *
+     * <p>This is the half of XI2 a client actually sees. An XI2 event is a core {@code GenericEvent}
+     * (type 35) whose second byte is the extension's opcode and whose {@code evtype} names the XI2
+     * event - so "the extension is advertised" says nothing about whether a client can receive one,
+     * which is the shape of gap this kit exists to find.
+     *
+     * <p>Three things here were measured by getting them wrong first, and all three are traps for
+     * anyone implementing XI2 rather than using it: the <b>mask bits</b> are not the core ones shifted
+     * the way they look ({@code 1<<3} selects nothing where {@code 1<<4} is {@code ButtonPress}); a
+     * {@code GenericEvent} is read whole or not at all; and the pointer has to be warped to the window
+     * the events are selected on, not to the root near it.
+     */
+    private static void selectEvents(Wire wire, int opcode, int mask, int device, boolean onRoot)
+            throws Exception {
+        int xtest = queryExtensionNamed(wire, "XTEST");
+        if (xtest == 0) {
+            System.out.println("this server has no XTEST, so the probe cannot drive it");
+            return;
+        }
+        int window = onRoot ? wire.root() : createWindow(wire);
+        int warpX = onRoot ? 400 : 20;
+        int warpY = onRoot ? 400 : 20;
+
+        // XISelectEvents: the window, the number of EventMask records, then one record of
+        // deviceid, mask_len and the mask words.
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = SELECT_EVENTS;
+        Wire.writeShort(select, 2, 5);
+        Wire.writeInt(select, 4, window);
+        Wire.writeShort(select, 8, 1);              // one EventMask record
+        Wire.writeShort(select, 10, 0);             // pad
+        Wire.writeShort(select, 12, device);
+        Wire.writeShort(select, 14, 1);             // mask_len, in four byte words
+        Wire.writeInt(select, 16, mask);
+        wire.send(select);
+        System.out.println("selected mask 0x" + Integer.toHexString(mask) + " device " + device
+                + " on 0x" + Integer.toHexString(window) + (onRoot ? " (the root)" : ""));
+
+        // The core masks as well, so the same gesture can be read on both rails: a quiet XI2 run
+        // means "no XI2 event" while a quiet run on both means "the gesture never happened", and
+        // only having both in one output tells the two apart.
+        byte[] maskRequest = new byte[16];
+        maskRequest[0] = 2;                         // ChangeWindowAttributes
+        Wire.writeShort(maskRequest, 2, 4);
+        Wire.writeInt(maskRequest, 4, window);
+        Wire.writeInt(maskRequest, 8, 0x800);       // CWEventMask
+        Wire.writeInt(maskRequest, 12, 0x0C);       // ButtonPressMask | ButtonReleaseMask
+        wire.send(maskRequest);
+
+        // The pointer has to be inside the window for it to be the event's target, and "inside"
+        // means relative to the window it is warped to: warping to the root at 20,20 leaves the
+        // pointer outside a window that starts at 100,100, and the server then has every reason to
+        // deliver nothing at all.
+        byte[] warp = new byte[24];
+        warp[0] = 41;                               // WarpPointer
+        Wire.writeShort(warp, 2, 6);
+        Wire.writeInt(warp, 4, 0);                  // src: none
+        Wire.writeInt(warp, 8, window);             // dst
+        Wire.writeShort(warp, 16, warpX);           // dst x
+        Wire.writeShort(warp, 18, warpY);           // dst y
+        wire.send(warp);
+
+        // Say where the pointer actually is before driving it: a quiet run has two very different
+        // causes - the device event was not delivered, or the gesture never happened where the
+        // probe thought it did - and this is the line that tells them apart.
+        byte[] query = new byte[8];
+        query[0] = 38;                              // QueryPointer
+        Wire.writeShort(query, 2, 2);
+        Wire.writeInt(query, 4, wire.root());
+        wire.send(query);
+        byte[] answer = replyTo(wire, "QueryPointer");
+        System.out.println("pointer is over 0x"
+                + Integer.toHexString(Wire.readInt(answer, 12))
+                + " at " + Wire.readShort(answer, 16) + "," + Wire.readShort(answer, 18));
+
+        // And XTEST has to press a button, because the pointer cannot.
+        fakeButton(wire, xtest, 1, true);
+        fakeButton(wire, xtest, 1, false);
+
+        wire.readTimeoutMillis(400);
+        for (int i = 0; i < 12; i++) {
+            byte[] message = wire.readMessage();
+            if (message == null) {
+                System.out.println("(quiet)");
+                break;
+            }
+            int type = message[0] & 0xFF;
+            // A reply and a GenericEvent carry a length field; a core event does not - and its bytes
+            // four to seven are the *timestamp*, which read as a length is a wait for data that will
+            // never come. That is how a probe that extends every message hangs on a ButtonPress.
+            if (type == 1 || type == 35) {
+                message = wire.withExtraData(message);
+            }
+            if (type == 35) {
+                // The generic header is twelve bytes - type, extension, sequence, length, evtype,
+                // deviceid - and the XI2 body starts at the timestamp. There is *no* 32 bit full
+                // sequence on the wire here, which is worth saying out loud: assuming one (XGE's
+                // other events do have it) puts every field four bytes late, and the timestamp then
+                // reads as 1 and the detail as the root window's id. Measured against a reference:
+                // the fields up to `child` end on the thirty two byte boundary the protocol's own
+                // notes mention.
+                System.out.println("GenericEvent ext " + (message[1] & 0xFF)
+                        + " evtype " + Wire.readShort(message, 8) + " (" + xiEventName(
+                                Wire.readShort(message, 8)) + ")"
+                        + " device " + Wire.readShort(message, 10)
+                        + " time " + Wire.readInt(message, 12)
+                        + " detail " + Wire.readInt(message, 16)
+                        + " root 0x" + Integer.toHexString(Wire.readInt(message, 20))
+                        + " event 0x" + Integer.toHexString(Wire.readInt(message, 24))
+                        + " child 0x" + Integer.toHexString(Wire.readInt(message, 28))
+                        + " at " + fixed(Wire.readInt(message, 32)) + ","
+                        + fixed(Wire.readInt(message, 36))
+                        + " in-window " + fixed(Wire.readInt(message, 40)) + ","
+                        + fixed(Wire.readInt(message, 44))
+                        + " source " + Wire.readShort(message, 52)
+                        + " bytes " + message.length);
+                hex("GenericEvent", java.util.Arrays.copyOf(message, Math.min(96, message.length)));
+            } else {
+                System.out.println("core event type " + type + " bytes " + message.length);
+                hex("event", message);
+            }
+        }
+    }
+
+    /**
+     * {@code XTEST FakeInput}: press or release a button, which is how a probe drives the pointer.
+     *
+     * <p>Two things about this request read differently than they look, and both were measured by
+     * being sent wrong: the request is **thirty six bytes** and wants a length of 9, not the sixteen
+     * a reading of its fixed fields suggests - a short one is answered {@code BadLength} under an
+     * extension major opcode, which reads as "XTEST is not working" - and the {@code type} field is
+     * a **core event type number** (4 for ButtonPress, 5 for ButtonRelease, 6 for MotionNotify),
+     * not a numbering of XTEST's own.
+     */
+    private static void fakeButton(Wire wire, int xtest, int button, boolean pressed)
+            throws Exception {
+        byte[] request = new byte[36];
+        request[0] = (byte) xtest;
+        request[1] = 2;                             // XTEST FakeInput
+        request[2] = 9;
+        request[4] = (byte) (pressed ? 4 : 5);      // core ButtonPress / ButtonRelease
+        request[5] = (byte) button;
+        wire.send(request);
+    }
+
+    /** Creates and maps a 200x200 window at 100,100 and answers its id. */
+    private static int createWindow(Wire wire) throws Exception {
+        int window = wire.allocateId();
+        byte[] create = new byte[32];
+        create[0] = 1;                              // CreateWindow
+        create[1] = 24;                             // depth
+        Wire.writeShort(create, 2, 8);
+        Wire.writeInt(create, 4, window);
+        Wire.writeInt(create, 8, wire.root());
+        Wire.writeShort(create, 12, 100);
+        Wire.writeShort(create, 14, 100);
+        Wire.writeShort(create, 16, 200);
+        Wire.writeShort(create, 18, 200);
+        wire.send(create);
+        byte[] map = new byte[8];
+        map[0] = 8;                                 // MapWindow
+        Wire.writeShort(map, 2, 2);
+        Wire.writeInt(map, 4, window);
+        wire.send(map);
+        return window;
+    }
+
+    private static int queryExtensionNamed(Wire wire, String name) throws Exception {
+        byte[] request = new byte[(8 + name.length() + 3) & ~3];
+        request[0] = 98;
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, name.length());
+        for (int i = 0; i < name.length(); i++) {
+            request[8 + i] = (byte) name.charAt(i);
+        }
+        wire.send(request);
+        while (true) {
+            byte[] message = wire.readMessage();
+            if (message == null) {
+                throw new java.io.IOException("no answer to QueryExtension " + name);
+            }
+            if ((message[0] & 0xFF) == 1) {
+                return (message[8] & 0xFF) == 0 ? 0 : (message[9] & 0xFF);
+            }
+        }
+    }
+
+    /**
+     * Reads messages until the reply to the request just sent turns up, dropping events on the way.
+     *
+     * <p>An event passed over has to be read <em>whole</em>: a {@code GenericEvent}'s length field
+     * says how much of it follows, and reading only its first thirty two bytes leaves the rest in the
+     * stream, so the reply that comes next is read from the wrong offset and every field in it is
+     * garbage. Measured - with a motion mask selected, the warp generates an XI2 {@code Motion}, and
+     * the {@code QueryPointer} reply behind it decoded as {@code error 0, bad value 0x640000}, which
+     * is the event's own {@code root_x}.
+     */
+    private static byte[] replyTo(Wire wire, String what) throws Exception {
+        while (true) {
+            byte[] message = wire.readMessage();
+            if (message == null) {
+                throw new java.io.IOException("no answer to " + what);
+            }
+            if ((message[0] & 0xFF) == 35 || (message[0] & 0xFF) == 1) {
+                message = wire.withExtraData(message);
+            }
+            if ((message[0] & 0x7F) == 1) {
+                return message;
+            }
+            if ((message[0] & 0x7F) == 0) {
+                // An error names the request it is about: minor opcode at 8, major at 10. Printing
+                // the error itself rather than the zeroed reply it stands in for is what says which
+                // value the server objected to.
+                System.out.println(what + " -> error " + (message[1] & 0xFF)
+                        + " bad value 0x" + Integer.toHexString(Wire.readInt(message, 4))
+                        + " on major " + (message[10] & 0xFF)
+                        + " minor " + Wire.readShort(message, 8));
+                hex("error", message);
+                return new byte[32];
+            }
+        }
+    }
+
+    private static void hex(String what, byte[] bytes) {
+        StringBuilder line = new StringBuilder();
+        for (int i = 0; i < bytes.length; i++) {
+            if (i % 16 == 0) {
+                if (line.length() > 0) {
+                    System.out.println("    " + line);
+                }
+                line = new StringBuilder();
+                line.append(String.format("%04x  ", i));
+            }
+            line.append(String.format("%02x ", bytes[i] & 0xFF));
+        }
+        if (line.length() > 0) {
+            System.out.println("    " + line);
+        }
+    }
+}

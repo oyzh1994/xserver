@@ -176,6 +176,24 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `XiProbe` - the harness for B4 (XInput2), and the tool that says **why that item cannot be landed in
+  pieces**. `XiProbe <host> <port>` prints the version handshake, `XIGetClientPointer` and the whole
+  device list **parsed and as bytes**; `device <id>` narrows the list to one device; `select <mask>
+  [deviceid] [root]` selects XI2 events on a window, warps the pointer in, drives a button through
+  XTEST and prints every message - with the core masks selected as well, so a run that produces no
+  XI2 event and a run whose gesture never happened can be told apart (a quiet run means different
+  things and only having both rails in one output says which). Against this server it prints
+  `XInputExtension is not offered by this server`, which is the honest state today.
+  **Run it against Xvfb before writing anything**: a mask bit that looks wrong is wrong
+  (`1<<3` selects nothing where `1<<4` is `ButtonPress`, and a wrong mask is *accepted* and changes
+  nothing, which reads as a server that cannot deliver a device event at all), an XI2 event is a
+  `GenericEvent` whose header is twelve bytes with no 32 bit full sequence - read it as though it had
+  one and the timestamp reads as 1 - and it must be read **whole** (a length field says how much
+  follows; the first version read thirty two bytes of a 120 byte event and every message after it was
+  garbage, which showed up as the next reply decoding as `bad value 0x640000`, i.e. as the event's own
+  `root_x`). Its own XTEST driver cost two rounds the same way: `FakeInput` is **thirty six bytes**
+  with a length of 9 - not the sixteen its fixed fields suggest - and its `type` field is a **core**
+  event type number (4 press, 5 release, 6 motion), not a numbering of XTEST's own.
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
