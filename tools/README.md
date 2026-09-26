@@ -138,7 +138,8 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   worth more than another hand-built request. It prints what `XListFonts` matches and whether a font
   set was built, with the charsets no font was found for. Run it under the locale that matters
   (`LANG=zh_CN.UTF-8`), because the charsets asked for are the locale's own. See its header for the
-  two servers' measured output and for what is still not explained by it.
+  two servers' measured output, for the three font-path bugs it led to, and for what to measure
+  next if a font set ever fails again.
 - `font-reply-proxy.py` - the tool C10's font-set question needs next: a byte-level proxy that
   **captures a server's `ListFonts` and `ListFontsWithInfo` replies**, one framed message per line
   (`<opcode> <pattern> <hex>`), so two servers' answers to the same requests can be diffed byte for

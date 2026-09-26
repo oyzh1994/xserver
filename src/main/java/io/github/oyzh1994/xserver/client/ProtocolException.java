@@ -91,6 +91,16 @@ public class ProtocolException extends RuntimeException {
         return new ProtocolException(NAME, 0, "font or color name does not exist");
     }
 
+    /**
+     * The same error with a message of the caller's own, for a request where the core protocol's
+     * wording would mislead: {@code BadName} is also what an output property that is not there
+     * raises, and "font or color name does not exist" in the log for that sends the reader looking
+     * for a font.
+     */
+    public static ProtocolException badName(String message) {
+        return new ProtocolException(NAME, 0, message);
+    }
+
     public static ProtocolException unimplemented(String what) {
         return new ProtocolException(IMPLEMENTATION, 0, "not implemented: " + what);
     }

@@ -407,10 +407,16 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   Java font with the JVM's shapes and metrics. A font reached through an alias is listed under the
   alias and **reported under its own XLFD name**, which is what a font path does and what a client
   needs: `ListFonts` answers the name a pattern matched and `ListFontsWithInfo` the font's own name,
-  which is where a client reads a font's charset from. **A font set is still not built here**: with
-  the names right, `XCreateFontSet` against this server still fails where it succeeds against Xvfb,
-  and the remaining difference has not been found - so an X input method running on the client side
-  cannot be used yet (`docs/backlog.md`, C10).
+  which is where a client reads a font's charset from. **And a font is loadable by both names and by
+  a pattern**: the table is indexed by each font's XLFD name as well as its alias, a wildcard name is
+  resolved to the first table font it matches, and the font list carries the XLFD names - so the name
+  a `ListFontsWithInfo` reply gives out is a name the server then finds. That is the whole of what a
+  font set needs, and it was three separate misses away: measured against Xvfb, a font loaded by its
+  own XLFD name here had **no `CHARSET_REGISTRY`/`CHARSET_ENCODING` properties at all** (the Java
+  approximation has none, and Xlib reads a font's charset from exactly those), a pattern was treated
+  as an unknown name, and the XLFD names were not listed. With them fixed, `XCreateFontSet` answers
+  the same as the reference's, and an X input method on the client side works: `ibus` composing
+  through XIM into a forwarded `xterm` commits Chinese (`docs/backlog.md`, C10).
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
   feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
   screen - so a client that asks what the pointer did is answered.)

@@ -197,7 +197,7 @@ public final class RandRExtension implements Extension {
             // EDID, and a reference server has no EDID either - and "not implemented" tells it the
             // feature is missing rather than the monitor having no such property. Measured
             // 2026-09-26: this was the one error EasyShell's start-up path produced here.
-            throw ProtocolException.badName();
+            throw ProtocolException.badName("no such output property");
         } else if (request instanceof GetProviders) {
             // No providers: this screen has one output and it is the host window's, so there is
             // nothing to offload to and nothing to source from. An empty list is the honest answer

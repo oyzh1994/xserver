@@ -71,7 +71,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
-| [~] C10 | input methods: the host's composing is verified live; the client-side XIM needs dbus on the VM | host window | M |
+| ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
@@ -2266,7 +2266,7 @@ visual would fix the shape, and is a small item of its own.
 
 ---
 
-### [~] C10. Input methods: the host's own composing is verified live; the client-side one still needs an environment the VM has not got. **M**
+### [x] C10. Input methods. **M** - done 2026-09-26: both halves verified live, and the client-side one needed three font-path fixes rather than an environment
 
 **Current.** Unknown - and that is the item. An X input method (fcitx/ibus with the XIM protocol, or
 client-side modules) runs as an X *client* and talks to applications through the `XIM_SERVERS`
@@ -2411,27 +2411,52 @@ passes against a server that answers the same name to both) and **fails without 
 XLFD's last two fields are where a client reads a font's charset from - so it is committed as a
 fidelity fix.
 
-**It is not sufficient, and that is measured rather than assumed**: with the name fixed,
-`XCreateFontSet("fixed")` against this server **still returns NULL with the same five charsets
-missing**, against the same call succeeding on Xvfb. So something else in the font path is what
-libX11 rejects, and the next step is the one A4's investigation needed and this one does too: a proxy
-that can **rewrite replies** (not just log them) so our answers to `ListFonts`/`ListFontsWithInfo`
-can be replaced with Xvfb's byte for byte - if the font set is then created, the difference is in
-those two replies and can be bisected field by field. The remaining candidate differences are the
-answers' *count* (`ListFonts("fixed")` is 2 names on Xvfb and 1 here, and one of Xvfb's two fonts is
-an `--0-0-…` scalable variant this server has no table for) and `repliesHint`, the one field of the
-reply `xlsfonts` does not print.
+**It was not sufficient, and the two remaining halves were found the same way - done 2026-09-26.**
 
-**The next command is `tools/font-reply-proxy.py`**, written for this and checked in with the rest:
-it captures the two servers' `ListFonts`/`ListFontsWithInfo` replies framed one message per line, so
-the fields nothing displays can be compared - and its header records the replay half that follows if
-the bytes turn out to be identical (feed Xvfb's answer to this server's client and bisect).
+With the name fixed, `XCreateFontSet` still answered NULL, so the difference was elsewhere in the same
+gesture. A proxy that logs *every* request (`tools/font-reply-proxy.py`'s sibling, written for this)
+showed what Xlib actually does, and it is three requests deep: it asks `ListFonts("fixed")`, then
+`ListFontsWithInfo("fixed")` to learn the font's real name, and then **`ListFontsWithInfo` for that
+name** - and *that* request came back empty here, because the XLFD name was not in the font list at
+all. The server was telling a client the name of a font it could not then find.
 
-**And the live check still has to be run**, which is what the fix is for: `xterm` (installed on the
-VM for exactly this) with `XMODIFIERS=@im=ibus` against a `--single-window` server, the ibus trigger
-typed through XTEST, and the committed characters compared with the same run against Xvfb. It cannot
-be run yet - **the VM went off the network during this session** (`No route to host`, 2026-09-26
-13:10) and did not come back, so the XIM attempt above is the last measurement taken from it.
+Measuring further with `XGetFontProperty` (the same `ctypes`-at-Xlib approach) turned up the second
+half: loading a font *by its own XLFD name* here landed on the Java approximation, whose font has
+**no `CHARSET_REGISTRY`/`CHARSET_ENCODING` properties at all** - the reference answers
+`ISO8859`/`1` to both and this server answered neither - and Xlib reads a font's charset from exactly
+those two properties. A *pattern* (`-misc-fixed-*-iso8859-1`, which is what `XCreateFontSet` builds
+out of a base name and the charset it is looking for) had the same fate.
+
+Three fixes, all in the font tables:
+
+- `BitmapFont` indexes every font by its own XLFD name as well as by its alias, so a font this server
+  *names* is one it can *load*;
+- an X font pattern is resolved to the first table font it matches (a fixed order, so it resolves the
+  same way twice);
+- `ResourceHandlers`' font list carries those XLFD names, so the name a `ListFontsWithInfo` reply
+  hands out is one the server will find when the client asks about it.
+
+**Measured end to end, and this is what the item was for.** On the VM with `ibus` and `xterm` (both
+installed for this): before, `xterm` printed `Preparation of font set "fixed" for XIM failed` and
+`Failed to create input context`; after, it starts with no message at all, and `nihao` typed through
+ibus - the trigger and the letters sent by XTEST, the candidate taken with a space - **commits 你好
+into the xterm**, captured on screen. The probe agrees with the reference now:
+
+```
+XCreateFontSet("fixed")   Xvfb: OK, missing GB2312.1980-0, GBK-0, ISO10646-1
+                          here: OK, missing the same three       (before: NULL, missing five)
+```
+
+`BitmapFontTest.aFontIsLoadableByItsOwnNameAndByAPattern` pins the three lookups and **fails without
+them** (`expected: <[-Misc-Fixed-…-ISO8859-1]> but was: <[]>`). `mvn test` 328/328, and both live
+clients were looked at again after the change: EasyShell's context menu survived the six out-and-back
+passes 6/6 and termora's 6/6 with the two captures byte-identical.
+
+**So the item's framing was wrong in a way worth keeping**: "an X IME running on the client is a
+documentation item" was written from a probe that could not distinguish "the IME is fine" from "the
+font set is not". It was not a documentation item - three real bugs sat between a client-side input
+method and a working one, and all three were invisible to every test written from this server's own
+side, because the server agreed with itself in each case.
 
 ---
 

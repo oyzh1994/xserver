@@ -31,12 +31,18 @@ server, the second line is what ``xterm`` prints as
     xterm: Preparation of font set "fixed" for XIM failed.
     xterm: Failed to create input context
 
-**What was found with it, and what was not.** ``ListFontsWithInfo`` answered with the name the
-pattern matched where a reference answers the font's own XLFD name; that is fixed (see
-``XFont.realName``), and **it did not change this output** - the same five charsets are still
-missing. So the remaining difference is in the same two replies and somewhere this probe cannot see:
-the next step is a proxy that can *rewrite* them, so our answers can be replaced with Xvfb's byte for
-byte and bisected field by field.
+**What it found, and it took three fixes rather than one.** The probe's first measurement said
+``XCreateFontSet`` answered NULL here and OK against Xvfb, and each step after that was one more
+place where a font this server *names* could not be *loaded*: ``ListFontsWithInfo`` reported the
+alias instead of the font's own XLFD name; a font loaded by that XLFD name missed the table and fell
+back to the Java approximation, which has **no charset properties at all** (checked with
+``XGetFontProperty``: the reference answers ``ISO8859``/``1``, the approximation answers neither);
+and a *pattern* - what ``XCreateFontSet`` actually builds from a base name and a charset - was
+treated as an unknown name. With all three fixed the answer here matches the reference's, and
+``ibus`` composing through XIM into a forwarded ``xterm`` commits Chinese (backlog C10).
+
+The next measurement, if a font set ever fails again, is ``tools/font-reply-proxy.py``: capture both
+servers' ``ListFonts``/``ListFontsWithInfo`` replies and diff the fields nothing displays.
 """
 
 import ctypes
