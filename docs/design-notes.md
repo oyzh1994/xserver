@@ -23,6 +23,16 @@ dialogs or cost a second rendering model. One screen per client gets the same us
 for the case that matters (one forwarded application = one window) and keeps a client's own dialogs,
 menus and popups overlapping correctly inside its window.
 
+**And that paragraph is now measured rather than argued (C8, 2026-09-26).** The per-top-level model was
+built - a `HostWindow` per X top level, each with its own backend, viewport, title and input sink, and
+five tests pinning the rules, `mvn test` 350/350 - and then looked at. With EasyShell's 工具 dialog
+open in per-client mode the menu bar does show two windows, and a screen capture of the **main
+window's own area** is filled with the *dialog's* content: the scan table and its buttons, with the
+main window's sidebar only at the edges. A frame shows a rectangle of the screen, and the dialog's
+pixels are in the main window's rectangle too, because there is one surface for both. The dialog is
+shown twice and the window under it looks taken over by it - so the model was reverted, and the item
+now says what it needs: pixels of its own per window, which is B5's per-window store.
+
 The host window shows a **sub-rectangle** of the screen (`DisplayBackend.setViewport`): the union of
 the client's mapped top-level windows, so a small application arrives in a small window rather than
 in a screen-sized one with black around it. The screen grows when a window is dragged past it - see

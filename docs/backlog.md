@@ -85,7 +85,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
-| C8 | one host window per client toplevel | host window | L |
+| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bleed into its parent's frame (one framebuffer), so this needs B5's per-window store first | host window | L (B5 first) |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
@@ -2476,6 +2476,69 @@ carries no files. So the honest state is "the gesture is scriptable in principle
 not" - and the thing to try is a real drag by hand, with a real client that takes drops.
 
 ---
+
+### [ ] C8. One host window per client toplevel. **L** - built and measured 2026-09-26; it needs B5 first
+
+**What it is.** A connection gets one host window showing the **union** of every top level it has
+mapped (`contentBounds`), and that rectangle is what the frame follows. An application that opens a
+dialog beside its parent makes the parent's frame grow and jump; a small window with a dialog far away
+arrives in a large frame with empty space in it.
+
+**The whole item was built, and then measured against the thing that made it not shippable.** The
+refactor is written and was green (`mvn test` 350/350 with five new tests); it is reverted, and what
+follows is the design and the measurement so the next session starts where this one finished rather
+than at the beginning.
+
+**The design that was prototyped.** Everything that belongs to a window rather than to a screen moves
+into a `HostWindow`: the backend, the viewport, the title and icon, the largest size it may be dragged
+to, where the user left it, whether it has been raised or told it is idle, and - the part that makes
+the rest work - **its own `InputSink`**. The backend hands pointer and key events to that sink, which
+passes them to the screen's `InputState` (their coordinates are screen coordinates already, because the
+backend adds the viewport's origin) and keeps the two window-shaped callbacks, `windowResized` and
+`windowMoved`, for itself: a drag of *this* frame resizes *this* X window. `ScreenSession` keeps what
+belongs to the screen - the framebuffer, the cursor notifications, the connection - and the list of
+windows showing it. The rules the tick followed: one frame per mapped non-override-redirect top level;
+a menu gets none (and a client that has mapped only menus gets one frame showing them); a frame follows
+its own window and no other; closing a frame asks *that* window to close through `WM_DELETE_WINDOW` and
+leaves the session alone; and the whole-screen frame of single-window mode keeps the old
+"largest mapped top level" rule for its title, full-screen state and raise. Positions are remembered
+per window, a client's first keeping the plain `WM_CLASS` and later ones carrying a cascade number.
+
+**Why it was reverted, and this is the measurement that matters.** A frame shows a rectangle of the
+**screen**, and there is one framebuffer per screen (A9) - so two frames of one client are two views of
+one surface, and where the client's windows overlap, the upper window's pixels are in the lower one's
+rectangle too. Measured live on EasyShell in per-client mode: with its 工具 dialog open, the menu-bar
+shows two windows as intended (`Main | EasyShell主页 | 95,174 1300x728` and
+`Main | 工具 | 138,113 1050x628`), and a screen capture of the **main window's own area** is filled
+with the *dialog's* content - the connection-scan table and its buttons - with the main window's sidebar
+and welcome page only at the edges. The dialog is shown twice, and the window under it looks taken
+over by it. That is exactly what `docs/design-notes.md` predicted when it rejected this model
+("per-window native windows would either lose dialogs or cost a second rendering model"), and the
+measurement now says the prediction is right.
+
+**So C8 depends on B5.** A frame per top level is only honest once each window has pixels of its own to
+be that frame's picture - the per-window store B5 describes. Until then the union frame is the correct
+choice: everything the user sees is what the X screen shows, and only the *frame's* size and position
+are wrong, rather than its pixels.
+
+**Traps the prototype cost, each one a way to get it wrong quietly** - worth having before the code is
+written again:
+
+- **A resize request belongs to a window, not to a screen.** Reading the requested size off the
+  session's input state - which is where it had always been - applies a drag of one frame to every
+  window the client has. `ScreenResizeTest`'s "the screen did not grow" was the first sign.
+- **The whole-screen frame has no X window of its own**, so the "largest mapped top level" rule has to
+  survive for it: without it single-window mode loses its title bar, its full-screen state and its
+  raise (`WindowStateTest`: five failures, every one of them `expected: <true> but was: <false>`).
+- **A reported position must not be cleared as it is read.** The move-settle writes a position only
+  after seeing the same one on two ticks, so consuming it leaves nothing to compare against and no
+  position is ever written (`HostWindowPositionTest`'s "the move was never remembered").
+- **The master window has to be opened by `start()`**, not by the first tick: it is what the tray and
+  the clipboard present through, and a test that never runs the display loop (`TrayBridgeTest`) saw no
+  backend at all ("the backend never started").
+- **A frame whose client window is destroyed goes with it.** The per-connection window used to stay
+  with its last frame; a frame around a window that is gone is a stale picture
+  (`PerClientWindowTest`'s idle assertion, rewritten while the prototype was in).
 
 ### [x] C9. Tray icons in the macOS menu bar. **M** - done 2026-09-26: the server is the tray host, and the icons are shown in the menu bar
 

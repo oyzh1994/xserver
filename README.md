@@ -111,7 +111,10 @@ of its own - its own root window and framebuffer - so each forwarded application
 window sized to what it draws, and no client can draw over another's pixels. The window follows the
 client's top level windows: it is the union of their rectangles, so a dialog next to the parent
 stays inside it and a small application does not arrive in a screen-sized window with black around
-it. `--single-window` restores the older shape, one shared screen with every client on it. A
+it. **A host window per X top level was built and measured in 2026-09-26 and is not what this is**:
+with no per-window pixel store (B5) a dialog's pixels are in its parent's frame as well, so the dialog
+is shown twice and the window under it looks taken over by it - see `docs/backlog.md` C8.
+`--single-window` restores the older shape, one shared screen with every client on it. A
 screen's pixels are allocated when something first draws into it, so a connection that only asks
 questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
 
