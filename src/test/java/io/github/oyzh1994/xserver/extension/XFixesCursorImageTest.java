@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -87,6 +88,84 @@ class XFixesCursorImageTest {
             client.destroyWindow(window);
             client.queryTree(client.root());
         }
+    }
+
+    /**
+     * {@code XFixesChangeCursor}: the destination takes the source's image **and its serial**, a
+     * window already showing the destination shows the new shape, and the source is untouched.
+     *
+     * <p>Every part of that is measured rather than read off the specification
+     * ({@code tools/ChangeCursorProbe}): the request's two arguments are {@code source} then
+     * {@code destination} and it is the *destination* that changes; a reference server answers with
+     * the source's shape and the source's serial afterwards, so the two ids name one cursor; and
+     * **no cursor notification is raised** for a rewrite, which is what this server's tick gives for
+     * free - the cursor is the same cursor, so nothing looks changed to it.
+     */
+    @Test
+    void changeCursorRewritesTheDestinationInPlace() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int xfixes = client.queryExtension("XFIXES");
+            int font = client.allocateId();
+            client.openFont(font, "fixed");
+            int source = client.allocateId();
+            int destination = client.allocateId();
+            client.createGlyphCursor(source, font, font, 'A', 'A', 0xFFFFFF, 0x000000);
+            client.createGlyphCursor(destination, font, font, 'C', 'C', 0xFFFFFF, 0x000000);
+            int sourceWindow = client.allocateId();
+            int destinationWindow = client.allocateId();
+            client.createWindow(sourceWindow, client.root(), 0, 0, 60, 60, 0x202020);
+            client.createWindow(destinationWindow, client.root(), 200, 0, 60, 60, 0x202020);
+            client.setWindowCursor(sourceWindow, source);
+            client.setWindowCursor(destinationWindow, destination);
+            client.mapWindow(sourceWindow);
+            client.mapWindow(destinationWindow);
+            client.flush();
+
+            byte[] sourceImage = imageAt(client, xfixes, sourceWindow);
+            byte[] before = imageAt(client, xfixes, destinationWindow);
+            assertNotEquals(RawXClient.readInt(sourceImage, 20), RawXClient.readInt(before, 20),
+                    "two cursors to begin with, with serials of their own");
+
+            byte[] request = new byte[12];
+            request[0] = (byte) xfixes;
+            request[1] = 26;                            // X_XFixesChangeCursor
+            RawXClient.writeShortAt(request, 2, 3);
+            RawXClient.writeIntAt(request, 4, source);
+            RawXClient.writeIntAt(request, 8, destination);
+            client.sendRequest(request);
+            client.flush();
+
+            byte[] after = imageAt(client, xfixes, destinationWindow);
+            assertEquals(RawXClient.readInt(sourceImage, 20), RawXClient.readInt(after, 20),
+                    "the destination reports the source's serial: the id now names the source");
+            assertEquals(shape(sourceImage), shape(after), "and draws the source's shape");
+            assertEquals(RawXClient.readInt(sourceImage, 20),
+                    RawXClient.readInt(imageAt(client, xfixes, sourceWindow), 20),
+                    "the source itself is untouched");
+
+            client.warpPointer(client.root(), 1, 1);
+            client.destroyWindow(sourceWindow);
+            client.destroyWindow(destinationWindow);
+            client.queryTree(client.root());
+        }
+    }
+
+    /** The cursor the given window's pointer shows, by warping there and asking. */
+    private static byte[] imageAt(RawXClient client, int xfixes, int window) throws IOException {
+        client.warpPointer(window, 30, 30);
+        client.queryTree(window);                       // a round trip: the pointer is there
+        return getCursorImage(client, xfixes);
+    }
+
+    /** The reply's image as text, for comparing two cursors' shapes. */
+    private static String shape(byte[] reply) {
+        int width = RawXClient.readShort(reply, 12);
+        int height = RawXClient.readShort(reply, 14);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < width * height; i++) {
+            out.append((RawXClient.readInt(reply, 32 + i * 4) >>> 24) == 0 ? '.' : '#');
+        }
+        return out.toString();
     }
 
     /** XFixesGetCursorImage, whose request is one unit: it takes no arguments. */

@@ -176,6 +176,10 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `ChangeCursorProbe` - the harness for A8's `ChangeCursor`: two glyph cursors on two windows, the
+  image of each read back through `GetCursorImage` before and after the change - which says **which**
+  of the two arguments changes, that the window already showing it sees it, and (from the cursor
+  notifications, with the pointer left over the destination) that a rewrite raises none.
 - `BitGravityProbe` - the harness for A12's other half: a marker near each corner of a window, the
   window grown, and the window read back with `GetImage` as per-row ink spans - so the shift a
   `bitGravity` asks for is a number rather than a guess. Its own header says what the eleven values

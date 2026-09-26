@@ -83,6 +83,22 @@ class CursorFontTest {
             }
         }
         assertEquals(20, ink, "the glyph's own ink, where a filled cell would ink all seventy eight");
+
+        // The hotspot is the glyph's *origin*, not its ink's left bearing: measured across seven
+        // glyphs, and four of them have a bearing of their own. '!' begins two pixels in (lb=2) and a
+        // reference server still answers 0,11 - the pen's own place in the cell.
+        XCursor bearing = XCursor.fromGlyph(1, null, new XFont(1, null, "fixed"), '!', '!',
+                FOREGROUND, BACKGROUND);
+        assertEquals(0, bearing.hotspotX(), "the bearing does not move the hotspot");
+        assertEquals(11, bearing.hotspotY(), "which is the font's ascent down from the cell's top");
+
+        // And a code the *cursor font* has a shape for is that font's glyph here, not its shape: the
+        // cursor font's table is consulted for the cursor font and for no other (measured: 66 is one
+        // of its codes, and a reference server draws `fixed`'s 'B' for it).
+        XCursor collision = XCursor.fromGlyph(1, null, new XFont(1, null, "fixed"), 66, 66,
+                FOREGROUND, BACKGROUND);
+        assertEquals(6, collision.width(), "the cell of the font that was asked for");
+        assertEquals(13, collision.height());
     }
 
     @Test

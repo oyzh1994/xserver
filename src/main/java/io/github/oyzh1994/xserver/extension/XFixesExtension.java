@@ -80,8 +80,7 @@ import java.util.Map;
  * <p>The version reported is 4.0, the highest release whose requests are all answered. Requests
  * that this server cannot honour are rejected with {@code BadImplementation} rather than silently
  * ignored, so a client is never told something happened when nothing did. That covers the picture
- * and pointer barrier requests, which have no backing resources, and the cursor mutation requests,
- * which would have to rewrite a cursor image in place.
+ * requests, which have no backing resources, and the pointer barriers.
  *
  * <p>Both kinds of notification are delivered. {@code SelectSelectionInput} subscriptions are
  * answered with the three {@code SelectionNotify} subtypes, raised by {@link #notifySelection} from
@@ -98,10 +97,9 @@ import java.util.Map;
  *
  * <p>Known gaps, all deliberate:
  * <ul>
- *   <li>{@code ChangeCursor}/{@code ChangeCursorByName} and {@code CreateRegionFromPicture} are
- *       refused: the first two would rewrite a cursor image in place - a cursor is immutable here,
- *       and a window holds a reference to it - and the third needs a picture's clip read back as a
- *       region.
+ *   <li>{@code ChangeCursorByName} and {@code CreateRegionFromPicture} are refused: the first needs
+ *       the cursor font's glyph *names*, which this server's embedded table does not carry, and the
+ *       second needs a picture's clip read back as a region.
  * </ul>
  */
 public final class XFixesExtension implements Extension {
@@ -239,7 +237,7 @@ public final class XFixesExtension implements Extension {
         } else if (request instanceof SetPictureClipRegion setPictureClipRegion) {
             throw ProtocolException.unimplemented("XFixesSetPictureClipRegion");
         } else if (request instanceof ChangeCursor changeCursor) {
-            throw ProtocolException.unimplemented("XFixesChangeCursor");
+            changeCursor(server, client, changeCursor);
         } else if (request instanceof ChangeCursorByName changeCursorByName) {
             throw ProtocolException.unimplemented("XFixesChangeCursorByName");
         } else if (request instanceof CreatePointerBarrier createPointerBarrier) {
@@ -647,6 +645,26 @@ public final class XFixesExtension implements Extension {
     // Regions
     // ------------------------------------------------------------------
 
+    /**
+     * {@code XFixesChangeCursor}: the destination cursor becomes the source - its image, its hotspot
+     * and its serial - and stays the same *resource*, so a window already showing it shows the new
+     * shape.
+     *
+     * <p>Measured against a reference server with {@code tools/ChangeCursorProbe}: after
+     * {@code ChangeCursor(source, destination)} the window showing the destination reports the
+     * source's shape and the source's serial, and **no cursor notification is raised** - a rewrite is
+     * not a cursor change, which is why nothing here announces one.
+     */
+    private void changeCursor(XServer server, ClientConnection client, ChangeCursor request) {
+        XCursor source = requireCursor(server, client, request.getSource());
+        XCursor destination = requireCursor(server, client, request.getDestination());
+        destination.adopt(source);
+        // The sprite is not part of the framebuffer, so a frame has to go out for the new shape to
+        // reach the screen: a client that rewrites a cursor and then draws nothing would otherwise
+        // keep showing the old one.
+        server.markScreenDirty();
+    }
+
     private void createRegion(XServer server, ClientConnection client, CreateRegion request) {
         create(server, client, request.getRegion(), toAwt(request.getRectangles()));
     }
@@ -837,6 +855,11 @@ public final class XFixesExtension implements Extension {
 
     private static XWindow requireWindow(XServer server, ClientConnection client, int id) {
         return (XWindow) server.resources().require(client, id, XResource.CLASS_WINDOW, false);
+    }
+
+    /** A cursor resource, which is a core resource rather than an extension one. */
+    private static XCursor requireCursor(XServer server, ClientConnection client, int id) {
+        return (XCursor) server.resources().require(client, id, XResource.CLASS_CURSOR, false);
     }
 
     private static void checkShapeKind(int kind) {

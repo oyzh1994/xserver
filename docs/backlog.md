@@ -664,12 +664,25 @@ this server          6x13     0,0       a filled cell (the approximation A3 remo
 ```
 
 The rule the four combinations pin (source/mask 'A'/'A', 'A'/'B', 'A'/'0', 'A'/' ') is that **the
-mask character's ink is the silhouette**, and the hotspot is (the source glyph's left bearing, the
-font's ascent). `XCursor.fromGlyph` composes exactly that for a font whose glyphs it has - the cell is
-the font's own `maxWidth x ascent+descent`, the mask glyph's ink is the shape, the source glyph's ink
-is drawn in the foreground inside it - and the fallback (a font with no table at all) stays the old
-filled cell. **Measured afterwards: `GlyphCursorProbe`'s output against Xvfb and against this server
-differs in nothing but the window id**, for every mask character tried.
+mask character's ink is the silhouette**, and the hotspot is the glyph's **origin** - the pen's place
+in the cell, `(0, the font's ascent)` - and not the ink's left bearing, which is what this item first
+wrote down: measured across seven glyphs, four of them with a bearing of their own ('!' 2, '"' 1,
+',' 1, '(' 1), and a reference answers 0,11 for every one of them. `XCursor.fromGlyph` composes
+exactly that for a font whose glyphs it has - the cell is the font's own
+`maxWidth x ascent+descent`, the mask glyph's ink is the shape, the source glyph's ink is drawn in the
+foreground inside it - and the fallback (a font with no table at all) stays the old filled cell.
+**Measured: `GlyphCursorProbe`'s output against Xvfb and against this server is identical for
+fourteen characters**, and for the mask combinations above.
+
+**And the embedded cursor-font table belongs to the cursor font alone - which this item got wrong in
+the other direction.** It said "the font argument is not consulted at all on that path, because a
+client that asks for `XC_left_ptr` means the arrow every X server draws"; true for the cursor font and
+false for every other one, and the two collide because the cursor font's table is indexed by *code*.
+Measured: character 66 is one of the cursor font's codes, so `CreateGlyphCursor(fixed, 66)` answered
+with a cursor-font shape here and with **that font's own 'B'** on a reference server. The table is now
+consulted only for a font whose name says it is the cursor font (or for no font at all, which is how
+the callers that mean the cursor font pass it). Found while A8's `ChangeCursor` was being measured -
+the cursor probe was the first thing to ask a *non*-cursor font for a code in that range.
 
 **The one thing the probe cannot check is the two colours**, and that is written down rather than
 guessed: both servers answer the image as opaque black whatever colours the request named, so
@@ -679,8 +692,23 @@ own path already uses. The measurement that would settle the other reading (the 
 background colour with the source invisible, which is what the probe's *silhouettes* are consistent
 with) is the sprite's own pixels in a `-scene-` frame dump, where a JavaFX backend draws them.
 
-**Left open here**: `ChangeCursor`/`ChangeCursorByName` and `CreateRegionFromPicture` are still
-refused with `BadImplementation`. The first two would rewrite a cursor image in place, and a cursor
+**`ChangeCursor` is the fifth leftover and is done (2026-09-26)**, measured first with
+`tools/ChangeCursorProbe`: the two arguments are `source` then `destination` and it is the
+**destination** that changes; after the call a window already showing the destination shows the
+source's shape *and reports the source's serial*, so the two ids name one cursor; the source is
+untouched; and **no cursor notification is raised** - a rewrite is not a cursor change. This server
+implements it by rewriting the destination **in place** (`XCursor.adopt`), which is what those answers
+show: a window that was already holding it sees the new shape, and the tick's notification stays
+silent for free, because the cursor the pointer shows is still the same cursor. The sprite cache in
+`InputState` gained an image version for the same reason - it is keyed by cursor identity, and a
+rewritten cursor keeps its identity. `XFixesCursorImageTest` pins all of it.
+
+**Left open here**: `ChangeCursorByName` and `CreateRegionFromPicture`, plus `SetPictureClipRegion`,
+are still refused with `BadImplementation`. The first needs the cursor font's glyph *names*
+(`left_ptr`, `hand2`, ...), which the embedded table does not carry - it was generated from
+`cursor.pcf` for the bitmaps and the hotspots, and the names are in the file's character-name table,
+which `tools/gen-cursor-font.py` could capture as easily as the bitmaps. The other two need a
+picture's clip read back as (and set from) a region. The first two would rewrite a cursor image in place, and a cursor
 is immutable here (a window holds a reference to one), so honouring them needs a level of
 indirection this resource model does not have; the third needs a picture's clip read back as a
 region.

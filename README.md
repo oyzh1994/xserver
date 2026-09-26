@@ -370,9 +370,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
   arbitrary glyph set is composed the way X composes one - the mask character's bitmap is the
-  silhouette, the source glyph's ink is drawn inside it, and the hotspot is the source glyph's bearing
-  and the font's ascent, all measured against a reference with `tools/GlyphCursorProbe` - and
-  `ShapeNotify` details beyond the extents.
+  silhouette, the source glyph's ink is drawn inside it, and the hotspot is the glyph's origin at the
+  font's ascent, all measured against a reference with `tools/GlyphCursorProbe` - and `ShapeNotify`
+  details beyond the extents.
 - **A picture over a window sees the window's own pixels, not its children's**, unless the client
   asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
   *shows* - the children painted on top of it - which is what copying the screen through a parent

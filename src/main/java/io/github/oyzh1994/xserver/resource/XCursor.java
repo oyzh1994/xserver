@@ -40,21 +40,55 @@ public final class XCursor extends XResource {
     private static final java.util.concurrent.atomic.AtomicInteger NEXT_SERIAL =
             new java.util.concurrent.atomic.AtomicInteger(1);
 
-    private final int serial = NEXT_SERIAL.getAndIncrement();
+    private int serial = NEXT_SERIAL.getAndIncrement();
 
-    private final int width;
-    private final int height;
-    private final int hotspotX;
-    private final int hotspotY;
-    private final int[] pixels;
+    // Not final: XFIXES' ChangeCursor rewrites the destination cursor in place, and the two fields
+    // that move are the image and the serial (see adopt).
+    private int width;
+    private int height;
+    private int hotspotX;
+    private int hotspotY;
+    private int[] pixels;
+    /**
+     * Bumped whenever the image changes, so a cache that holds this cursor's pixels knows to read
+     * them again. The display tick's sprite cache is the one that matters.
+     */
+    private int imageVersion;
+
     private final boolean recolorable;
 
     private int foreground;
     private int background;
 
-    /** This cursor's XFixes serial, stable for the cursor's lifetime. */
+    /** This cursor's XFixes serial, stable for the cursor's lifetime - until it is rewritten. */
     public int serial() {
         return serial;
+    }
+
+    /** @see #imageVersion */
+    public int imageVersion() {
+        return imageVersion;
+    }
+
+    /**
+     * Takes on another cursor's image, hotspot and serial - XFIXES' {@code ChangeCursor}, where after
+     * the call the destination shows the source's shape and reports the source's serial.
+     *
+     * <p>Rewritten in place rather than by rebinding the id, because that is what a reference server's
+     * answers show: a window that was **already** showing the destination sees the new shape, so what
+     * it holds was changed rather than replaced. Measured with {@code tools/ChangeCursorProbe}, which
+     * also measured that **no cursor notification is raised** for a rewrite - and this matches that
+     * for free: the cursor the pointer is showing is the same cursor afterwards, so the display tick
+     * sees nothing change.
+     */
+    public void adopt(XCursor other) {
+        this.width = other.width;
+        this.height = other.height;
+        this.hotspotX = other.hotspotX;
+        this.hotspotY = other.hotspotY;
+        this.pixels = other.pixels;
+        this.serial = other.serial;
+        this.imageVersion++;
     }
 
     public XCursor(int id, ClientConnection owner, int width, int height, int hotspotX,
@@ -131,7 +165,10 @@ public final class XCursor extends XResource {
      */
     public static XCursor fromGlyph(int id, ClientConnection owner, XFont font, int sourceChar,
                                     int maskChar, int foreground, int background) {
-        CursorFont.Glyph shape = CursorFont.glyph(sourceChar);
+        // A null font means the cursor font: that is what the callers with no font in hand pass,
+        // and it is the font these shapes belong to.
+        CursorFont.Glyph shape = font == null || isCursorFont(font)
+                ? CursorFont.glyph(sourceChar) : null;
         if (shape != null) {
             // One of the cursor font's own shapes: the client asked for an arrow, an I-beam, a
             // resize handle. Its bitmap is the shape and the character after it is its mask, which
@@ -158,16 +195,20 @@ public final class XCursor extends XResource {
         BitmapFont.Glyph ink = font.bitmapGlyph(sourceChar);
         // No mask font means the source glyph masks itself, which is what X does with mask_font None.
         BitmapFont.Glyph silhouette = maskChar == 0 ? ink : font.bitmapGlyph(maskChar);
-        if (ink != null || silhouette != null) {
+        // The font's own table decides which path this is, not whether these two glyphs happen to
+        // have ink: a space has none, and a cursor made of a space is an empty cursor rather than the
+        // filled cell the approximation would draw (a reference server answers with nothing at all
+        // there - measured).
+        if (font != null && font.bitmap() != null) {
             // A font with real glyph bitmaps - the built-in tables, or a font read from the font
             // path - composes the cursor the way X does: **the mask glyph's ink is the silhouette**,
             // the source glyph's ink is drawn in the foreground inside it, and the rest of the
             // silhouette takes the background colour.
             //
             // Measured against a reference server 2026-09-26 with tools/GlyphCursorProbe: for
-            // `fixed`'s 'A' the cell is the font's own 6x13, the hotspot is the source glyph's left
-            // bearing and the font's ascent (0,11), and the drawn shape follows the *mask* character
-            // - 'A' with 'B' as its mask came back as a B, and with a space came back empty. The one
+            // `fixed`'s 'A' the cell is the font's own 6x13, the hotspot is the glyph's origin
+            // (0,11), and the drawn shape follows the *mask* character - 'A' with 'B' as its mask
+            // came back as a B, and with a space came back empty. The one
             // thing the probe cannot check is the two colours: both servers answer the image as
             // opaque black whatever the request named, so they follow the spec and the cursor font's
             // own path above, where the shape is the source and the mask is what fills behind it.
@@ -180,10 +221,13 @@ public final class XCursor extends XResource {
                             : inMask ? background : 0;
                 }
             }
-            BitmapFont.Metric metric = font.charMetric(sourceChar);
-            int hotX = metric == null ? 0 : metric.leftBearing();
-            XCursor cursor = new XCursor(id, owner, cellWidth, cellHeight, Math.max(0, hotX),
-                    font.ascent(), pixels, true);
+            // The hotspot is the glyph's **origin**: the pen position in the cell, which is the
+            // left edge and the font's ascent down - *not* the ink's left bearing. Measured across
+            // seven glyphs, four of them with a bearing of their own ('!' 2, '"' 1, ',' 1, '(' 1):
+            // a reference server answers 0,11 for every one of them, and the bearing would have put
+            // the hotspot inside the glyph.
+            XCursor cursor = new XCursor(id, owner, cellWidth, cellHeight, 0, font.ascent(),
+                    pixels, true);
             cursor.setColors(foreground, background);
             return cursor;
         }
@@ -208,6 +252,21 @@ public final class XCursor extends XResource {
         XCursor cursor = new XCursor(id, owner, width, height, 0, 0, pixels, true);
         cursor.setColors(foreground, background);
         return cursor;
+    }
+
+    /**
+     * Whether the font a glyph cursor is asked for is the cursor font itself - the one font whose
+     * codes are a *shape table* rather than characters.
+     *
+     * <p>Measured against a reference server (2026-09-26, while A8's ChangeCursor was being done):
+     * {@code CreateGlyphCursor} against {@code fixed} with character 66 answers **that font's** 'B'
+     * there and one of the cursor font's shapes here, because this server consulted the embedded
+     * table by code whatever font was named. The two agree for the cursor font's own codes and
+     * nowhere else, so the table is used only for the font it belongs to.
+     */
+    private static boolean isCursorFont(XFont font) {
+        String name = font == null ? null : font.fontName();
+        return name != null && name.toLowerCase(java.util.Locale.ROOT).contains("cursor");
     }
 
     /**

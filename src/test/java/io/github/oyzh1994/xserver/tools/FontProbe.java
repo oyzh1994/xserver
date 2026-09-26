@@ -31,7 +31,14 @@ import io.github.oyzh1994.xserver.test.RawXClient;
 public final class FontProbe {
 
     /** A string with ascenders, descenders, digits and punctuation in it. */
-    private static final String TEXT = "Hello, World 123!";
+    private static final String DEFAULT_TEXT = "Hello, World 123!";
+    /**
+     * The string whose pixels are compared. An argument rather than a constant because a font's
+     * glyphs are not all equally good: the first version of this drew one string, and the character
+     * that was wrong in the table - 'B' - was not in it (found 2026-09-26 through the cursor probe,
+     * of all things).
+     */
+    private static String text = DEFAULT_TEXT;
 
     private static final int WINDOW_WIDTH = 200;
     private static final int WINDOW_HEIGHT = 30;
@@ -55,10 +62,11 @@ public final class FontProbe {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.out.println("usage: FontProbe <host> <port> [font-name]");
+            System.out.println("usage: FontProbe <host> <port> [font-name] [text]");
             return;
         }
         String name = args.length > 2 ? args[2] : "fixed";
+        text = args.length > 3 ? args[3] : DEFAULT_TEXT;
         try (RawXClient client = RawXClient.connect(args[0], Integer.parseInt(args[1]))) {
             System.out.println("font: " + name);
             int font = client.allocateId();
@@ -75,8 +83,8 @@ public final class FontProbe {
             int gc = client.allocateId();
             client.createGC(gc, window, 0xFFFFFF);      // white ink
             client.changeGC(gc, RawXClient.GCFONT, font);
-            byte[] text = TEXT.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
-            client.imageText8(window, gc, PEN_X, BASELINE, text, 0, text.length);
+            byte[] ink = text.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+            client.imageText8(window, gc, PEN_X, BASELINE, ink, 0, ink.length);
             client.flush();
             printPixels(client.getImage(window, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0xFFFFFF));
         }
@@ -126,9 +134,9 @@ public final class FontProbe {
                 RawXClient.readShort(reply, at + 10) & 0xFFFF);
     }
 
-    /** {@code QueryTextExtents} of {@link #TEXT}, as {@code (0, ch)} pairs the way Xlib sends them. */
+    /** {@code QueryTextExtents} of {@link #text}, as {@code (0, ch)} pairs the way Xlib sends them. */
     private static void printTextExtents(RawXClient client, int font) throws Exception {
-        byte[] chars = TEXT.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] chars = text.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
         // The request's length *is* the string: everything after the eight byte header is read as
         // Char2b pairs, and the odd-length flag says the last two bytes are padding. Sizing it as
         // "two units plus the characters" makes a server read the zeros after the string as text -
@@ -146,7 +154,7 @@ public final class FontProbe {
         client.sendRequest(request);
         byte[] reply = client.readReply();
         System.out.printf("  extents(%s): ascent=%d descent=%d overall-ascent=%d overall-descent=%d"
-                        + " width=%d left=%d right=%d%n", TEXT,
+                        + " width=%d left=%d right=%d%n", text,
                 (short) RawXClient.readShort(reply, 8), (short) RawXClient.readShort(reply, 10),
                 (short) RawXClient.readShort(reply, 12), (short) RawXClient.readShort(reply, 14),
                 RawXClient.readInt(reply, 16), RawXClient.readInt(reply, 20),

@@ -286,6 +286,8 @@ public final class InputState implements DisplayBackend.InputSink {
     /** The current cursor's pixels, copied once per cursor because the backend asks every frame. */
     private int[] cursorPixels;
     private XCursor cursorPixelsFor;
+    /** The image version of {@link #cursorPixelsFor} the cached pixels were read from. */
+    private int cursorPixelsVersion;
 
     public InputState(XServer server) {
         this(server, server.screen());
@@ -2176,7 +2178,10 @@ public final class InputState implements DisplayBackend.InputSink {
         }
         int width = cursor.width();
         int height = cursor.height();
-        if (cursorPixelsFor != cursor) {
+        // The image version too: a cursor whose image was rewritten in place is the same cursor, and
+        // the cached pixels would otherwise outlive the shape they were copied from (XFIXES'
+        // ChangeCursor, see XCursor.adopt).
+        if (cursorPixelsFor != cursor || cursorPixelsVersion != cursor.imageVersion()) {
             int[] pixels = new int[width * height];
             for (int row = 0; row < height; row++) {
                 for (int col = 0; col < width; col++) {
@@ -2185,6 +2190,7 @@ public final class InputState implements DisplayBackend.InputSink {
             }
             cursorPixels = pixels;
             cursorPixelsFor = cursor;
+            cursorPixelsVersion = cursor.imageVersion();
         }
         return new CursorSprite(pointerX - cursor.hotspotX(), pointerY - cursor.hotspotY(),
                 width, height, cursor.hotspotX(), cursor.hotspotY(), cursorPixels);
