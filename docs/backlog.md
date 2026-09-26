@@ -75,6 +75,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
+| ~~B4~~ | ~~XInput2~~ **done 2026-09-26**: the protocol's spine, the events, the device grabs, and XInput 1's device list (which AWT segfaults without) - see the entry for what that cost | extension | L |
 | [~] B1 | XKEYBOARD: read, set by a client that compiles its own map (`xkbcomp`), and the controls (repeat delay/rate, `RepeatKeys`); no compiler in the server, so no layout by name | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
@@ -83,7 +84,6 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
-| B4 | XInput2 - **measured 2026-09-26** (`tools/XiProbe`): advertising it without the device-grab family would break GTK's menus, so it cannot be landed in pieces | extension | L (a week with the live checks) |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
@@ -1785,7 +1785,7 @@ whether that is "clipped" (today's behaviour) before advertising.
 
 ---
 
-### [ ] B4. XInput2. **L** - measured 2026-09-26 (`tools/XiProbe`); the item cannot be done partially
+### [x] B4. XInput2. **L** - done 2026-09-26, and it had to be all of it
 
 **Current.** Not advertised; `xeyes` prints a warning about the missing `XInputExtension` and falls
 back to core input, and that fallback works for every client tested.
@@ -1806,10 +1806,87 @@ layout are again positional; capture from Xvfb.
 **Verify.** `xinput list` on the VM; `xev -event device` prints XI2 events; the applications still
 receive input exactly once.
 
-**Measured 2026-09-26, and the plan above is too small to be safe - which is the finding.** The tool
-this item needed (`tools/XiProbe`, new) was written and run against Xvfb and against this server, and
-what it found is that **the version this plan describes would break the client it is meant to help**.
-The evidence is in three parts.
+**Done 2026-09-26, and the reconnaissance below is what made it a whole job rather than a partial
+one.** `extension/XInputExtension` advertises `XInputExtension`, answers its requests and delivers
+its events; `event/Xi2Event` and the delivery hook in `EventDispatcher` are the other two pieces.
+What is implemented:
+
+```
+XIQueryVersion      XIQueryDevice (two masters, with classes)   XIGetClientPointer
+XISetClientPointer  XISelectEvents XIGetSelectedEvents          XIQueryPointer
+XIWarpPointer       XIChangeCursor                              XIGetFocus
+XIGrabDevice        XIUngrabDevice  XIAllowEvents               XISetFocus
+GetExtensionVersion ListInputDevices OpenDevice CloseDevice     GetDeviceKeyMapping
+GetDeviceButtonMapping
+```
+
+and on the event rail, the XI2 twin of every core event the server already delivers - keys, buttons,
+motion, the crossings and the focus - with the emulated core event **suppressed** for a client that
+selected the device one, which is what a reference was measured doing.
+
+**Two requests turned out to be mandatory that the plan did not name, and both were found by a real
+client crashing.**
+
+- **`ListInputDevices`, XInput 1's device list.** AWT's `XToolkit.checkXInput` asks it as the JVM
+  starts and `getNumButtons` dereferences what comes back, so a server that advertises
+  `XInputExtension` and *refuses* it does not make Swing fall back - it **segfaults** in
+  `libawt_xawt.so`, measured with termora (`SIGSEGV ... getNumButtons.part.0`). The same shape as A4.
+  Answered now from the same two devices, with `OpenDevice`, `CloseDevice` and the two mappings beside
+  it, because AWT reads its input model from those.
+- **`XIChangeCursor` has no reply.** Answering it was measured to shift the client's whole stream: GDK
+  sends it when a text field takes the cursor, and afterwards EasyShell asked `XIQueryPointer`
+  **a million times in two minutes**, reading a pointer position that was really a reply header, until
+  the server had no time for anything else. `XIGetFocus` is the mirror image - it *has* a reply, and
+  accepting it in silence hangs the client (which is what `xinput list` did, on XInput 1's handshake).
+  Every request here is therefore answered, genuinely done, or refused, and never accepted and dropped.
+
+**Measured 2026-09-26, three ways.**
+
+- **`tools/XiProbe` against this server and against Xvfb**: the version handshake, the client pointer
+  and the whole device list decode the same, field for field - the pointer as device 2 with a button
+  class and two axes, the keyboard as device 3 with 248 keycodes - and the reply is **1240 bytes**,
+  which is exactly what Xvfb sends for its two masters. `XiProbe ... select 0x30` drives a real click
+  and gets the XI2 `ButtonPress` and `ButtonRelease` back with the fields the reference's carry.
+- **`extension/XInputTest` (6 tests)**, and the deliveries above are pinned rather than described: the
+  version reply's field offsets (four bytes out and `xinput` segfaults), the two masters, the
+  device-event-replaces-the-core-event rule, **the event's own size**, and the no-reply request.
+  `theDeviceEventIsTheSizeAClientSizesItFrom` fails with the layout the protocol XML implies
+  (`expected: <120> but was: <108>`).
+- **Live, both clients, `--single-window`, XTEST-driven**: **EasyShell** (JavaFX/GTK, which uses XI2
+  for everything - `XISelectEvents`, `XIGrabDevice`, `XIChangeCursor`, `XIQueryPointer`):
+  its window renders, a right-click on a host-list entry opens its context menu, **the menu survives
+  the out-and-back gesture 6 runs out of 6** (the §7 gate), typing into its search box produces the
+  character, and the whole session makes **nine** `XIQueryPointer` calls. **termora** (Swing/AWT,
+  which uses XInput 1 for its device list and XI2 for its events): renders, and its menu survives
+  3 of 3. `mvn test` 345/345.
+
+**The trap that cost the most, and it is the one to remember: the event's size is not what the
+protocol XML adds up to.** The XML's field list for a device event comes to sixty eight bytes; a
+reference sends **eighty of fixed part** and the two masks after that - 120 bytes for a key, 136 for a
+motion with two axes, and the arithmetic only closes at eighty. An event written to sixty eight is
+fifty two bytes short, and GDK does not reject it: it read the key code and the pointer position out
+of the middle of it and EasyShell **stopped producing characters from the keyboard**, with nothing in
+any log to say so. It was found by A/B - the same gesture on the previous build types the character -
+and only after the mask positions were measured (`1<<4` is `ButtonPress`; the mask words sit at 112
+for a two-axis motion, which is what fixes the fixed part at eighty).
+
+**Also worth carrying forward**: an XI2 event carries **no 32 bit `full_sequence`** (the header is
+twelve bytes and the body starts at the timestamp - assume one and the timestamp reads as 1); its
+length field is the size in four byte units **minus eight**; `FP1616` is four bytes where a valuator's
+`FP3232` is eight, and writing a position as the wider one overruns four fields; and
+`XIGetClientPointer` is answered `BadWindow` for the *root* on a reference, so a probe that asks about
+the root measures nothing.
+
+**What is still not here**, deliberately and visibly refused rather than accepted: touch, tablets,
+barriers and the raw event family (a client asks for them by name and this server has no device behind
+them), the device property requests, and the hierarchy's changing requests. A client that asks for one
+gets a protocol error, which is the honest answer.
+
+**The reconnaissance that came first, kept because it is why the item was done whole.** The tool this
+item needed (`tools/XiProbe`, new) was written and run against Xvfb and against this server before
+anything was implemented, and what it found is that **the smaller version this item's plan described
+would have broken the client it was meant to help**. That is what made the grab family part of the
+work rather than a later addition.
 
 **1. Advertising the extension changes what GDK does, not just what it could do.** EasyShell is
 JavaFX, and JavaFX's Linux backend is GTK: `libglassgtk3.so` calls `gdk_device_grab`/`gdk_device_ungrab`

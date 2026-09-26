@@ -94,7 +94,7 @@ io.github.oyzh1994.xserver
 ├── tray/         the notification area, shown in the host's menu bar
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
-                  RANDR, XKEYBOARD, MIT-SCREEN-SAVER and DPMS
+                  XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER and DPMS
 ```
 
 Three decisions shape everything else:
@@ -334,7 +334,15 @@ order (only the glyphset-switch item is always most-significant-byte first), and
 The list below is what a user notices; the working list of everything still missing, item by
 item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog.md).
 
-- **DAMAGE is there, and Composite, Present, SYNC and XInput2 are not.** A client that wants to hear
+- **XInput2 is there**, in the shape a server with one pointer and one keyboard can honestly have:
+  the version handshake, the device list (two masters, with their classes), the client pointer, the
+  event selection, the pointer query and warp, the cursor, the device **grabs** - which is what a
+  toolkit's menus go through - and the XI2 twin of every core input event this server delivers, with
+  the core one withheld from a client that selected the device one. `xeyes` no longer warns, `xinput`
+  lists the devices, and JavaFX's GTK backend and Swing's AWT both work through it rather than around
+  it. Not there, and refused rather than ignored: touch, tablets, barriers, the raw event family and
+  the device properties - this server has no device behind them.
+- **DAMAGE is there, and Composite, Present and SYNC are not.** A client that wants to hear
   what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that reads
   pixels rather than drawing them - creates a damage object and is told, at X's own levels: every
   change as it happens, or once per `Subtract` at the bounding levels. What a notify carries is a

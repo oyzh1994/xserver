@@ -982,14 +982,17 @@ the opposite reason - XINERAMA and XKEYBOARD - because their *absence* was not a
 `xdotool` dereferences the null `XkbGetMap` a server without XKEYBOARD hands back, and dies in its own
 startup (A4). Those cost three small replies and one keymap.
 
-XInput2 is the case where the rule says no, and it was measured rather than assumed (B4). JavaFX's
-Linux backend is GTK, `libglassgtk3.so` calls `gdk_device_grab`/`gdk_device_ungrab`, and
-**`libgdk-3.so` resolves `XIGrabDevice`/`XIUngrabDevice` where they exist** - measured with `strings`
-on the AppImage's own copy of each library. GDK3's device grab *is* `XIGrabDevice` once the extension
-is advertised, and every menu, drag and modal dialog a forwarded GTK application opens goes through
-one. A server that answers `XIQueryVersion` and then refuses `XIGrabDevice` therefore does not give
-that application better scrolling; it takes away its menus. Advertising it is one piece of work or
-none, and the measurement is in the backlog's B4 so the next session does not have to find it again.
+**XInput2 is the case the rule was written for, and it is now whole (B4).** The reconnaissance came
+first, and it is why: JavaFX's Linux backend is GTK, `libglassgtk3.so` calls
+`gdk_device_grab`/`gdk_device_ungrab`, and **`libgdk-3.so` resolves
+`XIGrabDevice`/`XIUngrabDevice`** wherever they exist - measured with `strings` on the AppImage's own
+copy of the library. GDK3's device grab *is* `XIGrabDevice` once the extension is advertised, so a
+server that answered `XIQueryVersion` and then refused it would not have given a forwarded GTK
+application better scrolling; it would have taken its menus away. The extension therefore went in
+with its **device grabs, its events and XInput 1's device list** in the same piece of work - and the
+last of those showed the rule is not only about XI2: AWT asks `ListInputDevices` as the JVM starts and
+`getNumButtons` dereferences the answer, so refusing it **segfaults Swing** rather than making it fall
+back. A client that takes the server at its word is not being unreasonable; the server is.
 
 The other half of the same rule is what a client is *told* when something is missing, and it is worth
 stating because it is not symmetric: an error is worse than an empty answer. A refusal is an X
