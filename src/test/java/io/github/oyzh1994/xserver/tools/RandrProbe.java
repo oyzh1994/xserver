@@ -123,13 +123,20 @@ public final class RandrProbe {
         return text.toString();
     }
 
-    /** {@code GetOutputProperty}: the output, the property, the type (any), the range, then the flags. */
+    /**
+     * {@code GetOutputProperty}: the output, the property, the type (any), the range, then the
+     * flags - seven units, which is what the request is: the last word carries {@code delete},
+     * {@code pending} and two bytes of padding. Without it the request is a word short and **both**
+     * servers refuse it - Xvfb with {@code BadLength}, this one with {@code BadRequest} - so the
+     * probe measured nothing at all, and the reference's answer to a property that is not there
+     * (which is {@code BadName}) had never been seen. Measured 2026-09-26.
+     */
     private static void outputProperty(Wire wire, int opcode, int output, int property)
             throws Exception {
-        byte[] request = new byte[24];
+        byte[] request = new byte[28];
         request[0] = (byte) opcode;
         request[1] = (byte) GET_OUTPUT_PROPERTY;
-        Wire.writeShort(request, 2, 6);
+        Wire.writeShort(request, 2, 7);
         Wire.writeInt(request, 4, output);
         Wire.writeInt(request, 8, property);
         Wire.writeInt(request, 12, 0);              // any type

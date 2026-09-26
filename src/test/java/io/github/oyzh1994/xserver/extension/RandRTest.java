@@ -51,9 +51,6 @@ class RandRTest {
     private static final int GET_OUTPUT_PROPERTY = 15;
     private static final int GET_PROVIDERS = 32;
 
-    /** {@code BadName}, the error a reference server raises for a property that is not there. */
-    private static final int BAD_NAME = 15;
-
     /** {@code SelectInput}'s screen-change bit. */
     private static final int SCREEN_CHANGE = 0x1;
 
@@ -317,13 +314,15 @@ class RandRTest {
 
         // GetOutputProperty, for a property the output does not have. The request is seven units:
         // output, property, type, long offset, long length, then delete/pending/pad in one word.
-        client.sendRequest(getOutputProperty(ids[1]));
-        client.flush();
-        byte[] error = client.readEvent();
-        assertNotNull(error, "a property that is not there is answered, not ignored");
-        assertEquals(0, error[0], "an error, rather than a reply");
-        assertEquals(BAD_NAME, error[1] & 0xFF,
-                "BadName: what a reference server answers for a property an output does not have");
+        reply = request(GET_OUTPUT_PROPERTY, 7, ids[1], edid(), 0, 0, 0xFFFFFFFF, 0);
+        // **An empty reply**, not an error, and that is measured against the reference: Xvfb
+        // answers format 0, type None, no items and nothing after it for a property that is not on
+        // the output. The first version of this refused it with BadName - read off Xorg's source,
+        // and wrong - which is a protocol error where the client expects an answer.
+        assertEquals(0, reply[1] & 0xFF, "format 0: no such property");
+        assertEquals(0, RawXClient.readInt(reply, 8), "type None");
+        assertEquals(0, RawXClient.readInt(reply, 12), "nothing after it");
+        assertEquals(0, RawXClient.readInt(reply, 16), "and no items");
 
         // GetProviders, the other question a client asks before it looks for a provider's
         // properties. A reference server with no GPU driver answers zero providers.
@@ -331,19 +330,9 @@ class RandRTest {
         assertEquals(0, RawXClient.readShort(reply, 12), "no providers");
     }
 
-    /** {@code GetOutputProperty} for a property this output does not have. */
-    private byte[] getOutputProperty(int output) throws IOException {
-        byte[] request = new byte[28];
-        request[0] = (byte) randr;
-        request[1] = (byte) GET_OUTPUT_PROPERTY;
-        RawXClient.writeShortAt(request, 2, 7);
-        RawXClient.writeIntAt(request, 4, output);
-        RawXClient.writeIntAt(request, 8, server.atoms().intern("EDID"));
-        RawXClient.writeIntAt(request, 12, 0);          // any type
-        RawXClient.writeIntAt(request, 16, 0);          // offset
-        RawXClient.writeIntAt(request, 20, 1000);       // length
-        RawXClient.writeIntAt(request, 24, 0);          // delete, pending, pad
-        return request;
+    /** The atom a toolkit asks an output for, which is the one this server does not have. */
+    private int edid() {
+        return server.atoms().intern("EDID");
     }
 
     /** A window bigger than the screen, which is what a drag grows the screen to fit. */

@@ -116,7 +116,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
 - `GravityProbe` - creates a parent and a child with chosen gravities, resizes the parent, and prints
   where the child ended up: the harness for A12, whose whole eleven-value table it produced.
 - `RandrProbe` - the harness for B2: the RandR questions `xrandr` asks, with the replies printed as
-  **bytes** as well as fields. RandR's replies are read positionally, so a field the server put in the
+  **bytes** as well as fields. Its `GetOutputProperty` request used to be **a word short** (six units
+  where the request is seven, the last carrying `delete`/`pending`/padding), so both servers refused
+  it and the line it printed measured nothing - the reference's answer for a property that is not
+  there (an empty reply, not the `BadName` Xorg's source suggests) had never been seen until it was
+  fixed on 2026-09-26. RandR's replies are read positionally, so a field the server put in the
   wrong place produces a plausible wrong number or a client that dies in its own library - the reply
   count that was left at zero here is what `xrandr --listmonitors` crashed on.
 - `XineramaProbe` - asks every question Xinerama has and prints the answers field by field, so two
@@ -322,4 +326,10 @@ happens), and sending `UngrabKey`'s opcode with `UngrabKeyboard`'s shorter body 
 * **`tools/bed.sh`'s default `single`/`perclient` display is 95, which is one the suite wants**, so a
   bed left running while `mvn test` runs makes `GrabCrossingTest` fail with `BindException: Address
   already in use` - a failure that looks like a broken test and is a leftover server. Stop the bed
-  (`pkill -f "xserver.Main --display 95"`) before running the suite.
+  (`pkill -f "xserver.Main --display 95"`) before running the suite;
+* **an `ssh -L` tunnel to the reference counts as a server on that display, and it fails *worse* than
+  the bind error.** `ssh -N -L 6098:127.0.0.1:6098 root@…` (which is how a probe here reaches the
+  VM's Xvfb) puts Xvfb where the suite's own test server expects to be, and the client under test
+  then talks to *Xvfb*: `FocusEventTest` failed three runs out of three with a window id one off
+  (2026-09-26) and read exactly like a focus bug in this server. `lsof -nP -iTCP:<port> -sTCP:LISTEN`
+  says who owns it; kill the tunnel before `mvn test`, and start it again for the next comparison.

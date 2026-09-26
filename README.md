@@ -342,9 +342,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   to announce before. A request to *change* the screen, or to create a lease, is refused with
   `BadImplementation`: the screen belongs to the host window. What a client can **ask** is answered
   even where the answer is "none": the output has no properties (`ListOutputProperties` is empty, and
-  `GetOutputProperty` answers `BadName`, which is what a reference server answers for a property an
-  output does not have - JavaFX asks for one as it starts, and a server that refuses the *request*
-  tells the client the feature is missing instead), there are no providers (`GetProviders` answers
+  `GetOutputProperty` answers an **empty reply** - format 0, type `None`, no items - which is what a
+  reference server answers for a property that is not there, measured. JavaFX asks for one as it
+  starts, and both a refusal *and* an error would leave it worse off than an answer it can read), there are no providers (`GetProviders` answers
   zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
   `xrandr --prop` prints no property lines.
 - **XKEYBOARD answers what a client asks before it will trust the keyboard, and no more.** The

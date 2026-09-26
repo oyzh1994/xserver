@@ -15,6 +15,7 @@ import com.github.moaxcp.x11.protocol.randr.GetCrtcTransformReply;
 import com.github.moaxcp.x11.protocol.randr.GetOutputPrimary;
 import com.github.moaxcp.x11.protocol.randr.GetOutputPrimaryReply;
 import com.github.moaxcp.x11.protocol.randr.GetOutputProperty;
+import com.github.moaxcp.x11.protocol.randr.GetOutputPropertyReply;
 import com.github.moaxcp.x11.protocol.randr.GetProviders;
 import com.github.moaxcp.x11.protocol.randr.GetProvidersReply;
 import com.github.moaxcp.x11.protocol.randr.GetPanning;
@@ -190,14 +191,24 @@ public final class RandRExtension implements Extension {
                     .atoms(IntLists.immutable.empty())
                     .build());
         } else if (request instanceof GetOutputProperty) {
-            // An output property, and this output has none (see ListOutputProperties above). The
-            // answer is the one a reference server gives for a property that is *not there*:
-            // BadName. Not the same as refusing the request, and the difference is what a client
-            // reads: JavaFX asks for one as it starts - it is how a toolkit gets at a monitor's
-            // EDID, and a reference server has no EDID either - and "not implemented" tells it the
-            // feature is missing rather than the monitor having no such property. Measured
-            // 2026-09-26: this was the one error EasyShell's start-up path produced here.
-            throw ProtocolException.badName("no such output property");
+            // An output property, and this output has none (see ListOutputProperties above).
+            //
+            // **An empty reply, and that is measured rather than derived.** The first version of
+            // this refused the request with BadName, read off Xorg's source; the reference server
+            // does not do that. Measured 2026-09-26 with a hand-built request against both - a
+            // valid output and a property that is not on it - Xvfb answers a *reply* with format 0,
+            // type 0 (None), no items and nothing after it, and this server raised an error. The
+            // difference is what a client reads: JavaFX asks for a property as it starts (it is how
+            // a toolkit gets at a monitor's EDID), and an empty reply is an answer it acts on
+            // where a protocol error is a line in its error handler.
+            client.sendReply(GetOutputPropertyReply.builder()
+                    .sequenceNumber(client.sequenceNumber())
+                    .format((byte) 0)
+                    .type(0)
+                    .bytesAfter(0)
+                    .numItems(0)
+                    .data(ByteLists.immutable.empty())
+                    .build());
         } else if (request instanceof GetProviders) {
             // No providers: this screen has one output and it is the host window's, so there is
             // nothing to offload to and nothing to source from. An empty list is the honest answer

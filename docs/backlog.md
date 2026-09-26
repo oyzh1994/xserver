@@ -1546,16 +1546,37 @@ carries on.
 **Superseded 2026-09-26: the questions are answered now, and the reference could be used as a model
 after all.** The "no client here needs it" half of that paragraph was true and the rest was not.
 Measured against Xvfb with `xrandr --prop`: its output carries one property (`non-desktop`) and no
-EDID, and it answers a property it does not have with **`BadName`** - so "the property is not there"
-and "the request is not implemented" are two different answers, and only the first is true here. A
+EDID. **What it answers for a property that is not there had to be measured, not read off the
+source**, and the first version of this got it wrong: Xorg's source reads like `BadName`, and the
+reference answers an **empty reply** - format 0, type `None`, no items, nothing after it (measured
+2026-09-26 with a hand-built request, `01 00 03 00 00 00 00 00 …` from both servers only after the
+fix). So "the property is not there" is not an error at all on a reference server, and a client that
+asks (JavaFX does, as it starts) gets an answer it can act on either way. A
 client that is told the second is told the feature is missing rather than the monitor having no EDID,
 and JavaFX asks exactly that as it starts (the live log above).
 
-What changed: `GetOutputProperty` answers `BadName`; `GetProviders` answers **zero** providers
+What changed: `GetOutputProperty` answers an **empty reply** (format 0, type `None`, no items);
+`GetProviders` answers **zero** providers
 (`xrandr --listproviders` prints `number : 0`, which is what a reference server with no GPU driver
 prints); creating a lease still refuses, for the same reason a screen change does. The provider and
 lease *questions* that name an id stay refused - with no provider there is no id to name, so a client
 cannot reach them.
+
+**And the probe that measured it had a bug of its own, which is why the first version of this was
+wrong twice over.** `RandrProbe`'s `GetOutputProperty` was built as **six** units where the request
+is seven - the last word carries `delete`, `pending` and padding - so *both* servers refused it
+(`Xvfb` with `BadLength`, this one with `BadRequest`) and the probe printed a line that looked like
+a field report. A hand-built request through `tools/font-reply-proxy.py`'s sibling settled it: with
+the word present, the reference's empty reply and this server's answer are identical. **When a probe
+and the reference disagree, check the probe's request against the protocol first** - the kit has now
+paid for that lesson twice (A2's `ShapeRectangles`, and this).
+
+**Left alone, and it is a deviation worth naming**: a request that names an output or CRTC this
+server does not have raises a core error (`BadName`, `BadValue`) where a reference raises the
+extension's **own** error (`BadOutput`, `BadCrtc` - measured: 147 from Xvfb's RandR base for an
+output of `None`). Doing it properly needs a way for an extension to raise its own error code, which
+this server has no mechanism for: every refusal is a core `ProtocolException`. Nothing measured
+depends on it - a client passes back the ids it was given - so it is recorded rather than built.
 
 **And the log line that found all this had a bug of its own.** The refusal above was reported as
 
