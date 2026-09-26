@@ -988,8 +988,16 @@ public final class XServer {
                     // The frame that takes the server's pointer off a window it will not touch again.
                     markSpriteDamage(session, session.lastCursor());
                     session.setLastCursor(null);
-                    log.info("nothing to show on display :{}: the window holds its last frame",
-                            options.displayNumber());
+                    // Said about a window only where there is one. "The window holds its last frame"
+                    // was said for the headless and VNC backends and for a session that has no
+                    // backend at all - which is every idle moment of per-client mode's master
+                    // session - so the line named a window that does not exist, the same fault as
+                    // the "opened a window" claim beside it (see openedMessage).
+                    io.github.oyzh1994.xserver.display.DisplayBackend showing = session.backend();
+                    log.info("nothing to show on display :{}: {}", options.displayNumber(),
+                            showing != null && !showing.isHeadless()
+                                    ? "the window holds its last frame"
+                                    : "no window is showing it");
                 }
             }
             if (wanted == null || wanted.equals(session.viewport())) {
@@ -1454,8 +1462,31 @@ public final class XServer {
         }
         session.setBackend(window);
         session.setViewport(viewport);
-        log.info("opened a window for display :{} showing {}{}", options.displayNumber(), viewport,
-                remembered == null ? "" : " at " + remembered.x + "," + remembered.y);
+        log.info("{}", openedMessage(window, options.displayNumber(), viewport, remembered));
+    }
+
+    /**
+     * What to say about a backend that has just been given a screen.
+     *
+     * <p><b>A backend that opens no window has to say so, and this used to be the one line that did
+     * not.</b> A server on a machine that cannot show anything logs a warning and falls back to the
+     * headless backend - and then, when a client mapped its first window, logged "opened a window for
+     * display :95 showing ..." directly underneath it. That sentence is what a user follows to find
+     * where their application went, and it named a window that does not exist. Measured on
+     * 2026-09-26 with {@code xclock} against a {@code -Djava.awt.headless=true} server: the warning
+     * and the false claim, one line apart.
+     *
+     * <p>A pure function so that it can be pinned without a display or a window: the case that went
+     * wrong is exactly the one a test on a machine with a display cannot otherwise reach.
+     */
+    static String openedMessage(io.github.oyzh1994.xserver.display.DisplayBackend backend, int
+            displayNumber, Rectangle viewport, java.awt.Point remembered) {
+        String where = remembered == null ? "" : " at " + remembered.x + "," + remembered.y;
+        if (backend.isHeadless()) {
+            return "display :" + displayNumber + " is served by the " + backend.name()
+                    + " backend, which opens no window: showing " + viewport + where;
+        }
+        return "opened a window for display :" + displayNumber + " showing " + viewport + where;
     }
 
     /**

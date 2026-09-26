@@ -263,7 +263,16 @@ public interface DisplayBackend {
     /** True when the backend reports the window has been closed by the user. */
     boolean isClosed();
 
-    /** True when this backend draws anything at all. */
+    /**
+     * True when this backend opens no window on this machine: the headless and VNC ones, which serve
+     * a screen without showing it here.
+     *
+     * <p>Not "draws nothing" - a VNC backend draws for every viewer that connects. What it says is
+     * that there is no window on this machine to move, resize, title or bring forward, which is what
+     * the server's own log has to be able to tell: a line claiming a window was opened on a machine
+     * that cannot show one is the single sentence a user follows to find their application, and it
+     * would be false.
+     */
     default boolean isHeadless() {
         return false;
     }
