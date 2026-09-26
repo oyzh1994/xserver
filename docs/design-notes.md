@@ -210,6 +210,13 @@ reads it back. Two rules make it behave:
   the first `movePointer`). The position starts at the origin, and a sprite drawn there is a second
   pointer in the window's top left corner, next to the platform's own arrow, until the first mouse
   event arrives.
+- **A client can ask for it not to be drawn, in one window at a time** (`XFixesHideCursor`, counted
+  per window and walked from the pointer's window up its parents, so a hide on a toplevel covers its
+  children). It is the client's own request about its own window rather than a display state - which
+  is why the count lives on the window and disappears with it, and why hiding it over one window
+  leaves it drawn everywhere else. The platform's side is separate and does not change: the host
+  window still hides the *system* pointer over itself, so with the sprite hidden too the window shows
+  no pointer until the client shows it again.
 
 ## The host pointer on macOS
 

@@ -126,6 +126,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   them is the whole feature: `none` and `save` send one expose on both servers (the reference
   advertises `save-unders NO` and does not implement it), and `backing` sends one here and **zero** on
   a reference server, which does keep the pixels. Run it against both and diff the table.
+- `fontset-probe.py` - the harness for C10's font-set question, and **Python** for the same reason
+  `backing-store-probe.py` is: the question is what *Xlib* makes of a server's font replies, so the
+  measurement has to be the library call itself - `XCreateFontSet` - and a `ctypes` call to it is
+  worth more than another hand-built request. It prints what `XListFonts` matches and whether a font
+  set was built, with the charsets no font was found for. Run it under the locale that matters
+  (`LANG=zh_CN.UTF-8`), because the charsets asked for are the locale's own. See its header for the
+  two servers' measured output and for what is still not explained by it.
 - `probe-diff.py` - diff two probe runs, ignoring what each server assigns for itself. `python3
   tools/probe-diff.py xvfb-run.txt ours-run.txt` prints `IDENTICAL` or a unified diff, and the point
   is that a difference here is a behaviour difference and not a formatting one. It normalises the
@@ -280,11 +287,15 @@ happens), and sending `UngrabKey`'s opcode with `UngrabKeyboard`'s shorter body 
 `GrabKeyboard` **must read the reply**, or every event afterwards is attributed to the step before.
 
 **Display numbers, and the trap that costs a confusing test failure.** The suite binds 10 and
-66-99: `MotionHistoryTest` takes 90, `GrabCrossingTest` takes **95**, `FocusEventTest` 98,
-`KeyboardGrabFocusTest` 83, `PassiveGrabTest` 70, `AllowEventsTest` 71, and others in between. Two consequences:
+63-99: `MotionHistoryTest` takes 90, `GrabCrossingTest` takes **95**, `FocusEventTest` 98,
+`KeyboardGrabFocusTest` 83, `PassiveGrabTest` 70, `AllowEventsTest` 71, `XkbControlsTest` **91**,
+`RandRTest` 75, `WindowStateTest` 74, and others in between. Two consequences:
 
-* a server started by hand for probes should take a display the suite does not - `:91` is what the
-  kit's own runs use;
+* a server started by hand for probes should take a display **no test binds**: `:61` (below the
+  suite's range) is what the kit's own runs should use. `:91` was the advice here until 2026-09-26,
+  when it turned out to be the display `XkbControlsTest` binds - so a hand-started server on it made
+  `mvn test` fail with `BindException: Address already in use`, two minutes of blaming the suite for a
+  leftover server. That is the same failure mode as the bullet below, one test further along;
 * **`tools/bed.sh`'s default `single`/`perclient` display is 95, which is one the suite wants**, so a
   bed left running while `mvn test` runs makes `GrabCrossingTest` fail with `BindException: Address
   already in use` - a failure that looks like a broken test and is a leftover server. Stop the bed

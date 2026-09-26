@@ -339,8 +339,14 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   **RandR is there**, in the shape this server has: one CRTC, one output and one mode covering the
   whole screen, a real physical size (so a client can compute a DPI), and a `ScreenChangeNotify` to
   the clients that asked for one when the screen grows - which is what C1's screen growth had no way
-  to announce before. A request to *change* the screen, or anything about providers and leases, is
-  refused with `BadImplementation`: the screen belongs to the host window.
+  to announce before. A request to *change* the screen, or to create a lease, is refused with
+  `BadImplementation`: the screen belongs to the host window. What a client can **ask** is answered
+  even where the answer is "none": the output has no properties (`ListOutputProperties` is empty, and
+  `GetOutputProperty` answers `BadName`, which is what a reference server answers for a property an
+  output does not have - JavaFX asks for one as it starts, and a server that refuses the *request*
+  tells the client the feature is missing instead), there are no providers (`GetProviders` answers
+  zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
+  `xrandr --prop` prints no property lines.
 - **XKEYBOARD answers what a client asks before it will trust the keyboard, and no more.** The
   version handshake, the keymap (`GetMap`), the modifier state (`GetState`) and the keyboard's
   controls (`GetControls`/`SetControls`) are there, the requests that have no answer here
@@ -398,7 +404,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   default path, and `SetFontPath` replaces it. Measured against Xvfb with `tools/kit.sh FontProbe`,
   `QueryFont` field by field, `QueryTextExtents` and the pixels of a drawn string are **identical**
   for the built-in fonts and for one read from a file. The last resort - a name nothing has - is a
-  Java font with the JVM's shapes and metrics.
+  Java font with the JVM's shapes and metrics. A font reached through an alias is listed under the
+  alias and **reported under its own XLFD name**, which is what a font path does and what a client
+  needs: `ListFonts` answers the name a pattern matched and `ListFontsWithInfo` the font's own name,
+  which is where a client reads a font's charset from. **A font set is still not built here**: with
+  the names right, `XCreateFontSet` against this server still fails where it succeeds against Xvfb,
+  and the remaining difference has not been found - so an X input method running on the client side
+  cannot be used yet (`docs/backlog.md`, C10).
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
   feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
   screen - so a client that asks what the pointer did is answered.)

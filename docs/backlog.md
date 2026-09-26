@@ -599,9 +599,23 @@ change is a hand-written probe. Registration order is not ours to pick, so the e
 `firstEvent()`, and the two event classes are numbered correctly by the fork (`NUMBER` 0 and 1),
 unlike the five in E1.
 
-**Left open here**: `ChangeCursor` and `CreateRegionFromPicture` are still refused with
-`BadImplementation`, and `HideCursor`/`ShowCursor` still only count (the sprite is drawn
-unconditionally) - neither is about notifications.
+**Left open here**: `ChangeCursor`/`ChangeCursorByName` and `CreateRegionFromPicture` are still
+refused with `BadImplementation`. The first two would rewrite a cursor image in place, and a cursor
+is immutable here (a window holds a reference to one), so honouring them needs a level of
+indirection this resource model does not have; the third needs a picture's clip read back as a
+region.
+
+**`HideCursor`/`ShowCursor` were the third leftover and are done (2026-09-26).** They used to only
+count - `InputState` drew the sprite unconditionally, so the counter was a number nobody read. The
+count is now per window (`XWindow.cursorHideCount`) and `InputState.cursorSprite()` walks from the
+window the pointer is in up its parents, so the cursor is hidden while the pointer is in the window
+that asked *or anything inside it*, and shown again when the hides are given back - hidden **there**
+rather than everywhere, which is what the extension defines and what a video player hiding the
+pointer means. `input/CursorSpriteTest` grew two tests (three assertions on the ancestor and
+counting rules, and the guard that a show with nothing to show is not a credit against a later
+hide); **both fail with the hide left out of the sprite decision**. The `isCursorHidden()` accessor
+and its counter were deleted rather than kept: they answered a question about the whole server, which
+is not the question the sprite depends on.
 
 ---
 
@@ -1498,11 +1512,39 @@ how the missing `nOutputs` and the refused `GetPanning` showed up. A reply can b
 two bytes (`GetMonitors`' array follows twelve bytes of padding), and a probe that reads only the fixed
 part leaves the rest of the stream out of step. `xrandr` asks for `GetCrtcTransform`, `GetPanning` and
 `GetOutputPrimary` *before* printing anything, and `--verbose` adds `ListOutputProperties` - a
-half-implemented extension is not "mostly working", it is a crash. And **`GetOutputProperty` is left
+half-implemented extension is not "mostly working", it is a crash. And **`GetOutputProperty` was left
 unanswered on purpose**: this server's outputs have no properties (an empty `ListOutputProperties` is
 the honest answer), the reference could not be used as a model for the refusal because the request this
 probe builds is itself refused by it (`BadLength`), and no client here needs it - JavaFX asks once and
 carries on.
+
+**Superseded 2026-09-26: the questions are answered now, and the reference could be used as a model
+after all.** The "no client here needs it" half of that paragraph was true and the rest was not.
+Measured against Xvfb with `xrandr --prop`: its output carries one property (`non-desktop`) and no
+EDID, and it answers a property it does not have with **`BadName`** - so "the property is not there"
+and "the request is not implemented" are two different answers, and only the first is true here. A
+client that is told the second is told the feature is missing rather than the monitor having no EDID,
+and JavaFX asks exactly that as it starts (the live log above).
+
+What changed: `GetOutputProperty` answers `BadName`; `GetProviders` answers **zero** providers
+(`xrandr --listproviders` prints `number : 0`, which is what a reference server with no GPU driver
+prints); creating a lease still refuses, for the same reason a screen change does. The provider and
+lease *questions* that name an id stay refused - with no provider there is no id to name, so a client
+cannot reach them.
+
+**And the log line that found all this had a bug of its own.** The refusal above was reported as
+
+```
+client[2 …]: InternAtom rejected the request (error 17): not implemented: RANDR GetOutputProperty
+```
+
+- the request named is the last *core* request the client sent, because `RequestDispatcher` only set
+the name it prints in `route()`, which extension requests never reach. Every refused extension request
+was therefore reported under somebody else's name, and the only way to tell which was to read the
+message. `dispatchExtension` (and `dispatch`, for a request that does not survive decoding) now set it
+too, and `client/RequestLogTest` pins both halves - the refused request named, and the request before
+it *not* named - by reading the log through a logback appender. It fails without the change, on the
+line above, verbatim.
 ---
 
 ### [x] B3. Xinerama. **S-M** - done 2026-09-25 (the part a client needs, measured)
@@ -2289,6 +2331,63 @@ forward.
 "an application typed into through an IME running *on the client*", which is the other reading of the
 item's title, has not been exercised. The host's side - the one the author actually needs, since the
 Mac's own input method is what types Chinese - is done and verified.
+
+**The VM's environment changed, and the client-side half was attempted - 2026-09-26.** The paragraph
+above says "no input method can run on the VM"; that was true when it was written and is not any
+more: `apt-get update` now works on it (670 kB/s from `ports.ubuntu.com`), and `dbus-daemon` and
+`ibus` were already installed. `apt-get install dbus-x11 xterm ibus-libpinyin` finished the job, a
+D-Bus session and `ibus-daemon -drx` start, and **`XIM_SERVERS` is set on this server's root** - the
+input method registers, and a client that reads the property finds it.
+
+**And that is where a real bug turned up, in this server, after all.** `xterm` on Xvfb creates its
+XIM input context and runs; against this server it printed
+
+```
+xterm: Preparation of font set "fixed" for XIM failed.
+xterm: Failed to create input context
+```
+
+so no XIM client could work here regardless of the input method. Measured with a `ctypes` call to
+Xlib itself, the same way A4's cause was found - the request stream is byte-identical against both
+servers, and the answers are not:
+
+```
+                         Xvfb                                  this server (before)
+XListFonts("fixed")      2 names, both "fixed"                 1 name, "fixed"
+  XCreateFontSet         OK, missing GB2312/GBK/ISO10646-1      NULL, missing ISO8859-1 (twice) and those three
+ListFontsWithInfo         the fonts' own XLFD names              the name the pattern matched: "fixed"
+```
+
+**One real divergence was found and fixed, and it is not the whole cause.** `ListFontsWithInfo`
+answered with the name the pattern *matched*; a reference server answers with the font's **own**
+name. Measured: Xvfb answers `fixed` to `ListFonts("fixed")` and
+`-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1` to
+`ListFontsWithInfo("fixed")` - the name in `fonts.dir`/`fonts.alias` is what `ListFonts` matches and
+reports, and the XLFD the font carries is what the info replies carry. Those are the two names a font
+path has, and this server used one for both. `XFont.realName()` now answers the font's own name and
+`ResourceHandlers.listFontsWithInfo` uses it for the reply's name and for the `repliesHint`
+arithmetic; `BitmapFontTest.anAliasedFontIsReportedUnderItsOwnName` pins both halves (either alone
+passes against a server that answers the same name to both) and **fails without the change**
+(`expected: <[-Misc-Fixed-…-ISO8859-1]> but was: <[fixed]>`). It matters on its own account - the
+XLFD's last two fields are where a client reads a font's charset from - so it is committed as a
+fidelity fix.
+
+**It is not sufficient, and that is measured rather than assumed**: with the name fixed,
+`XCreateFontSet("fixed")` against this server **still returns NULL with the same five charsets
+missing**, against the same call succeeding on Xvfb. So something else in the font path is what
+libX11 rejects, and the next step is the one A4's investigation needed and this one does too: a proxy
+that can **rewrite replies** (not just log them) so our answers to `ListFonts`/`ListFontsWithInfo`
+can be replaced with Xvfb's byte for byte - if the font set is then created, the difference is in
+those two replies and can be bisected field by field. The remaining candidate differences are the
+answers' *count* (`ListFonts("fixed")` is 2 names on Xvfb and 1 here, and one of Xvfb's two fonts is
+an `--0-0-…` scalable variant this server has no table for) and `repliesHint`, the one field of the
+reply `xlsfonts` does not print.
+
+**And the live check still has to be run**, which is what the fix is for: `xterm` (installed on the
+VM for exactly this) with `XMODIFIERS=@im=ibus` against a `--single-window` server, the ibus trigger
+typed through XTEST, and the committed characters compared with the same run against Xvfb. It cannot
+be run yet - **the VM went off the network during this session** (`No route to host`, 2026-09-26
+13:10) and did not come back, so the XIM attempt above is the last measurement taken from it.
 
 ---
 
