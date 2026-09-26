@@ -173,6 +173,33 @@ class BitmapFontTest {
         }
     }
 
+    /**
+     * A font reached through an alias is listed under the alias and <em>reported</em> under its own
+     * name - and that second half is what Xlib's font sets are built on.
+     *
+     * <p>{@code XCreateFontSet} reads a font's charset out of its own XLFD name (the last two
+     * fields), so a server that reports {@code fixed} where the font is
+     * {@code -misc-fixed-...-iso8859-1} makes every font unclassifiable: every charset comes back
+     * missing and the call fails. Measured against Xvfb 2026-09-26: it answers {@code ListFonts}
+     * with {@code fixed} and {@code ListFontsWithInfo} with the XLFD names, and against this server
+     * the same probe failed - which is why no X input method worked here (backlog C10).
+     *
+     * <p>Both halves are asserted, because either one alone would pass against a server that
+     * answered the same name to both requests.
+     */
+    @Test
+    void anAliasedFontIsReportedUnderItsOwnName() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            assertEquals(java.util.List.of("fixed"), client.listFonts("fixed", 64),
+                    "ListFonts answers the name the pattern matched");
+            assertEquals(java.util.List.of(
+                            "-Misc-Fixed-Medium-R-SemiCondensed--13-120-75-75-C-60-ISO8859-1"),
+                    client.listFontsWithInfo("fixed", 64),
+                    "ListFontsWithInfo answers the font's own XLFD name, which is where its "
+                            + "charset is");
+        }
+    }
+
     private static String metric(byte[] reply, int at) {
         return String.format("lb=%d rb=%d width=%d asc=%d desc=%d",
                 (short) RawXClient.readShort(reply, at), (short) RawXClient.readShort(reply, at + 2),

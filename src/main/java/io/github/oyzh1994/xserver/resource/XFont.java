@@ -95,6 +95,26 @@ public final class XFont extends XResource {
     }
 
     /**
+     * The name the font <em>really</em> has, which is what {@code ListFontsWithInfo} answers with.
+     *
+     * <p>A font reached through an alias is reported under its own name and not the alias, because
+     * that is what a font path does: the name in {@code fonts.dir}/{@code fonts.alias} is what
+     * {@code ListFonts} matches and reports, and the XLFD the font carries is what the info replies
+     * carry. Measured against a reference server (backlog C10): {@code ListFonts("fixed")} answered
+     * {@code fixed} there and {@code ListFontsWithInfo("fixed")} answered
+     * {@code -misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1}.
+     *
+     * <p>It is not cosmetic. Xlib's font-set machinery ({@code XCreateFontSet}) classifies a font by
+     * the charset in its own name, so an info reply that names an alias makes the font
+     * unclassifiable, every charset comes back missing, and the call fails - which is how this was
+     * found: no X input method could be used against this server, and the failing font set was the
+     * one {@code xterm} builds for its XIM pre-edit text.
+     */
+    public String realName() {
+        return bitmap != null ? bitmap.xlfd() : name;
+    }
+
+    /**
      * The glyph the font itself has for a character, or null when it has none - a space, a control
      * code, or a name that fell back to the Java approximation.
      */

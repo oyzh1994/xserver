@@ -604,11 +604,16 @@ public final class ResourceHandlers {
         List<String> names = matchFonts(ascii(r.getPattern()), Short.toUnsignedInt(r.getMaxNames()));
         List<XFont> fonts = new ArrayList<>();
         List<ImmutableList<Fontprop>> fontProperties = new ArrayList<>();
+        List<String> replyNames = new ArrayList<>();
         for (String name : names) {
             // Never registered: the font only exists to measure the one this reply describes.
             XFont font = new XFont(0, null, name);
             fonts.add(font);
             fontProperties.add(properties(font));
+            // The font's own name, not the one the pattern matched: an alias is how a font is
+            // *found* and the XLFD is what it *is*, and only the latter tells a client the charset
+            // (see XFont.realName, and backlog C10 for what it costs to get this wrong).
+            replyNames.add(font.realName());
         }
         // repliesHint is the byte size of what is still to come, starting with the terminator,
         // and is the only thing a client has to size its buffer ahead of the replies.
@@ -616,7 +621,7 @@ public final class ResourceHandlers {
         int remaining = 32;
         for (int i = fonts.size() - 1; i >= 0; i--) {
             hints[i] = remaining;
-            remaining += replySize(names.get(i).length(), fontProperties.get(i).size());
+            remaining += replySize(replyNames.get(i).length(), fontProperties.get(i).size());
         }
         for (int i = 0; i < fonts.size(); i++) {
             XFont font = fonts.get(i);
@@ -635,7 +640,7 @@ public final class ResourceHandlers {
                     .fontDescent((short) font.descent())
                     .repliesHint(hints[i])
                     .properties(fontProperties.get(i))
-                    .name(str(names.get(i)).getName())
+                    .name(str(replyNames.get(i)).getName())
                     .build());
         }
         client.sendReply(ListFontsWithInfoReply.builder()
