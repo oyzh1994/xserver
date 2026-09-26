@@ -703,12 +703,18 @@ silent for free, because the cursor the pointer shows is still the same cursor. 
 `InputState` gained an image version for the same reason - it is keyed by cursor identity, and a
 rewritten cursor keeps its identity. `XFixesCursorImageTest` pins all of it.
 
-**Left open here**: `ChangeCursorByName` and `CreateRegionFromPicture`, plus `SetPictureClipRegion`,
-are still refused with `BadImplementation`. The first needs the cursor font's glyph *names*
-(`left_ptr`, `hand2`, ...), which the embedded table does not carry - it was generated from
-`cursor.pcf` for the bitmaps and the hotspots, and the names are in the file's character-name table,
-which `tools/gen-cursor-font.py` could capture as easily as the bitmaps. The other two need a
-picture's clip read back as (and set from) a region. The first two would rewrite a cursor image in place, and a cursor
+**Left open here, and `ChangeCursorByName` now has a measured answer rather than a guess**: it stays
+refused. The probe calls it with `left_ptr`, with `hand2` and with a name nothing has, and a reference
+server does **nothing at all** for every one of them - no error, and neither the window showing the
+cursor nor a window that takes the same cursor id afterwards sees any change (measured 2026-09-26).
+The name is looked up in the *cursor font*, and the cursor font's glyphs carry no names on this
+machine: `cursor.pcf.gz`'s character-name table is far too small for its seventy-odd glyphs, so the
+lookup fails and fails silently. A server that refuses with `BadImplementation` is therefore the
+honest one of the two - the extension's own rule, "rejected rather than silently ignored" - and there
+is nothing to copy. `CreateRegionFromPicture` and `SetPictureClipRegion` also stay refused: a picture
+here has no client clip of its own (its clip is recomputed from the window's visible region on every
+request), so the first would answer with something that is not a picture's clip and the second would
+have to intersect a client clip in the drawing path. The first two would rewrite a cursor image in place, and a cursor
 is immutable here (a window holds a reference to one), so honouring them needs a level of
 indirection this resource model does not have; the third needs a picture's clip read back as a
 region.

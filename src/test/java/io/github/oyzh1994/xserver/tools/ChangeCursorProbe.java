@@ -52,7 +52,9 @@ public final class ChangeCursorProbe {
             client.createGlyphCursor(second, font, font, 'B', 'B', 0xFFFFFF, 0x000000);
 
             int windowOne = client.allocateId();
-            int windowTwo = client.allocateId();
+            windowTwo = client.allocateId();
+            firstCursor = first;
+            secondCursor = second;
             client.createWindow(windowOne, client.root(), 100, 100, 60, 60, 0x303030);
             client.createWindow(windowTwo, client.root(), 300, 100, 60, 60, 0x303030);
             client.setWindowCursor(windowOne, first);
@@ -82,6 +84,12 @@ public final class ChangeCursorProbe {
             show(client, opcode, windowOne, "window with source");
             show(client, opcode, windowTwo, "window with destination");
 
+            // And ChangeCursorByName: one cursor and a name from the cursor font, so the question is
+            // whether the name is looked up in that font and what the cursor reports afterwards.
+            byName(client, opcode, windowTwo, "left_ptr");
+            byName(client, opcode, windowTwo, "hand2");
+            byName(client, opcode, windowTwo, "xserver-no-such-cursor-name");
+
             // And the notifications, which say whether a rewrite is a cursor change a client hears
             // about, and which serial it carries.
             int events = 0;
@@ -97,6 +105,59 @@ public final class ChangeCursorProbe {
             System.out.println("  cursor notifications during the change: " + events);
         }
     }
+
+    /** XFixesChangeCursorByName(cursor, name), then the cursor that window shows. */
+    private static void byName(RawXClient client, int opcode, int window, String name)
+            throws Exception {
+        byte[] bytes = name.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] request = new byte[12 + ((bytes.length + 3) & ~3)];
+        request[0] = (byte) opcode;
+        request[1] = 27;                                // X_XFixesChangeCursorByName
+        RawXClient.writeShortAt(request, 2, request.length / 4);
+        // The cursor to change is the one the window shows, so this is the window's own cursor id:
+        // the probe keeps it in the window's attributes, and the caller passes the window.
+        RawXClient.writeIntAt(request, 4, cursorOf(window));
+        RawXClient.writeShortAt(request, 8, bytes.length);
+        System.arraycopy(bytes, 0, request, 12, bytes.length);
+        client.sendRequest(request);
+        client.flush();
+        client.queryTree(window);                       // the reply, with any error still to come
+        // An error for a request like this arrives asynchronously, so it is read here rather than
+        // assumed away: a name the server does not know is refused, and the first version of this
+        // probe swallowed that and reported "no change" for every name alike.
+        client.readTimeoutMillis(300);
+        for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+            if ((event[0] & 0x7F) == 0) {
+                System.out.printf("-- ChangeCursorByName(%s): refused, error %d%n", name,
+                        event[1] & 0xFF);
+                client.readTimeoutMillis(5000);
+                return;
+            }
+        }
+        client.readTimeoutMillis(5000);
+        System.out.println("-- after ChangeCursorByName(" + name + ")");
+        show(client, opcode, window, "window that was showing it");
+        // And a window that takes the *same cursor id* afterwards: whether the name changed the
+        // cursor the id means, or the cursor the window holds, is the difference between "nothing
+        // happened" and "the id was rebound" - and a window already holding it cannot tell them apart.
+        int fresh = client.allocateId();
+        client.createWindow(fresh, client.root(), 500, 300, 60, 60, 0x303030);
+        client.setWindowCursor(fresh, cursorOf(window));
+        client.mapWindow(fresh);
+        client.flush();
+        show(client, opcode, fresh, "window created afterwards");
+        client.destroyWindow(fresh);
+        client.queryTree(client.root());
+    }
+
+    /** The cursor this probe gave that window: the second one it made. */
+    private static int cursorOf(int window) {
+        return window == windowTwo ? secondCursor : firstCursor;
+    }
+
+    private static int windowTwo;
+    private static int firstCursor;
+    private static int secondCursor;
 
     /** XFixesGetCursorImage for the cursor the given window's pointer shows. */
     private static void show(RawXClient client, int opcode, int window, String what)

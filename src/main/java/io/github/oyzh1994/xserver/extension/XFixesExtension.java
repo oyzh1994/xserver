@@ -97,9 +97,12 @@ import java.util.Map;
  *
  * <p>Known gaps, all deliberate:
  * <ul>
- *   <li>{@code ChangeCursorByName} and {@code CreateRegionFromPicture} are refused: the first needs
- *       the cursor font's glyph *names*, which this server's embedded table does not carry, and the
- *       second needs a picture's clip read back as a region.
+ *   <li>{@code ChangeCursorByName}, {@code CreateRegionFromPicture} and {@code SetPictureClipRegion}
+ *       are refused. The first because there is nothing to copy: a reference server does nothing at
+ *       all for a name - not even for {@code left_ptr} - since the name is looked up in the cursor
+ *       font and that font's glyphs carry no names (measured, and the refusal is the more honest of
+ *       the two answers). The other two because a picture here has no client clip of its own: its
+ *       clip is recomputed from the window's visible region on every request.
  * </ul>
  */
 public final class XFixesExtension implements Extension {
