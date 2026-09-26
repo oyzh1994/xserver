@@ -187,7 +187,7 @@ public final class ResourceHandlers {
         XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
         // The GC is published only once every value has been accepted, so a rejected request
         // never leaves a half configured context behind for the id to name.
-        XGC gc = new XGC(r.getCid(), client, screenOf(drawable));
+        XGC gc = new XGC(r.getCid(), client, screenOf(drawable), visualOf(drawable));
         applyGcValues(client, gc, depthOf(drawable), GcValues.of(r));
         server.resources().add(gc);
     }
@@ -1524,6 +1524,17 @@ public final class ResourceHandlers {
             return pixmap.screen();
         }
         throw ProtocolException.badDrawable(drawable.id());
+    }
+
+    /** The visual of a drawable, which is what a GC created on it converts colours in (B5). */
+    private static io.github.oyzh1994.xserver.display.VisualInfo visualOf(XResource drawable) {
+        if (drawable instanceof XWindow window) {
+            return window.visual();
+        }
+        if (drawable instanceof XPixmap pixmap) {
+            return pixmap.visual();
+        }
+        return null;
     }
 
     private static int depthOf(XResource drawable) {

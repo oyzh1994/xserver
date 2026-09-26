@@ -39,13 +39,40 @@ public final class Framebuffer implements PixelStore {
     private int dirtyX1;
     private int dirtyY1;
 
+    /**
+     * Whether the alpha channel is part of a pixel here.
+     *
+     * <p>A <em>screen</em> has no alpha and must not: X composites everything onto an opaque root,
+     * and the raster operations can produce any 32 bit value - {@code GXclear} yields zero outright
+     * and {@code GXinvert} turns white into transparent black - so a backend that honours alpha
+     * would draw those as holes. A window's <em>own</em> store is the other case: a window whose
+     * visual has an alpha channel is asking for its pixels to be kept with it, so that what it
+     * draws can be composited over what is under it (B5).
+     */
+    private final boolean alpha;
+
+    /** A screen's pixels: opaque, because a screen composites everything onto an opaque root. */
     public Framebuffer(int width, int height, int fillArgb) {
+        this(width, height, fillArgb, false);
+    }
+
+    /**
+     * @param alpha true for a window's own store, which keeps the alpha a client drew with, and
+     *     false for a screen, which has none
+     */
+    public Framebuffer(int width, int height, int fillArgb, boolean alpha) {
         this.width = width;
         this.height = height;
         this.fillArgb = fillArgb;
+        this.alpha = alpha;
         // Nothing is allocated here: a screen that is never drawn into is a size and a colour, and
         // the whole of it counts as damaged so that whatever allocates it later is presented.
         markDirty(0, 0, width, height);
+    }
+
+    /** Whether this store keeps the alpha channel, which only a window's own store does. */
+    public boolean keepsAlpha() {
+        return alpha;
     }
 
     /** Whether the pixels have been allocated, which is what the lazy allocation turns on. */
@@ -145,8 +172,8 @@ public final class Framebuffer implements PixelStore {
      * (JavaFX uploads premultiplied) then draws those pixels as holes, so a client that paints
      * perfectly correct black on white sees nothing. The screen stores colour only.
      */
-    private static int opaque(int argb) {
-        return 0xFF000000 | (argb & 0x00FFFFFF);
+    private int opaque(int argb) {
+        return alpha ? argb : 0xFF000000 | (argb & 0x00FFFFFF);
     }
 
     @Override

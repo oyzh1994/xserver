@@ -23,6 +23,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.display.VisualInfo;
+import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.draw.ImageCodec;
 import io.github.oyzh1994.xserver.draw.PixelStore;
 import io.github.oyzh1994.xserver.draw.Rasterizer;
@@ -224,7 +225,8 @@ public final class DrawHandlers {
         VisualInfo visual = visualOf(drawable);
         // Reading needs the surface but no graphics context: GetImage takes its own plane mask.
         PixelStore store = storeOf(drawable);
-        byte[] data = ImageCodec.getImage(store, x + originXOf(drawable), y + originYOf(drawable),
+        byte[] data = ImageCodec.getImage(store, x + originXOf(drawable),
+                y + originYOf(drawable),
                 width, height, format,
                 r.getPlaneMask(), depthOf(drawable), visual, client.isBigEndian());
         client.sendReply(GetImageReply.builder()
@@ -476,7 +478,9 @@ public final class DrawHandlers {
 
     private PixelStore storeOf(XResource drawable) {
         if (drawable instanceof XWindow window) {
-            return window.screen().framebuffer();
+            // A window with pixels of its own is read from them: what the client drew is what it
+            // gets back, whether or not the window is showing (B5).
+            return window.keepsOwnPixels() ? window.ownPixels() : window.screen().framebuffer();
         }
         return (XPixmap) drawable;
     }
@@ -547,6 +551,26 @@ public final class DrawHandlers {
      * intersection of the two rectangle lists is taken here, where both are available. A clip mask
      * is left to the rasterizer, which tests it per pixel.
      */
+    /**
+     * The parts of a store window a request may draw into: all of it, narrowed by the GC's clip.
+     *
+     * <p>Not {@link #clipRegion}, which subtracts what is stacked above the window: a window whose
+     * pixels are kept draws whether or not it shows, because the store is what will be composited
+     * when it is uncovered again.
+     */
+    private static List<Rectangle> ownPixelRegion(XWindow window, XGC gc) {
+        List<Rectangle> region = List.of(new Rectangle(0, 0, window.width(), window.height()));
+        if (gc.isClipByRectangles()) {
+            List<Rectangle> clip = new ArrayList<>();
+            for (XGC.Rectangle2 r : gc.clipRectangles()) {
+                clip.add(new Rectangle(r.x() + gc.clipOriginX(), r.y() + gc.clipOriginY(),
+                        r.width(), r.height()));
+            }
+            region = ShapeState.intersect(region, clip);
+        }
+        return region;
+    }
+
     private List<Rectangle> clipRegion(XWindow window, XGC gc) {
         List<Rectangle> region = window.visibleRegion();
         if (gc.isClipByRectangles()) {
@@ -564,6 +588,18 @@ public final class DrawHandlers {
 
     private Target target(XResource drawable, XGC gc) {
         if (drawable instanceof XWindow window) {
+            if (window.keepsOwnPixels()) {
+                // **A window with pixels of its own draws into them** (B5): the request is applied in
+                // the window's own coordinates, to the whole of the window rather than to the part of
+                // it that shows - a covered window goes on drawing, which is the point of keeping
+                // them - and what is on screen is composited from the store afterwards
+                // (XServer.compositeOwnPixels). The clip is therefore the window's rectangle and the
+                // GC's own, both of which are already window-relative.
+                Framebuffer pixels = window.ownPixels();
+                List<Rectangle> region = ownPixelRegion(window, gc);
+                return new Target(pixels, new Rasterizer(pixels, gc, ShapeState.extents(region),
+                        region), 0, 0);
+            }
             PixelStore store = window.screen().framebuffer();
             List<Rectangle> region = clipRegion(window, gc);
             return new Target(store, new Rasterizer(store, gc, ShapeState.extents(region), region),
@@ -574,11 +610,23 @@ public final class DrawHandlers {
     }
 
     /** Origin of a drawable in screen coordinates, for requests that name two drawables. */
+    /**
+     * A drawable's origin: where its own (0,0) is on the screen, or on nothing at all.
+     *
+     * <p>A window with pixels of its own has its origin at 0, because those pixels *are* its
+     * coordinates - there is no other surface underneath them to be offset from (B5).
+     */
     private static int originXOf(XResource drawable) {
+        if (drawable instanceof XWindow window && window.keepsOwnPixels()) {
+            return 0;
+        }
         return drawable instanceof XWindow window ? window.absoluteX() : 0;
     }
 
     private static int originYOf(XResource drawable) {
+        if (drawable instanceof XWindow window && window.keepsOwnPixels()) {
+            return 0;
+        }
         return drawable instanceof XWindow window ? window.absoluteY() : 0;
     }
 
@@ -603,8 +651,16 @@ public final class DrawHandlers {
         Rectangle drawn = target.rasterizer().drawnBounds();
         if (drawn != null) {
             if (drawable instanceof XWindow window) {
+                if (window.keepsOwnPixels()) {
+                    // What was drawn is in the window's own pixels, in its own coordinates; what the
+                    // screen shows is composited from them.
+                    server.compositeOwnPixels(window, drawn);
+                    drawn = null;                       // the screen's damage is the composite's
+                }
+            }
+            if (drawn != null && drawable instanceof XWindow window) {
                 server.markScreenDirty(window.screen(), drawn);
-            } else {
+            } else if (drawn != null) {
                 server.markScreenDirty(((XPixmap) drawable).screen(), drawn);
             }
             // And a client that asked to be told what changed is told here, with the same region and

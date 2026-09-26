@@ -124,8 +124,20 @@ public final class TrayBridge {
                 new XProperty(opcodeAtom, atomAtom(), 32, card32(opcodeAtom)));
         ownerWindow.properties().put(orientationAtom, new XProperty(orientationAtom, cardinalAtom(), 32,
                 card32(ORIENTATION_HORIZONTAL)));
+        // The **32 bit ARGB** visual, which is what makes an icon's transparent corners arrive
+        // transparent - the client creates its icon window with the visual named here, and a window
+        // with an alpha channel keeps its pixels and is composited (B5). Publishing the root's 24 bit
+        // visual instead - which is what this did - is why the icon in the menu bar was a square with
+        // a light background rather than a cut-out disc.
+        int visual = server.screen().root().visual().id();
+        for (io.github.oyzh1994.xserver.display.VisualInfo candidate : server.screen().visuals()) {
+            if (candidate.hasAlpha()) {
+                visual = candidate.id();
+                break;
+            }
+        }
         ownerWindow.properties().put(visualAtom, new XProperty(visualAtom, visualIdAtom(), 32,
-                card32(server.screen().root().visual().id())));
+                card32(visual)));
         server.setSelectionOwner(SELECTION, ownerWindow.id(), server.events().time(),
                 io.github.oyzh1994.xserver.extension.XFixesExtension.SELECTION_SET_OWNER);
         running = true;
@@ -492,14 +504,29 @@ public final class TrayBridge {
         if (width <= 0 || height <= 0) {
             return null;
         }
-        // Read out of the framebuffer rather than kept: there is no per-window store (A9), so what
-        // an icon drew is in the screen's pixels or nowhere. An icon that is covered reads as what
-        // is over it, which is what a user looking at the screen would see too.
-        Framebuffer framebuffer = screen.framebuffer();
+        // An icon window is created with the ARGB visual this bridge publishes, so it keeps its own
+        // pixels and they carry the alpha the client drew (B5): the icon is read from there, and its
+        // transparent corners stay transparent so the menu bar shows a shape rather than a square. A
+        // window with no store - a client that ignored the published visual - is read out of the
+        // screen instead, which is what this always did, and reads as what is over it.
         int[] pixels = new int[width * height];
-        for (int row = 0; row < height; row++) {
-            for (int column = 0; column < width; column++) {
-                pixels[row * width + column] = framebuffer.pixel(x0 + column, y0 + row) | 0xFF000000;
+        if (window.keepsOwnPixels()) {
+            Framebuffer own = window.ownPixels();
+            int originX = window.absoluteX();
+            int originY = window.absoluteY();
+            for (int row = 0; row < height; row++) {
+                for (int column = 0; column < width; column++) {
+                    pixels[row * width + column] = own.pixel(x0 + column - originX,
+                            y0 + row - originY);
+                }
+            }
+        } else {
+            Framebuffer framebuffer = screen.framebuffer();
+            for (int row = 0; row < height; row++) {
+                for (int column = 0; column < width; column++) {
+                    pixels[row * width + column] = framebuffer.pixel(x0 + column, y0 + row)
+                            | 0xFF000000;
+                }
             }
         }
         int scale = Math.max(width, height) > ICON_MAX ? ICON_MAX : 0;

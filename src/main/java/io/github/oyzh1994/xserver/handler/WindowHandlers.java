@@ -116,10 +116,14 @@ public final class WindowHandlers {
         int depth = Byte.toUnsignedInt(r.getDepth());
         if (depth == 0) {
             depth = parent.depth();
-        } else if (depth != parent.depth()) {
-            // A child must share its parent's depth; anything else is a match failure.
-            throw ProtocolException.badMatch();
         }
+        // **A child need not share its parent's depth**, which this used to refuse as a match
+        // failure - and that rule is what made the 32 bit ARGB visual useless here, because the ARGB
+        // window every compositing toolkit creates is a child of the root: depth 32 under a depth 24
+        // root. What has to exist is a *visual* of the depth asked for, which is checked below; a
+        // reference server refuses "no visual of that depth on this screen", not "not your parent's
+        // depth". (Xvfb cannot be asked about the difference: it advertises no depth 32 visual at
+        // all, so the ARGB case does not arise there.)
         if (windowClass == XWindow.INPUT_ONLY && depth != 0 && depth != parent.depth()) {
             throw ProtocolException.badMatch();
         }
@@ -1163,6 +1167,27 @@ public final class WindowHandlers {
         if (window.isInputOnly()) {
             return;
         }
+        if (window.keepsOwnPixels()) {
+            // A window with pixels of its own is painted into them - the whole window, not only the
+            // part that shows - and composited from there (B5). The clip the caller passes is in
+            // screen coordinates, as every caller works in them.
+            Rectangle area = window.absoluteBounds().intersection(clip);
+            if (area.isEmpty()) {
+                return;
+            }
+            Framebuffer pixels = window.ownPixels();
+            Rectangle local = new Rectangle(area.x - window.absoluteX(), area.y - window.absoluteY(),
+                    area.width, area.height);
+            if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
+                tileInto(pixels, tile, local, 0, 0);
+            } else {
+                pixels.fillRect(local.x, local.y, local.width, local.height,
+                        window.backgroundPixel());
+            }
+            server.compositeOwnPixels(window, local);
+            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
+            return;
+        }
         Framebuffer framebuffer = window.screen().framebuffer();
         for (Rectangle piece : window.visibleRegion()) {
             Rectangle area = window.absoluteBounds().intersection(clip).intersection(piece);
@@ -1415,7 +1440,17 @@ public final class WindowHandlers {
                         // gets them back here, and is not asked to draw what it never lost. What
                         // could not be put back - a window with no store, or one that has drawn since
                         // it was captured - is painted and exposed exactly as before.
-                        List<Rectangle> restored = candidate.restoreBacking(part);
+                        // A window with pixels of its own puts them back itself, and has nothing to
+                        // expose: nothing was lost while it was covered (B5).
+                        List<Rectangle> restored;
+                        if (candidate.keepsOwnPixels()) {
+                            server.compositeOwnPixels(candidate, new Rectangle(
+                                    part.x - candidate.absoluteX(), part.y - candidate.absoluteY(),
+                                    part.width, part.height));
+                            restored = List.of(part);
+                        } else {
+                            restored = candidate.restoreBacking(part);
+                        }
                         for (Rectangle back : restored) {
                             // Pixels put back from a backing store changed too, and the client that
                             // watches damage is told about them the same way.

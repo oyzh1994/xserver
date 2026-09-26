@@ -1890,6 +1890,42 @@ public final class XServer {
                 drawn.y + drawn.height);
     }
 
+    /**
+     * Composites a window's own pixels onto the screen, where the window shows (B5).
+     *
+     * <p>A window whose visual has an alpha channel draws into a store of its own rather than onto
+     * the screen, and this is what puts it there: the part of the store the request wrote, composited
+     * over what is already on the screen, **clipped to the part of the window that shows** - a covered
+     * window goes on drawing into its store, and what it drew appears when something uncovers it
+     * ({@code WindowHandlers.repaintUnder} composes it again through the reveal path).
+     *
+     * @param local the region the request wrote, in the window's own coordinates
+     */
+    public void compositeOwnPixels(XWindow window, Rectangle local) {
+        Screen screen = window.screen();
+        io.github.oyzh1994.xserver.draw.Framebuffer target = screen.framebuffer();
+        io.github.oyzh1994.xserver.draw.Framebuffer source = window.ownPixels();
+        int originX = window.absoluteX();
+        int originY = window.absoluteY();
+        Rectangle onScreen = new Rectangle(local.x + originX, local.y + originY, local.width,
+                local.height);
+        List<Rectangle> visible = io.github.oyzh1994.xserver.resource.ShapeState.intersect(
+                List.of(onScreen), window.visibleRegion());
+        for (Rectangle part : visible) {
+            for (int y = part.y; y < part.y + part.height; y++) {
+                for (int x = part.x; x < part.x + part.width; x++) {
+                    int src = source.pixel(x - originX, y - originY);
+                    target.setPixel(x, y, io.github.oyzh1994.xserver.draw.Compositor
+                            .compositeOver(src, target.pixel(x, y)));
+                }
+            }
+            markScreenDirty(screen, part);
+            // The pixels changed, so a client that asked to be told about changes hears it - the same
+            // hook every other change to a window's pixels goes through.
+            io.github.oyzh1994.xserver.extension.DamageExtension.drew(this, window, part);
+        }
+    }
+
     public void stop() {
         running = false;
         if (clipboard != null) {

@@ -2,6 +2,7 @@ package io.github.oyzh1994.xserver.resource;
 
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.display.VisualInfo;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -96,9 +97,31 @@ public final class XGC extends XResource {
 
     private boolean clipByRectangles;
 
+    /**
+     * The visual the GC's pixel values are read and written in: the visual of the drawable it was
+     * created on.
+     *
+     * <p>A client that creates a GC on a window with an alpha channel sets its foreground in *that*
+     * visual, so a half transparent colour keeps its alpha - and that is the only way a core drawing
+     * request can ask for translucency at all (B5). Converting through the screen's default visual
+     * instead - which is what this did - forces every colour opaque, and a client's translucent fill
+     * arrives as a solid rectangle.
+     */
+    private VisualInfo visual;
+
     public XGC(int id, ClientConnection owner, Screen screen) {
+        this(id, owner, screen, screen == null ? null : screen.rootVisual());
+    }
+
+    public XGC(int id, ClientConnection owner, Screen screen, VisualInfo visual) {
         super(id, CLASS_GC, owner);
         this.screen = screen;
+        this.visual = visual != null ? visual : screen == null ? null : screen.rootVisual();
+    }
+
+    /** The visual this context's pixel values are converted in. */
+    public VisualInfo visual() {
+        return visual;
     }
 
     public Screen screen() {
@@ -151,7 +174,6 @@ public final class XGC extends XResource {
     }
 
     private int convert(int pixel) {
-        var visual = screen.rootVisual();
         return visual == null ? 0xFF000000 | pixel : visual.toArgb(pixel);
     }
 

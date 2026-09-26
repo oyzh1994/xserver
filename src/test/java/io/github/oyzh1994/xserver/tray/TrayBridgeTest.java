@@ -184,6 +184,45 @@ class TrayBridgeTest {
         return icon;
     }
 
+    /**
+     * An icon whose window has an alpha channel keeps its transparent corners (B5, C9's leftover).
+     *
+     * <p>The tray publishes `_NET_SYSTEM_TRAY_VISUAL`, and a client creates its icon window with it -
+     * so publishing the root's 24 bit visual is what made every icon a square with a light background
+     * instead of a cut-out shape. It publishes the 32 bit ARGB visual now, and an icon window made
+     * with it keeps its own pixels, so what reaches the menu bar is the client's shape.
+     */
+    @Test
+    void anIconWithAnAlphaVisualKeepsItsTransparentCorners() throws Exception {
+        RecordingWindow backend = awaitBackend();
+        int icon = client.allocateId();
+        client.createWindowWithVisual(icon, client.root(), ICON_X, ICON_Y, ICON, ICON, 32,
+                server.screen().visuals().stream()
+                        .filter(io.github.oyzh1994.xserver.display.VisualInfo::hasAlpha)
+                        .findFirst().orElseThrow().id(), 0x00000000);
+        client.mapWindow(icon);
+        client.queryInputFocus();
+        dock(icon);
+
+        // The disc is drawn *after* the dock, because docking reparents the window and a reparent is
+        // an unmap and a map - which paints the background again, as it does on a reference server:
+        // a reparented window loses what it had drawn. A client's own icon is drawn on request and
+        // stays drawn, which is what this reads.
+        int gc = client.createGC(client.allocateId(), icon, 0xFF000000 | RED);
+        client.fillRectangle(icon, gc, ICON / 4, ICON / 4, ICON / 2, ICON / 2);
+        client.queryInputFocus();
+
+        server.tray().pollOnce();
+
+        BufferedImage shown = backend.icon;
+        assertNotNull(shown, "the menu bar was given no icon");
+        assertEquals(0, shown.getRGB(0, 0) >>> 24,
+                "the icon's transparent corner is still transparent, which is what the ARGB visual"
+                        + " it was created with is for");
+        assertEquals(RED, shown.getRGB(ICON / 2, ICON / 2) & 0xFFFFFF,
+                "and the disc the client drew is its colour");
+    }
+
     /** Asks the tray to display a window, the way a client does: a ClientMessage to the owner. */
     private void dock(int window) throws Exception {
         awaitBackend();

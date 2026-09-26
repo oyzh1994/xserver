@@ -74,6 +74,9 @@ public final class XWindow extends XResource {
     /** The parts of the screen {@link #backing} holds, in screen coordinates. Empty when none. */
     private List<Rectangle> backingSaved = List.of();
 
+    /** This window's own pixels, for a window whose visual has an alpha channel - see keepsOwnPixels. */
+    private Framebuffer ownPixels;
+
     /**
      * The two gravities, whose default is X's own: {@code NorthWest} (1) for both. It matters that
      * the default is measured rather than assumed - {@code bitGravity} was stored as 0, which is
@@ -276,9 +279,49 @@ public final class XWindow extends XResource {
     /**
      * Whether the client asked for this window's contents to be kept while something covers it -
      * {@code backing_store} of {@code WhenMapped} or {@code Always}.
+     *
+     * <p>A window whose visual has an alpha channel is kept whether it asked or not: its pixels
+     * cannot be represented on the screen at all - a screen has no alpha - so they are held here and
+     * composited over it (B5). See {@link #ownPixels()}.
      */
     public boolean keepsBackingStore() {
-        return backingStore != 0 && !isInputOnly();
+        return (backingStore != 0 || keepsOwnPixels()) && !isInputOnly();
+    }
+
+    /**
+     * Whether this window's pixels live in a store of their own rather than only on the screen.
+     *
+     * <p>True for a window whose visual has an alpha channel: what such a client draws is meant to be
+     * composited over what is under it, and the screen's framebuffer has no alpha to composite with
+     * ({@code Framebuffer.opaque} forces every pixel there opaque, deliberately). Everything the
+     * client draws goes into {@link #ownPixels()} and is composited from it - clipped to what shows,
+     * exactly as before - so a translucent window is translucent and a covered one keeps its pixels.
+     */
+    public boolean keepsOwnPixels() {
+        return visual != null && visual.hasAlpha() && !isInputOnly();
+    }
+
+    /**
+     * The window's own pixels: {@code width x height} of ARGB, filled with the window's background
+     * when it is first made, in window coordinates.
+     *
+     * <p>Thrown away when the window is resized - the store is the window's contents and this server
+     * does not scale them - and kept across a move, because a move does not change them.
+     */
+    public Framebuffer ownPixels() {
+        if (ownPixels == null || ownPixels.width() != width() || ownPixels.height() != height()) {
+            ownPixels = new Framebuffer(Math.max(1, width()), Math.max(1, height()),
+                    backgroundPixel, true);
+        }
+        return ownPixels;
+    }
+
+    /**
+     * Forgets the store, so the next ask makes a new one. Called where the window's contents are
+     * known to be gone rather than merely hidden - a resize.
+     */
+    public void forgetOwnPixels() {
+        ownPixels = null;
     }
 
     /**
@@ -290,6 +333,11 @@ public final class XWindow extends XResource {
      * the client may have drawn into it in between.
      */
     public void captureBacking(List<Rectangle> aboutToBeCovered) {
+        if (keepsOwnPixels()) {
+            // Nothing to capture: everything the client drew went into the store as it was drawn, so
+            // what is there now is the window's content and not a copy of the screen.
+            return;
+        }
         // What shows now, plus whatever of the window's own content is inside the area the covering
         // window is about to paint - which its visible region no longer has, because the window
         // doing the covering is already above it. Both are still this window's pixels at this
@@ -317,6 +365,12 @@ public final class XWindow extends XResource {
      * - see {@link #forgetBacking}, which the drawing paths call.
      */
     public List<Rectangle> restoreBacking(Rectangle area) {
+        if (keepsOwnPixels()) {
+            // The whole of what is asked for comes back, because the store is current: the client's
+            // drawing goes into it rather than onto the screen, so nothing was lost while it was
+            // covered. Composing it is the caller's job - see XServer.compositeOwnPixels.
+            return List.of(area);
+        }
         if (backing == null || backingSaved.isEmpty()) {
             return List.of();
         }
@@ -343,6 +397,11 @@ public final class XWindow extends XResource {
      * move them), and the client turned the backing store off.
      */
     public void forgetBacking() {
+        if (keepsOwnPixels()) {
+            // A store window's pixels are not the screen's copy of them, so drawing does not make
+            // them stale: they are what it drew.
+            return;
+        }
         backingSaved = List.of();
         backing = null;
     }

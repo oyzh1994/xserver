@@ -502,6 +502,19 @@ public final class Compositor {
      *                 {@code componentAlpha} is set
      * @param maskAlpha the mask's alpha, already extracted because every path needs it
      */
+    /**
+     * A source composited over an opaque destination, with the source's own alpha - what a window's
+     * own pixels are painted onto the screen with (B5).
+     *
+     * <p>It is {@link #blend} with no mask and the source-over operator, so a window's translucent
+     * pixels are composited by exactly the arithmetic everything else in this server composites with
+     * - including the fast paths, whose identity with the general form is what {@code
+     * BlendFastPathTest} holds.
+     */
+    public static int compositeOver(int srcArgb, int dstArgb) {
+        return blend(OVER, srcArgb, dstArgb, 0, 255, false);
+    }
+
     static int blend(int op, int srcArgb, int dstArgb, int maskArgb, int maskAlpha,
                      boolean componentAlpha) {
         // The two cases that are a copy, and they are most of what a desktop draws: an opaque source

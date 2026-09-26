@@ -97,6 +97,41 @@ public final class RawXClient implements AutoCloseable {
         createWindow(window, parent, x, y, width, height, -1);
     }
 
+    /**
+     * Creates a window with a depth and a visual of its own, which is how a client asks for 32 bit
+     * pixels: {@code CreateWindow}'s depth byte and visual field, rather than the parent's.
+     *
+     * <p>Needed by anything that wants a window whose visual has an alpha channel (B5) - the visual
+     * id comes from the connection setup reply, and a test that wants one has to know it.
+     */
+    public void createWindowWithVisual(int window, int parent, int x, int y, int width, int height,
+                                       int depth, int visual, int backgroundPixel) throws IOException {
+        byte[] request = new byte[36];
+        request[0] = 1;                             // CreateWindow
+        request[1] = (byte) depth;
+        writeShort(request, 2, 9);
+        writeInt(request, 4, window);
+        writeInt(request, 8, parent);
+        writeShort(request, 12, x);
+        writeShort(request, 14, y);
+        writeShort(request, 16, width);
+        writeShort(request, 18, height);
+        writeShort(request, 20, 0);                 // border width
+        writeShort(request, 22, 1);                 // class: InputOutput
+        writeInt(request, 24, visual);
+        // The value list is in mask-bit order, so CWBackPixel (bit 1) comes before CWEventMask
+        // (bit 11) - and a mask bit that is not a real attribute is refused, which reads as "the
+        // window was never created" a request later.
+        writeInt(request, 28, backgroundPixel >= 0 ? 0x2 | 0x800 : 0x800);
+        if (backgroundPixel >= 0) {
+            request = java.util.Arrays.copyOf(request, 40);
+            writeShort(request, 2, 10);
+            writeInt(request, 32, backgroundPixel);
+            writeInt(request, 36, 0);
+        }
+        send(request);
+    }
+
     /** Creates a window, optionally with a background pixel - which a ClearArea then paints it in. */
     public void createWindow(int window, int parent, int x, int y, int width, int height,
                              int backgroundPixel) throws IOException {
