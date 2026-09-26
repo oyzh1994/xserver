@@ -62,6 +62,9 @@ public final class RequestDispatcher {
 
     public void dispatch(ClientConnection client, byte opcode, byte minorOpcode, X11Input in,
                          int requestBytes) {
+        // Named before anything can throw, so a request that fails to *decode* is still reported
+        // as itself rather than as whatever was handled before it.
+        currentRequest = "opcode " + (opcode & 0xFF);
         if ((opcode & 0xFF) >= 128) {
             dispatchExtension(client, opcode, minorOpcode, in);
             return;
@@ -73,7 +76,15 @@ public final class RequestDispatcher {
         route(client, request);
     }
 
-    /** Name of the last request routed, used only to make the error log readable. */
+    /**
+     * Name of the last request routed, used only to make the error log readable.
+     *
+     * <p>Every path that can throw sets it: a core request in {@link #route}, an extension request
+     * in {@link #dispatchExtension}, and {@link #dispatch} itself for one that does not survive
+     * decoding. Before that last one a request that failed to decode was reported under the name of
+     * the previous request - measured live as "{@code InternAtom rejected the request ...
+     * RANDR GetOutputProperty}", which names a request the client never sent.
+     */
     public String currentRequest() {
         return currentRequest;
     }
@@ -121,6 +132,10 @@ public final class RequestDispatcher {
             log.debug("{} -> {} ({} minor {})", client, request.getClass().getSimpleName(),
                     extension.name(), minorOpcode & 0xFF);
         }
+        // Set before the handler runs, so a handler that raises a protocol error is reported under
+        // its own request name: an extension request used to leave the name of the last *core*
+        // request in place, and the error log then named a request the client never sent.
+        currentRequest = request.getClass().getSimpleName();
         extension.handleRequest(server, client, request);
     }
 

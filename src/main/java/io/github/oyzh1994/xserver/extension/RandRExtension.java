@@ -14,6 +14,9 @@ import com.github.moaxcp.x11.protocol.randr.GetCrtcTransform;
 import com.github.moaxcp.x11.protocol.randr.GetCrtcTransformReply;
 import com.github.moaxcp.x11.protocol.randr.GetOutputPrimary;
 import com.github.moaxcp.x11.protocol.randr.GetOutputPrimaryReply;
+import com.github.moaxcp.x11.protocol.randr.GetOutputProperty;
+import com.github.moaxcp.x11.protocol.randr.GetProviders;
+import com.github.moaxcp.x11.protocol.randr.GetProvidersReply;
 import com.github.moaxcp.x11.protocol.randr.GetPanning;
 import com.github.moaxcp.x11.protocol.randr.GetPanningReply;
 import com.github.moaxcp.x11.protocol.randr.GetMonitors;
@@ -39,6 +42,7 @@ import com.github.moaxcp.x11.protocol.randr.ScreenSize;
 import com.github.moaxcp.x11.protocol.randr.SelectInput;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.display.Screen;
 
 import org.eclipse.collections.impl.factory.Lists;
@@ -185,6 +189,26 @@ public final class RandRExtension implements Extension {
                     .sequenceNumber(client.sequenceNumber())
                     .atoms(IntLists.immutable.empty())
                     .build());
+        } else if (request instanceof GetOutputProperty) {
+            // An output property, and this output has none (see ListOutputProperties above). The
+            // answer is the one a reference server gives for a property that is *not there*:
+            // BadName. Not the same as refusing the request, and the difference is what a client
+            // reads: JavaFX asks for one as it starts - it is how a toolkit gets at a monitor's
+            // EDID, and a reference server has no EDID either - and "not implemented" tells it the
+            // feature is missing rather than the monitor having no such property. Measured
+            // 2026-09-26: this was the one error EasyShell's start-up path produced here.
+            throw ProtocolException.badName();
+        } else if (request instanceof GetProviders) {
+            // No providers: this screen has one output and it is the host window's, so there is
+            // nothing to offload to and nothing to source from. An empty list is the honest answer
+            // and the one a client acts on - `xrandr --listproviders` prints "number : 0" for a
+            // reference server with no GPU driver too. (The provider *properties* are still refused
+            // below: with no provider id to name, a client cannot ask for one.)
+            client.sendReply(GetProvidersReply.builder()
+                    .sequenceNumber(client.sequenceNumber())
+                    .timestamp(client.sequenceNumber())
+                    .providers(IntLists.immutable.empty())
+                    .build());
         } else if (request instanceof GetPanning r) {
             getPanning(client, screen, r);
         } else if (request instanceof GetCrtcTransform r) {
@@ -214,7 +238,7 @@ public final class RandRExtension implements Extension {
             // it is what a client acts on rather than a half-answer. A `ProtocolException` rather
             // than a plain exception, so the refusal is one line in the log rather than a stack
             // trace: a client asking a question this server cannot answer is not a server error.
-            throw io.github.oyzh1994.xserver.client.ProtocolException
+            throw ProtocolException
                     .unimplemented("RANDR " + request.getClass().getSimpleName()
                             + ": this server's screen is the host window");
         }

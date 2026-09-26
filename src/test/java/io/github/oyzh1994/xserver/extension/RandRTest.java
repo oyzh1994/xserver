@@ -47,6 +47,12 @@ class RandRTest {
     private static final int GET_CRTC_GAMMA_SIZE = 22;
     private static final int GET_CRTC_GAMMA = 23;
     private static final int GET_MONITORS = 42;
+    private static final int LIST_OUTPUT_PROPERTIES = 10;
+    private static final int GET_OUTPUT_PROPERTY = 15;
+    private static final int GET_PROVIDERS = 32;
+
+    /** {@code BadName}, the error a reference server raises for a property that is not there. */
+    private static final int BAD_NAME = 15;
 
     /** {@code SelectInput}'s screen-change bit. */
     private static final int SCREEN_CHANGE = 0x1;
@@ -289,6 +295,55 @@ class RandRTest {
         client.readTimeoutMillis(400);
         assertNull(client.readEvent(firstEvent), "an event arrived for a client that never asked");
         client.readTimeoutMillis(5000);
+    }
+
+    /**
+     * The three questions a client asks about things this server does not have, each answered the
+     * way a reference server answers it rather than refused.
+     *
+     * <p>All three were found by measuring a real client and a reference server (2026-09-26):
+     * JavaFX asks for an output property as it starts - that is how a toolkit gets at a monitor's
+     * EDID - and the answer here was "not implemented", which tells the client the feature is
+     * missing rather than the monitor having no EDID. Xvfb's own output has one property
+     * ({@code non-desktop}) and no EDID either, and it answers a property it does not have with
+     * {@code BadName}; {@code xrandr --listproviders} against it prints {@code number : 0}.
+     */
+    @Test
+    void theThingsThisServerDoesNotHaveAreAnsweredRatherThanRefused() throws IOException {
+        int[] ids = ids();
+
+        byte[] reply = request(LIST_OUTPUT_PROPERTIES, 2, ids[1]);
+        assertEquals(0, RawXClient.readShort(reply, 8), "no properties on the output");
+
+        // GetOutputProperty, for a property the output does not have. The request is seven units:
+        // output, property, type, long offset, long length, then delete/pending/pad in one word.
+        client.sendRequest(getOutputProperty(ids[1]));
+        client.flush();
+        byte[] error = client.readEvent();
+        assertNotNull(error, "a property that is not there is answered, not ignored");
+        assertEquals(0, error[0], "an error, rather than a reply");
+        assertEquals(BAD_NAME, error[1] & 0xFF,
+                "BadName: what a reference server answers for a property an output does not have");
+
+        // GetProviders, the other question a client asks before it looks for a provider's
+        // properties. A reference server with no GPU driver answers zero providers.
+        reply = request(GET_PROVIDERS, 2, client.root());
+        assertEquals(0, RawXClient.readShort(reply, 12), "no providers");
+    }
+
+    /** {@code GetOutputProperty} for a property this output does not have. */
+    private byte[] getOutputProperty(int output) throws IOException {
+        byte[] request = new byte[28];
+        request[0] = (byte) randr;
+        request[1] = (byte) GET_OUTPUT_PROPERTY;
+        RawXClient.writeShortAt(request, 2, 7);
+        RawXClient.writeIntAt(request, 4, output);
+        RawXClient.writeIntAt(request, 8, server.atoms().intern("EDID"));
+        RawXClient.writeIntAt(request, 12, 0);          // any type
+        RawXClient.writeIntAt(request, 16, 0);          // offset
+        RawXClient.writeIntAt(request, 20, 1000);       // length
+        RawXClient.writeIntAt(request, 24, 0);          // delete, pending, pad
+        return request;
     }
 
     /** A window bigger than the screen, which is what a drag grows the screen to fit. */
