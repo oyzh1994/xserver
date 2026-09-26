@@ -66,6 +66,12 @@ permission for whatever is at the top of the shell's parent chain (the same gran
 recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its
 bottom-right corner resizes it, which is what C1's verification does.
 
+**Do not `pkill` by a name the *test bed itself* is running under.** `pkill -9 -f dbus-daemon`, while
+setting up C10's input method on 2026-09-26, took the session bus down with it and EasyShell - still
+connected and drawing - went with it, thirty seconds before the measurement it was there for. Kill
+the process you started, by its own name and its own arguments (`pkill -9 -f "ibus-daemon -drx"`), and
+treat the shared daemons - the session bus, `xdg-*`, the window server - as the user's, not the run's.
+
 **Killing a client on the VM: put the pattern in brackets.** `pkill -9 -f EasyShell` matches the
 command line of the *remote shell running it* - which contains the word - and kills it, so ssh
 returns 255 and nothing you asked for happens, with no output to say why. Write
@@ -143,7 +149,7 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   front of Xvfb. The replay half (feeding one server's answer to the other's client, which is how the
   remaining difference gets bisected) is not written yet; capturing is what says whether it is needed.
   Two framing traps are handled in it because they cost an hour each: the setup request and reply are
-  the ones message with an eight byte header, and a reply's length field counts the bytes *after* its
+  the only messages with an eight byte header, and a reply's length field counts the bytes *after* its
   header rather than the whole message.
 - `probe-diff.py` - diff two probe runs, ignoring what each server assigns for itself. `python3
   tools/probe-diff.py xvfb-run.txt ours-run.txt` prints `IDENTICAL` or a unified diff, and the point
