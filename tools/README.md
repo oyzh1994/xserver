@@ -58,6 +58,7 @@ clang -o /tmp/drag    tools/host-drag.c    -framework ApplicationServices
 /tmp/drag 650 209 950 329          # a left-button drag, as a hand makes it
 clang -o /tmp/type tools/host-type.c -framework ApplicationServices
 /tmp/type "你好"                    # types text, each character as a Unicode key event
+/tmp/keypid <pid> "你好"            # the same, posted straight to a process instead of the front window
 ```
 
 `winlist` needs no permission; `drag` posts events into the session and so needs the *Accessibility*

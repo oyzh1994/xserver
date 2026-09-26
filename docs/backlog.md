@@ -71,7 +71,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
-| C10 | input methods: verify XIM, and decide about the host IME | host window | M |
+| [~] C10 | input methods: the host's composing is verified live; the client-side XIM needs dbus on the VM | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
@@ -2051,9 +2051,14 @@ the second half of this item.
 Finder into a forwarded `xterm` (it should print the path)" - but **`xterm` does not speak XDND**; it
 is a client from before drag and drop, and nothing it does will ever print a dropped path. The clients
 that take drops are toolkits - GTK, Qt, and Swing's `TransferHandler` - so a forwarded GTK application
-(or termora's terminal) is the thing to try. And the platform's half cannot be scripted here for the
-same reason C10's could not: a drag is a real mouse gesture, and neither `osascript` nor a posted
-`CGEvent` got one to reach the host window in this session.
+(or termora's terminal) is the thing to try.
+
+**The reason given here for not trying it has since been corrected (2026-09-26, C10's re-measurement):
+posted `CGEvent`s *do* reach the host window** - a click and a typed character both arrive, and a
+script can even post straight to the server's pid when the window will not come forward. What a script
+still cannot do is make it a *file* drag: Finder's drag carries a file promise, and a posted event
+carries no files. So the honest state is "the gesture is scriptable in principle, the payload is
+not" - and the thing to try is a real drag by hand, with a real client that takes drops.
 
 ---
 
@@ -2157,7 +2162,7 @@ icon from a client that stays up, click it, and watch the client's log.
 
 ---
 
-### [ ] C10. Input methods: verify XIM, and decide about the host IME. **M**
+### [~] C10. Input methods: the host's own composing is verified live; the client-side one still needs an environment the VM has not got. **M**
 
 **Current.** Unknown - and that is the item. An X input method (fcitx/ibus with the XIM protocol, or
 client-side modules) runs as an X *client* and talks to applications through the `XIM_SERVERS`
@@ -2232,6 +2237,35 @@ against a `--single-window` server, and type into a forwarded application - whic
 `xterm` for either, so the client would be termora's terminal. The host-IME question - macOS composing
 into the forwarded window, which is what the work above is about - is answered; the client-side one
 needs that environment.
+
+**Re-measured 2026-09-26, and the host half now *is* verified live - the item's "could not be made to
+happen here" was a measurement failure, not a feature missing.** The recipe, which is worth keeping
+because two of its three steps are easy to get wrong:
+
+1. **`tools/host-type.c` works.** The item recorded that a character posted with it "reaches nothing:
+   the observer on the X side sees no key press at all". It does reach: with the host window in front
+   and a client holding the X focus, `/tmp/type "你好"` produces, **per character**, a `KeyPressEvent`,
+   a **`MappingNotifyEvent`** and the synthetic keycode's press and release - in the server's own log.
+2. **Grepping the log for the wrong strings is how it looks like nothing happened.** The first run of
+   this check "found nothing" because it was greped for `hostEvent`/`keyTyped`, neither of which the
+   event dispatcher prints; what it prints is `event KeyPressEvent -> client[…]`. The measurement is
+   the log line, not the absence of one.
+3. **What the client sees is a keycode, and the character comes from `GetKeyboardMapping`.** A small
+   client that reads the mapping after the typing answers it exactly: **keycode 255 carries U+597D**
+   (好) - X's own spelling for a character no key has, `0x01000000 | codepoint`. That is the whole
+   path: the host composed it, the server claimed a keycode and said so, and a client turns the
+   keycode back into the character.
+
+A second route was measured on the way and works too, which matters when the window is awkward to
+focus: **`CGEventPostToPid`** with the unicode string attached delivers to a given process what
+`CGEventPost(kCGHIDEventTap, …)` delivers to the frontmost window. `tools/host-type.c` posts to the
+tap; posting to the server's pid is what a script should do when the window cannot be brought
+forward.
+
+**Still open, and it is the client-side half**: no X input method can run on the VM as it is (2), so
+"an application typed into through an IME running *on the client*", which is the other reading of the
+item's title, has not been exercised. The host's side - the one the author actually needs, since the
+Mac's own input method is what types Chinese - is done and verified.
 
 ---
 
