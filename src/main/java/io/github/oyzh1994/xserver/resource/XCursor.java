@@ -60,6 +60,22 @@ public final class XCursor extends XResource {
     private int foreground;
     private int background;
 
+    /**
+     * The name a client gave this cursor with XFIXES' {@code SetCursorName}, as an atom, or 0 for
+     * none. Cursors are not born named - this server has no name for the shapes it creates - and the
+     * name is the *client's* to give, which is what other clients read back to tell one cursor from
+     * another (measured against a reference: a name given is a name read back).
+     */
+    private int name;
+
+    public int name() {
+        return name;
+    }
+
+    public void setName(int name) {
+        this.name = name;
+    }
+
     /** This cursor's XFixes serial, stable for the cursor's lifetime - until it is rewritten. */
     public int serial() {
         return serial;
@@ -82,6 +98,7 @@ public final class XCursor extends XResource {
      * sees nothing change.
      */
     public void adopt(XCursor other) {
+        this.name = other.name;
         this.width = other.width;
         this.height = other.height;
         this.hotspotX = other.hotspotX;

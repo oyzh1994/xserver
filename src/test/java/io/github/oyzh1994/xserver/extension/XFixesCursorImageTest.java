@@ -168,6 +168,49 @@ class XFixesCursorImageTest {
         return out.toString();
     }
 
+    /**
+     * A cursor's name is the client's to give, and a name given is a name read back.
+     *
+     * <p>Measured against a reference server ({@code tools/GlyphCursorProbe ... names}): it answers
+     * the atom and the name a client set, and a cursor nobody named answers {@code None} with
+     * nothing. This server used to ignore {@code SetCursorName} entirely and answer {@code None} for
+     * everything, which tells a client that watches cursors nothing.
+     */
+    @Test
+    void aCursorNameGivenIsANameReadBack() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int xfixes = client.queryExtension("XFIXES");
+            int font = client.allocateId();
+            client.openFont(font, "fixed");
+            int cursor = client.allocateId();
+            client.createGlyphCursor(cursor, font, font, 'A', 'A', 0xFFFFFF, 0x000000);
+            client.flush();
+
+            assertEquals(0, name(client, xfixes, cursor).atom, "a cursor starts with no name");
+            client.setCursorName(xfixes, cursor, "my-cursor");
+            Name name = name(client, xfixes, cursor);
+            assertNotEquals(0, name.atom, "the name is an atom a client can look up");
+            assertEquals("my-cursor", name.text);
+        }
+    }
+
+    private record Name(int atom, String text) {
+    }
+
+    /** XFixesGetCursorName, and the name its atom names. */
+    private static Name name(RawXClient client, int xfixes, int cursor) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) xfixes;
+        request[1] = 24;                                // X_XFixesGetCursorName
+        RawXClient.writeShortAt(request, 2, 2);
+        RawXClient.writeIntAt(request, 4, cursor);
+        client.sendRequest(request);
+        byte[] reply = client.readReply();
+        int length = RawXClient.readShort(reply, 12);
+        return new Name(RawXClient.readInt(reply, 8),
+                new String(reply, 32, length, java.nio.charset.StandardCharsets.ISO_8859_1));
+    }
+
     /** XFixesGetCursorImage, whose request is one unit: it takes no arguments. */
     private static byte[] getCursorImage(RawXClient client, int xfixes) throws IOException {
         byte[] request = new byte[4];

@@ -47,6 +47,7 @@ public final class GlyphCursorProbe {
             // never asked for one, which reads as BadRequest on the *first* cursor request and looks
             // like a malformed request rather than a missing handshake (measured 2026-09-26).
             client.queryXfixesVersion(xfixes, 4, 0);
+            boolean namesOnly = args.length > 5 && args[5].equals("names");
             int window = client.allocateId();
             client.createWindow(window, client.root(), 0, 0, 60, 60, 0x202020);
             client.mapWindow(window);
@@ -54,6 +55,13 @@ public final class GlyphCursorProbe {
             client.openFont(font, fontName);
             System.out.println("font " + fontName + ", window 0x" + Integer.toHexString(window));
 
+            if (namesOnly) {
+                int named = client.allocateId();
+                client.createGlyphCursor(named, font, font, 'A', 'A', 0xFFFFFF, 0x000000);
+                client.flush();
+                names(client, xfixes, named);
+                return;
+            }
             for (int i = 0; i < chars.length(); i++) {
                 int character = chars.charAt(i);
                 int mask = masks.length() > i ? masks.charAt(i) : character + 1;
@@ -74,6 +82,41 @@ public final class GlyphCursorProbe {
 
     private static int background() {
         return Integer.decode(System.getenv().getOrDefault("GLYPH_BG", "0x000000"));
+    }
+
+    /**
+     * XFixesSetCursorName and XFixesGetCursorName around one cursor: whether a name a client gives a
+     * cursor can be read back, by that client or another.
+     */
+    private static void names(RawXClient client, int xfixes, int cursor) throws Exception {
+        for (String name : new String[] {"my-cursor", ""}) {
+            byte[] bytes = name.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+            // Twelve bytes of header and fields, then the name padded to whole words.
+            byte[] set = new byte[12 + ((bytes.length + 3) & ~3)];
+            set[0] = (byte) xfixes;
+            set[1] = 23;                                // X_XFixesSetCursorName
+            RawXClient.writeShortAt(set, 2, set.length / 4);
+            RawXClient.writeIntAt(set, 4, cursor);
+            // cursor, then nbytes and two bytes of pad: the name starts at twelve, not at nine.
+            RawXClient.writeShortAt(set, 8, bytes.length);
+            System.arraycopy(bytes, 0, set, 12, bytes.length);
+            client.sendRequest(set);
+
+            byte[] get = new byte[8];
+            get[0] = (byte) xfixes;
+            get[1] = 24;                                // X_XFixesGetCursorName
+            RawXClient.writeShortAt(get, 2, 2);
+            RawXClient.writeIntAt(get, 4, cursor);
+            client.sendRequest(get);
+            client.flush();
+            byte[] reply = client.readReply();
+            int atom = RawXClient.readInt(reply, 8);
+            int length = RawXClient.readShort(reply, 12);
+            String read = new String(reply, 32, Math.min(length, reply.length - 32),
+                    java.nio.charset.StandardCharsets.ISO_8859_1);
+            System.out.printf("  SetCursorName(%s) -> GetCursorName: atom=%d name=%s%n",
+                    name.isEmpty() ? "(none)" : name, atom, read);
+        }
     }
 
     /** XFixesGetCursorImage: the size, the hotspot and the image, as text. */

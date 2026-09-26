@@ -54,6 +54,7 @@ import io.github.oyzh1994.xserver.resource.XPixmap;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.eclipse.collections.api.list.ImmutableList;
+import org.eclipse.collections.api.list.primitive.ByteList;
 import org.eclipse.collections.api.list.primitive.IntList;
 import org.eclipse.collections.impl.factory.Lists;
 import org.eclipse.collections.impl.factory.primitive.ByteLists;
@@ -230,7 +231,7 @@ public final class XFixesExtension implements Extension {
         } else if (request instanceof SetWindowShapeRegion setWindowShapeRegion) {
             setWindowShapeRegion(server, client, setWindowShapeRegion);
         } else if (request instanceof SetCursorName setCursorName) {
-            setCursorName(setCursorName);
+            setCursorName(server, client, setCursorName);
         } else if (request instanceof ChangeSaveSet changeSaveSet) {
             changeSaveSet(changeSaveSet);
         } else if (request instanceof DeletePointerBarrier deletePointerBarrier) {
@@ -513,9 +514,9 @@ public final class XFixesExtension implements Extension {
                 .xhot((short) cursor.hotspotX())
                 .yhot((short) cursor.hotspotY())
                 .cursorSerial(cursor.serial())
-                .cursorAtom(0)                          // None: our cursors carry no name
+                .cursorAtom(cursor.name())
                 .cursorImage(cursorPixels(cursor))
-                .name(ByteLists.immutable.empty())
+                .name(name(cursor, server))
                 .build());
     }
 
@@ -541,19 +542,40 @@ public final class XFixesExtension implements Extension {
      * Cursors here are built from bitmaps or glyphs and are never named, so the honest answer is
      * {@code None} with an empty name rather than an invented atom.
      */
+    /**
+     * The name a client gave this cursor, which is how one client tells another's cursors apart.
+     * Measured against a reference: a name given is a name read back, and a cursor nobody named
+     * answers {@code None} with nothing.
+     */
     private void getCursorName(XServer server, ClientConnection client, GetCursorName request) {
-        server.resources().require(client, request.getCursor(), XResource.CLASS_CURSOR, false);
+        XCursor cursor = requireCursor(server, client, request.getCursor());
         client.sendReply(GetCursorNameReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .atom(0)
-                .name(ByteLists.immutable.empty())
+                .atom(cursor.name())
+                .name(name(cursor, server))
                 .build());
     }
 
-    private void setCursorName(SetCursorName request) {
-        // Cursors have no names in this server, so there is no name to attach. Saying so is better
-        // than pretending it worked, but the request is harmless enough not to be an error.
-        log.debug("XFIXES SetCursorName ignored: cursors carry no names");
+    /** A cursor's name as the bytes of a reply, or nothing when it has none. */
+    private ByteList name(XCursor cursor, XServer server) {
+        if (cursor.name() == 0) {
+            return ByteLists.immutable.empty();
+        }
+        String text = server.atoms().name(cursor.name());
+        return text == null ? ByteLists.immutable.empty()
+                : ByteLists.immutable.of(text.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1));
+    }
+
+    private void setCursorName(XServer server, ClientConnection client, SetCursorName request) {
+        XCursor cursor = requireCursor(server, client, request.getCursor());
+        // The name is an atom, so the client can look it up, and an empty name takes one back off -
+        // this server answers None for that, where a reference interns the empty string as an atom
+        // and reports it (measured: 87 with no bytes, against 0 here). A client that tests for None
+        // gets the sane answer; one that compares atoms it interned itself sees the difference.
+        String name = new String(request.getName().toArray(),
+                java.nio.charset.StandardCharsets.ISO_8859_1);
+        cursor.setName(name.isEmpty() ? 0 : server.atoms().intern(name));
+        server.markScreenDirty();
     }
 
     private static IntList cursorPixels(XCursor cursor) {

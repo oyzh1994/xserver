@@ -1170,6 +1170,19 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /** XFixesSetCursorName: the name a client gives a cursor of its own, or "" to take one back. */
+    public void setCursorName(int opcode, int cursor, String name) throws IOException {
+        byte[] bytes = name.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] request = new byte[12 + ((bytes.length + 3) & ~3)];
+        request[0] = (byte) opcode;
+        request[1] = 23;                            // X_XFixesSetCursorName
+        writeShort(request, 2, request.length / 4);
+        writeInt(request, 4, cursor);
+        writeShort(request, 8, bytes.length);       // the name begins at twelve: cursor, nbytes, pad
+        System.arraycopy(bytes, 0, request, 12, bytes.length);
+        send(request);
+    }
+
     /** DAMAGE's Create: a damage object on a drawable, at one of X's report levels. */
     public void createDamage(int opcode, int damage, int drawable, int level) throws IOException {
         byte[] request = new byte[16];

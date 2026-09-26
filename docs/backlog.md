@@ -703,6 +703,13 @@ silent for free, because the cursor the pointer shows is still the same cursor. 
 `InputState` gained an image version for the same reason - it is keyed by cursor identity, and a
 rewritten cursor keeps its identity. `XFixesCursorImageTest` pins all of it.
 
+**And a cursor's *name* is honoured (2026-09-26)**: `SetCursorName` used to be accepted and ignored
+with a log line saying cursors carry no names here, which is true of the shapes this server makes and
+not of the name a *client* gives one. Measured against a reference (`GlyphCursorProbe ... names`): a
+name given is an atom and a name read back, and a cursor nobody named answers `None`. One difference
+is recorded in the code: an explicitly *empty* name answers `None` here where the reference interns
+the empty string and reports that atom.
+
 **Left open here, and `ChangeCursorByName` now has a measured answer rather than a guess**: it stays
 refused. The probe calls it with `left_ptr`, with `hand2` and with a name nothing has, and a reference
 server does **nothing at all** for every one of them - no error, and neither the window showing the
