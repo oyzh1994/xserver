@@ -1633,6 +1633,11 @@ they were, and the log has **no ERROR lines**: the one request it makes that is 
 (`GetOutputProperty`) is answered with a clean `BadImplementation` that the application carries on
 past. `mvn test` 226/226.
 
+**And one more alignment, 2026-09-26**: `GetOutputInfo` reported the output as carrying the mode
+(`1 mode(s)`), where a reference reports none - the mode is on the CRTC, which is where a client that
+wants one looks (`GetCrtcInfo` answers it), and an output's list is the *optional* list of modes it
+could be set to. The reference diff is now down to the deliberate differences listed above.
+
 **Traps.** RandR's replies are read positionally and some of them are long, so a field in the wrong
 place is not an error but a plausible wrong number - or a client that dies in its own library, which is
 how the missing `nOutputs` and the refused `GetPanning` showed up. A reply can be longer than thirty

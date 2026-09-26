@@ -499,7 +499,12 @@ public final class RandRExtension implements Extension {
                 .subpixelOrder((byte) SUBPIXEL_UNKNOWN)
                 .numPreferred((short) 1)
                 .crtcs(IntLists.immutable.of(crtcId))
-                .modes(IntLists.immutable.of(modeId))
+                // The output carries no modes of its own, which is what a reference server reports for
+                // its single output (measured: `RandrProbe` reads "1 crtc(s), 0 mode(s)" there and read
+                // "1 mode(s)" here). The mode is on the CRTC, which is where a client that wants one
+                // looks - `GetCrtcInfo` answers it - and the output's list is the *optional* list of
+                // modes it could be set to, which for an output the host window owns is nothing.
+                .modes(IntLists.immutable.empty())
                 .clones(IntLists.immutable.empty())
                 .name(ByteLists.immutable.of(name))
                 .build());
