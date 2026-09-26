@@ -106,6 +106,9 @@ import java.util.Map;
  */
 public final class XFixesExtension implements Extension {
 
+    /** {@code XFixesCreateRegion}, the one request here whose decoder this class supplies. */
+    private static final int CREATE_REGION = 5;
+
     private static final Logger log = LoggerFactory.getLogger(XFixesExtension.class);
 
     /** XFIXES 4.0: everything below is answered, and nothing above it is claimed. */
@@ -372,6 +375,50 @@ public final class XFixesExtension implements Extension {
                         .build());
             }
         }
+    }
+
+    /**
+     * {@code XFixesCreateRegion} is decoded here for the reason
+     * {@link io.github.oyzh1994.xserver.protocol.VariableLengthDecoders} gives for the sixteen core
+     * requests it covers, and {@code ShapeExtension} gives for {@code ShapeRectangles}: the
+     * generated reader sizes its rectangle list with {@code withInitialCapacity(length - javaStart)},
+     * where {@code length} is the request length in <em>four byte units</em> and {@code javaStart} a
+     * byte offset. This request's fixed part is eight bytes, so **zero, one or two rectangles** -
+     * a request of eight, twelve or sixteen bytes - come out negative and are refused with
+     * {@code BadRequest} before the handler sees them. Three rectangles (six units against a fixed
+     * part of eight) are accepted, which is what makes this look like a rule about region sizes
+     * rather than an arithmetic mistake.
+     *
+     * <p>A client reaches this the moment it builds a region for a shape, a clip or an input region
+     * of its own, so the refusal is the ordinary small case: {@code XFixesCreateRegion} with one
+     * rectangle. Nothing else here needs hand decoding - every other XFIXES request is a fixed size
+     * or carries no list.
+     */
+    @Override
+    public XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
+            throws java.io.IOException {
+        if ((minorOpcode & 0xFF) == CREATE_REGION) {
+            return readCreateRegion(in);
+        }
+        return null;
+    }
+
+    /** {@code XFixesCreateRegion} as it arrives: the region, then as many rectangles as were sent. */
+    private static CreateRegion readCreateRegion(com.github.moaxcp.x11.protocol.X11Input in)
+            throws java.io.IOException {
+        in.readPad(1);                              // the minor opcode, already known
+        int lengthUnits = Short.toUnsignedInt(in.readCard16());
+        int region = in.readCard32();
+        // Eight bytes of header and region behind us; eight bytes a rectangle.
+        int count = Math.max(lengthUnits * 4 - 8, 0) / 8;
+        List<com.github.moaxcp.x11.protocol.xproto.Rectangle> rectangles = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
+        }
+        return CreateRegion.builder()
+                .region(region)
+                .rectangles(Lists.immutable.withAll(rectangles))
+                .build();
     }
 
     // ------------------------------------------------------------------

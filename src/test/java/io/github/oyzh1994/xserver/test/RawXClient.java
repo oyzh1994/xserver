@@ -1148,6 +1148,39 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /**
+     * XFixesCreateRegion: a region made of rectangles, which is how a client builds the shapes and
+     * clips it hands to {@code SetWindowShapeRegion} and friends.
+     */
+    public void createRegion(int opcode, int region, int[][] rectangles) throws IOException {
+        byte[] request = new byte[8 + rectangles.length * 8];
+        request[0] = (byte) opcode;
+        request[1] = 5;                             // X_XFixesCreateRegion
+        writeShort(request, 2, request.length / 4);
+        writeInt(request, 4, region);
+        for (int i = 0; i < rectangles.length; i++) {
+            writeShort(request, 8 + i * 8, rectangles[i][0]);
+            writeShort(request, 10 + i * 8, rectangles[i][1]);
+            writeShort(request, 12 + i * 8, rectangles[i][2]);
+            writeShort(request, 14 + i * 8, rectangles[i][3]);
+        }
+        send(request);
+    }
+
+    /** XFixesSetWindowShapeRegion: one of a window's three shapes, from a region. */
+    public void setWindowShapeRegion(int opcode, int window, int kind, int region)
+            throws IOException {
+        // dest, destination kind, three bytes of pad, x offset, y offset, region: five units.
+        byte[] request = new byte[20];
+        request[0] = (byte) opcode;
+        request[1] = 21;                            // X_XFixesSetWindowShapeRegion
+        writeShort(request, 2, 5);
+        writeInt(request, 4, window);
+        request[8] = (byte) kind;
+        writeInt(request, 16, region);
+        send(request);
+    }
+
     /** Presses or releases one key, through XTEST. */
     public void fakeKey(int opcode, int keycode, boolean pressed) throws IOException {
         byte[] request = new byte[36];

@@ -30,6 +30,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Rectangle;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -68,6 +69,9 @@ import java.util.WeakHashMap;
  * so its entry is collected rather than leaked.
  */
 public final class ShapeExtension implements Extension {
+
+    /** {@code ShapeRectangles}, whose decoder this class has to supply: see {@link #decodeRequest}. */
+    private static final int RECTANGLES = 1;
 
     private static final Logger log = LoggerFactory.getLogger(ShapeExtension.class);
 
@@ -246,6 +250,67 @@ public final class ShapeExtension implements Extension {
                 .majorVersion(MAJOR_VERSION)
                 .minorVersion(MINOR_VERSION)
                 .build());
+    }
+
+    /**
+     * {@code ShapeRectangles} is decoded here, and the reason is the one
+     * {@link io.github.oyzh1994.xserver.protocol.VariableLengthDecoders} gives for the sixteen core
+     * requests it covers: the generated reader sizes its rectangle list with
+     * {@code withInitialCapacity(length - javaStart)}, where {@code length} is the request length in
+     * *four byte units* and {@code javaStart} a byte offset. For this request the fixed part is
+     * sixteen bytes, so any request shorter than sixteen units - **five rectangles or fewer** - gets
+     * a negative capacity and is refused with {@code BadRequest} before the handler ever sees it.
+     *
+     * <p>Measured 2026-09-26 against a live server from the kit's hand-written client: one rectangle
+     * is refused ({@code java.lang.IllegalArgumentException: initial capacity cannot be less than 0}
+     * in the log), ten are accepted. So a client that shapes a window with a handful of rectangles -
+     * the ordinary case, and what {@code XShapeCombineRectangles} sends - was told its request was
+     * malformed, and the reason it was written down as "unexplained" in the kit's README (A2) is
+     * that the generated readers are right in every respect except this arithmetic.
+     *
+     * <p>Nothing else is hand-decoded here: {@code Combine}, {@code Mask}, {@code Offset} and the
+     * rest carry no trailing list, and the reply readers are the client's side of the wire.
+     */
+    @Override
+    public XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
+            throws IOException {
+        if ((minorOpcode & 0xFF) == RECTANGLES) {
+            return readRectangles(in);
+        }
+        return null;
+    }
+
+    /**
+     * {@code ShapeRectangles} as it arrives: the fixed part, then as many rectangles as the request's
+     * own length leaves. The count comes from the length that arrived rather than from a field, which
+     * is what makes it right for a request sent as a BIG-REQUEST too.
+     */
+    private static Rectangles readRectangles(com.github.moaxcp.x11.protocol.X11Input in)
+            throws IOException {
+        in.readPad(1);                              // the minor opcode, already known
+        int lengthUnits = Short.toUnsignedInt(in.readCard16());
+        byte operation = in.readCard8();
+        byte destinationKind = in.readCard8();
+        byte ordering = in.readByte();
+        in.readPad(1);
+        int window = in.readCard32();
+        short xOffset = in.readInt16();
+        short yOffset = in.readInt16();
+        // Sixteen bytes of header and fixed fields are behind us; eight bytes a rectangle.
+        int count = Math.max(lengthUnits * 4 - 16, 0) / 8;
+        List<com.github.moaxcp.x11.protocol.xproto.Rectangle> rectangles = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
+        }
+        return Rectangles.builder()
+                .operation(operation)
+                .destinationKind(destinationKind)
+                .ordering(ordering)
+                .destinationWindow(window)
+                .xOffset(xOffset)
+                .yOffset(yOffset)
+                .rectangles(Lists.immutable.withAll(rectangles))
+                .build();
     }
 
     private void rectangles(XServer server, ClientConnection client, Rectangles request) {

@@ -225,11 +225,15 @@ against this server is identical once the things a server assigns for itself are
 (opcodes, atom ids, cursor serials, and the absolute clock, which is a different epoch on each
 server) - compare the two runs by hand, or with a small normaliser, before believing any difference.
 
-**One open question about `RawXClient`**: its hand-written `ShapeRectangles` request is refused by
-this server as a bad request, so `ShapeClippingTest` sets shapes in process instead. The layout
-matches the library's generated writer (minor 1, then operation, destination kind, ordering, pad,
-window, offsets), so the next step is to see which request the server decodes - a debug line in
-`ShapeExtension.handleRequest`, or `XProxy` in front of the server. Backlog item A2 records it.
+**`RawXClient`'s hand-written `ShapeRectangles` was right and the server was wrong** - the question
+this file used to leave open, answered 2026-09-26. The request arrived and was refused by the
+generated *decoder* (`initial capacity cannot be less than 0`), because it sizes a trailing list from
+the request length in four byte units where it means a byte offset: one rectangle was refused and ten
+accepted, which is why the bytes were blamed for so long. `ShapeExtension.decodeRequest` and
+`XkbExtension`-style hand decoders fix it at each request, and `ShapeClippingTest` now sets a shape
+over the wire; A2 in the backlog has the measurement. The kit's rule from it: **when a hand-written
+request is refused, read the server's log line before changing a single byte** - it named the exact
+exception, and had been there since the request was first tried.
 
 ## What is missing
 

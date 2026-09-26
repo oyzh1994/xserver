@@ -419,11 +419,33 @@ border lives outside the content rectangle, so a shaped window's border is clipp
 (`outerVisibleRegion` gets it from the same walk). `SetWindowClipRegion` (XFixes) is a different
 thing, a clip on drawing, and stays where it is.
 
-**Left open here**: the hand-written `ShapeRectangles` request in `RawXClient` is refused by this
-server as a bad request, so the tests set shapes in process. The layout matches the generated writer
-(minor 1, then operation, destination kind, ordering, pad, window, offsets), so the next step is to
-see which request the server actually decodes - `XProxy` in front of the server, or a debug line in
-`ShapeExtension.handleRequest`.
+**Left open here, answered and fixed 2026-09-26: the hand-written `ShapeRectangles` in `RawXClient`
+was right and the server was refusing a valid request.** The tool's layout was never the problem -
+the request reached `ShapeExtension` and died in the *decoder*:
+
+```
+opcode 130 rejected the request (error 1): could not decode SHAPE request 1:
+    java.lang.IllegalArgumentException: initial capacity cannot be less than 0
+```
+
+which is the arithmetic `VariableLengthDecoders` documents for the core requests: the generated
+readers size a trailing list with `withInitialCapacity(length - javaStart)`, where `length` is the
+request length in **four byte units** and `javaStart` a byte offset. `ShapeRectangles`' fixed part is
+sixteen bytes, so any request shorter than sixteen units - **five rectangles or fewer** - computes a
+negative capacity and is refused with `BadRequest` before the handler runs. Measured against a live
+server: one rectangle refused, ten accepted, which is what kept this looking like a problem with the
+tool's own bytes.
+
+`ShapeExtension.decodeRequest` now reads the request by hand (as `RenderDecoders` does for RENDER)
+and `XFixesCreateRegion` needed the same thing for the same reason with a smaller fixed part - it
+lists its rectangles eight bytes in, so **zero, one or two** are refused, and that is the path GTK
+and Qt take when they build a region for a window shape. `ShapeClippingTest` grew two tests that go
+over the wire instead of in process: one rectangle through `ShapeRectangles`, one rectangle through
+`XFixesCreateRegion` + `SetWindowShapeRegion`, each asserting the pixels. **Both error with
+`the server refused request …: error 1` with the decoders taken out.** `mvn test` 326/326.
+
+The general fix is still the fork's (E1): every generated reader with a trailing list carries this
+expression, and each one is worked around where it is reached.
 
 ---
 

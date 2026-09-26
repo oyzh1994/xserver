@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A bounding shape takes pixels away from a window, so drawing into it stays inside the shape.
@@ -58,16 +59,96 @@ class ShapeClippingTest {
     }
 
     /**
-     * Sets a window's bounding shape through the extension the requests would reach anyway.
+     * Sets a window's bounding shape through the extension, in process.
      *
-     * <p>In process rather than over the wire on purpose: what the shape <em>does</em> is what these
-     * tests are for, and the wire encoding of {@code ShapeRectangles} has its own question to answer
-     * first - the hand-written request in `RawXClient` is refused as a bad request by this server,
-     * which is worth chasing on its own (see the item's notes in `docs/backlog.md`).
+     * <p>What the shape <em>does</em> is what most of these tests are for, and setting it in process
+     * keeps them about that. The wire encoding has its own test now
+     * ({@link #aShapeSetWithOneRectangleOverTheWireTakesEffect}): {@code ShapeRectangles} used to be
+     * refused as a bad request, which was a bug in the generated reader rather than in this server's
+     * shape handling, and that test is the one that would catch it coming back.
      */
     private static void shape(int windowId, Rectangle rectangle) {
         XWindow window = (XWindow) server.resources().get(windowId);
         new ShapeExtension().setShape(server, window, KIND_BOUNDING, List.of(rectangle), 0, 0);
+    }
+
+    /**
+     * A shape set the way a client really sets one: {@code ShapeRectangles} over the wire.
+     *
+     * <p>This request was refused as a bad request for as long as the extension has existed, and the
+     * cause was arithmetic in the generated reader rather than anything here: it sizes the rectangle
+     * list with {@code withInitialCapacity(length - javaStart)}, where the length is in <em>four byte
+     * units</em> and the offset is in bytes, so a request with fewer than six rectangles computes a
+     * negative capacity and never reaches the handler. Measured against a live server: one rectangle
+     * is refused ({@code initial capacity cannot be less than 0} in the log) and ten are accepted -
+     * which is why it read as "sometimes works" for so long, and why the kit's hand-written request
+     * (its README recorded the refusal as unexplained) was written off as the tool's fault.
+     *
+     * <p><b>One rectangle</b> is what this test sends, deliberately: that is the size that failed,
+     * and a client shaping a window with a handful of rectangles is the ordinary case.
+     */
+    @Test
+    void aShapeSetWithOneRectangleOverTheWireTakesEffect() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            int gc = client.allocateId();
+            client.createWindow(window, client.root(), 500, 100, 40, 40);
+            client.mapWindow(window);
+            client.createGC(gc, client.root(), FILL);
+            sync(client, window);
+
+            int shape = client.queryExtension("SHAPE");
+            assertTrue(shape != 0, "the extension this test is about");
+            client.shapeRectangles(shape, window, KIND_BOUNDING, 0, new int[][] {{10, 10, 10, 10}});
+            sync(client, window);
+
+            client.fillRectangle(window, gc, 0, 0, 40, 40);
+            sync(client, window);
+
+            Screen screen = server.screen();
+            assertEquals(FILL, screen.framebuffer().pixel(515, 115) & 0xFFFFFF,
+                    "a point inside the one rectangle shape is painted");
+            assertEquals(BACKGROUND, screen.framebuffer().pixel(502, 102) & 0xFFFFFF,
+                    "and a corner the shape took away is not");
+        }
+    }
+
+    /**
+     * The same shape, built the other way a client builds one: an XFIXES region of one rectangle,
+     * handed to the window with {@code SetWindowShapeRegion}.
+     *
+     * <p>{@code XFixesCreateRegion} carries the same broken arithmetic with a smaller fixed part -
+     * its list starts eight bytes in, so zero, one or two rectangles were refused - and this is the
+     * path GTK and Qt take when they shape a window themselves. The region is not tested on its own
+     * because a region that is never applied draws nothing: what a client sees is the shape, so that
+     * is what is asserted.
+     */
+    @Test
+    void anXfixesRegionOfOneRectangleShapesTheWindow() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            int region = client.allocateId();
+            int gc = client.allocateId();
+            client.createWindow(window, client.root(), 700, 100, 40, 40);
+            client.mapWindow(window);
+            client.createGC(gc, client.root(), FILL);
+            sync(client, window);
+
+            int xfixes = client.queryExtension("XFIXES");
+            assertTrue(xfixes != 0, "the extension this test is about");
+            client.createRegion(xfixes, region, new int[][] {{10, 10, 10, 10}});
+            client.setWindowShapeRegion(xfixes, window, KIND_BOUNDING, region);
+            sync(client, window);
+
+            client.fillRectangle(window, gc, 0, 0, 40, 40);
+            sync(client, window);
+
+            Screen screen = server.screen();
+            assertEquals(FILL, screen.framebuffer().pixel(715, 115) & 0xFFFFFF,
+                    "a point inside the region's one rectangle is painted");
+            assertEquals(BACKGROUND, screen.framebuffer().pixel(702, 102) & 0xFFFFFF,
+                    "and a corner the region took away is not");
+        }
     }
 
     /**
