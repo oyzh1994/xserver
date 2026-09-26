@@ -2167,7 +2167,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * only changes when a client replaces it.
      */
     public CursorSprite cursorSprite() {
-        if (!pointerKnown) {
+        if (!pointerKnown || cursorHiddenHere()) {
             return null;
         }
         XCursor cursor = cursorFor();
@@ -2211,5 +2211,23 @@ public final class InputState implements DisplayBackend.InputSink {
             }
         }
         return screen.rootCursor();
+    }
+
+    /**
+     * Whether the pointer's own window - or a window above it - asked for the cursor to be hidden
+     * ({@code XFixesHideCursor}).
+     *
+     * <p>The walk is the one {@link #cursorFor()} makes and for the same reason: "hidden in this
+     * window" means the window and everything inside it, so an application that hides the pointer on
+     * its toplevel keeps it hidden over its children, while one that hides it on a single child
+     * window hides it only there.
+     */
+    private boolean cursorHiddenHere() {
+        for (XWindow window = pointerWindow; window != null; window = window.parent()) {
+            if (window.cursorHideCount() > 0) {
+                return true;
+            }
+        }
+        return false;
     }
 }

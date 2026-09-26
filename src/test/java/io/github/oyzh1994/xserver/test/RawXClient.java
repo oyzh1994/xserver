@@ -362,6 +362,31 @@ public final class RawXClient implements AutoCloseable {
     }
 
     /**
+     * XFixesHideCursor: one counted hide of the pointer sprite while it is in this window.
+     *
+     * <p>Counted is the point: the requests pair up, a window that asked twice needs two shows, and
+     * the cursor is hidden in that window rather than everywhere.
+     */
+    public void hideCursor(int opcode, int window) throws IOException {
+        xfixesCursorRequest(opcode, 29, window);    // X_XFixesHideCursor
+    }
+
+    /** XFixesShowCursor: takes one hide back off the same window. */
+    public void showCursor(int opcode, int window) throws IOException {
+        xfixesCursorRequest(opcode, 30, window);    // X_XFixesShowCursor
+    }
+
+    /** The shape both of the cursor-visibility requests have: the minor opcode and a window. */
+    private void xfixesCursorRequest(int opcode, int minor, int window) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = (byte) minor;
+        request[2] = 2;
+        writeInt(request, 4, window);
+        send(request);
+    }
+
+    /**
      * The EWMH {@code _NET_WM_STATE} message a toolkit sends the root when it wants a window
      * fullscreen, maximised or shaded - which is the request, not the state: the window manager is
      * expected to answer by writing the state into the window's property.
@@ -883,6 +908,67 @@ public final class RawXClient implements AutoCloseable {
         writeShort(request, 14, y);
         System.arraycopy(text, offset, request, 16, length);
         send(request);
+    }
+
+    /** The bytes of a {@code ListFonts}-family request: the pattern, padded to four bytes. */
+    private static byte[] listFontsRequest(int opcode, String pattern, int maxNames) {
+        byte[] request = new byte[(8 + pattern.length() + 3) & ~3];
+        request[0] = (byte) opcode;
+        writeShort(request, 2, request.length / 4);
+        writeShort(request, 4, maxNames);
+        writeShort(request, 6, pattern.length());
+        for (int i = 0; i < pattern.length(); i++) {
+            request[8 + i] = (byte) pattern.charAt(i);
+        }
+        return request;
+    }
+
+    /** {@code ListFonts}: the names of the fonts matching a pattern, at most {@code maxNames}. */
+    public java.util.List<String> listFonts(String pattern, int maxNames) throws IOException {
+        send(listFontsRequest(49, pattern, maxNames));
+        byte[] reply = readReply();
+        return names(reply, 32, readShort(reply, 8));
+    }
+
+    /**
+     * {@code ListFontsWithInfo}: the name of every font matching a pattern - one reply each, ended
+     * by a terminator whose name is empty - so the names here are the fonts' <em>own</em> rather
+     * than the ones the pattern matched.
+     *
+     * <p>That difference is the point of the request and it is not cosmetic: a font reached through
+     * an alias is reported under its real XLFD name, and the XLFD's last two fields are the only
+     * place Xlib's font-set machinery can read a font's charset from. A server that answers with
+     * the alias name makes every font unclassifiable and every {@code XCreateFontSet} fail, which is
+     * what no X input method could be used against this server for (backlog C10).
+     */
+    public java.util.List<String> listFontsWithInfo(String pattern, int maxNames)
+            throws IOException {
+        send(listFontsRequest(50, pattern, maxNames));
+        java.util.List<String> out = new java.util.ArrayList<>();
+        while (true) {
+            byte[] reply = readReply();
+            int nameLength = reply[1] & 0xFF;
+            if (nameLength == 0) {
+                return out;                         // the terminator
+            }
+            // properties_len is at 46 and the properties follow the 60 byte fixed part, so the name
+            // is at 60 plus eight bytes a property.
+            int propertyCount = readShort(reply, 46);
+            out.add(new String(reply, 60 + propertyCount * 8, nameLength,
+                    java.nio.charset.StandardCharsets.ISO_8859_1));
+        }
+    }
+
+    /** A list of length prefixed names, as the {@code ListFonts} family returns them. */
+    private static java.util.List<String> names(byte[] reply, int offset, int count) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            int length = reply[offset] & 0xFF;
+            out.add(new String(reply, offset + 1, length,
+                    java.nio.charset.StandardCharsets.ISO_8859_1));
+            offset += 1 + length;
+        }
+        return out;
     }
 
     /**

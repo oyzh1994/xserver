@@ -91,11 +91,17 @@ import java.util.Map;
  * instance, that a selection losing its owner window reports the time the owner <em>took</em> it
  * rather than now, nor that a cursor's serial is the cursor's own rather than a change counter.
  *
+ * <p>{@code HideCursor}/{@code ShowCursor} are honoured: each is a counted request on one window,
+ * and {@code InputState} skips the sprite while the pointer is in that window or one of its
+ * descendants ({@link XWindow#cursorHideCount()}). The cursor is hidden there rather than
+ * everywhere, which is what the extension defines and what a client asking for it means.
+ *
  * <p>Known gaps, all deliberate:
  * <ul>
- *   <li>{@code HideCursor}/{@code ShowCursor} only count: {@code InputState} draws the sprite
- *       unconditionally, so the cursor stays visible. {@link #isCursorHidden()} is what a caller
- *       would consult to change that, and it is what the counter exists for.
+ *   <li>{@code ChangeCursor}/{@code ChangeCursorByName} and {@code CreateRegionFromPicture} are
+ *       refused: the first two would rewrite a cursor image in place - a cursor is immutable here,
+ *       and a window holds a reference to it - and the third needs a picture's clip read back as a
+ *       region.
  * </ul>
  */
 public final class XFixesExtension implements Extension {
@@ -140,9 +146,6 @@ public final class XFixesExtension implements Extension {
     public static final byte SELECTION_SET_OWNER = 0;
     public static final byte SELECTION_WINDOW_DESTROY = 1;
     public static final byte SELECTION_CLIENT_CLOSE = 2;
-
-    /** How many clients currently have the cursor hidden. */
-    private int hiddenCursors;
 
     @Override
     public String name() {
@@ -371,11 +374,6 @@ public final class XFixesExtension implements Extension {
         }
     }
 
-    /** Whether some client asked for the cursor to be hidden. */
-    public boolean isCursorHidden() {
-        return hiddenCursors > 0;
-    }
-
     // ------------------------------------------------------------------
     // Version and cursors
     // ------------------------------------------------------------------
@@ -500,15 +498,17 @@ public final class XFixesExtension implements Extension {
 
     private void hideCursor(XServer server, ClientConnection client, HideCursor request) {
         XWindow window = requireWindow(server, client, request.getWindow());
-        hiddenCursors++;
+        window.hideCursor();
+        // The sprite is not part of the framebuffer, so hiding it is not a change to what a client
+        // drew - but the frame has to go out for the sprite to disappear from it: a client that
+        // hides the cursor and then draws nothing would otherwise keep the last frame, pointer and
+        // all, on the screen until something else moved.
         server.markScreenDirty(window);
     }
 
     private void showCursor(XServer server, ClientConnection client, ShowCursor request) {
         XWindow window = requireWindow(server, client, request.getWindow());
-        if (hiddenCursors > 0) {
-            hiddenCursors--;
-        }
+        window.showCursor();
         server.markScreenDirty(window);
     }
 

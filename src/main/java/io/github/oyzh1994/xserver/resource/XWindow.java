@@ -93,6 +93,8 @@ public final class XWindow extends XResource {
 
     private XColormap colormap;
     private XCursor cursor;
+    /** Outstanding {@code XFixesHideCursor} requests, see {@link #cursorHideCount()}. */
+    private int cursorHideCount;
 
     /** Properties, keyed by the atom naming them. */
     private final java.util.Map<Integer, XProperty> properties = new java.util.HashMap<>();
@@ -452,6 +454,33 @@ public final class XWindow extends XResource {
 
     public void setCursor(XCursor cursor) {
         this.cursor = cursor;
+    }
+
+    /**
+     * How many outstanding {@code XFixesHideCursor} requests this window has - the pointer sprite is
+     * not drawn while it is over this window or one of its descendants, and {@code XFixesShowCursor}
+     * takes one back off.
+     *
+     * <p>Per window and counted, which is what the extension defines: the requests pair up, a
+     * window that asked twice needs two shows, and the cursor is hidden <em>in that window</em>
+     * rather than everywhere - a video player hiding the pointer must not hide it over the rest of
+     * the screen. The count lives on the window rather than in the extension because that is its
+     * lifetime: a window that goes away takes its hidden cursor with it.
+     */
+    public int cursorHideCount() {
+        return cursorHideCount;
+    }
+
+    /** {@code XFixesHideCursor}: one more hide, and a negative count is not a state to have. */
+    public void hideCursor() {
+        cursorHideCount++;
+    }
+
+    /** {@code XFixesShowCursor}: one fewer hide, never below zero. */
+    public void showCursor() {
+        if (cursorHideCount > 0) {
+            cursorHideCount--;
+        }
     }
 
     public int eventMask() {
