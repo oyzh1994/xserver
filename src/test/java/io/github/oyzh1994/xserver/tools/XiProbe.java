@@ -71,6 +71,7 @@ public final class XiProbe {
         int selectMask = BUTTON_MOTION_MASK;
         int selectDevice = ALL_MASTER_DEVICES;
         boolean selectRoot = false;
+        boolean driveKey = false;
         for (int i = 2; i < args.length; i++) {
             switch (args[i]) {
                 case "device" -> {
@@ -91,6 +92,10 @@ public final class XiProbe {
                         selectRoot = true;
                         i++;
                     }
+                    if (i + 1 < args.length && args[i + 1].equals("key")) {
+                        driveKey = true;
+                        i++;
+                    }
                 }
                 case "dump" -> dump = true;
                 default -> {
@@ -104,13 +109,15 @@ public final class XiProbe {
                 return;
             }
             System.out.println("XInputExtension opcode " + opcode);
+            legacyVersion(wire, opcode, dump);
+            listInputDevices(wire, opcode, dump);
             if (mode.equals("select")) {
                 // The version handshake first, because that is the order a client uses and because
                 // an XISelectEvents sent before it is a request the reference accepts and then does
                 // nothing about: the run is quiet on the XI2 rail and loud on the core one, which
                 // reads as a server that cannot deliver a device event at all.
                 queryVersion(wire, opcode, dump);
-                selectEvents(wire, opcode, selectMask, selectDevice, selectRoot);
+                selectEvents(wire, opcode, selectMask, selectDevice, selectRoot, driveKey);
                 return;
             }
             queryVersion(wire, opcode, dump);
@@ -123,6 +130,93 @@ public final class XiProbe {
                 queryDevice(wire, opcode, ALL_DEVICES, dump);
             }
         }
+    }
+
+    /**
+     * XInput <em>1.x</em>'s {@code GetExtensionVersion}, which is not an XI2 request at all and is
+     * still the first thing some clients send.
+     *
+     * <p>It was added here because getting it wrong is not a wrong answer, it is a crash:
+     * {@code xinput list} asks it before anything else, and a server that answered with the fields
+     * four bytes out made it <b>segfault</b> - the same shape as A4's {@code xdotool}, where a reply
+     * a client did not survive was the whole bug. The reply's layout is read off a reference here
+     * rather than from the protocol XML, because the XML puts the reply's own type byte among the
+     * fields after the header where the wire keeps it in the header's second byte.
+     */
+    private static void legacyVersion(Wire wire, int opcode, boolean dump) throws Exception {
+        byte[] request = new byte[(8 + EXTENSION.length() + 3) & ~3];
+        request[0] = (byte) opcode;
+        request[1] = 1;                             // GetExtensionVersion
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, EXTENSION.length());
+        for (int i = 0; i < EXTENSION.length(); i++) {
+            request[8 + i] = (byte) EXTENSION.charAt(i);
+        }
+        wire.send(request);
+        byte[] reply = replyTo(wire, "GetExtensionVersion");
+        System.out.println("GetExtensionVersion (XI 1.x): byte1=" + (reply[1] & 0xFF)
+                + " words at 8=" + Wire.readShort(reply, 8) + " 10=" + Wire.readShort(reply, 10)
+                + " 12=" + Wire.readShort(reply, 12)
+                + " byte12=" + (reply[12] & 0xFF) + " byte13=" + (reply[13] & 0xFF));
+        if (dump) {
+            hex("GetExtensionVersion", reply);
+        }
+    }
+
+    /**
+     * XInput <em>1.x</em>'s {@code ListInputDevices}, which is the next thing the {@code xinput}
+     * tool asks and which a server without it refuses - and a refusal under Xlib's default handler
+     * ends the process, so a server that answers the version handshake and then refuses this is a
+     * server {@code xinput} dies against rather than one it reports.
+     *
+     * <p>The reply is printed as bytes: its device records, their class lists and their names are
+     * three separate lists in one reply, and the devices' class count is what sizes the second.
+     */
+    private static void listInputDevices(Wire wire, int opcode, boolean dump) throws Exception {
+        byte[] request = new byte[4];
+        request[0] = (byte) opcode;
+        request[1] = 2;                             // ListInputDevices
+        Wire.writeShort(request, 2, 1);             // length in four byte units, which is not optional
+        wire.send(request);
+        byte[] reply = replyTo(wire, "ListInputDevices");
+        int devices = reply[8] & 0xFF;
+        System.out.println("ListInputDevices: " + devices + " device(s), reply " + reply.length
+                + " bytes");
+        int at = 32;
+        int classes = 0;
+        for (int i = 0; i < devices && at + 8 <= reply.length; i++) {
+            int type = Wire.readInt(reply, at);
+            int id = reply[at + 4] & 0xFF;
+            int numClassInfo = reply[at + 5] & 0xFF;
+            int use = reply[at + 6] & 0xFF;
+            classes += numClassInfo;
+            System.out.println("  device id " + id + " use " + use + " type atom " + type
+                    + " with " + numClassInfo + " class(es)");
+            at += 8;
+        }
+        for (int i = 0; i < classes && at + 2 <= reply.length; i++) {
+            System.out.println("    class " + (reply[at] & 0xFF) + " event base "
+                    + (reply[at + 1] & 0xFF));
+            at += 2;
+        }
+        if (dump) {
+            hex("ListInputDevices", reply);
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < devices && at + 1 < reply.length; i++) {
+            int length = reply[at] & 0xFF;
+            if (at + 1 + length > reply.length) {
+                // The class list is walked with a count the devices give, and getting that count
+                // wrong lands the reader in the middle of a name: a probe that then throws has
+                // measured nothing at all, which is worse than printing one short name.
+                System.out.println("  names run past the reply: the class count is off");
+                break;
+            }
+            names.append('"').append(new String(reply, at + 1, length,
+                    java.nio.charset.StandardCharsets.ISO_8859_1)).append("\" ");
+            at += 1 + length;
+        }
+        System.out.println("  names " + names);
     }
 
     /** {@code QueryExtension XInputExtension}, answering the extension's major opcode or 0. */
@@ -312,6 +406,25 @@ public final class XiProbe {
         return (value >> 16) + "." + String.format("%04d", ((value & 0xFFFF) * 10000) >> 16);
     }
 
+    /** One XI2 event as a line, read with the offsets the header is known to use. */
+    private static String describeXi2(byte[] message) {
+        return "GenericEvent ext " + (message[1] & 0xFF)
+                + " evtype " + Wire.readShort(message, 8) + " (" + xiEventName(
+                        Wire.readShort(message, 8)) + ")"
+                + " device " + Wire.readShort(message, 10)
+                + " time " + Wire.readInt(message, 12)
+                + " detail " + Wire.readInt(message, 16)
+                + " root 0x" + Integer.toHexString(Wire.readInt(message, 20))
+                + " event 0x" + Integer.toHexString(Wire.readInt(message, 24))
+                + " child 0x" + Integer.toHexString(Wire.readInt(message, 28))
+                + " at " + fixed(Wire.readInt(message, 32)) + ","
+                + fixed(Wire.readInt(message, 36))
+                + " in-window " + fixed(Wire.readInt(message, 40)) + ","
+                + fixed(Wire.readInt(message, 44))
+                + " source " + Wire.readShort(message, 52)
+                + " bytes " + message.length;
+    }
+
     private static String className(int type) {
         return switch (type) {
             case 0 -> "key";
@@ -338,8 +451,8 @@ public final class XiProbe {
      * {@code GenericEvent} is read whole or not at all; and the pointer has to be warped to the window
      * the events are selected on, not to the root near it.
      */
-    private static void selectEvents(Wire wire, int opcode, int mask, int device, boolean onRoot)
-            throws Exception {
+    private static void selectEvents(Wire wire, int opcode, int mask, int device, boolean onRoot,
+                                     boolean driveKey) throws Exception {
         int xtest = queryExtensionNamed(wire, "XTEST");
         if (xtest == 0) {
             System.out.println("this server has no XTEST, so the probe cannot drive it");
@@ -402,9 +515,17 @@ public final class XiProbe {
                 + Integer.toHexString(Wire.readInt(answer, 12))
                 + " at " + Wire.readShort(answer, 16) + "," + Wire.readShort(answer, 18));
 
-        // And XTEST has to press a button, because the pointer cannot.
-        fakeButton(wire, xtest, 1, true);
-        fakeButton(wire, xtest, 1, false);
+        // And XTEST has to drive the device, because a hand cannot.
+        if (driveKey) {
+            // Keycode 38 is 'a' on the standard layout, and the window has to have the input focus
+            // for the keyboard to deliver anything at all.
+            setFocus(wire, window);
+            fakeKey(wire, xtest, 38, true);
+            fakeKey(wire, xtest, 38, false);
+        } else {
+            fakeButton(wire, xtest, 1, true);
+            fakeButton(wire, xtest, 1, false);
+        }
 
         wire.readTimeoutMillis(400);
         for (int i = 0; i < 12; i++) {
@@ -494,6 +615,28 @@ public final class XiProbe {
         return window;
     }
 
+    /** {@code SetInputFocus} on a window, so that key events have somewhere to be delivered. */
+    private static void setFocus(Wire wire, int window) throws Exception {
+        byte[] request = new byte[12];
+        request[0] = 42;                            // SetInputFocus
+        Wire.writeShort(request, 2, 3);
+        Wire.writeInt(request, 4, window);
+        request[8] = 1;                             // revert to PointerRoot
+        wire.send(request);
+    }
+
+    /** XTEST FakeInput for a key: the type is the core event type, and the detail a keycode. */
+    private static void fakeKey(Wire wire, int xtest, int keycode, boolean pressed)
+            throws Exception {
+        byte[] request = new byte[36];
+        request[0] = (byte) xtest;
+        request[1] = 2;
+        request[2] = 9;
+        request[4] = (byte) (pressed ? 2 : 3);      // core KeyPress / KeyRelease
+        request[5] = (byte) keycode;
+        wire.send(request);
+    }
+
     private static int queryExtensionNamed(Wire wire, String name) throws Exception {
         byte[] request = new byte[(8 + name.length() + 3) & ~3];
         request[0] = 98;
@@ -532,6 +675,14 @@ public final class XiProbe {
             }
             if ((message[0] & 0xFF) == 35 || (message[0] & 0xFF) == 1) {
                 message = wire.withExtraData(message);
+            }
+            if ((message[0] & 0xFF) == 35) {
+                // **An event passed over is printed, not swallowed.** The kit's own A6 lesson: a
+                // probe whose reply reader drops what it walks past produces a measurement that is
+                // wrong in a way nothing else shows - and a motion generated by the warp below is
+                // exactly the event that goes missing.
+                System.out.println("(while waiting for " + what + ") " + describeXi2(message));
+                hex("GenericEvent", message);
             }
             if ((message[0] & 0x7F) == 1) {
                 return message;
