@@ -55,7 +55,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A2~~ | ~~a bounding shape does not clip drawing~~ **done 2026-09-24** | correctness | S-M |
 | ~~A11~~ | ~~no keyboard autorepeat~~ **done 2026-09-24** | correctness | S-M |
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
-| ~~A12~~ | ~~`winGravity` is stored but not applied~~ **done 2026-09-25** (`bitGravity` still open) | correctness | S-M |
+| ~~A12~~ | ~~window gravity, `winGravity` and `bitGravity`~~ **done 2026-09-26** (both halves, measured against the reference) | correctness | S-M |
 | ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
 | A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | ~~A5~~ | ~~`PointerRoot` focus reporting: the premise was wrong, five measured differences remain~~ **done 2026-09-25** | correctness | M |
@@ -559,11 +559,37 @@ child was and the child is asked to draw where it now is).
   (A9), so the alternative is a child showing whatever used to be under it. The pixels are ours to
   keep coherent; the events are where the reference's behaviour was copied.
 
-**`bitGravity` is not implemented, and the plan for it in this item was wrong.** It is about a
-window's *own* contents on its own resize, and with no per-window backing store there is no content to
-shift: the window's pixels are wherever they were drawn, the server paints the new area with the
-window's background and sends an `Expose`. For `NorthWest` - what everything uses - that is what
-already happens; anything else would need A9's backing store first. Left open here deliberately.
+**`bitGravity` is done too (2026-09-26), and the paragraph that used to stand here was wrong twice
+over.** It said "with no per-window backing store there is no content to shift" - but the store is not
+the point: a window's pixels are in the framebuffer while they are visible, and a reference server
+moves them. It also said "anything else would need A9's backing store first", and A9 has been in since
+2026-09-25 without this being possible to write from it. Measured one gravity at a time with the tool
+the work needed anyway, `tools/BitGravityProbe` - a marker drawn near each corner, the window grown,
+the window read back with `GetImage`:
+
+```
+gravity  1 NW  2 N      3 NE   4 W     5 Center   6 E      7 SW   8 S      9 SE   10 Static  0 Forget
+moves by 0,0   dW/2,0   dW,0   0,dH/2  dW/2,dH/2  dW,dH/2  0,dH    dW/2,dH  dW,dH   0,0       gone
+```
+
+The same three-by-three grid as `winGravity`, and the same two odd ones: `Static` does not move the
+pixels, and `Forget` **throws them away** - the measured marker is simply gone. What moves is what was
+*visible*, since nothing keeps an obscured window's content; the area the content leaves is painted
+with the window's background and exposed, the same as a reveal. `applyBitGravity` is called from the
+configure path after the gained area is painted, so what moves lands on top of it.
+
+**And the default had to be measured before any of that could be safe**: `bitGravity` was stored as
+**0**, which is `Forget` - so a window resized under the default would have thrown its contents away,
+every window in the server losing its pixels on its first resize. `GetWindowAttributes` on a freshly
+created window answers 1 (`NorthWest`) on a reference server and answered 0 here; both gravities now
+start at 1. The test that pins the grid (`WindowGravityTest`,
+`aResizeMovesAWindowsOwnContentsByItsBitGravity`) fails without the implementation at the `Forget`
+case, where an ink pixel survives that should be gone.
+
+**One primitive had to be fixed on the way**, and it is worth knowing about: `Framebuffer.copyFrom`'s
+self-copy direction was decided by the *rows* alone, so a purely horizontal self-copy smeared - every
+pixel written over the one the next read wanted. Bit gravity is the first caller to copy pixels
+sideways on the same surface (a backing-store save copies between surfaces or downwards).
 
 **Measured 2026-09-25.** `handler/WindowGravityTest` (3 tests, the whole nine-gravity grid plus the two
 that do not move and the "a move is not a resize" case). **It fails without the fix** (`+0,+0` where

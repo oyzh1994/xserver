@@ -447,12 +447,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   `DPMS` are advertised and answer honestly, so `xset s`, `xset dpms` and a client that checks before
   blanking all get an answer rather than "extension not present" - but the display belongs to the host
   window and the system's own screen saver is what blanks it, so the server reports and does not act.
-- **`winGravity` is applied, `bitGravity` is not.** A child moves the way its own gravity says when
-  its parent is resized, matching a reference server's numbers for all eleven values (and, also like
-  the reference, the child is not sent a `ConfigureNotify`). `bitGravity` - what happens to a window's
-  own contents when it is resized - has nothing to act on with no per-window backing store: the window
-  is painted with its background over the new area and asked to redraw, which is what `NorthWest`
-  amounts to anyway.
+- **Both gravities are applied.** A child moves the way its own `winGravity` says when its parent is
+  resized (and, also like the reference, the child is not sent a `ConfigureNotify`), and a window's
+  own contents move the way its `bitGravity` says when *it* is resized: the same three-by-three grid,
+  measured against a reference server for all eleven values including `Static`, which moves nothing,
+  and `Forget`, which throws the contents away. The pixels that move are the visible ones - nothing
+  keeps an obscured window's content - and the area they leave is painted with the window's background
+  and exposed.
 - **A resize grows the screen, up to `--max-screen`.** The host window is resizable and resizes the
   client's window; a drag past what the screen currently shows makes the screen bigger first, so a
   forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag

@@ -739,6 +739,11 @@ public final class WindowHandlers {
             // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
             visibilityChanged(window, before, visibleRegionOf(window), moved);
+            if (resized) {
+                // The window's own pixels, moved the way its bit gravity asks - after the area it
+                // gained has been painted, because what moves lands on top of that.
+                applyBitGravity(window, oldWidth, oldHeight);
+            }
             server.markScreenDirty(window);
         }
 
@@ -747,6 +752,92 @@ public final class WindowHandlers {
         // area it leaves, and the window it leaves it to has just been painted.
         if (window.width() != oldWidth || window.height() != oldHeight) {
             applyWinGravity(window, window.width() - oldWidth, window.height() - oldHeight);
+        }
+    }
+
+    /**
+     * Moves a window's own pixels the way its {@code bit_gravity} says they follow a resize - the
+     * other half of A12, and the half the item left open with the reason "with no per-window backing
+     * store there is no content to shift". The store is not the point: a window's pixels are in the
+     * framebuffer while they are visible, and a reference server moves them. Measured one gravity at
+     * a time with {@code tools/BitGravityProbe}, on a window grown by dW x dH with a marker drawn
+     * near each corner:
+     *
+     * <pre>
+     * gravity  1 NW  2 N      3 NE   4 W     5 Center   6 E    7 SW   8 S      9 SE   10 Static  0 Forget
+     * moves by 0,0   dW/2,0   dW,0   0,dH/2  dW/2,dH/2  dW,dH/2 0,dH  dW/2,dH  dW,dH  0,0       gone
+     * </pre>
+     *
+     * <p>It is the grid {@link #applyWinGravity} uses, and so is {@link #shift}: none, half or all of
+     * the change. Two of the nine are not a shift at all - {@code Static} leaves the pixels where
+     * they are (the same as {@code NorthWest} for a resize that does not also move the window), and
+     * {@code Forget} throws them away, which is what the measured marker does: it is simply gone, and
+     * the window is its background afterwards.
+     *
+     * <p>What moves is what was <em>visible</em>. This server keeps no per-window content, so the
+     * parts another window covered are not there to move; the area the content leaves behind is
+     * painted with the window's background and exposed, which is what a reveal leaves too.
+     */
+    private void applyBitGravity(XWindow window, int oldWidth, int oldHeight) {
+        int deltaWidth = window.width() - oldWidth;
+        int deltaHeight = window.height() - oldHeight;
+        if (deltaWidth == 0 && deltaHeight == 0) {
+            return;
+        }
+        // Everything here is in *screen* coordinates: the visible region, `absoluteBounds`, and both
+        // of the helpers this calls (`paintBackground`'s clip and `deliverExpose`'s rectangle) are
+        // screen rectangles. Passing one that is window relative paints nothing at all when the
+        // window is not at the origin, which is what the first version of this did.
+        Rectangle windowRect = window.absoluteBounds();
+        int gravity = window.bitGravity();
+        if (gravity == FORGET_GRAVITY) {
+            paintBackground(window, windowRect);
+            deliverExpose(window, windowRect);
+            log.debug("bit gravity Forget on 0x{}: the contents are thrown away",
+                    Integer.toHexString(window.id()));
+            return;
+        }
+        if (gravity < NORTH_WEST_GRAVITY || gravity > SOUTH_EAST_GRAVITY) {
+            return;                                  // Static, and anything unknown: nothing moves
+        }
+        int row = (gravity - NORTH_WEST_GRAVITY) / 3;
+        int column = (gravity - NORTH_WEST_GRAVITY) % 3;
+        int shiftX = shift(deltaWidth, column);
+        int shiftY = shift(deltaHeight, row);
+        if (shiftX == 0 && shiftY == 0) {
+            return;
+        }
+        Framebuffer framebuffer = window.screen().framebuffer();
+        int absX = window.absoluteX();
+        int absY = window.absoluteY();
+        // The visible region is in *screen* coordinates and the framebuffer is the screen, so the copy
+        // is done there; what the void arithmetic wants is window relative, and that is what `moved`
+        // is translated back to.
+        Rectangle oldBounds = new Rectangle(absX, absY, oldWidth, oldHeight);
+        Rectangle newBounds = window.absoluteBounds();
+        List<Rectangle> moved = new ArrayList<>();
+        for (Rectangle visible : window.visibleRegion()) {
+            Rectangle source = visible.intersection(oldBounds);
+            if (source.isEmpty()) {
+                continue;
+            }
+            Rectangle destination = new Rectangle(source.x + shiftX, source.y + shiftY,
+                    source.width, source.height).intersection(newBounds);
+            if (destination.isEmpty()) {
+                continue;
+            }
+            framebuffer.copyFrom(framebuffer, destination.x - shiftX, destination.y - shiftY,
+                    destination.x, destination.y, destination.width, destination.height);
+            moved.add(destination);
+        }
+        // What the content left behind: the window, minus what was moved into it.
+        for (Rectangle left : ShapeState.subtract(List.of(windowRect), moved)) {
+            paintBackground(window, left);
+            deliverExpose(window, left);
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("bit gravity {} on 0x{}: the contents moved by {},{}",
+                    gravity, Integer.toHexString(window.id()), shiftX, shiftY);
         }
     }
 
@@ -815,6 +906,8 @@ public final class WindowHandlers {
     /** X's gravity numbers: 1 is north-west and 9 is south-east, in a three by three grid. */
     private static final int NORTH_WEST_GRAVITY = 1;
     private static final int SOUTH_EAST_GRAVITY = 9;
+    /** {@code Forget}: not a place to keep the contents but the instruction to drop them. */
+    private static final int FORGET_GRAVITY = 0;
 
     private void notifyConfigure(XWindow window, ConfigureWindow r, int mask, boolean moved,
                                  boolean resized) {

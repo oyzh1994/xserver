@@ -176,6 +176,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `BitGravityProbe` - the harness for A12's other half: a marker near each corner of a window, the
+  window grown, and the window read back with `GetImage` as per-row ink spans - so the shift a
+  `bitGravity` asks for is a number rather than a guess. Its own header says what the eleven values
+  measure; the first version summarised the picture as ASCII art and the column arithmetic lost the
+  shift, which is why it prints coordinates now.
 - `GlyphCursorProbe` - the harness for A3's other half: a cursor built from an arbitrary font's glyphs,
   read back the way a client can (`XFixesGetCursorImage` answers with the cursor the pointer is
   showing, so the probe defines the cursor on a window, warps the pointer in, and prints the size, the
@@ -310,6 +315,11 @@ These cost hours each, the first time:
    which offer no credentials - the failure reads as "the connection setup was refused", i.e. as if
    the display were not running), and *not* `-nolisten unix` (the VM's own clients reach it through
    the unix socket). `tools/xvfb.sh start` does all three.
+
+**`WinTree`'s output carries NUL bytes, so grep reads it as binary.** `WM_CLASS` is two strings
+separated by a NUL (`class=EasyShell\0EasyShell`), and a pipe or a file with a NUL in it makes most
+greps say nothing at all - "the window is not there" was three times "grep ate the line" on
+2026-09-26, with the menu window plainly in the tree. Write `grep -a`, or read the file.
 
 **Every hand-built request has to be padded to its protocol size, or a reference server refuses it.**
 `RandrProbe`'s `GetOutputProperty` was a word short (six units where the request is seven), and the

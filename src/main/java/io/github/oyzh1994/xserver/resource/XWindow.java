@@ -74,8 +74,17 @@ public final class XWindow extends XResource {
     /** The parts of the screen {@link #backing} holds, in screen coordinates. Empty when none. */
     private List<Rectangle> backingSaved = List.of();
 
-    private int bitGravity = 0;
-    private int winGravity = 0;
+    /**
+     * The two gravities, whose default is X's own: {@code NorthWest} (1) for both. It matters that
+     * the default is measured rather than assumed - {@code bitGravity} was stored as 0, which is
+     * {@code Forget}, and a window resized under {@code Forget} **throws its contents away**: every
+     * window in the server would have lost its pixels on its first resize. Measured against a
+     * reference server 2026-09-26 with {@code GetWindowAttributes} on a freshly created window:
+     * {@code bit_gravity} answers 1 there and answered 0 here.
+     */
+    private int bitGravity = 1;
+    /** {@code winGravity}'s default is the same number; see {@link #bitGravity}. */
+    private int winGravity = 1;
 
     /** Background: either a pixel or a pixmap; {@code backgroundIsPixmap} says which. */
     /**

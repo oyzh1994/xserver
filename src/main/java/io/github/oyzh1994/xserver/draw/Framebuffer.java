@@ -180,16 +180,26 @@ public final class Framebuffer implements PixelStore {
             return;
         }
         boolean sameSurface = src == this;
-        boolean forward = !sameSurface || srcY >= dstY;
-        int startRow = forward ? dy0 : dy1 - 1;
-        int endRow = forward ? dy1 : dy0 - 1;
-        int step = forward ? 1 : -1;
-        for (int dy = startRow; dy != endRow; dy += step) {
+        // A copy onto the same surface has to start at the far end of the overlap or it eats its own
+        // source. Which end is "far" is per axis, and both axes have to be asked: this used to look
+        // at the rows alone, so a purely *horizontal* self-copy (dstX > srcX, same rows) smeared -
+        // every pixel written over the one the next read wanted, and the result a run of the first
+        // pixel. Found by A12's bit gravity, which is the first caller to copy pixels sideways on the
+        // same surface (backing-store saves copy between surfaces or downwards).
+        boolean backwardsX = sameSurface && dstX > srcX;
+        boolean backwardsY = sameSurface && dstY > srcY;
+        int startRow = backwardsY ? dy1 - 1 : dy0;
+        int endRow = backwardsY ? dy0 - 1 : dy1;
+        int rowStep = backwardsY ? -1 : 1;
+        for (int dy = startRow; dy != endRow; dy += rowStep) {
             int sy = srcY + (dy - dstY);
             if (sy < 0 || sy >= src.height()) {
                 continue;
             }
-            for (int dx = dx0; dx < dx1; dx++) {
+            int startColumn = backwardsX ? dx1 - 1 : dx0;
+            int endColumn = backwardsX ? dx0 - 1 : dx1;
+            int columnStep = backwardsX ? -1 : 1;
+            for (int dx = startColumn; dx != endColumn; dx += columnStep) {
                 int sx = srcX + (dx - dstX);
                 if (sx < 0 || sx >= src.width()) {
                     continue;
