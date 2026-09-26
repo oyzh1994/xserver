@@ -106,8 +106,9 @@ import java.util.Map;
  */
 public final class XFixesExtension implements Extension {
 
-    /** {@code XFixesCreateRegion}, the one request here whose decoder this class supplies. */
+    /** The two requests here whose decoders this class supplies: see {@link #decodeRequest}. */
     private static final int CREATE_REGION = 5;
+    private static final int SET_REGION = 11;
 
     private static final Logger log = LoggerFactory.getLogger(XFixesExtension.class);
 
@@ -378,7 +379,7 @@ public final class XFixesExtension implements Extension {
     }
 
     /**
-     * {@code XFixesCreateRegion} is decoded here for the reason
+     * {@code XFixesCreateRegion} and {@code XFixesSetRegion} are decoded here for the reason
      * {@link io.github.oyzh1994.xserver.protocol.VariableLengthDecoders} gives for the sixteen core
      * requests it covers, and {@code ShapeExtension} gives for {@code ShapeRectangles}: the
      * generated reader sizes its rectangle list with {@code withInitialCapacity(length - javaStart)},
@@ -400,6 +401,9 @@ public final class XFixesExtension implements Extension {
         if ((minorOpcode & 0xFF) == CREATE_REGION) {
             return readCreateRegion(in);
         }
+        if ((minorOpcode & 0xFF) == SET_REGION) {
+            return readSetRegion(in);
+        }
         return null;
     }
 
@@ -416,6 +420,30 @@ public final class XFixesExtension implements Extension {
             rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
         }
         return CreateRegion.builder()
+                .region(region)
+                .rectangles(Lists.immutable.withAll(rectangles))
+                .build();
+    }
+
+    /**
+     * {@code XFixesSetRegion}, the other half of the same pair: it replaces a region's rectangles,
+     * so a client that keeps a region and changes it - which is what a toolkit does with a shape it
+     * recalculates - reaches it. Same arithmetic, same fixed part of eight bytes, so **one or two
+     * rectangles** are refused; measured against a live server 2026-09-26 (one and two refused with
+     * {@code initial capacity cannot be less than 0}, three accepted and then refused by the handler
+     * for the region id the probe invented, which is how the threshold shows).
+     */
+    private static SetRegion readSetRegion(com.github.moaxcp.x11.protocol.X11Input in)
+            throws java.io.IOException {
+        in.readPad(1);                              // the minor opcode, already known
+        int lengthUnits = Short.toUnsignedInt(in.readCard16());
+        int region = in.readCard32();
+        int count = Math.max(lengthUnits * 4 - 8, 0) / 8;
+        List<com.github.moaxcp.x11.protocol.xproto.Rectangle> rectangles = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
+        }
+        return SetRegion.builder()
                 .region(region)
                 .rectangles(Lists.immutable.withAll(rectangles))
                 .build();

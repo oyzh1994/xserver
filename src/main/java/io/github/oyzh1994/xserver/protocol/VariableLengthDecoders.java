@@ -59,9 +59,10 @@ import java.util.List;
  * <p>The same expression is in every generated reader with a trailing list, including the
  * extensions', and each is worked around where it is reached rather than here (this class only sees
  * core opcodes): {@code protocol/RenderDecoders} for RENDER's fourteen, {@code ShapeExtension} for
- * {@code ShapeRectangles} and {@code XFixesExtension} for {@code XFixesCreateRegion} - which is how
- * a client that shaped a window with five rectangles or fewer had its request refused (A2's open
- * question), and one with three or fewer regions (measured 2026-09-26).
+ * {@code ShapeRectangles} and {@code XFixesExtension} for {@code XFixesCreateRegion} and
+ * {@code XFixesSetRegion} - which is how a client that shaped a window with five rectangles or fewer
+ * had its request refused (A2's open question), and one that made or changed a region of two
+ * rectangles or fewer (measured 2026-09-26).
  *
  * <p>If the library is ever fixed upstream this class can be deleted and the dispatch in
  * {@code RequestDispatcher} simplified back to a single call.

@@ -436,13 +436,16 @@ negative capacity and is refused with `BadRequest` before the handler runs. Meas
 server: one rectangle refused, ten accepted, which is what kept this looking like a problem with the
 tool's own bytes.
 
-`ShapeExtension.decodeRequest` now reads the request by hand (as `RenderDecoders` does for RENDER)
-and `XFixesCreateRegion` needed the same thing for the same reason with a smaller fixed part - it
-lists its rectangles eight bytes in, so **zero, one or two** are refused, and that is the path GTK
-and Qt take when they build a region for a window shape. `ShapeClippingTest` grew two tests that go
-over the wire instead of in process: one rectangle through `ShapeRectangles`, one rectangle through
-`XFixesCreateRegion` + `SetWindowShapeRegion`, each asserting the pixels. **Both error with
-`the server refused request …: error 1` with the decoders taken out.** `mvn test` 326/326.
+`ShapeExtension.decodeRequest` now reads the request by hand (as `RenderDecoders` does for RENDER),
+and the two XFIXES requests with the same shape of list needed it too, with a smaller fixed part:
+`XFixesCreateRegion` and `XFixesSetRegion` list their rectangles eight bytes in, so **zero, one or
+two** are refused - measured, two refused with `initial capacity cannot be less than 0` and three
+decoded. That is the path GTK and Qt take when they build or recalculate a region for a window
+shape, so it is the ordinary case and not a corner. `ShapeClippingTest` grew three tests that go
+over the wire instead of in process: one rectangle through `ShapeRectangles`, one through
+`XFixesCreateRegion` + `SetWindowShapeRegion`, and one region *changed* to a single rectangle with
+`XFixesSetRegion`, each asserting the pixels. **All three error with
+`the server refused request …: error 1` with the decoders taken out.** `mvn test` 327/327.
 
 The general fix is still the fork's (E1): every generated reader with a trailing list carries this
 expression, and each one is worked around where it is reached.

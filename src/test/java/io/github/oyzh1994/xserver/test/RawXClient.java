@@ -1167,6 +1167,22 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /** XFixesSetRegion: replaces the rectangles a region is made of. */
+    public void setRegion(int opcode, int region, int[][] rectangles) throws IOException {
+        byte[] request = new byte[8 + rectangles.length * 8];
+        request[0] = (byte) opcode;
+        request[1] = 11;                            // X_XFixesSetRegion
+        writeShort(request, 2, request.length / 4);
+        writeInt(request, 4, region);
+        for (int i = 0; i < rectangles.length; i++) {
+            writeShort(request, 8 + i * 8, rectangles[i][0]);
+            writeShort(request, 10 + i * 8, rectangles[i][1]);
+            writeShort(request, 12 + i * 8, rectangles[i][2]);
+            writeShort(request, 14 + i * 8, rectangles[i][3]);
+        }
+        send(request);
+    }
+
     /** XFixesSetWindowShapeRegion: one of a window's three shapes, from a region. */
     public void setWindowShapeRegion(int opcode, int window, int kind, int region)
             throws IOException {

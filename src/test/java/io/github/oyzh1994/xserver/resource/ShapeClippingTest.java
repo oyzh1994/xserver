@@ -152,6 +152,53 @@ class ShapeClippingTest {
     }
 
     /**
+     * A region that is <em>changed</em> rather than created: {@code XFixesSetRegion} with one
+     * rectangle, on a region that was made with three.
+     *
+     * <p>The same broken arithmetic is in this request's generated reader, so one and two rectangles
+     * were refused while three were accepted (measured against a live server: two refused with
+     * {@code initial capacity cannot be less than 0}, three decoded). A client that keeps a region
+     * and recalculates it - which is what a toolkit does with a shape it re-derives on every resize
+     * - uses exactly this call, and the shape on screen is where the result shows.
+     */
+    @Test
+    void aRegionChangedToOneRectangleShapesTheWindow() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            int region = client.allocateId();
+            int gc = client.allocateId();
+            client.createWindow(window, client.root(), 900, 100, 40, 40);
+            client.mapWindow(window);
+            client.createGC(gc, client.root(), FILL);
+            sync(client, window);
+
+            int xfixes = client.queryExtension("XFIXES");
+            client.createRegion(xfixes, region, new int[][] {{0, 0, 20, 20}, {20, 0, 20, 20},
+                    {0, 20, 40, 20}});
+            client.setWindowShapeRegion(xfixes, window, KIND_BOUNDING, region);
+            sync(client, window);
+            client.fillRectangle(window, gc, 0, 0, 40, 40);
+            sync(client, window);
+
+            Screen screen = server.screen();
+            assertEquals(FILL, screen.framebuffer().pixel(910, 130) & 0xFFFFFF,
+                    "the three rectangles cover the window's bottom half too");
+
+            // Now the same region, redefined by one small rectangle near the top left. Changing a
+            // region does not move a window's shape by itself - a shape is set from a region, not
+            // bound to it - so the client applies it again, which is what a toolkit does.
+            client.setRegion(xfixes, region, new int[][] {{10, 10, 10, 10}});
+            client.setWindowShapeRegion(xfixes, window, KIND_BOUNDING, region);
+            sync(client, window);
+
+            assertEquals(FILL, screen.framebuffer().pixel(915, 115) & 0xFFFFFF,
+                    "the point inside the new rectangle keeps the client's paint");
+            assertEquals(BACKGROUND, screen.framebuffer().pixel(910, 130) & 0xFFFFFF,
+                    "and what the old rectangles covered is handed back");
+        }
+    }
+
+    /**
      * Nothing is synchronous between this thread and the server's: a request that is answered proves
      * everything sent before it has been processed, which is what a framebuffer assertion needs.
      */
