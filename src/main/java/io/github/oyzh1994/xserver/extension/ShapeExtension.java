@@ -270,6 +270,14 @@ public final class ShapeExtension implements Extension {
      *
      * <p>Nothing else is hand-decoded here: {@code Combine}, {@code Mask}, {@code Offset} and the
      * rest carry no trailing list, and the reply readers are the client's side of the wire.
+     *
+     * <p>One limitation comes with the extension path rather than with this reader: the request's
+     * length is the sixteen bit field, which a BIG-REQUEST over 64K cannot describe ({@code
+     * RequestDispatcher} writes the capped value into the stream the decoders read). A shape with
+     * more than about eight thousand rectangles would therefore be read short. The core requests get
+     * the true byte count from the dispatcher ({@code VariableLengthDecoders.decode}'s
+     * {@code requestBytes}); extension requests have no such parameter, so any extension list this
+     * long is short by the same amount.
      */
     @Override
     public XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
@@ -282,8 +290,8 @@ public final class ShapeExtension implements Extension {
 
     /**
      * {@code ShapeRectangles} as it arrives: the fixed part, then as many rectangles as the request's
-     * own length leaves. The count comes from the length that arrived rather than from a field, which
-     * is what makes it right for a request sent as a BIG-REQUEST too.
+     * own length leaves. Nothing inside the request says how many there are - the count comes from
+     * the length, which is what the generated reader gets wrong.
      */
     private static Rectangles readRectangles(com.github.moaxcp.x11.protocol.X11Input in)
             throws IOException {

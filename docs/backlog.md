@@ -1570,6 +1570,20 @@ message. `dispatchExtension` (and `dispatch`, for a request that does not surviv
 too, and `client/RequestLogTest` pins both halves - the refused request named, and the request before
 it *not* named - by reading the log through a logback appender. It fails without the change, on the
 line above, verbatim.
+
+**And the same generator arithmetic is in the requests this extension refuses on purpose**, which is
+left alone deliberately: `ConfigureOutputProperty`, `ChangeOutputProperty`, `CreateMode`,
+`SetCrtcConfig`, `SetCrtcGamma`, `SetCrtcTransform`, the two provider-property requests and
+`CreateLease` all carry a trailing list and are decoded by the generated reader, so one whose list is
+short enough computes a negative capacity and is answered `BadRequest` where this server means
+`BadImplementation`. Found by sweeping every extension request that has a trailing list - building a
+minimal valid instance from each protocol XML and reading the server's own log for `could not
+decode`; the ones this server *answers* were `ShapeRectangles`, `XFixesCreateRegion` and
+`XFixesSetRegion`, all decoded by hand now. Nothing in the paragraph above is answered, so the only
+difference is which error a client gets for a request that was going to fail either way - and a
+client with no error handler exits on either. The XFIXES requests in the same position are
+`CreateAnimCursor` (whose list is "the rest of the request", so it also needs the true byte count)
+and `CreatePointerBarrier`.
 ---
 
 ### [x] B3. Xinerama. **S-M** - done 2026-09-25 (the part a client needs, measured)

@@ -393,7 +393,13 @@ public final class XFixesExtension implements Extension {
      * <p>A client reaches this the moment it builds a region for a shape, a clip or an input region
      * of its own, so the refusal is the ordinary small case: {@code XFixesCreateRegion} with one
      * rectangle. Nothing else here needs hand decoding - every other XFIXES request is a fixed size
-     * or carries no list.
+     * or carries no list ({@code SetCursorName} carries a string, which the generated reader sizes
+     * from its own length field and gets right).
+     *
+     * <p>As in {@code ShapeExtension}, the count can only be as good as the sixteen bit length field:
+     * an extension request over 64K cannot describe itself in it, and the extension path is not
+     * given the true byte count the way the core decoders are. A region of more than eight thousand
+     * rectangles would be read short.
      */
     @Override
     public XRequest decodeRequest(int minorOpcode, com.github.moaxcp.x11.protocol.X11Input in)
