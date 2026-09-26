@@ -287,6 +287,32 @@ class AllowEventsTest {
     }
 
     /**
+     * X's time check, and it is a silent one: a request that names a time outside the grab is
+     * <em>ignored</em> rather than refused, so the device stays frozen and the client has to ask again
+     * with a time it can use. A time before the grab and one in the future are both refused; the
+     * {@code CurrentTime} every real client sends is not.
+     */
+    @Test
+    void aTimeOutsideTheGrabReleasesNothing() throws Exception {
+        assertEquals(0, actor.grabPointer(actor.root(), false, BUTTON | MOTION,
+                RawXClient.GRAB_SYNC, RawXClient.GRAB_SYNC));
+        pressMoveRelease();
+
+        actor.allowEvents(SYNC_POINTER, 1);
+        actor.flush();
+        assertNothing(actor, BUTTON_PRESS_EVENT, "a time before the grab released the device");
+
+        actor.allowEvents(SYNC_POINTER, (int) (System.currentTimeMillis() + 60000));
+        actor.flush();
+        assertNothing(actor, BUTTON_PRESS_EVENT, "a time after now released the device");
+
+        actor.allowEvents(SYNC_POINTER);
+        actor.flush();
+        assertNotNull(actor.readEvent(BUTTON_PRESS_EVENT),
+                "CurrentTime did not release the event the device froze on");
+    }
+
+    /**
      * The guard: an <em>asynchronous</em> grab never stops anything, which is what every live client
      * here uses (measured for EasyShell and termora) and therefore the case that must not change.
      */

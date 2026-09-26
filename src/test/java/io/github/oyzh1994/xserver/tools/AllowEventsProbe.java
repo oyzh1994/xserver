@@ -83,6 +83,10 @@ public final class AllowEventsProbe {
         // "asyncgrab" asks for the grab that freezes nothing, so the two can be compared. Anything
         // else is the synchronous one, which is the mode this probe exists to measure.
         boolean asyncGrab = java.util.Arrays.asList(args).contains("asyncgrab");
+        // "staletime" asks one AllowEvents with a time nothing can be: earlier than the grab. X's own
+        // rule is that such a request is *ignored* - the device stays frozen - and a server without
+        // that rule releases on it, which is the difference this arrangement exists to show.
+        boolean staleTime = java.util.Arrays.asList(args).contains("staletime");
         int grabMode = asyncGrab ? GRAB_ASYNC : GRAB_SYNC;
         String grabName = asyncGrab ? "Async" : "Sync";
         String what = args.length > 3 ? args[3] : "sync";
@@ -138,6 +142,12 @@ public final class AllowEventsProbe {
             fakeButton(injection, 1, false);
             drain(wire);
 
+            if (staleTime) {
+                System.out.println("step: AllowEvents(SyncPointer) with a time of 1 (outside the"
+                        + " grab, so it releases nothing)");
+                allowEvents(wire, 1, 1);
+                drain(wire);
+            }
             if (what.equals("sync") || what.equals("all")) {
                 System.out.println("step: AllowEvents(SyncPointer)");
                 allowEvents(wire, 1);
@@ -398,12 +408,17 @@ public final class AllowEventsProbe {
     }
 
     private static void allowEvents(Wire wire, int mode) throws Exception {
-        System.out.printf("  (sending AllowEvents(%s))%n", ALLOW_MODES[mode]);
+        allowEvents(wire, mode, 0);                 // CurrentTime, which is what a client sends
+    }
+
+    /** The same with a time of its own: a request outside the grab's range is ignored. */
+    private static void allowEvents(Wire wire, int mode, int time) throws Exception {
+        System.out.printf("  (sending AllowEvents(%s) at time %d)%n", ALLOW_MODES[mode], time);
         byte[] request = new byte[8];
         request[0] = 35;                            // AllowEvents
         request[1] = (byte) mode;
         Wire.writeShort(request, 2, 2);
-        Wire.writeInt(request, 4, 0);               // CurrentTime
+        Wire.writeInt(request, 4, time);
         wire.send(request);
     }
 

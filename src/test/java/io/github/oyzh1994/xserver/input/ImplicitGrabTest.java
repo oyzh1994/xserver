@@ -88,7 +88,7 @@ public class ImplicitGrabTest {
         InputState input = server.input();
         XWindow window = (XWindow) server.resources().get(0x400001);
         input.setPointerGrab(new InputState.Grab(null, window, false, EventMasks.ALL, false,
-                GRAB_ASYNC, GRAB_ASYNC));
+                GRAB_ASYNC, GRAB_ASYNC, 0));
 
         input.forgetGrabWindow(window);
 

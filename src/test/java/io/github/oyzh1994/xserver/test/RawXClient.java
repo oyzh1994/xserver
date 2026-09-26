@@ -748,10 +748,20 @@ public final class RawXClient implements AutoCloseable {
      * 6 {@code AsyncBoth}, 7 {@code SyncBoth}.
      */
     public void allowEvents(int mode) throws IOException {
+        allowEvents(mode, 0);
+    }
+
+    /**
+     * The same with a time of its own, which the protocol compares with now and with the grab's own
+     * time: a request outside that range is ignored. Zero is {@code CurrentTime} and is what every
+     * real client sends.
+     */
+    public void allowEvents(int mode, int time) throws IOException {
         byte[] request = new byte[8];
         request[0] = 35;                            // AllowEvents
         request[1] = (byte) mode;
-        request[2] = 2;
+        writeShort(request, 2, 2);
+        writeInt(request, 4, time);
         send(request);
     }
 

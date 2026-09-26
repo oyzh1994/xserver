@@ -1235,12 +1235,20 @@ until this was fixed two runs of the same probe disagreed with each other. Fixed
   where `SyncPointer` is 1. The probe had them backwards once already (see the correction above), and
   the same mistake reads as a plausible measurement rather than as a bug.
 
-**Still not modelled**: the protocol's time check on `AllowEvents` (a request older than the grab is
-ignored) - this server keeps no per-grab timestamp to compare against, and the only clients that send
-a time send `CurrentTime`; and Xorg's motion compression in the held queue, which merges consecutive
-motions. Measured with the reference: two held motions are delivered as **two** events, both carrying
-the last position, so nothing here needs the merge - it would change the count of events a client
-sees, and the measurement says not to.
+**The protocol's time check, added 2026-09-26.** `AllowEvents` names a time, and X ignores the request
+when that time is later than now or earlier than the grab itself - a *silent* refusal, not an error, so
+the device stays frozen and the client has to ask again with a time it can use. This server kept no
+per-grab timestamp, so it had nothing to compare against and did not check at all. `Grab` now carries
+the time it was taken, and the comparison is X's own (`CompareTimeStamps`: the sign of the difference,
+because the clock wraps). Verified two ways: `AllowEventsProbe` gained a `staletime` arrangement - one
+`AllowEvents(SyncPointer)` with a time of 1 - and against **Xvfb it releases nothing while the
+`CurrentTime` call that follows releases the press, identical line for line to here**;
+`input/AllowEventsTest` grew `aTimeOutsideTheGrabReleasesNothing`, which fails with the check removed.
+
+**Still not modelled**: Xorg's motion compression in the held queue, which merges consecutive motions.
+Measured with the reference: two held motions are delivered as **two** events, both carrying the last
+position, so nothing here needs the merge - it would change the count of events a client sees, and the
+measurement says not to.
 
 **Unchanged**: `AllowEvents` still validates its mode and does nothing else. Neither EasyShell nor
 termora depends on a freeze - A1's `GrabProbe` measured both grabbing with `Async` - so this is a

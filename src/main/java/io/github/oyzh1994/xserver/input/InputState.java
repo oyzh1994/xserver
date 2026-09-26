@@ -317,7 +317,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * decides which device freezes - see {@link #grabActivated}.
      */
     public record Grab(ClientConnection client, XWindow window, boolean ownerEvents, int eventMask,
-                       boolean keyboard, int pointerMode, int keyboardMode) {
+                       boolean keyboard, int pointerMode, int keyboardMode, int grabTime) {
 
         /** The mode this grab names for the device it is held on. */
         int ownMode() {
@@ -775,7 +775,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * server has no per-grab timestamp to compare against, and the only clients that send a time
      * send {@code CurrentTime}.
      */
-    public void allowEvents(ClientConnection client, int mode) {
+    public void allowEvents(ClientConnection client, int mode, int time) {
         boolean onPointer = mode <= 2;
         Sync sync = onPointer ? pointerSync : keyboardSync;
         Sync paired = onPointer ? keyboardSync : pointerSync;
@@ -788,6 +788,19 @@ public final class InputState implements DisplayBackend.InputSink {
             if (log.isDebugEnabled()) {
                 log.debug("AllowEvents(mode {}) from {} ignored: it does not hold a frozen device",
                         mode, client);
+            }
+            return;
+        }
+        // X's own time check, and it is a *silent* one: a request whose time is later than now, or
+        // earlier than the grab itself, is ignored rather than refused. CurrentTime (0) means "now"
+        // and is what every real client sends; the check is here because the protocol has it and a
+        // client that names a time is entitled to the same answer a reference server gives it.
+        if (time != 0 && grab != null
+                && (laterThan(time, (int) server.events().time()) || laterThan(grab.grabTime(), time))) {
+            if (log.isDebugEnabled()) {
+                log.debug("AllowEvents(mode {}) from {} ignored: its time is outside the grab ({} vs"
+                        + " now {}, grabbed at {})", mode, client, time, server.events().time(),
+                        grab.grabTime());
             }
             return;
         }
@@ -835,6 +848,17 @@ public final class InputState implements DisplayBackend.InputSink {
                     syncName(pointerSync), syncName(keyboardSync));
         }
         computeFreezes();
+    }
+
+    /**
+     * X's {@code CompareTimeStamps}: whether {@code a} is later than {@code b}, on times that wrap.
+     *
+     * <p>Both are 32 bit values from a millisecond clock that wraps in about fifty days, so "later" is
+     * the sign of their difference and not their order - the same rule {@code XServer} uses for
+     * {@code GetMotionEvents}' range.
+     */
+    private static boolean laterThan(int a, int b) {
+        return a != b && a - b > 0;
     }
 
     /** X's {@code AsyncBoth}/{@code SyncBoth}: every device this client grabbed gets the new state. */
@@ -1835,7 +1859,7 @@ public final class InputState implements DisplayBackend.InputSink {
                                      Held event) {
         Grab grab = new Grab(passive.client(), passive.window(), passive.ownerEvents(),
                 passive.eventMask(), !passive.pointer(), passive.pointerMode(),
-                passive.keyboardMode());
+                passive.keyboardMode(), (int) server.events().time());
         passiveGrabDetail = detail;
         passiveGrabModifiers = modifiers;
         if (passive.pointer()) {

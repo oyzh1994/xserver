@@ -264,8 +264,8 @@ public final class InputHandlers {
             return;
         }
         server.inputFor(client).setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                Short.toUnsignedInt(r.getEventMask()), false,
-                Byte.toUnsignedInt(r.getPointerMode()), Byte.toUnsignedInt(r.getKeyboardMode())));
+                Short.toUnsignedInt(r.getEventMask()), false, Byte.toUnsignedInt(r.getPointerMode()),
+                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time()));
     }
 
     public void ungrabPointer(ClientConnection client, UngrabPointer r) {
@@ -286,8 +286,8 @@ public final class InputHandlers {
         // The modes carry over: ChangeActivePointerGrab changes the event mask and the cursor, not
         // what the grab does to the devices.
         server.inputFor(client).setPointerGrab(new InputState.Grab(grab.client(), grab.window(),
-                grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false,
-                grab.pointerMode(), grab.keyboardMode()));
+                grab.ownerEvents(), Short.toUnsignedInt(r.getEventMask()), false, grab.pointerMode(),
+                grab.keyboardMode(), grab.grabTime()));
     }
 
     /**
@@ -334,8 +334,8 @@ public final class InputHandlers {
             return;
         }
         server.inputFor(client).setKeyboardGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                EventMasks.KEYBOARD_GRAB, true,
-                Byte.toUnsignedInt(r.getPointerMode()), Byte.toUnsignedInt(r.getKeyboardMode())));
+                EventMasks.KEYBOARD_GRAB, true, Byte.toUnsignedInt(r.getPointerMode()),
+                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time()));
     }
 
     public void ungrabKeyboard(ClientConnection client, UngrabKeyboard r) {
@@ -376,7 +376,7 @@ public final class InputHandlers {
         if (mode < MODE_ASYNC_POINTER || mode > MODE_SYNC_BOTH) {
             throw ProtocolException.badValue(mode);
         }
-        server.inputFor(client).allowEvents(client, mode);
+        server.inputFor(client).allowEvents(client, mode, r.getTime());
     }
 
     private byte grabStatus(ClientConnection client, XWindow window) {
