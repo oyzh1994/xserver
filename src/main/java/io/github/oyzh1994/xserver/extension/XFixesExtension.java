@@ -416,18 +416,10 @@ public final class XFixesExtension implements Extension {
     /** {@code XFixesCreateRegion} as it arrives: the region, then as many rectangles as were sent. */
     private static CreateRegion readCreateRegion(com.github.moaxcp.x11.protocol.X11Input in)
             throws java.io.IOException {
-        in.readPad(1);                              // the minor opcode, already known
-        int lengthUnits = Short.toUnsignedInt(in.readCard16());
-        int region = in.readCard32();
-        // Eight bytes of header and region behind us; eight bytes a rectangle.
-        int count = Math.max(lengthUnits * 4 - 8, 0) / 8;
-        List<com.github.moaxcp.x11.protocol.xproto.Rectangle> rectangles = new ArrayList<>(count);
-        for (int i = 0; i < count; i++) {
-            rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
-        }
+        Region region = readRegion(in);
         return CreateRegion.builder()
-                .region(region)
-                .rectangles(Lists.immutable.withAll(rectangles))
+                .region(region.id())
+                .rectangles(Lists.immutable.withAll(region.rectangles()))
                 .build();
     }
 
@@ -441,6 +433,24 @@ public final class XFixesExtension implements Extension {
      */
     private static SetRegion readSetRegion(com.github.moaxcp.x11.protocol.X11Input in)
             throws java.io.IOException {
+        Region region = readRegion(in);
+        return SetRegion.builder()
+                .region(region.id())
+                .rectangles(Lists.immutable.withAll(region.rectangles()))
+                .build();
+    }
+
+    /** The region id and rectangles these two requests both carry, in the order they arrive. */
+    private record Region(int id, List<com.github.moaxcp.x11.protocol.xproto.Rectangle> rectangles) {
+    }
+
+    /**
+     * The body both requests have: eight bytes of header and region behind the reader, then eight
+     * bytes a rectangle. The count comes from the length that arrived - nothing inside the request
+     * says how many rectangles there are, which is what the generated reader gets wrong.
+     */
+    private static Region readRegion(com.github.moaxcp.x11.protocol.X11Input in)
+            throws java.io.IOException {
         in.readPad(1);                              // the minor opcode, already known
         int lengthUnits = Short.toUnsignedInt(in.readCard16());
         int region = in.readCard32();
@@ -449,10 +459,7 @@ public final class XFixesExtension implements Extension {
         for (int i = 0; i < count; i++) {
             rectangles.add(com.github.moaxcp.x11.protocol.xproto.Rectangle.readRectangle(in));
         }
-        return SetRegion.builder()
-                .region(region)
-                .rectangles(Lists.immutable.withAll(rectangles))
-                .build();
+        return new Region(region, rectangles);
     }
 
     // ------------------------------------------------------------------
