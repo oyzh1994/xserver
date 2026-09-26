@@ -112,6 +112,15 @@ public final class RandRExtension implements Extension {
 
     private final RandrPlugin plugin = new RandrPlugin();
 
+    /**
+     * The server, kept for its event clock. Every RandR reply carries a timestamp, and a client uses
+     * one for what it is for: comparing two readings to see whether the configuration changed between
+     * them. These replies used to carry the *sequence number* instead - a number that changes with
+     * every request, so every reading looked like a change (measured: `xrandr --verbose` prints
+     * `Timestamp: 931772` for a reference and printed a small sequence number here).
+     */
+    private XServer server;
+
     /** The three ids this output is made of, allocated once so a client can refer to them. */
     private int crtcId;
     private int outputId;
@@ -160,6 +169,7 @@ public final class RandRExtension implements Extension {
 
     @Override
     public void init(XServer server) {
+        this.server = server;
         crtcId = server.nextServerResourceId();
         outputId = server.nextServerResourceId();
         modeId = server.nextServerResourceId();
@@ -217,7 +227,7 @@ public final class RandRExtension implements Extension {
             // below: with no provider id to name, a client cannot ask for one.)
             client.sendReply(GetProvidersReply.builder()
                     .sequenceNumber(client.sequenceNumber())
-                    .timestamp(client.sequenceNumber())
+                    .timestamp(server.events().time())
                     .providers(IntLists.immutable.empty())
                     .build());
         } else if (request instanceof GetPanning r) {
@@ -299,7 +309,7 @@ public final class RandRExtension implements Extension {
     private GetScreenResourcesReply resources(ClientConnection client, XServer server, Screen screen) {
         return GetScreenResourcesReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .configTimestamp(client.sequenceNumber())
                 .crtcs(IntLists.immutable.of(crtcId))
                 .outputs(IntLists.immutable.of(outputId))
@@ -312,7 +322,7 @@ public final class RandRExtension implements Extension {
                                                             Screen screen) {
         return GetScreenResourcesCurrentReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .configTimestamp(client.sequenceNumber())
                 .crtcs(IntLists.immutable.of(crtcId))
                 .outputs(IntLists.immutable.of(outputId))
@@ -357,7 +367,7 @@ public final class RandRExtension implements Extension {
         client.sendReply(GetCrtcInfoReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .status((byte) status)
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .x((short) 0)
                 .y((short) 0)
                 .width((short) screen.width())
@@ -449,7 +459,7 @@ public final class RandRExtension implements Extension {
         client.sendReply(GetPanningReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .status((byte) (r.getCrtc() == crtcId ? 0 : 1))
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .left((short) 0)
                 .top((short) 0)
                 .width(width)
@@ -479,7 +489,7 @@ public final class RandRExtension implements Extension {
         client.sendReply(GetOutputInfoReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .status((byte) status)
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .crtc(status == 0 ? crtcId : 0)
                 // The same millimetres the core setup reply reports: a client computing a DPI reads
                 // both, and two answers that disagree are worse than no answer.
@@ -504,7 +514,7 @@ public final class RandRExtension implements Extension {
                 .sequenceNumber(client.sequenceNumber())
                 .rotations((byte) ROTATIONS)
                 .root(screen.root().id())
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 .configTimestamp(client.sequenceNumber())
                 .sizeID((short) 0)
                 .rotation(ROTATE_NONE)
@@ -536,7 +546,7 @@ public final class RandRExtension implements Extension {
                 .build();
         client.sendReply(GetMonitorsReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .timestamp(client.sequenceNumber())
+                .timestamp(server.events().time())
                 // The reply's own output count, which is not the same thing as each monitor's: a
                 // client reads it to know how far the array reaches, and a zero here made
                 // `xrandr --listmonitors` die in its own library (measured) rather than print

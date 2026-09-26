@@ -1680,6 +1680,14 @@ output of `None`). Doing it properly needs a way for an extension to raise its o
 this server has no mechanism for: every refusal is a core `ProtocolException`. Nothing measured
 depends on it - a client passes back the ids it was given - so it is recorded rather than built.
 
+**And every RandR reply carried its *sequence number* as its timestamp** (found 2026-09-26 while the
+replies were being compared byte for byte). A client uses `configTimestamp` and `timestamp` for what
+they are for - comparing two readings to see whether the configuration changed - and a number that
+changes with every request makes every reading look like a change. The reference prints
+`Timestamp: 931772` (milliseconds since it started) and this server printed a small sequence number;
+the replies now use the server's own event clock, which is what its events carry and is therefore
+comparable with them.
+
 **And the log line that found all this had a bug of its own.** The refusal above was reported as
 
 ```
