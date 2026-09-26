@@ -929,4 +929,55 @@ public final class XWindow extends XResource {
             this.mask = mask;
         }
     }
+
+    // ------------------------------------------------------------------
+    // XInput2 selections (B4)
+    // ------------------------------------------------------------------
+
+    /**
+     * The XInput2 event selections a client made on this window, one entry per (client, device).
+     *
+     * <p>Kept here rather than in {@code XInputExtension} for the same reason the core masks are:
+     * a selection belongs to the window it was made on, so it is dropped when the window is, and
+     * nothing has to be told to clean it up. It is a second list rather than a field on
+     * {@link OtherClient} because a client selects XI2 *per device* and may be the window's owner as
+     * well - the owner is the common case for a toolkit's own windows.
+     *
+     * <p>The masks are the wire's own: words of thirty two bits, as {@code XISelectEvents} carries
+     * them, because XI2's mask bits are numbered from one and reach past the core protocol's
+     * thirty two.
+     */
+    private final List<Xi2Selection> xi2Selections = new ArrayList<>();
+
+    /**
+     * One client's XInput2 selection on a window: which device it named, and the mask words for it.
+     *
+     * <p>Deliberately a plain record of what the client asked for. What a device id *means* (that
+     * zero is every device and one is every master) belongs to the input side, which is where the
+     * delivery rule lives; a window only holds what was selected on it.
+     */
+    public record Xi2Selection(ClientConnection client, int deviceId, int[] mask) {
+    }
+
+    /**
+     * Records (or clears) a client's XInput2 selection for one device.
+     *
+     * <p>A zero mask removes the entry, which is how a client unsubscribes - the same rule
+     * {@link #setOtherClientMask} follows for the core masks.
+     */
+    public void selectXi2(ClientConnection client, int deviceId, int[] mask) {
+        xi2Selections.removeIf(selection -> selection.client() == client
+                && selection.deviceId() == deviceId);
+        for (int word : mask) {
+            if (word != 0) {
+                xi2Selections.add(new Xi2Selection(client, deviceId, mask));
+                return;
+            }
+        }
+    }
+
+    /** A copy of the selections on this window, for the delivery rule, a reply, or a test. */
+    public List<Xi2Selection> xi2Selections() {
+        return List.copyOf(xi2Selections);
+    }
 }

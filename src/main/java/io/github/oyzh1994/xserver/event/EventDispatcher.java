@@ -89,17 +89,39 @@ public final class EventDispatcher {
         return (int) (System.currentTimeMillis() & 0xFFFFFFFFL);
     }
 
-    /** Sends an already built event, silently dropping it for dead connections. */
+    /**
+     * Sends an already built event, silently dropping it for dead connections.
+     *
+     * <p><b>This is where a core event becomes its XInput2 twin</b>, and it is the only place - the
+     * conversion needs the recipient (whose byte order and sequence number the event carries) and
+     * the event itself, and both are here. A client that selected the XI2 version of an event is
+     * sent that and <em>not</em> the core one, which is what a reference server was measured doing:
+     * a client with {@code XI_ButtonPress} selected gets one event per click even though it also
+     * asked for {@code ButtonPressMask}, and a toolkit that handles both rails would otherwise
+     * handle every click twice.
+     */
     public void send(ClientConnection client, XEvent event) {
         if (client == null || client.isClosed() || client.isShuttingDown()) {
             return;
+        }
+        var xinput = server.xinput();
+        if (xinput != null) {
+            XEvent twin = xinput.twinOf(client, event);
+            if (twin != null) {
+                event = twin;
+            }
         }
         try {
             client.output().writeEvent(event);
             if (log.isDebugEnabled()) {
                 // What the server tells the client matters as much as what the client asks for: a
                 // toolkit that never learns its window is visible will never draw into it.
-                log.debug("event {} -> {}", event.getClass().getSimpleName(), client);
+                // The event itself rather than its class name: half of what is delivered now is an
+                // Xi2Event, and "Xi2Event" forty times over says nothing about which device event it
+                // was - which is exactly what a delivery question turns on. Xi2Event's toString
+                // carries the evtype and the device for that reason.
+                log.debug("event {} -> {}", event.getClass() == Xi2Event.class
+                        ? event.toString() : event.getClass().getSimpleName(), client);
             }
         } catch (IOException e) {
             log.debug("dropping event for {}: {}", client.peer(), e.getMessage());
@@ -116,17 +138,33 @@ public final class EventDispatcher {
     public int deliverToWindow(XWindow window, int maskBit, EventFactory factory) {
         int delivered = 0;
         ClientConnection owner = window.owner();
-        if (owner != null && (window.eventMask() & maskBit) != 0) {
+        if (owner != null && interested(owner, window, maskBit)) {
             send(owner, factory.create(owner, window, null, 0, 0));
             delivered++;
         }
         for (OtherClient other : window.otherClients()) {
-            if ((other.mask & maskBit) != 0) {
+            if (interested(other.client, window, maskBit)) {
                 send(other.client, factory.create(other.client, window, null, 0, 0));
                 delivered++;
             }
         }
         return delivered;
+    }
+
+    /**
+     * Whether a client wants an event of this kind on this window, on either rail.
+     *
+     * <p>A client that selected only the XInput2 version of an event is as interested as one that
+     * selected the core mask - that is the whole point of the extension - and the event it is handed
+     * is the XI2 one, which {@link #send} substitutes on the way out. A toolkit that subscribes
+     * through XI2 and nothing else is the ordinary case, not the exception.
+     */
+    private boolean interested(ClientConnection client, XWindow window, int maskBit) {
+        if ((window.eventMaskFor(client) & maskBit) != 0) {
+            return true;
+        }
+        var xinput = server.xinput();
+        return xinput != null && xinput.wants(client, window, maskBit);
     }
 
     /**
@@ -144,8 +182,13 @@ public final class EventDispatcher {
         XWindow window = start;
         XWindow child = null;
         int delivered = 0;
+        var xinput = server.xinput();
         while (window != null) {
-            if (window.anyClientSelected(maskBit)) {
+            // An XInput2 selection stops the walk exactly as a core one does: a client that asked
+            // for this event through XI2 on this window is who the event belongs to, and a window
+            // above it must not be told as well.
+            if (window.anyClientSelected(maskBit)
+                    || (xinput != null && xinput.anyoneWants(window, maskBit))) {
                 XWindow eventWindow = window;
                 XWindow eventChild = child;
                 int x = screenX - eventWindow.absoluteX();

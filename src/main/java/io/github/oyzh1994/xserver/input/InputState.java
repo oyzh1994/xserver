@@ -490,6 +490,59 @@ public final class InputState implements DisplayBackend.InputSink {
         return keyboardGrab;
     }
 
+    /** The status a grab request is answered with: 0 success, 1 held by another client, 4 not viewable. */
+    public static final byte GRAB_SUCCESS = 0;
+    public static final byte GRAB_ALREADY_GRABBED = 1;
+    public static final byte GRAB_NOT_VIEWABLE = 4;
+
+    /**
+     * Whether a grab may be taken on this window, for {@code client}.
+     *
+     * <p>Shared by the core requests and XInput2's {@code XIGrabDevice} rather than written twice: a
+     * window has one pointer and one keyboard, so "the device is already grabbed" means the same
+     * thing on both rails, and a client that takes a core grab and then reads an XI2 one must not be
+     * told something different from a client that only ever used XI2. GDK does exactly that - it
+     * grabs with {@code XIGrabDevice} and may have taken a core grab earlier in its life.
+     */
+    public byte grabStatus(ClientConnection client, XWindow window) {
+        if (!window.isViewable()) {
+            return GRAB_NOT_VIEWABLE;
+        }
+        if (pointerGrab != null && pointerGrab.client() != client) {
+            return GRAB_ALREADY_GRABBED;
+        }
+        if (keyboardGrab != null && keyboardGrab.client() != client) {
+            return GRAB_ALREADY_GRABBED;
+        }
+        return GRAB_SUCCESS;
+    }
+
+    /**
+     * Takes a device grab and answers the status, for either rail.
+     *
+     * <p>The modes are the core ones ({@code GrabModeSync = 0}, {@code GrabModeAsync = 1}), which is
+     * what {@link Grab} stores; a caller whose own protocol numbers them differently - XInput2 has
+     * {@code XIGrabModeAsync = 1} and {@code XIGrabModeSync = 2} - converts before calling.
+     */
+    public byte setDeviceGrab(ClientConnection client, XWindow window, boolean keyboard,
+                              boolean ownerEvents, int eventMask, int ownMode, int pairedMode,
+                              int grabTime) {
+        byte status = grabStatus(client, window);
+        if (status != GRAB_SUCCESS) {
+            return status;
+        }
+        int pointerMode = keyboard ? pairedMode : ownMode;
+        int keyboardMode = keyboard ? ownMode : pairedMode;
+        Grab grab = new Grab(client, window, ownerEvents, eventMask, keyboard, pointerMode,
+                keyboardMode, grabTime);
+        if (keyboard) {
+            setKeyboardGrab(grab);
+        } else {
+            setPointerGrab(grab);
+        }
+        return GRAB_SUCCESS;
+    }
+
     public void setPointerGrab(Grab grab) {
         Grab previous = this.pointerGrab;
         this.pointerGrab = grab;

@@ -1463,6 +1463,21 @@ public final class RawXClient implements AutoCloseable {
         } catch (java.net.SocketTimeoutException quiet) {
             return null;
         }
+        if ((event[0] & 0x7F) == GENERIC_EVENT) {
+            // A GenericEvent carries a length field of its own, and an XInput2 device event - which
+            // is what one usually is here - is a hundred and twenty bytes. Read as the thirty two a
+            // reader assumes, the rest of it stays in the stream and every event after it is read
+            // from the wrong offset. This is the same lesson as {@link #longEvents}, for the one
+            // event family whose size is written down in the event itself.
+            int extra = readInt(event, 4) * 4;
+            if (extra <= 0) {
+                return event;
+            }
+            byte[] whole = new byte[32 + extra];
+            System.arraycopy(event, 0, whole, 0, 32);
+            in.readFully(whole, 32, extra);
+            return whole;
+        }
         if (longEventTypes.contains(event[0] & 0x7F)) {
             byte[] whole = new byte[48];
             System.arraycopy(event, 0, whole, 0, 32);
@@ -1471,6 +1486,9 @@ public final class RawXClient implements AutoCloseable {
         }
         return event;
     }
+
+    /** Core event type 35, the GenericEvent an XInput2 device event arrives as. */
+    public static final int GENERIC_EVENT = 35;
 
     /**
      * Registers event types that are longer than the thirty two bytes a reader assumes.
@@ -1519,9 +1537,14 @@ public final class RawXClient implements AutoCloseable {
             if (type == 0) {
                 // The sequence in an error names the request it belongs to, which is the whole of
                 // what makes one diagnosable when several are in flight.
+                // The opcodes are printed with it because an error's code is only meaningful
+                // against the extension that raised it: 0 is BadDevice to XInput2 and nothing at
+                // all to the core protocol, and a reader who cannot see which request it was has a
+                // number with no context.
                 throw new IOException("the server refused request "
                         + readShort(reply, 2) + ": error " + (reply[1] & 0xFF) + " value 0x"
-                        + Integer.toHexString(readInt(reply, 4)) + " (waiting for "
+                        + Integer.toHexString(readInt(reply, 4)) + " major " + (reply[10] & 0xFF)
+                        + " minor " + readShort(reply, 8) + " (waiting for "
                         + outstandingSequence() + ")");
             }
             // Anything else is an event the client never asked to read separately - a NoExposure

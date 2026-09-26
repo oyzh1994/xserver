@@ -63,9 +63,7 @@ public final class InputHandlers {
             org.slf4j.LoggerFactory.getLogger(InputHandlers.class);
 
     /** Grab status values reported to clients. */
-    private static final byte GRAB_SUCCESS = 0;
-    private static final byte GRAB_ALREADY_GRABBED = 1;
-    private static final byte GRAB_NOT_VIEWABLE = 4;
+    private static final byte GRAB_SUCCESS = InputState.GRAB_SUCCESS;
 
     /** AllowEvents modes. */
     private static final int MODE_ASYNC_POINTER = 0;
@@ -263,9 +261,9 @@ public final class InputHandlers {
         if (status != GRAB_SUCCESS) {
             return;
         }
-        server.inputFor(client).setPointerGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                Short.toUnsignedInt(r.getEventMask()), false, Byte.toUnsignedInt(r.getPointerMode()),
-                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time()));
+        server.inputFor(client).setDeviceGrab(client, window, false, r.isOwnerEvents(),
+                Short.toUnsignedInt(r.getEventMask()), Byte.toUnsignedInt(r.getPointerMode()),
+                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time());
     }
 
     public void ungrabPointer(ClientConnection client, UngrabPointer r) {
@@ -333,9 +331,9 @@ public final class InputHandlers {
         if (status != GRAB_SUCCESS) {
             return;
         }
-        server.inputFor(client).setKeyboardGrab(new InputState.Grab(client, window, r.isOwnerEvents(),
-                EventMasks.KEYBOARD_GRAB, true, Byte.toUnsignedInt(r.getPointerMode()),
-                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time()));
+        server.inputFor(client).setDeviceGrab(client, window, true, r.isOwnerEvents(),
+                EventMasks.KEYBOARD_GRAB, Byte.toUnsignedInt(r.getPointerMode()),
+                Byte.toUnsignedInt(r.getKeyboardMode()), (int) server.events().time());
     }
 
     public void ungrabKeyboard(ClientConnection client, UngrabKeyboard r) {
@@ -379,19 +377,16 @@ public final class InputHandlers {
         server.inputFor(client).allowEvents(client, mode, r.getTime());
     }
 
+    /**
+     * The status a grab request is answered with.
+     *
+     * <p>The rule lives in {@link InputState#grabStatus}, not here, because XInput2's
+     * {@code XIGrabDevice} takes the same grab on the same device and has to answer the same thing -
+     * a client that grabs on one rail and reads the status on the other must not be told two
+     * different stories about the one pointer.
+     */
     private byte grabStatus(ClientConnection client, XWindow window) {
-        if (!window.isViewable()) {
-            return GRAB_NOT_VIEWABLE;
-        }
-        InputState.Grab pointer = server.inputFor(client).pointerGrab();
-        if (pointer != null && pointer.client() != client) {
-            return GRAB_ALREADY_GRABBED;
-        }
-        InputState.Grab keyboard = server.inputFor(client).keyboardGrab();
-        if (keyboard != null && keyboard.client() != client) {
-            return GRAB_ALREADY_GRABBED;
-        }
-        return GRAB_SUCCESS;
+        return server.inputFor(client).grabStatus(client, window);
     }
 
     // ------------------------------------------------------------------

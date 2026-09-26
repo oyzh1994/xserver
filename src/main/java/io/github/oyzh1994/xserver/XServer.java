@@ -258,6 +258,17 @@ public final class XServer {
         return randrExtension;
     }
 
+    private io.github.oyzh1994.xserver.extension.XInputExtension xinputExtension;
+
+    /**
+     * The XInput2 extension, which every event delivery asks whether a client wants the device
+     * version instead (B4). Null before registration, which is why the callers ask for it through
+     * {@link #xinput()} rather than holding it.
+     */
+    public io.github.oyzh1994.xserver.extension.XInputExtension xinput() {
+        return xinputExtension;
+    }
+
     /**
      * Registers the extensions this server implements. Order matters: opcodes are handed out in
      * registration order and clients cache the assignment for the life of the connection.
@@ -292,6 +303,12 @@ public final class XServer {
         // kept by name because the screen-growth path is what raises its notification.
         this.randrExtension = extensions.register(
                 new io.github.oyzh1994.xserver.extension.RandRExtension(), 2, 4);
+        // XInput2 defines one error (the device error) and no events of its own: what it sends are
+        // generic events, which live at core event 35 and not in an extension's range. It is kept by
+        // name because the event delivery asks it, for every event, whether a client wants the
+        // device version instead.
+        this.xinputExtension = extensions.register(
+                new io.github.oyzh1994.xserver.extension.XInputExtension(), 0, 1);
         // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();

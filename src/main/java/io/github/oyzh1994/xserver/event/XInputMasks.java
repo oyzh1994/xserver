@@ -1,0 +1,137 @@
+package io.github.oyzh1994.xserver.event;
+
+/**
+ * XInput2's devices, event numbers and event mask bits (backlog B4).
+ *
+ * <p>Beside {@link EventMasks} rather than in the extension because three layers need the same
+ * numbers and none of them owns the other two: the extension answers the requests, the input path
+ * decides what a selection means, and the dispatcher builds the events. This is the one place they
+ * can agree.
+ *
+ * <p><b>Every number here was measured against a reference server, not read off a header</b>
+ * ({@code tools/XiProbe}, 2026-09-26). Two of them are not what they look like:
+ *
+ * <ul>
+ *   <li><b>The mask bit of an event is {@code 1 << eventNumber}</b> - so {@code XI_ButtonPress} is
+ *       {@code 1<<4}, not the {@code 1<<2} the core protocol gives {@code ButtonPressMask}.
+ *       Measured one bit at a time: {@code 1<<3} selects nothing and lets the core events through,
+ *       {@code 1<<4} delivers an XI2 {@code ButtonPress}, {@code 1<<6} a {@code Motion}. A mask one
+ *       bit off is <em>accepted</em> and changes nothing, which is exactly what a server that cannot
+ *       deliver a device event looks like.
+ *   <li><b>An XI2 event is a core {@code GenericEvent}</b> (type 35) whose first twelve bytes are a
+ *       header - type, the extension's major opcode, the sequence number, the length, the evtype and
+ *       the device id - with the event's own body at the timestamp. There is <em>no</em> 32 bit
+ *       {@code full_sequence} on the wire, which other GenericEvents do have: read the body as
+ *       though it had one and the timestamp comes out as 1 and the detail as the root window's id.
+ *   <li>The length field is the event's size in four byte units <b>minus eight</b>, which is how a
+ *       sixty-eight byte event carries a length of {@code 9}.
+ * </ul>
+ */
+public final class XInputMasks {
+
+    private XInputMasks() {
+    }
+
+    /** {@code XIAllDevices} and {@code XIAllMasterDevices}: what a selection can name instead of one. */
+    public static final int ALL_DEVICES = 0;
+    public static final int ALL_MASTER_DEVICES = 1;
+
+    /**
+     * The two devices this server has, as ids.
+     *
+     * <p>A reference server numbers them 2 and 3 - the core pointer and keyboard hold 0 and 1 -
+     * and the numbers were measured rather than chosen: {@code XIQueryDevice} on Xvfb answers
+     * {@code Virtual core pointer} as device 2 and {@code Virtual core keyboard} as device 3, and a
+     * client that has cached those ids for the life of its connection is not told otherwise.
+     */
+    public static final int POINTER_DEVICE = 2;
+    public static final int KEYBOARD_DEVICE = 3;
+
+    /** {@code DeviceType}: what a device is, in {@code XIQueryDevice}'s answer. */
+    public static final int MASTER_POINTER = 1;
+    public static final int MASTER_KEYBOARD = 2;
+
+    /** What a reference server calls its two masters, measured with {@code XIQueryDevice 0}. */
+    public static final String POINTER_NAME = "Virtual core pointer";
+    public static final String KEYBOARD_NAME = "Virtual core keyboard";
+
+    // XI2 event numbers, as {@code evtype} in the generic event's header.
+    public static final int DEVICE_CHANGED = 1;
+    public static final int KEY_PRESS = 2;
+    public static final int KEY_RELEASE = 3;
+    public static final int BUTTON_PRESS = 4;
+    public static final int BUTTON_RELEASE = 5;
+    public static final int MOTION = 6;
+    public static final int ENTER = 7;
+    public static final int LEAVE = 8;
+    public static final int FOCUS_IN = 9;
+    public static final int FOCUS_OUT = 10;
+
+    /** The mask bit a client selects for an event: measured to be {@code 1 << eventNumber}. */
+    public static int bit(int eventNumber) {
+        return 1 << eventNumber;
+    }
+
+    /**
+     * The device an XI2 event comes from.
+     *
+     * <p>The pointer's events and the keyboard's are what a client subscribes to separately - a
+     * selection that names {@code XIAllMasterDevices} covers both, which is what a toolkit that
+     * wants "the input" asks for.
+     */
+    public static int deviceOf(int eventNumber) {
+        return switch (eventNumber) {
+            case KEY_PRESS, KEY_RELEASE, FOCUS_IN, FOCUS_OUT, DEVICE_CHANGED -> KEYBOARD_DEVICE;
+            default -> POINTER_DEVICE;
+        };
+    }
+
+    /**
+     * The XI2 event a core event mask stands for, or 0 when the core mask has no XI2 twin.
+     *
+     * <p>The correspondence is one to one except for motion, where the core protocol has eight masks
+     * (one plain, one hint and one per button) and XI2 has the single {@code XI_Motion}, and except
+     * for the focus, where one core mask covers both the arriving and the leaving event - so
+     * {@code FOCUS_CHANGE} maps to {@code XI_FocusIn} here and the caller asks for the leaving one
+     * by name.
+     */
+    public static int eventForCoreMask(int coreMask) {
+        if (coreMask == EventMasks.KEY_PRESS) {
+            return KEY_PRESS;
+        }
+        if (coreMask == EventMasks.KEY_RELEASE) {
+            return KEY_RELEASE;
+        }
+        if (coreMask == EventMasks.BUTTON_PRESS) {
+            return BUTTON_PRESS;
+        }
+        if (coreMask == EventMasks.BUTTON_RELEASE) {
+            return BUTTON_RELEASE;
+        }
+        if (coreMask == EventMasks.ENTER_WINDOW) {
+            return ENTER;
+        }
+        if (coreMask == EventMasks.LEAVE_WINDOW) {
+            return LEAVE;
+        }
+        if (coreMask == EventMasks.FOCUS_CHANGE) {
+            return FOCUS_IN;
+        }
+        if ((coreMask & EventMasks.MOTION) != 0) {
+            return MOTION;
+        }
+        return 0;
+    }
+
+    /** Whether a client's selection of {@code device} covers an event from {@code eventDevice}. */
+    public static boolean selectionCovers(int selectedDevice, int eventDevice) {
+        return selectedDevice == ALL_DEVICES || selectedDevice == ALL_MASTER_DEVICES
+                || selectedDevice == eventDevice;
+    }
+
+    /** Whether a selection's mask words have {@code bit} set. */
+    public static boolean hasBit(int[] mask, int bit) {
+        int word = bit >>> 5;
+        return word < mask.length && (mask[word] & (1 << (bit & 31))) != 0;
+    }
+}
