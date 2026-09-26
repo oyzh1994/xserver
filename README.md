@@ -369,8 +369,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 - **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
   given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
-  arbitrary glyph set - the cursor font's own shapes are embedded, another font's outlines are not -
-  and `ShapeNotify` details beyond the extents.
+  arbitrary glyph set - the cursor font's own shapes are embedded, another font's is a filled cell
+  (`tools/GlyphCursorProbe` measures what a reference draws instead: the mask character's bitmap, with
+  the hotspot at the source glyph's bearing and the font's ascent) - and `ShapeNotify` details beyond
+  the extents.
 - **A picture over a window sees the window's own pixels, not its children's**, unless the client
   asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
   *shows* - the children painted on top of it - which is what copying the screen through a parent

@@ -486,7 +486,7 @@ public final class XFixesExtension implements Extension {
     }
 
     private void getCursorImage(XServer server, ClientConnection client, GetCursorImage request) {
-        XCursor cursor = server.rootCursor();
+        XCursor cursor = displayedCursor(server, client);
         client.sendReply(GetCursorImageReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .x((short) (server.inputFor(client).pointerX() - cursor.hotspotX()))
@@ -495,14 +495,14 @@ public final class XFixesExtension implements Extension {
                 .height((short) cursor.height())
                 .xhot((short) cursor.hotspotX())
                 .yhot((short) cursor.hotspotY())
-                .cursorSerial(0)                        // The root cursor never changes
+                .cursorSerial(cursor.serial())
                 .cursorImage(cursorPixels(cursor))
                 .build());
     }
 
     private void getCursorImageAndName(XServer server, ClientConnection client,
                                        GetCursorImageAndName request) {
-        XCursor cursor = server.rootCursor();
+        XCursor cursor = displayedCursor(server, client);
         client.sendReply(GetCursorImageAndNameReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .x((short) (server.inputFor(client).pointerX() - cursor.hotspotX()))
@@ -511,11 +511,29 @@ public final class XFixesExtension implements Extension {
                 .height((short) cursor.height())
                 .xhot((short) cursor.hotspotX())
                 .yhot((short) cursor.hotspotY())
-                .cursorSerial(0)
+                .cursorSerial(cursor.serial())
                 .cursorAtom(0)                          // None: our cursors carry no name
                 .cursorImage(cursorPixels(cursor))
                 .name(ByteLists.immutable.empty())
                 .build());
+    }
+
+    /**
+     * The cursor the pointer is showing - the window's own, or the nearest one it inherits - which
+     * is what the two "get the cursor image" requests are defined to answer with.
+     *
+     * <p>Both of them used to answer {@link XServer#rootCursor()} with a comment saying the root
+     * cursor never changes, which is true and beside the point: measured against a reference server
+     * on 2026-09-26, Xvfb answers with the cursor the window was given (a glyph cursor defined on
+     * the window came back as that glyph) while this server answered the arrow however the pointer
+     * was sitting. The cursor *notifications* had it right all along - the tick reads
+     * {@code displayedCursor()} and reports its serial - so this is the same reading, and the serial
+     * travels with it: a cursor that has been shown before answers with the serial it had then, which
+     * is the rule the notifications were measured to follow.
+     */
+    private static XCursor displayedCursor(XServer server, ClientConnection client) {
+        XCursor displayed = server.inputFor(client).displayedCursor();
+        return displayed != null ? displayed : server.rootCursor();
     }
 
     /**

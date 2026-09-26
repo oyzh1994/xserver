@@ -310,6 +310,9 @@ public final class RawXClient implements AutoCloseable {
      */
     public void createGlyphCursor(int cursor, int sourceFont, int maskFont, int sourceChar,
                                   int maskChar, int foreground, int background) throws IOException {
+        // Eight units: a pad byte, three ids, then eight colours and characters - thirty two bytes,
+        // which is already a whole number of words (the pad byte is the one right after the opcode,
+        // inside the header).
         byte[] request = new byte[32];
         request[0] = 94;                            // CreateGlyphCursor
         request[2] = 8;

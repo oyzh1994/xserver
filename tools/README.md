@@ -176,6 +176,12 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `GlyphCursorProbe` - the harness for A3's other half: a cursor built from an arbitrary font's glyphs,
+  read back the way a client can (`XFixesGetCursorImage` answers with the cursor the pointer is
+  showing, so the probe defines the cursor on a window, warps the pointer in, and prints the size, the
+  hotspot and the image). `GlyphCursorProbe <host> <port> [font] [chars] [mask-chars]`; `GLYPH_FG` and
+  `GLYPH_BG` set the two colours and `GLYPH_RAW=1` prints the pixels' values as well as their shapes.
+  What it measured, and what it could not, is in the backlog (A8/A3).
 - `PolyProbe` - the harness for A15, and the tool that turned the 0.8% `xlogo` difference into a rule:
   it fills a fixed table of polygons - a control at 45 degrees, slopes of 2, 44/21, 44/17 and 44/45,
   a quadrilateral with no axis-aligned edge, a sixteen-gon, and the star the suite uses - into a
@@ -304,6 +310,15 @@ These cost hours each, the first time:
    which offer no credentials - the failure reads as "the connection setup was refused", i.e. as if
    the display were not running), and *not* `-nolisten unix` (the VM's own clients reach it through
    the unix socket). `tools/xvfb.sh start` does all three.
+
+**Every hand-built request has to be padded to its protocol size, or a reference server refuses it.**
+`RandrProbe`'s `GetOutputProperty` was a word short (six units where the request is seven), and the
+new `GlyphCursorProbe` was wrong twice in the same way before it measured anything - `XFixesGetCursorImage`
+takes *no* arguments (one unit, not two) and a `CreateGlyphCursor` is eight units, not nine. The trap
+is that **this server accepts them anyway**: it reads the length the request declares, so a request
+that is short of a field still decodes, while Xvfb answers `BadLength` or `BadRequest`. So "the probe
+works against this server" says nothing about whether the probe is right, and a probe that disagrees
+with the reference is checked against the protocol XML first.
 
 **A trap in the numbering, worth ten minutes:** the core grab opcodes are contiguous and easy to
 shift by one - `GrabPointer` 26, `UngrabPointer` 27, `GrabButton` 28, `UngrabButton` 29,
