@@ -1818,8 +1818,9 @@ level 3 NonEmpty        the same shape of answer, with one difference recorded r
                         this server's area really did change.
 ```
 
-`DeltaRectangles` (1) is refused with `BadValue`: it reports the *difference* between two damage
-regions and no client of this server asks for it. The events are thirty two bytes like any other -
+`DeltaRectangles` (1) is answered like the two bounding levels - measured first: a reference server
+behaves identically at that level too ({@code DamageProbe 1}), so the "difference between two damage
+regions" the specification describes comes to the same box. The events are thirty two bytes like any other -
 a rectangle in them is four shorts, which is what the probe's own first version got wrong.
 
 **Found on the way, and it is a real bug of its own**: this server sent a `NoExpose` for **every**

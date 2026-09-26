@@ -66,14 +66,16 @@ import java.util.Map;
  * appears; a version of this that hooked only the drawing requests reported what the client drew and
  * nothing else, which is exactly the half a screencast does not need.</p>
  *
- * <p>What is <em>not</em> here: {@code DeltaRectangles} (1), the level that reports the difference
- * between two damage regions, which no client of this server has asked for and which would need
- * region subtraction per report.
+ * <p>{@code DeltaRectangles} (1) is answered like the two bounding levels, which is what a reference
+ * server was measured to do ({@code DamageProbe 1}: nothing until a subtract, then one report per
+ * change with its own area) - the specification describes it as reporting the difference between two
+ * damage regions, and on this reference the difference and the box come to the same thing.
  */
 public final class DamageExtension implements Extension {
 
     /** {@code ReportLevel}, X's own numbering - and not the order the names suggest. */
     private static final int RAW_RECTANGLES = 0;
+    private static final int DELTA_RECTANGLES = 1;
     private static final int BOUNDING_BOX = 2;
     private static final int NON_EMPTY = 3;
 
@@ -208,7 +210,8 @@ public final class DamageExtension implements Extension {
     private void create(XServer server, ClientConnection client, Create request) {
         XResource drawable = server.resources().requireDrawable(client, request.getDrawable());
         int level = request.getLevel() & 0xFF;
-        if (level != RAW_RECTANGLES && level != BOUNDING_BOX && level != NON_EMPTY) {
+        if (level != RAW_RECTANGLES && level != DELTA_RECTANGLES && level != BOUNDING_BOX
+                && level != NON_EMPTY) {
             throw ProtocolException.badValue(level);
         }
         if (!client.ownsIdRange(request.getDamage()) || server.resources().contains(request.getDamage())) {
