@@ -2,6 +2,8 @@ package io.github.oyzh1994.xserver.resource;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 /**
  * The cursor a client gets when it asks for a cursor-font shape.
  *
@@ -53,6 +55,34 @@ class CursorFontTest {
         // The arrow's point is its hotspot: top left, and the pixel there is the shape's own.
         org.junit.jupiter.api.Assertions.assertTrue(cursor.hotspotX() >= 0 && cursor.hotspotY() >= 0,
                 "the hotspot is inside the bitmap, not at the origin by accident");
+    }
+
+    /**
+     * A glyph cursor from a font that is <em>not</em> the cursor font: the shape is the mask
+     * character's bitmap and the hotspot is the source glyph's own.
+     *
+     * <p>Measured against a reference server with {@code tools/GlyphCursorProbe}, which reads a
+     * cursor back through XFIXES' {@code GetCursorImage}: for {@code fixed}'s 'A' the reference
+     * answers a 6x13 cursor with the hotspot at 0,11 and the glyph's own ink - twenty inked pixels,
+     * not the filled cell (seventy eight) this used to be for every font but the cursor font.
+     */
+    @Test
+    void aGlyphFromAnyFontIsDrawnAsItsOwnShape() {
+        XCursor cursor = XCursor.fromGlyph(1, null, new XFont(1, null, "fixed"), 'A', 'A',
+                FOREGROUND, BACKGROUND);
+        assertEquals(6, cursor.width(), "the font's own cell width");
+        assertEquals(13, cursor.height(), "and its height: eleven of ascent, two of descent");
+        assertEquals(0, cursor.hotspotX(), "the source glyph's left bearing");
+        assertEquals(11, cursor.hotspotY(), "and the font's ascent");
+        int ink = 0;
+        for (int y = 0; y < cursor.height(); y++) {
+            for (int x = 0; x < cursor.width(); x++) {
+                if (cursor.pixel(x, y) != 0) {
+                    ink++;
+                }
+            }
+        }
+        assertEquals(20, ink, "the glyph's own ink, where a filled cell would ink all seventy eight");
     }
 
     @Test

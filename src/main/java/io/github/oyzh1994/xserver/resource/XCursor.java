@@ -153,12 +153,47 @@ public final class XCursor extends XResource {
             cursor.setColors(foreground, background);
             return cursor;
         }
-        int width = Math.max(1, font.maxWidth());
-        int height = Math.max(1, font.ascent() + font.descent());
+        int cellWidth = Math.max(1, font.maxWidth());
+        int cellHeight = Math.max(1, font.ascent() + font.descent());
+        BitmapFont.Glyph ink = font.bitmapGlyph(sourceChar);
+        // No mask font means the source glyph masks itself, which is what X does with mask_font None.
+        BitmapFont.Glyph silhouette = maskChar == 0 ? ink : font.bitmapGlyph(maskChar);
+        if (ink != null || silhouette != null) {
+            // A font with real glyph bitmaps - the built-in tables, or a font read from the font
+            // path - composes the cursor the way X does: **the mask glyph's ink is the silhouette**,
+            // the source glyph's ink is drawn in the foreground inside it, and the rest of the
+            // silhouette takes the background colour.
+            //
+            // Measured against a reference server 2026-09-26 with tools/GlyphCursorProbe: for
+            // `fixed`'s 'A' the cell is the font's own 6x13, the hotspot is the source glyph's left
+            // bearing and the font's ascent (0,11), and the drawn shape follows the *mask* character
+            // - 'A' with 'B' as its mask came back as a B, and with a space came back empty. The one
+            // thing the probe cannot check is the two colours: both servers answer the image as
+            // opaque black whatever the request named, so they follow the spec and the cursor font's
+            // own path above, where the shape is the source and the mask is what fills behind it.
+            int[] pixels = new int[cellWidth * cellHeight];
+            for (int y = 0; y < cellHeight; y++) {
+                for (int x = 0; x < cellWidth; x++) {
+                    boolean inMask = inkAt(silhouette, font, x, y);
+                    boolean inSource = inkAt(ink, font, x, y);
+                    pixels[y * cellWidth + x] = inMask && inSource ? foreground
+                            : inMask ? background : 0;
+                }
+            }
+            BitmapFont.Metric metric = font.charMetric(sourceChar);
+            int hotX = metric == null ? 0 : metric.leftBearing();
+            XCursor cursor = new XCursor(id, owner, cellWidth, cellHeight, Math.max(0, hotX),
+                    font.ascent(), pixels, true);
+            cursor.setColors(foreground, background);
+            return cursor;
+        }
+        // Nothing to compose: a font with no glyph table at all gets the old approximation, a filled
+        // cell, which is what this path did for every font before the tables existed.
+        int width = cellWidth;
+        int height = cellHeight;
         int[] pixels = new int[width * height];
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                // Without glyph outlines we approximate: the source char fills the cell.
                 boolean inSource = x < font.charWidth(sourceChar);
                 boolean inMask = maskChar == 0 || x < font.charWidth(maskChar);
                 if (inSource && inMask) {
@@ -173,6 +208,26 @@ public final class XCursor extends XResource {
         XCursor cursor = new XCursor(id, owner, width, height, 0, 0, pixels, true);
         cursor.setColors(foreground, background);
         return cursor;
+    }
+
+    /**
+     * Whether a glyph's ink covers a point of the font's cell.
+     *
+     * <p>A glyph's bits are one byte a pixel, positioned from the pen and the baseline (the record
+     * says so, and the rasteriser reads them the same way), and the cursor's cell has the baseline
+     * {@code ascent} of the way down - so the cell's row for a glyph row is
+     * {@code originY + row + ascent}.
+     */
+    private static boolean inkAt(BitmapFont.Glyph glyph, XFont font, int x, int y) {
+        if (glyph == null) {
+            return false;
+        }
+        int mx = x - glyph.originX();
+        int my = y - (glyph.originY() + font.ascent());
+        if (mx < 0 || my < 0 || mx >= glyph.width() || my >= glyph.height()) {
+            return false;
+        }
+        return glyph.bits()[my * glyph.width() + mx] != 0;
     }
 
     /** One bit of a packed cursor bitmap: a row is padded to whole bytes, most significant bit first. */

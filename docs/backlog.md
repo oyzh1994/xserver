@@ -624,8 +624,8 @@ change is a hand-written probe. Registration order is not ours to pick, so the e
 `firstEvent()`, and the two event classes are numbered correctly by the fork (`NUMBER` 0 and 1),
 unlike the five in E1.
 
-**And `CreateGlyphCursor` with a font that is not the cursor font** - A3's other half - **is measured
-but not implemented**. `tools/GlyphCursorProbe` defines a glyph cursor on a window, warps the pointer
+**And `CreateGlyphCursor` with a font that is not the cursor font** - A3's other half - **is done
+(2026-09-26)**, measured first and implemented from the measurement. `tools/GlyphCursorProbe` defines a glyph cursor on a window, warps the pointer
 in and reads the image back through XFIXES' `GetCursorImage`, so the composed result can be compared
 rather than the arguments. What it measured against Xvfb (2026-09-26), for `fixed`'s 'A' with 'B' as
 the mask character:
@@ -638,13 +638,20 @@ this server          6x13     0,0       a filled cell (the approximation A3 remo
 ```
 
 The rule the four combinations pin (source/mask 'A'/'A', 'A'/'B', 'A'/'0', 'A'/' ') is that **the
-mask character's ink is the silhouette**, the hotspot is (the source glyph's left bearing, the font's
-ascent), and the source glyph's ink was **not visible at all** - which is not the composition the
-cursor font's own path uses (source in the foreground over the mask in the background), so the two
-paths cannot share an implementation without knowing which is right. The colours are the open
-question: both servers answer the image as `ff000000` whatever colours the request named, so
-`GetCursorImage` cannot tell them apart, and the next measurement is the sprite's own pixels in a
-`-scene-` frame dump, where a JavaFX backend draws them.
+mask character's ink is the silhouette**, and the hotspot is (the source glyph's left bearing, the
+font's ascent). `XCursor.fromGlyph` composes exactly that for a font whose glyphs it has - the cell is
+the font's own `maxWidth x ascent+descent`, the mask glyph's ink is the shape, the source glyph's ink
+is drawn in the foreground inside it - and the fallback (a font with no table at all) stays the old
+filled cell. **Measured afterwards: `GlyphCursorProbe`'s output against Xvfb and against this server
+differs in nothing but the window id**, for every mask character tried.
+
+**The one thing the probe cannot check is the two colours**, and that is written down rather than
+guessed: both servers answer the image as opaque black whatever colours the request named, so
+`GetCursorImage` cannot tell them apart, and this server draws the source's ink in the foreground and
+the rest of the silhouette in the background - the spec's composition and the one the cursor font's
+own path already uses. The measurement that would settle the other reading (the mask's ink in the
+background colour with the source invisible, which is what the probe's *silhouettes* are consistent
+with) is the sprite's own pixels in a `-scene-` frame dump, where a JavaFX backend draws them.
 
 **Left open here**: `ChangeCursor`/`ChangeCursorByName` and `CreateRegionFromPicture` are still
 refused with `BadImplementation`. The first two would rewrite a cursor image in place, and a cursor
