@@ -2629,6 +2629,39 @@ font. The tables are for the fonts a client is most likely to ask for by name; t
 ("parse X font files for the fonts a user would put on a font path") would generalise this rather than
 replace it.
 
+**The plan for that half, with the file format read off the source (2026-09-26, and nothing
+implemented yet).** The reading is done - `libXfont`'s `src/bitmap/pcfread.c`, which is the format's
+own implementation - and the shape it has to fit is already here: a reader only has to produce a
+`BitmapFont.Font`, which is exactly what `XFont` consumes, so nothing downstream changes.
+
+- **The table of contents is little endian whatever the rest of the file is**: the version `\x01fcp`,
+  a count, then (type, format, size, offset) per entry, all LSB. The *format* word of a section is
+  what says how to read that section's payload: bit 2 is the byte order, bit 3 the bit order, bits 0-1
+  the glyph padding (1, 2, 4 or 8 bytes a row), bits 4-5 the scan unit.
+- **The metrics section begins with the font's own header** - seven flag bytes, a padding byte,
+  `fontAscent`, `fontDescent`, `maxOverlap`, then min-bounds and max-bounds as six `INT16`s each (and
+  ink bounds too when the format says `ACCEL_W_INKBOUNDS`) - followed by a count and that many
+  metrics. A "compressed" metrics section stores each of the five numbers in **one byte minus 0x80**,
+  which is the one part of the format that cannot be guessed from the field sizes.
+- **Properties are a name and a value plus an `isString` byte each, then a block of NUL-terminated
+  strings**; both the name and (for a string property) the value are *offsets into that block*. That
+  is exactly the `propertyNames`/`propertyValues`/`propertyStrings` shape the tables already carry.
+- **The bitmaps are indexed by glyph, not by character**: `nbitmaps` offsets, then four sizes (one per
+  glyph padding), then the data; a glyph's rows are `rb - lb` wide and `asc + desc` tall, padded up to
+  the glyph pad.
+- **The encodings table is what turns a code into a glyph**: first/last column, first/last row, the
+  default character, then one `INT16` per cell that is a glyph index or `0xFFFF` for "no such
+  character". A font whose glyphs are in code order - which the `misc` ones are - makes this look
+  redundant, and assuming it is would break on the first font that is not.
+- The name resolution on top of it is the part with a standard: `<dir>/fonts.alias` maps a short name
+  to an XLFD, `<dir>/fonts.dir` maps an XLFD to a file name, and `SetFontPath` names the directories.
+  The VM's `/usr/share/fonts/X11/misc` is a working example of all three, and **the Mac has no PCF
+  fonts at all** - so a live check has to copy a few (and their `fonts.dir`) somewhere the server can
+  read, `~/.xserver/fonts` being the directory this project already keeps its own files in.
+- **The verification is already built**: `tools/FontProbe` compares `QueryFont`, `QueryTextExtents` and
+  the *pixels* of a string against a reference server, and a font with no built-in table - `8x13` is
+  one - would exercise the new path end to end the moment it resolves.
+
 ---
 
 ### [ ] D4. Audio and other devices - out of scope by default.
