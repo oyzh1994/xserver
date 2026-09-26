@@ -2629,8 +2629,23 @@ font. The tables are for the fonts a client is most likely to ask for by name; t
 ("parse X font files for the fonts a user would put on a font path") would generalise this rather than
 replace it.
 
-**The plan for that half, with the file format read off the source (2026-09-26, and nothing
-implemented yet).** The reading is done - `libXfont`'s `src/bitmap/pcfread.c`, which is the format's
+**Done 2026-09-26: the font path is read.** `resource/PcfFont` reads a PCF file (plain or gzipped)
+into the same `BitmapFont.Font` the generated tables carry, so nothing downstream changed, and
+`resource/FontPath` does the standard resolution - alias to full name, full name to file - with
+`~/.xserver/fonts` on the default path. Measured with `tools/FontProbe` against Xvfb for `8x13`
+(a font with no built-in table, read from `8x13-ISO8859-1.pcf.gz`): **identical line for line** -
+the header, the bounds, all 256 character metrics, the properties, `QueryTextExtents` and the pixels
+of a drawn string - and the six built-in fonts are unchanged and still identical. `mvn test`
+318/318. The traps: the section numbers of the encodings and the accelerators are easy to swap
+(32 and 256), the header is in the accelerators section rather than the metrics one, the per-character
+metrics are the *ink* ones, and `fonts.dir`'s count line is the only line to skip - a font file's
+name usually begins with a digit.
+
+**What is not there**: BDF files are recognised by name but not parsed (PCF is what the fonts on a
+font path are), a compressed `.pcf.gz` is read into memory whole, and the *default* path is one
+directory plus the built-ins rather than the platform's own font configuration.
+
+**The notes below are the reading that preceded it, kept for the detail.** The reading is done - `libXfont`'s `src/bitmap/pcfread.c`, which is the format's
 own implementation - and the shape it has to fit is already here: a reader only has to produce a
 `BitmapFont.Font`, which is exactly what `XFont` consumes, so nothing downstream changes.
 

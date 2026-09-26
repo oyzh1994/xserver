@@ -151,7 +151,15 @@ public final class ResourceHandlers {
     /** Colormaps clients installed explicitly, on top of each screen's default one. */
     private final List<XColormap> installedColormaps = new ArrayList<>();
 
-    private List<String> fontPath = DEFAULT_FONT_PATH;
+    /**
+     * The directories a font name is resolved in, and the files in them. A name the built-in tables
+     * do not have is looked up here before it is approximated, which is the half of D3 that makes a
+     * {@code SetFontPath} mean something.
+     */
+    private final io.github.oyzh1994.xserver.resource.FontPath fontPath =
+            new io.github.oyzh1994.xserver.resource.FontPath(
+                    java.nio.file.Path.of(System.getProperty("user.home", "."), ".xserver", "fonts")
+                            .toString());
 
     public ResourceHandlers(XServer server) {
         this.server = server;
@@ -486,9 +494,11 @@ public final class ResourceHandlers {
         if (name.isEmpty() || name.length() > 255) {
             throw ProtocolException.badName();
         }
-        // Every name resolves: the metrics come from a Java font chosen by the X font name, so
-        // there is no font file that could be missing and no BadName to report.
-        XFont font = new XFont(r.getFid(), client, name);
+        // The built-in tables first - they are the fonts this server always has, whatever the path
+        // says - then the font path, and only then the Java approximation, which exists so that a
+        // client that asks for a font nobody here has still gets something it can draw with.
+        io.github.oyzh1994.xserver.resource.BitmapFont.Font fromFile = fontPath.open(name);
+        XFont font = new XFont(r.getFid(), client, name, fromFile);
         server.resources().add(font);
     }
 
@@ -663,12 +673,12 @@ public final class ResourceHandlers {
             }
             path.add(element);
         }
-        fontPath = List.copyOf(path);
+        fontPath.setClientPath(path);
     }
 
     public void getFontPath(ClientConnection client, GetFontPath r) {
         List<Str> path = new ArrayList<>();
-        for (String element : fontPath) {
+        for (String element : fontPath.elements()) {
             path.add(str(element));
         }
         client.sendReply(GetFontPathReply.builder()

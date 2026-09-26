@@ -463,7 +463,7 @@ public final class BitmapFont {
             },
             new String[] {"FONTNAME_REGISTRY", "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME", "PIXEL_SIZE", "POINT_SIZE", "RESOLUTION_X", "RESOLUTION_Y", "SPACING", "AVERAGE_WIDTH", "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "CAP_HEIGHT", "X_HEIGHT", "_GBDFED_INFO", "FONT", "WEIGHT", "RESOLUTION", "QUAD_WIDTH"},
             new int[] {87, 89, 90, 92, 94, 96, 87, 13, 120, 75, 75, 102, 60, 105, 107, 108, 9, 6, 110, 111, 10, 103, 6},
-            new String[] {"", "Misc", "Fixed", "Medium", "R", "SemiCondensed", "", null, null, null, null, null, null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-SemiCondensed--13-120-75-75-C-60-ISO8859-1", null, null, null});
+            new String[] {"", "Misc", "Fixed", "Medium", "R", "SemiCondensed", "", null, null, null, null, "C", null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-SemiCondensed--13-120-75-75-C-60-ISO8859-1", null, null, null});
     }
 
     /** 7x13 - -Misc-Fixed-Medium-R-Normal--13-120-75-75-C-70-ISO8859-1, captured from a reference server. */
@@ -802,7 +802,7 @@ public final class BitmapFont {
             },
             new String[] {"FONTNAME_REGISTRY", "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME", "PIXEL_SIZE", "POINT_SIZE", "RESOLUTION_X", "RESOLUTION_Y", "SPACING", "AVERAGE_WIDTH", "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "DESTINATION", "CAP_HEIGHT", "X_HEIGHT", "_GBDFED_INFO", "FONT", "WEIGHT", "RESOLUTION", "QUAD_WIDTH"},
             new int[] {87, 89, 90, 92, 94, 235, 87, 13, 120, 75, 75, 102, 70, 105, 107, 108, 1, 9, 6, 110, 237, 10, 107, 7},
-            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, null, null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--13-120-75-75-C-70-ISO8859-1", null, null, null});
+            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, "C", null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--13-120-75-75-C-70-ISO8859-1", null, null, null});
     }
 
     /** 9x15 - -Misc-Fixed-Medium-R-Normal--15-140-75-75-C-90-ISO8859-1, captured from a reference server. */
@@ -1143,7 +1143,7 @@ public final class BitmapFont {
             },
             new String[] {"FONTNAME_REGISTRY", "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME", "PIXEL_SIZE", "POINT_SIZE", "RESOLUTION_X", "RESOLUTION_Y", "SPACING", "AVERAGE_WIDTH", "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "CAP_HEIGHT", "X_HEIGHT", "_GBDFED_INFO", "FONT", "WEIGHT", "RESOLUTION", "QUAD_WIDTH"},
             new int[] {87, 89, 90, 92, 94, 235, 87, 15, 140, 75, 75, 102, 90, 105, 107, 108, 10, 7, 110, 238, 10, 103, 9},
-            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, null, null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--15-140-75-75-C-90-ISO8859-1", null, null, null});
+            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, "C", null, "ISO8859", "1", "Public domain font.  Share and enjoy.", null, null, "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--15-140-75-75-C-90-ISO8859-1", null, null, null});
     }
 
     /** 10x20 - -Misc-Fixed-Medium-R-Normal--20-200-75-75-C-100-ISO8859-1, captured from a reference server. */
@@ -1490,7 +1490,7 @@ public final class BitmapFont {
             },
             new String[] {"FONTNAME_REGISTRY", "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME", "PIXEL_SIZE", "POINT_SIZE", "RESOLUTION_X", "RESOLUTION_Y", "SPACING", "AVERAGE_WIDTH", "CHARSET_REGISTRY", "CHARSET_ENCODING", "X_HEIGHT", "CAP_HEIGHT", "COPYRIGHT", "_GBDFED_INFO", "FONT", "WEIGHT", "RESOLUTION", "QUAD_WIDTH"},
             new int[] {87, 89, 90, 92, 94, 235, 87, 20, 200, 75, 75, 102, 100, 105, 107, 8, 13, 108, 110, 239, 10, 103, 10},
-            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, null, null, "ISO8859", "1", null, null, "Public domain font.  Share and enjoy.", "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--20-200-75-75-C-100-ISO8859-1", null, null, null});
+            new String[] {"", "Misc", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, "C", null, "ISO8859", "1", null, null, "Public domain font.  Share and enjoy.", "Edited with gbdfed 1.3.", "-Misc-Fixed-Medium-R-Normal--20-200-75-75-C-100-ISO8859-1", null, null, null});
     }
 
     /** 12x24 - -Sony-Fixed-Medium-R-Normal--24-170-100-100-C-120-ISO8859-1, captured from a reference server. */
@@ -1998,7 +1998,7 @@ public final class BitmapFont {
             },
             new String[] {"FONTNAME_REGISTRY", "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME", "PIXEL_SIZE", "POINT_SIZE", "RESOLUTION_X", "RESOLUTION_Y", "SPACING", "AVERAGE_WIDTH", "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "FONT", "WEIGHT", "RESOLUTION", "X_HEIGHT", "QUAD_WIDTH"},
             new int[] {87, 240, 90, 92, 94, 235, 87, 24, 170, 100, 100, 102, 120, 105, 107, 241, 242, 10, 138, 22, 12},
-            new String[] {"", "Sony", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, null, null, "ISO8859", "1", "Copyright (c) 1987, 1988 Sony Corp.", "-Sony-Fixed-Medium-R-Normal--24-170-100-100-C-120-ISO8859-1", null, null, null, null});
+            new String[] {"", "Sony", "Fixed", "Medium", "R", "Normal", "", null, null, null, null, "C", null, "ISO8859", "1", "Copyright (c) 1987, 1988 Sony Corp.", "-Sony-Fixed-Medium-R-Normal--24-170-100-100-C-120-ISO8859-1", null, null, null, null});
     }
 
     static {

@@ -389,12 +389,14 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   have no pixels to read - and its image is copied into the menu bar on top of that. A client's own
   context menu therefore opens next to its window on the X screen, not under the menu-bar icon: the
   menu is a window the client places itself, and no tray host here can move it.
-- **The standard X fonts are the real ones, and every other name is approximated.** `fixed`, `6x13`,
-  `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD names they answer to - are served from tables
-  captured off a reference server, so the metrics a client reads through `QueryFont` and
-  `QueryTextExtents` and the glyphs it draws are that server's: measured identical to Xvfb field by
-  field and pixel by pixel with `tools/kit.sh FontProbe`. Any other name is mapped onto a Java font
-  and has the JVM's shapes and metrics, and a font **file** on a font path is still not read.
+- **Fonts are real X fonts.** `fixed`, `6x13`, `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD
+  names they answer to - are served from tables captured off a reference server, and **any other name
+  is looked up on the font path**: `fonts.alias` maps a short name to a full one, `fonts.dir` maps
+  that to a file, and the file (`.pcf`, `.pcf.gz` or `.bdf`) is read. `~/.xserver/fonts` is on the
+  default path, and `SetFontPath` replaces it. Measured against Xvfb with `tools/kit.sh FontProbe`,
+  `QueryFont` field by field, `QueryTextExtents` and the pixels of a drawn string are **identical**
+  for the built-in fonts and for one read from a file. The last resort - a name nothing has - is a
+  Java font with the JVM's shapes and metrics.
 - **Pointer acceleration is accepted and ignored**: the platform's own acceleration is what the user
   feels, and nothing here adds to it. (`GetMotionEvents` does keep a history now - 256 motions per
   screen - so a client that asks what the pointer did is answered.)

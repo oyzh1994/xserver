@@ -44,7 +44,7 @@ public final class FontProbe {
     private static final java.util.Set<String> STRING_PROPERTIES = java.util.Set.of(
             "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME",
             "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "NOTICE", "FONT",
-            "FONTNAME_REGISTRY", "_GBDFED_INFO");
+            "FONTNAME_REGISTRY", "SPACING", "_GBDFED_INFO");
 
     /** One pixel of margin, so a glyph with a negative left bearing is not clipped away. */
     private static final int PEN_X = 4;

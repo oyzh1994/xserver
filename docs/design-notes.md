@@ -1383,6 +1383,37 @@ architecture can avoid:
 - A client's own context menu opens on the X screen next to its window, not under the menu-bar icon.
   The menu is a window the client places itself and no tray host can move it.
 
+## A font file on the font path
+
+The built-in tables answer the names a client is most likely to ask for, and a **font path** answers
+every other name an X server would: `SetFontPath` names the directories, `<dir>/fonts.alias` maps a
+short name to a full one, `<dir>/fonts.dir` maps that to a file, and the file is read
+(`resource/PcfFont`, `resource/FontPath`). `~/.xserver/fonts` is on the default path, so a font
+dropped there is served without a flag.
+
+**The file format was read off `libXfont`'s `src/bitmap/pcfread.c` rather than guessed**, and four
+things in it are not where the shape of the file suggests. Each one was found by a wrong answer that
+looked plausible:
+
+- **The table of contents is little endian whatever the rest of the file is**, and each section's own
+  format word is what says how *its* payload is read: byte order, bit order, glyph padding, scan unit.
+- **The font's header is in the `ACCELERATORS` section**, not the metrics one - eight flag bytes, then
+  the ascent, the descent, the overlap and the bounds. And the section numbers are the pair that is
+  easy to swap: **the encodings are 32 and the accelerators 256**. Read the other way round, the font
+  header lands where the character map should be and every field decodes as nonsense.
+- **What `QueryFont` reports per character is the file's *ink* metrics** (section 16) where it has
+  them, not the plain metrics: `8x13-ISO8859-1`'s metrics table says every glyph is the whole cell and
+  its ink table says what each one covers, and a client lays text out from the second.
+- **The bounds are the extremes over the file's glyphs**, including the ones the encoding table does
+  not map, while **a character code the table does not map answers with zeros** rather than with the
+  default character's metrics - which were both guesses here until the reference said otherwise.
+
+The path resolution has a trap of its own, and it is a one-line one: **`fonts.dir`'s first line is a
+count and the only line to skip**. A font file's name usually begins with a digit
+(`8x13-ISO8859-1.pcf.gz` is one), so a reader that skips "lines that start with a number" throws the
+table away and falls back to the file that shares the short name - which is what happened here, and
+the property list said so: `CHARSET_REGISTRY=ISO10646` where the alias means ISO8859-1.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

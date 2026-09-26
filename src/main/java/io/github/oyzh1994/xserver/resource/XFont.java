@@ -45,9 +45,18 @@ public final class XFont extends XResource {
     private boolean fixedPitch;
 
     public XFont(int id, ClientConnection owner, String name) {
+        this(id, owner, name, null);
+    }
+
+    /**
+     * The same, with a font already read from somewhere else - a file on the font path, which is what
+     * the built-in tables cannot answer (D3). Null means "look the name up in the tables", which is
+     * what the one argument form above does.
+     */
+    public XFont(int id, ClientConnection owner, String name, BitmapFont.Font font) {
         super(id, CLASS_FONT, owner);
         this.name = name;
-        this.bitmap = BitmapFont.forName(name);
+        this.bitmap = font != null ? font : BitmapFont.forName(name);
         if (bitmap != null) {
             // Nothing of the approximation is needed, and not building it is not only thrift: the
             // measurements above are the font's own and a Java font's would be a second answer.

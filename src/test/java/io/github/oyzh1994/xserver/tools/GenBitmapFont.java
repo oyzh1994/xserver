@@ -66,7 +66,7 @@ public final class GenBitmapFont {
     private static final Set<String> STRING_PROPERTIES = Set.of(
             "FOUNDRY", "FAMILY_NAME", "WEIGHT_NAME", "SLANT", "SETWIDTH_NAME", "ADD_STYLE_NAME",
             "CHARSET_REGISTRY", "CHARSET_ENCODING", "COPYRIGHT", "NOTICE", "FONT",
-            "FONTNAME_REGISTRY", "_GBDFED_INFO");
+            "FONTNAME_REGISTRY", "SPACING", "_GBDFED_INFO");
 
     private static final int QUERY_FONT_FIXED = 60;
     private static final int MIN_BOUNDS_AT = 8;
