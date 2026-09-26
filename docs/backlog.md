@@ -70,7 +70,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
 | C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
-| C9 | tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar | host window | M |
+| ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | C10 | input methods: verify XIM, and decide about the host IME | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
@@ -2057,7 +2057,7 @@ same reason C10's could not: a drag is a real mouse gesture, and neither `osascr
 
 ---
 
-### [ ] C9. Tray icons in the macOS menu bar. **M**
+### [x] C9. Tray icons in the macOS menu bar. **M** - done 2026-09-26: the server is the tray host, and the icons are shown in the menu bar
 
 **Current.** Nothing. A client that wants a notification-area icon (Java's `SystemTray`, Qt's
 `QSystemTrayIcon`, GTK's `StatusIcon`) looks for a `_NET_SYSTEM_TRAY_Sn` selection owner and gives up
@@ -2080,6 +2080,80 @@ popup on the X screen, so it must appear where the *host* icon is, not on the X 
 
 **Verify.** A Java application using `SystemTray` (`xeyes`-style, or a raw client that sends
 `SYSTEM_TRAY_REQUEST_DOCK`) shows up; its context menu opens at the menu-bar icon.
+
+**Done 2026-09-26, and the item's own premise was wrong in a way that made it cheaper.**
+
+**No JNI is needed.** The plan said "JavaFX/AWT has no menu-bar API; this needs JNI or a native
+helper". JavaFX has none, but **AWT does**: `java.awt.SystemTray` has been implemented on macOS for
+years and puts its `TrayIcon` in the menu bar. That was measured before anything was written - a
+plain Java process added an icon and a screenshot showed it - and it is what the whole item rests on.
+
+`tray/TrayBridge` is the tray host: it owns `_NET_SYSTEM_TRAY_S0` with a window of the server's own,
+publishes the three properties a client reads before docking (`_NET_SYSTEM_TRAY_OPCODE`,
+`_ORIENTATION`, `_VISUAL`), hears `SYSTEM_TRAY_REQUEST_DOCK`, reparents the icon window into a tray
+window of its own, sends the XEmbed message that says so, and copies the icon's pixels into the menu
+bar every 200 ms - there is no X event for "the icon was redrawn", so the pixels are read out of the
+framebuffer the client draws into. A click on the menu-bar icon is delivered to the icon window as a
+synthetic press and release, which is how every tray host does it. `--no-tray` turns it off, and a
+server with no window (headless, VNC) never starts it: a viewer has its own desktop, and a menu bar
+that is not on this machine is not something an icon can be shown in.
+
+**The selection is taken at startup, not when a window appears**, and that is not an implementation
+detail: an application asks whether a notification area exists while it is starting up and gives up
+for good if the answer is no, so a tray owned only once something has been drawn is owned too late.
+
+**The real client found a real bug in this server, and it is the interesting half of the item.**
+Java's tray peer creates its icon window, sends the dock request and then **blocks for five seconds**
+waiting to be told it has been embedded; when it gives up it throws `TrayIcon couldn't be displayed`.
+What it waits for is a `ReparentNotify` on its *own* window - and `WindowHandlers.reparent` delivered
+that event to the *new parent* only. Measured by removing the wait's cause: with the reparented window
+told as well, the same client prints `added` where it had thrown. That is a protocol gap the tray
+found and not a tray-specific hack: X11 says the window that was moved hears about it, and this
+server had only ever told the parent.
+
+**Two differences from a panel, both forced by what the screen is here, and both in the design
+notes**: the icon is shown in the menu bar *and* stays where the client drew it (this server has one
+surface, so a window off the screen has no pixels to read), and a client's own context menu opens on
+the X screen where its window is rather than under the menu-bar icon (the menu is a window the client
+places itself, and no tray host on this architecture can move it).
+
+**Measured 2026-09-26**, three ways:
+
+- `tray/TrayBridgeTest` (5 tests, a recording backend so nothing touches the real menu bar): the
+  selection is owned and the three properties say what they should (the opcode property's value is
+  the atom a dock request must carry, the orientation is horizontal, the visual is not zero); a docked
+  icon reaches the "menu bar" as the *client's own pixels*, read out of the framebuffer; a click
+  arrives at the icon window as a press and a release at the place it was clicked; an icon whose
+  window is destroyed leaves the tray and the menu bar is told; and the guard that a backend with no
+  menu bar has no tray at all. **Three of the five fail when the dock request is ignored** (the other
+  two are guards).
+- **Live, with a real Java client** (`SystemTray`, an AppImage-less `TrayClient` on the VM): it prints
+  `systemTraySupported=true` and then `added` - it docks, and **a screenshot of the Mac's menu bar
+  shows its icon**, a blue disc drawn by the client, next to the status items. Before the
+  `ReparentNotify` fix the same client threw `TrayIcon couldn't be displayed`.
+- `mvn test` 312/312.
+
+**What the live check did not establish**: a *click* on the menu-bar icon reaching the client. The
+click path is pinned in process (the test above), and the menu-bar half was attempted with
+`tools/host-drag.c` (which is working: a click at the clock's coordinates opens Notification Centre),
+but the tray client kept exiting between the round trips that finding the icon's coordinates and
+pressing it take, so the run never had both ends alive at once. Worth doing by hand once: add a tray
+icon from a client that stays up, click it, and watch the client's log.
+
+**Traps.**
+
+- **The dock message's words are not where they look.** `data[0]` is the timestamp, the **opcode is
+  `data[1]`** and the window is `data[2]`. Reading the opcode out of `data[0]` makes every request
+  look like "dock window 0x0" - a warning in the log and an application that reports it cannot show
+  its icon, which reads as the tray ignoring it rather than as a message understood differently. Java's
+  peer sends it the second way and is what the shape was measured against.
+- **32 bit property data is stored in X11's order, which is big endian** - the client swaps what it
+  has to. A server-side writer that stores little endian is read correctly by a hand-written probe
+  and wrongly by Xlib.
+- **A status item is not where you think it is.** Two screenshots with no icon in them "proved" the
+  feature broken; the icon was there, at the left of the status area, outside both crops. What settled
+  it was comparing a capture with an icon against one without - and the cheapest check of all is a
+  second, unmistakable icon (a fixed red disc) beside it.
 
 ---
 

@@ -40,6 +40,7 @@ Options:
 | `--tick-rate N` | display refresh rate (default 60) |
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
+| `--no-tray` | do not serve the notification area (the tray a client's icon docks in) |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--scale N\|auto` | screen pixels per logical pixel: `auto` is the host's own scale, 2 on a Retina panel (default 1) |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
@@ -90,6 +91,7 @@ io.github.oyzh1994.xserver
 ├── event/        event masks, propagation, crossing events, raw event assembly
 ├── input/        pointer/keyboard state, keymap, cursor sprite
 ├── clipboard/    the bridge between the host's clipboard and the X selections
+├── tray/         the notification area, shown in the host's menu bar
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
                   RANDR, XKEYBOARD, MIT-SCREEN-SAVER and DPMS
@@ -163,6 +165,10 @@ XKEYBOARD is still missing.
 Events: structure notifications, exposes, property and colormap notifications, crossing and focus
 events with the full detail lattice and the grab modes, pointer and keyboard events with propagation
 and `doNotPropagateMask`, and `ClientMessage` in both directions.
+
+The **notification area** is the host's menu bar (C9): a client that docks a tray icon -
+Java's `SystemTray`, Qt's, GTK's - is shown there, and a click on the icon is delivered to the window
+the client drew it into. `--no-tray` turns it off, and a server with no window has none.
 
 Extensions: `BIG-REQUESTS`, `XC-MISC`, `SHAPE` (rectangles, masks and the five combine
 operations), `XTEST` (synthetic input), `RANDR` (one CRTC, output and mode over the whole screen, with
@@ -378,6 +384,11 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   flat colours into kilobytes instead of megabytes, and a client that asks for the **Cursor**
   pseudo-encoding is sent the X pointer's own shape. Not there: `Tight`/`CoRRE` (optimisations on top
   of ZRLE).
+- **A tray icon is shown in the menu bar and stays where the client drew it.** The docked window is
+  a window of the X screen like any other - this server has one surface, so a window off it would
+  have no pixels to read - and its image is copied into the menu bar on top of that. A client's own
+  context menu therefore opens next to its window on the X screen, not under the menu-bar icon: the
+  menu is a window the client places itself, and no tray host here can move it.
 - **The standard X fonts are the real ones, and every other name is approximated.** `fixed`, `6x13`,
   `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD names they answer to - are served from tables
   captured off a reference server, so the metrics a client reads through `QueryFont` and

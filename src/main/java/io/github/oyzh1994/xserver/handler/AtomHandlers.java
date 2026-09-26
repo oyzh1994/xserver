@@ -564,6 +564,18 @@ public final class AtomHandlers {
             bridge.selectionAnswered(
                     readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
         }
+        io.github.oyzh1994.xserver.tray.TrayBridge tray = server.tray();
+        if (tray != null && eventCode == CLIENT_MESSAGE && tray.ownsWindow(destination.id())) {
+            // A notification-area client asking to be displayed: SYSTEM_TRAY_REQUEST_DOCK, sent as a
+            // ClientMessage to the selection's owner, which is the bridge. Its data is opcode,
+            // window id, then three words the three opcodes use differently.
+            int[] data = new int[5];
+            for (int i = 0; i < data.length; i++) {
+                data[i] = readCard32(bytes, 12 + i * 4, senderBigEndian);
+            }
+            tray.clientMessage(readCard32(bytes, 8, senderBigEndian), data);
+            return;
+        }
         io.github.oyzh1994.xserver.drop.DropBridge drops = server.dropBridge();
         if (drops != null && eventCode == CLIENT_MESSAGE && drops.ownsWindow(destination.id())) {
             // The target answering the drag: XdndStatus says whether it will take the drop, and

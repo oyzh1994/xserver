@@ -346,6 +346,11 @@ public final class WindowHandlers {
         if (window.isDestroyed()) {
             return;
         }
+        // A docked tray icon (C9) goes with its window: the bridge keeps a tray window for it, and a
+        // tray window whose client's window is gone is a window nobody will ever draw in again.
+        if (server.tray() != null) {
+            server.tray().forgetWindow(window);
+        }
         // Unmapped before the children are destroyed rather than after, so that the whole subtree
         // stops being viewable at once: the focus of a window inside it then reverts past all of it,
         // the way a reference server reverts it, instead of landing on a window that this same
@@ -416,6 +421,16 @@ public final class WindowHandlers {
         if (window.isInputOnly() != parent.isInputOnly()) {
             throw ProtocolException.badMatch();
         }
+        reparentTo(window, parent, r.getX(), r.getY());
+    }
+
+    /**
+     * The tree surgery and the notifications a reparent owes, without the protocol checks: the same
+     * work {@code ReparentWindow} does, for a caller inside the server. The tray bridge reparents a
+     * docked icon window into a tray window of its own (C9), and an XEmbed client is waiting for
+     * this to happen - it is how the client learns that its icon is now somebody else's window.
+     */
+    public void reparentTo(XWindow window, XWindow parent, int atX, int atY) {
         XWindow oldParent = window.parent();
         boolean wasMapped = window.isMapped();
         if (wasMapped) {
@@ -425,25 +440,37 @@ public final class WindowHandlers {
             oldParent.removeChild(window);
         }
         parent.addChild(window, -1);
-        window.setPosition(r.getX(), r.getY());
+        window.setPosition(atX, atY);
         if (parent != null) {
             server.events().deliverToWindow(parent, EventMasks.STRUCTURE_NOTIFY,
-                    (recipient, w, child, x, y) -> ReparentNotifyEvent.builder()
-                            .firstEventOffset((byte) 0)
-                            .sentEvent(false)
-                            .sequenceNumber(recipient.sequenceNumber())
-                            .event(w.id())
-                            .window(window.id())
-                            .parent(parent.id())
-                            .x((short) window.x())
-                            .y((short) window.y())
-                            .overrideRedirect(window.isOverrideRedirect())
-                            .build());
+                    (recipient, w, child, x, y) -> reparentNotify(recipient, w, window, parent));
+            // The window that was moved is told as well, which is the half a tray's dock depends on:
+            // an XEmbed client hands its icon window to the tray, and what it waits for is this
+            // event on its *own* window - Java's tray peer blocks five seconds for it and then
+            // reports that the icon could not be displayed (measured while C9 was written).
+            server.events().deliverToWindow(window, EventMasks.STRUCTURE_NOTIFY,
+                    (recipient, w, child, x, y) -> reparentNotify(recipient, w, window, parent));
         }
         if (wasMapped || window.isMapped()) {
             mapWindow(window);
         }
         server.markScreenDirty(window);
+    }
+
+    /** The event a reparent owes, reported against whatever window hears about it. */
+    private static ReparentNotifyEvent reparentNotify(ClientConnection recipient, XWindow reported,
+                                                     XWindow window, XWindow parent) {
+        return ReparentNotifyEvent.builder()
+                .firstEventOffset((byte) 0)
+                .sentEvent(false)
+                .sequenceNumber(recipient.sequenceNumber())
+                .event(reported.id())
+                .window(window.id())
+                .parent(parent.id())
+                .x((short) window.x())
+                .y((short) window.y())
+                .overrideRedirect(window.isOverrideRedirect())
+                .build();
     }
 
     // ------------------------------------------------------------------

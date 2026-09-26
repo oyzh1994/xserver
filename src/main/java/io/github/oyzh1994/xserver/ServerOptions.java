@@ -69,6 +69,9 @@ public final class ServerOptions {
     private int maxScreenHeight = 8192;
     /** Whether the host clipboard is bridged to the X CLIPBOARD selection. */
     private boolean clipboard = true;
+
+    /** Whether the notification area is served (C9). */
+    private boolean tray = true;
     /**
      * How many framebuffer pixels one logical pixel is worth.
      *
@@ -162,6 +165,7 @@ public final class ServerOptions {
                 case "--single-window" -> options.singleWindow = true;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
+                case "--no-tray" -> options.tray = false;
                 case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
@@ -395,6 +399,11 @@ public final class ServerOptions {
     /** Whether the host clipboard should be bridged to the X CLIPBOARD selection. */
     public boolean noClipboard() {
         return !clipboard;
+    }
+
+    /** Whether the notification area is served - the tray a forwarded application's icon docks in. */
+    public boolean noTray() {
+        return !tray;
     }
 
     public boolean perClientWindows() {

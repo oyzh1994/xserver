@@ -6,6 +6,7 @@ import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ConnectionSetup;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.clipboard.ClipboardBridge;
+import io.github.oyzh1994.xserver.tray.TrayBridge;
 import io.github.oyzh1994.xserver.clipboard.HostClipboard;
 import io.github.oyzh1994.xserver.client.RequestDispatcher;
 import io.github.oyzh1994.xserver.display.CursorSprite;
@@ -92,6 +93,9 @@ public final class XServer {
     private final ExtensionRegistry extensions = new ExtensionRegistry();
     /** The host clipboard bridge, or null when there is no host to bridge to. */
     private ClipboardBridge clipboard;
+
+    /** The notification area, or null when this server has no menu bar to put icons in (C9). */
+    private TrayBridge tray;
     /** The host drag bridge, or null when this server has no window to drop on. */
     private io.github.oyzh1994.xserver.drop.DropBridge drops;
     /**
@@ -417,6 +421,40 @@ public final class XServer {
      */
     public ClipboardBridge clipboard() {
         return clipboard;
+    }
+
+    /**
+     * The notification area, or null when this server has no menu bar.
+     *
+     * <p>Like {@link #clipboard()}, callers must expect null: a headless server and one served over
+     * VNC have no host menu bar, and a client's tray icon has nothing to be shown in.
+     */
+    public TrayBridge tray() {
+        return tray;
+    }
+
+    /**
+     * Serves the notification area, if this server has somewhere to show its icons.
+     *
+     * <p>The tray is the host's menu bar, so only a backend with one starts the bridge: a headless
+     * server has no menu bar, and a VNC server's viewers have their own desktops - showing an icon
+     * in the machine the server runs on would be showing it to the wrong person.
+     */
+    private void startTrayBridge() {
+        if (options.noTray() || tray != null) {
+            return;
+        }
+        // The selection is taken at startup rather than when a window appears, and that is what a
+        // client needs: an application asks whether a notification area exists while it is starting
+        // up and gives up for good if the answer is no, so owning it only once something has been
+        // drawn would be owning it too late for the application that wanted it. Whether there is a
+        // menu bar is the options' own question - a backend given by a factory is taken at its word
+        // by the code that shows the icons.
+        if (presentsNoWindowHere()) {
+            return;
+        }
+        tray = new TrayBridge(this);
+        tray.start();
     }
 
     /**
@@ -834,6 +872,7 @@ public final class XServer {
             openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
         }
         startClipboardBridge();
+        startTrayBridge();
         startDropBridgeForWindow();
         suggestScale();
         listener = new ClientListener(this);
@@ -1806,6 +1845,9 @@ public final class XServer {
         if (clipboard != null) {
             clipboard.stop();
         }
+        if (tray != null) {
+            tray.stop();
+        }
         if (drops != null) {
             drops.stop();
         }
@@ -1879,6 +1921,9 @@ public final class XServer {
                 session.input().clientDisconnected(client);
             }
             input.clientDisconnected(client);
+            if (tray != null) {
+                tray.clientDisconnected(client);
+            }
             // Windows owned by this client get destroyed, which generates destroy notifications.
             dispatcher.destroyClientResources(client);
         } finally {

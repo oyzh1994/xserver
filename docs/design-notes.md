@@ -1344,6 +1344,45 @@ a client that opens a font nobody here has should get something it can draw with
 no font at all is a refusal an application cannot work around. What is not pretended is the
 metrics - the approximation reports its own, and the README's limitations say which names are real.
 
+## The notification area is the menu bar
+
+A client that wants a tray icon looks for the owner of `_NET_SYSTEM_TRAY_S0` and gives up when there
+is none, which is what happened here: an application silently lost a piece of its own interface. This
+server owns that selection and is the tray host (C9), and the icons go in the host's menu bar.
+
+**No native code, against the item's own expectation.** The plan said JavaFX/AWT had no menu-bar API
+and that this would need JNI. JavaFX has none, but AWT does: `java.awt.SystemTray` puts a `TrayIcon`
+in the macOS menu bar, measured before any of this was written. That is one small class
+(`display/AwtTrayIcon`) shared by the JavaFX and Swing backends, and the whole of the host's half.
+
+**The X half is `tray/TrayBridge`, and its shape is forced by two things about this server.**
+
+- **The pixels are read, not kept.** A docked icon is a window on the client's screen, and this server
+  has no per-window store (A9): what it drew is in the screen's framebuffer or nowhere. So the bridge
+  copies the window's rectangle out of the framebuffer every 200 ms and hands it to the menu bar, and
+  an icon that something covers reads as what covers it - which is what a user looking at the screen
+  would see too.
+- **The selection is taken at startup.** An application asks whether a notification area exists while
+  it is starting and never asks again, so a tray that appears when the first window does is a tray
+  that application has already given up on.
+
+**A real client found a real bug in the server, and it was not in the tray.** Java's tray peer creates
+its icon window, sends the dock request, and then blocks for five seconds waiting to be told it is
+embedded - it throws `TrayIcon couldn't be displayed` when nothing arrives. What it waits for is a
+`ReparentNotify` on its *own* window, and `WindowHandlers.reparent` delivered that event only to the
+*new parent*. A reparent that does not tell the window it was moved is a gap in the server, not in the
+tray: X11 says the window hears about it, and the tray was simply the first thing here to reparent a
+window it did not own.
+
+**Two deliberate differences from a panel**, both of which a client can see and neither of which this
+architecture can avoid:
+
+- The icon is in the menu bar **and** stays where the client drew it, because the window has to be on
+  the screen for its pixels to exist. A panel reparents the icon into itself and the icon is then only
+  there; here the tray window is where the icon already was, so a reparent does not move it.
+- A client's own context menu opens on the X screen next to its window, not under the menu-bar icon.
+  The menu is a window the client places itself and no tray host can move it.
+
 ## Deliberately not done
 
 This is the list of things left out *on purpose*, with the measurement that settled them. The

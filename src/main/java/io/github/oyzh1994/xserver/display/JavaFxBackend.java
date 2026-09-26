@@ -480,6 +480,24 @@ public final class JavaFxBackend implements DisplayBackend {
         });
     }
 
+    /** The menu bar, for a forwarded application's notification-area icon (C9). */
+    private final AwtTrayIcon tray = new AwtTrayIcon();
+
+    @Override
+    public boolean hasTray() {
+        return tray.available();
+    }
+
+    @Override
+    public void setTrayIcon(java.awt.image.BufferedImage image, String tooltip) {
+        tray.set(image, tooltip);
+    }
+
+    @Override
+    public void setTrayClickListener(DisplayBackend.TrayClick listener) {
+        tray.setListener(listener);
+    }
+
     @Override
     public void raise() {
         runOnFxThreadAndWait(() -> {

@@ -208,6 +208,40 @@ public interface DisplayBackend {
      * the one case where pulling a window out from behind another is what was asked for. Called once
      * per hint, never per frame.
      */
+    /**
+     * A click on the tray icon, in the icon's own pixels.
+     *
+     * <p>Where a docked notification-area icon's clicks go (C9). The backend reports what the
+     * platform's menu bar was clicked at, and the tray turns it into a click on the client's icon
+     * window - a menu bar has no X coordinates of its own, so the mapping is the backend's to make.
+     */
+    @FunctionalInterface
+    interface TrayClick {
+        void clicked(int x, int y, int button, int clickCount);
+    }
+
+    /**
+     * Whether this backend has somewhere to put a tray icon: a menu bar, or the notification area of
+     * a desktop. False by default, and false for the headless and VNC backends - a screen served over
+     * RFB has no host menu bar, and a client's tray icon would have nothing to be shown in.
+     */
+    default boolean hasTray() {
+        return false;
+    }
+
+    /**
+     * Shows the notification area's icons, or takes the icon away when {@code image} is null.
+     *
+     * <p>Called from the server's tray poll thread, so an implementation must not block on the
+     * toolkit's thread: the AWT one hands the work to the event dispatch thread.
+     */
+    default void setTrayIcon(java.awt.image.BufferedImage image, String tooltip) {
+    }
+
+    /** Where tray icon clicks go. Null means nobody wants them. */
+    default void setTrayClickListener(TrayClick listener) {
+    }
+
     default void raise() {
     }
 
