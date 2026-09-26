@@ -2422,6 +2422,11 @@ answers' *count* (`ListFonts("fixed")` is 2 names on Xvfb and 1 here, and one of
 an `--0-0-…` scalable variant this server has no table for) and `repliesHint`, the one field of the
 reply `xlsfonts` does not print.
 
+**The next command is `tools/font-reply-proxy.py`**, written for this and checked in with the rest:
+it captures the two servers' `ListFonts`/`ListFontsWithInfo` replies framed one message per line, so
+the fields nothing displays can be compared - and its header records the replay half that follows if
+the bytes turn out to be identical (feed Xvfb's answer to this server's client and bisect).
+
 **And the live check still has to be run**, which is what the fix is for: `xterm` (installed on the
 VM for exactly this) with `XMODIFIERS=@im=ibus` against a `--single-window` server, the ibus trigger
 typed through XTEST, and the committed characters compared with the same run against Xvfb. It cannot

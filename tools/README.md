@@ -133,6 +133,18 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   set was built, with the charsets no font was found for. Run it under the locale that matters
   (`LANG=zh_CN.UTF-8`), because the charsets asked for are the locale's own. See its header for the
   two servers' measured output and for what is still not explained by it.
+- `font-reply-proxy.py` - the tool C10's font-set question needs next: a byte-level proxy that
+  **captures a server's `ListFonts` and `ListFontsWithInfo` replies**, one framed message per line
+  (`<opcode> <pattern> <hex>`), so two servers' answers to the same requests can be diffed byte for
+  byte - including the fields nothing displays (`replies_hint`, the reply lengths, how many replies
+  came back). It is what the item asks for after the names were the only difference anything
+  *showed*: `python3 tools/font-reply-proxy.py 7061 <host> <port> /tmp/ours.txt`, point
+  `fontset-probe.py` or `xterm` at `127.0.0.1:7061`, and do the same through a second instance in
+  front of Xvfb. The replay half (feeding one server's answer to the other's client, which is how the
+  remaining difference gets bisected) is not written yet; capturing is what says whether it is needed.
+  Two framing traps are handled in it because they cost an hour each: the setup request and reply are
+  the ones message with an eight byte header, and a reply's length field counts the bytes *after* its
+  header rather than the whole message.
 - `probe-diff.py` - diff two probe runs, ignoring what each server assigns for itself. `python3
   tools/probe-diff.py xvfb-run.txt ours-run.txt` prints `IDENTICAL` or a unified diff, and the point
   is that a difference here is a behaviour difference and not a formatting one. It normalises the
