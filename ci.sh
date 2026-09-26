@@ -38,6 +38,25 @@ if [ -z "$MVN" ]; then
     fi
 fi
 
+# A leftover server, bed or ssh tunnel on a display the suite binds makes a test fail as if it were
+# broken - `BindException: Address already in use` from one, and from another (a tunnel to the
+# reference display, which answers for the server under test) a window id one off, which reads as a
+# focus bug. Four runs were lost to exactly that on 2026-09-26, once *after* the trap was written
+# down, so the script refuses to start instead. The displays the suite binds are in
+# tools/README.md: 10 and 62-99.
+leftovers=""
+for port in 6010 $(seq 6062 6099); do
+    if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        leftovers="$leftovers $port"
+    fi
+done
+if [ -n "$leftovers" ]; then
+    echo "ci.sh: something is listening on a display the suite binds:$leftovers" >&2
+    echo "        a leftover server, bed or tunnel makes a test fail as if it were broken;" >&2
+    echo "        stop it and run again (tools/README.md, \"Display numbers\")" >&2
+    exit 2
+fi
+
 # -B for the plain log a CI log viewer can read, and no -o: a runner's local repository starts empty,
 # so the dependencies have to be fetchable. (On this machine `-o` works because the author's is warm;
 # a runner that cannot reach the network needs its repository seeded instead.)

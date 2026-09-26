@@ -860,6 +860,14 @@ public final class XFixesExtension implements Extension {
         return (XWindow) server.resources().require(client, id, XResource.CLASS_WINDOW, false);
     }
 
+    /**
+     * The resource class of an XFIXES region, for the DAMAGE extension: a {@code DamageSubtract}'s
+     * repair region is one of these, and neither extension can name it without this.
+     */
+    static int regionClass() {
+        return REGION_CLASS;
+    }
+
     /** A cursor resource, which is a core resource rather than an extension one. */
     private static XCursor requireCursor(XServer server, ClientConnection client, int id) {
         return (XCursor) server.resources().require(client, id, XResource.CLASS_CURSOR, false);

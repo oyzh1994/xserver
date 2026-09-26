@@ -367,6 +367,9 @@ public final class WindowHandlers {
         if (parent != null) {
             parent.removeChild(window);
         }
+        // And a DAMAGE object on it goes with it: a client that watched a window hears no more
+        // about it, and the drawing path's index has to stop pointing at a window that is gone.
+        io.github.oyzh1994.xserver.extension.DamageExtension.drawableGone(server, window);
         // A window that is gone cannot be the window a grab is held on, nor the window that has the
         // input focus: X11 releases the one and reverts the other with the window, and a client that
         // grabs for a dialog or focuses one and then destroys it instead of putting things back
@@ -1172,6 +1175,12 @@ public final class WindowHandlers {
                 framebuffer.fillRect(area.x, area.y, area.width, area.height,
                         window.backgroundPixel());
             }
+            // The server painting a window's background is a change to that window's pixels like any
+            // other, and a client that asked to be told about changes hears it: measured with
+            // tools/DamageProbe, where a reference server's accumulated damage covers the whole
+            // window once it has been mapped and this server (which hooked only the drawing requests)
+            // reported only what the client drew itself.
+            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
         }
     }
 
@@ -1407,6 +1416,12 @@ public final class WindowHandlers {
                         // could not be put back - a window with no store, or one that has drawn since
                         // it was captured - is painted and exposed exactly as before.
                         List<Rectangle> restored = candidate.restoreBacking(part);
+                        for (Rectangle back : restored) {
+                            // Pixels put back from a backing store changed too, and the client that
+                            // watches damage is told about them the same way.
+                            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server,
+                                    candidate, back);
+                        }
                         for (Rectangle left : ShapeState.subtract(List.of(part), restored)) {
                             paintBackground(candidate, left);
                             deliverExpose(candidate, left);

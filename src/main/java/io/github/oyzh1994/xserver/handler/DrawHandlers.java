@@ -607,6 +607,9 @@ public final class DrawHandlers {
             } else {
                 server.markScreenDirty(((XPixmap) drawable).screen(), drawn);
             }
+            // And a client that asked to be told what changed is told here, with the same region and
+            // in the same breath - which is the whole of this extension's hook into drawing.
+            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, drawable, drawn);
         }
         if (drawable instanceof XWindow window) {
             // A window that has just drawn is no longer the window its backing store was captured
@@ -615,7 +618,13 @@ public final class DrawHandlers {
             // which is the behaviour every window had before backing store existed.
             window.forgetBacking();
         }
-        if (gc.graphicsExposures() && drawable instanceof XWindow window) {
+        // Only the copy requests have anything to say: `GraphicsExpose`/`NoExpose` answer "what
+        // happened to the part I could not copy", and a fill copies nothing. Sending one for every
+        // drawing request - which is what this did - is a stray event into a client that is very
+        // likely waiting for one from an earlier `CopyArea`, and a reference server sends none.
+        // Measured 2026-09-26 with `tools/DamageProbe`, whose event reader printed "other event type
+        // 14" for every fill here and nothing at all there.
+        if (gc.graphicsExposures() && sourceDrawable != 0 && drawable instanceof XWindow window) {
             server.events().send(window.owner() == null ? client : window.owner(),
                     NoExposureEvent.builder()
                             .firstEventOffset((byte) 0)

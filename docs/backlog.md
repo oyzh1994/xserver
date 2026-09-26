@@ -1786,21 +1786,57 @@ receive input exactly once.
 
 ---
 
-### [ ] B5. DAMAGE, Composite, Present, SYNC - and real translucency. **L**
+### [~] B5. DAMAGE done 2026-09-26; Composite, Present and SYNC still open. **L**
 
-**Current.** None of the four. The model is "every request draws straight into one framebuffer and a
-revealed window is asked to redraw with an `Expose`" (README's "A revealed window is restored by
-asking it to draw"). A 32-bit ARGB visual is advertised, but with no compositor a translucent window
-simply draws its pixels opaquely.
+**Current.** ~~None of the four.~~ **DAMAGE is there now**; the other three are not. The model is
+"every request draws straight into one framebuffer and a revealed window is asked to redraw with an
+`Expose`" (README's "A revealed window is restored by asking it to draw"). A 32-bit ARGB visual is
+advertised, but with no compositor a translucent window simply draws its pixels opaquely.
+
+**DAMAGE, and the plan above was wrong about it being inseparable from Composite.** It is not the
+compositor's prerequisite: it is the answer to "tell me when a window's pixels changed" for clients
+that *read* them - a screencast, a magnifier, a remote-desktop encoder - and it needs one hook into
+the drawing path and nothing else. That hook turned out to be already there: every drawing request
+ends in `DrawHandlers.afterDrawing`, which has computed the region the request wrote since E3 did the
+damage region (it is what goes to the backend). `DamageExtension.drew` is called from it, and from
+`WindowHandlers.paintBackground` and the backing-store restore - and **the server's own painting has
+to count**, which is the half a first version missed: a reference's accumulated damage covers the
+whole window once it has been mapped, because mapping paints the background.
+
+**Measured with `tools/DamageProbe`** (new), which creates a damage object, draws, reads the
+notifications and subtracts, at each level, against Xvfb:
+
+```
+level 0 RawRectangles   one notify per drawing request, carrying that request's own area, cleared
+                        as it is reported     -> identical to the reference, line for line
+level 2 BoundingBox     nothing until a Subtract; the change after one is reported once, as the
+                        bounding box of what accumulated -> identical, apart from the ids
+level 3 NonEmpty        the same shape of answer, with one difference recorded rather than copied:
+                        on the reference the accumulated damage is not cleared by a subtract, so its
+                        report carries everything since the object was created; here it carries what
+                        changed since the subtract. Both report once per subtract, and every pixel in
+                        this server's area really did change.
+```
+
+`DeltaRectangles` (1) is refused with `BadValue`: it reports the *difference* between two damage
+regions and no client of this server asks for it. The events are thirty two bytes like any other -
+a rectangle in them is four shorts, which is what the probe's own first version got wrong.
+
+**Found on the way, and it is a real bug of its own**: this server sent a `NoExpose` for **every**
+drawing request when the GC asked for graphics exposures (which is the default), where a reference
+sends one only for `CopyArea`/`CopyPlane`. `DamageProbe`'s event reader printed "other event type 14"
+after every fill here and nothing at all there. A stray `NoExpose` is a trap for a client that is
+waiting for one from an earlier copy - and it is the shape of bug the kit exists to find, in a path
+nothing else looked at because everything else about it was right.
 
 **Why it matters.** A compositing window manager has nothing to build on; a translucent popup or a
 window with a shadow cannot exist; a client that wants damage notifications (instead of `Expose`)
 polls. It is also the prerequisite for a *cheap* C1 (resize the screen without asking everyone to
 repaint) and for honest backing store (A9).
 
-**Plan.** This is the architecture item: a per-window backing store, a damage region per window, the
-`Damage` and `Composite` extensions over it, and a final composite to the framebuffer in the display
-tick. Do it *after* C1/C2 if the goal is a usable forwarder - the payoff today is small for the two
+**Plan (the rest of it).** This is the architecture item for the remaining three: a per-window
+backing store, a damage region per window, `Composite` and `Present` and `SYNC` over it, and a final
+composite to the framebuffer in the display tick. Do it *after* C1/C2 if the goal is a usable forwarder - the payoff today is small for the two
 applications tested, and the risk to the obscuring/expose machinery (which took three sessions to get
 right) is large.
 

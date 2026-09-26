@@ -334,8 +334,13 @@ order (only the glyphset-switch item is always most-significant-byte first), and
 The list below is what a user notices; the working list of everything still missing, item by
 item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog.md).
 
-- **No Composite, DAMAGE or XInput2.** `xeyes` prints a warning about the missing
-  `XInputExtension` and falls back, and a compositing window manager has nothing to build on.
+- **DAMAGE is there, and Composite, Present, SYNC and XInput2 are not.** A client that wants to hear
+  what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that reads
+  pixels rather than drawing them - creates a damage object and is told, at X's own levels: every
+  change as it happens, or once per `Subtract` at the bounding levels. What a notify carries is a
+  bounding box, and the rectangles are available through `Subtract`'s repair region. `xeyes` prints a
+  warning about the missing `XInputExtension` and falls back, and a compositing window manager has
+  nothing to build on.
   **RandR is there**, in the shape this server has: one CRTC, one output and one mode covering the
   whole screen, a real physical size (so a client can compute a DPI), and a `ScreenChangeNotify` to
   the clients that asked for one when the screen grows - which is what C1's screen growth had no way

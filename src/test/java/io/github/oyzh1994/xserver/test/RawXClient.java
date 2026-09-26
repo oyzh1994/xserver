@@ -1170,6 +1170,41 @@ public final class RawXClient implements AutoCloseable {
         send(request);
     }
 
+    /** DAMAGE's Create: a damage object on a drawable, at one of X's report levels. */
+    public void createDamage(int opcode, int damage, int drawable, int level) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = (byte) opcode;
+        request[1] = 1;                             // X_DamageCreate
+        writeShort(request, 2, 4);
+        writeInt(request, 4, damage);
+        writeInt(request, 8, drawable);
+        request[12] = (byte) level;
+        send(request);
+    }
+
+    /** DAMAGE's Destroy: the object goes and the client's id is free again. */
+    public void destroyDamage(int opcode, int damage) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = 2;                             // X_DamageDestroy
+        writeShort(request, 2, 2);
+        writeInt(request, 4, damage);
+        send(request);
+    }
+
+    /**
+     * DAMAGE's Subtract with no repair and no parts: what the client has caught up with is thrown
+     * away, and at the bounding levels the next change is the one that gets reported.
+     */
+    public void subtractDamage(int opcode, int damage) throws IOException {
+        byte[] request = new byte[16];
+        request[0] = (byte) opcode;
+        request[1] = 3;                             // X_DamageSubtract
+        writeShort(request, 2, 4);
+        writeInt(request, 4, damage);
+        send(request);
+    }
+
     /** XFixesSetRegion: replaces the rectangles a region is made of. */
     public void setRegion(int opcode, int region, int[][] rectangles) throws IOException {
         byte[] request = new byte[8 + rectangles.length * 8];
@@ -1415,8 +1450,33 @@ public final class RawXClient implements AutoCloseable {
         } catch (java.net.SocketTimeoutException quiet) {
             return null;
         }
+        if (longEventTypes.contains(event[0] & 0x7F)) {
+            byte[] whole = new byte[48];
+            System.arraycopy(event, 0, whole, 0, 32);
+            in.readFully(whole, 32, 16);
+            return whole;
+        }
         return event;
     }
+
+    /**
+     * Registers event types that are longer than the thirty two bytes a reader assumes.
+     *
+     * <p>An event carries no length field - its size is implied by its type - so a reader that always
+     * takes thirty two bytes leaves the rest of a long one in the stream and every event after it is
+     * nonsense. DAMAGE's {@code DamageNotify} is the one this kit meets: forty eight bytes, with the
+     * damaged area and the drawable's geometry after the fixed part. A probe says which types are
+     * long (the extension's own event base is what it knows and this reader cannot), and every read
+     * after that brings the whole event.
+     */
+    public void longEvents(int... types) {
+        for (int type : types) {
+            longEventTypes.add(type);
+        }
+    }
+
+    /** The event types registered as longer than thirty two bytes. */
+    private final java.util.Set<Integer> longEventTypes = new java.util.HashSet<>();
 
     /** Reads an event and keeps reading until it is the wanted one, or the server goes quiet. */
     public byte[] readEvent(int type) throws IOException {

@@ -268,6 +268,8 @@ public final class XServer {
         extensions.register(new io.github.oyzh1994.xserver.extension.BigRequestsExtension(), 0, 0);
         extensions.register(new io.github.oyzh1994.xserver.extension.XCMiscExtension(), 0, 0);
         extensions.register(new io.github.oyzh1994.xserver.extension.ShapeExtension(), 1, 1);
+        // DAMAGE: one event (DamageNotify) and one error (BadDamage).
+        extensions.register(new io.github.oyzh1994.xserver.extension.DamageExtension(), 1, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XTestExtension(), 0, 1);
         extensions.register(new io.github.oyzh1994.xserver.extension.XFixesExtension(), 2, 1);
         // One screen is Xinerama's whole answer here, and it is an answer a client needs rather than

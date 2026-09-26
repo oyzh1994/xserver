@@ -176,6 +176,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+- `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
+  draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
+  draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
+  X's own numbering, which is **not** the order the names suggest: 0 `RawRectangles`, 2 `BoundingBox`,
+  3 `NonEmpty`. Its first version read a `DamageNotify` as forty eight bytes (it is thirty two, and a
+  rectangle in it is four shorts) and could not tell a stray filter request from a `NoExpose` - which
+  is how the spurious-expose bug in B5 was found.
 - `ChangeCursorProbe` - the harness for A8's `ChangeCursor`: two glyph cursors on two windows, the
   image of each read back through `GetCursorImage` before and after the change - which says **which**
   of the two arguments changes, that the window already showing it sees it, and (from the cursor
