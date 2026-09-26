@@ -336,6 +336,15 @@ public final class TrayBridge {
         }
     }
 
+    /** How wide the composed strip of icons is, which is what a position inside it is relative to. */
+    private int stripWidth() {
+        int width = 0;
+        for (Docked icon : docked) {
+            width += Math.max(1, icon.window().width());
+        }
+        return width;
+    }
+
     /** The icon windows on display, for tests and for the log. */
     public List<XWindow> icons() {
         List<XWindow> windows = new ArrayList<>();
@@ -525,10 +534,19 @@ public final class TrayBridge {
         int localX = x;
         server.lockServer();
         try {
+            boolean insideTheStrip = x >= 0 && x < stripWidth();
             for (Docked icon : docked) {
                 int width = Math.max(1, icon.window().width());
-                if (localX < width) {
+                if (localX < width || !insideTheStrip) {
+                    // A backend that knows where its icons are sends a position inside the strip the
+                    // tray composed; one that does not - AWT reports a menu-bar click in *screen*
+                    // coordinates, and a status item's own geometry is not something it exposes -
+                    // sends something outside it, and a click on the one icon there is belongs to
+                    // that icon wherever in it the pointer was. Measured: the platform does deliver
+                    // the click (button 1 at 1060,12 for an icon at that place on the screen), which
+                    // is what made the first version of this look like a platform that does not.
                     target = icon.window();
+                    localX = insideTheStrip ? localX : width / 2;
                     break;
                 }
                 localX -= width;

@@ -56,9 +56,32 @@ public final class FontPath {
         this.ownDirectory = ownDirectory;
     }
 
+    /**
+     * The directories a font name is resolved in before a client sets a path of its own: this
+     * server's own directory, then the ones a machine with X fonts keeps them in.
+     *
+     * <p>The platform's directories are looked at because that is where a font path normally points
+     * and a server that ignored them would answer a Java approximation for fonts sitting right there.
+     * Only the ones that exist are used, and this server's own directory comes first so a font
+     * dropped into it wins over a system one of the same name. `built-ins` is last and is not a
+     * directory: it is the generated tables, which the caller looks at.
+     */
+    private List<String> defaultPath() {
+        List<String> elements = new ArrayList<>();
+        elements.add(ownDirectory);
+        for (String system : new String[] {"/usr/share/fonts/X11/misc", "/usr/share/fonts/misc",
+                "/opt/X11/share/fonts/misc"}) {
+            if (Files.isDirectory(Path.of(system))) {
+                elements.add(system);
+            }
+        }
+        elements.add("built-ins");
+        return List.copyOf(elements);
+    }
+
     /** The path a client set with {@code SetFontPath}, or the default. */
     public List<String> elements() {
-        return clientPath != null ? clientPath : List.of(ownDirectory, "built-ins");
+        return clientPath != null ? clientPath : defaultPath();
     }
 
     /** Replaces the path a client set. */

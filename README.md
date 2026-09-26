@@ -388,7 +388,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   a window of the X screen like any other - this server has one surface, so a window off it would
   have no pixels to read - and its image is copied into the menu bar on top of that. A client's own
   context menu therefore opens next to its window on the X screen, not under the menu-bar icon: the
-  menu is a window the client places itself, and no tray host here can move it.
+  menu is a window the client places itself, and no tray host here can move it. And the icon is
+  **opaque**: `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual, so a client's icon window
+  has no alpha and its transparent corners arrive as a light square.
 - **Fonts are real X fonts.** `fixed`, `6x13`, `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD
   names they answer to - are served from tables captured off a reference server, and **any other name
   is looked up on the font path**: `fonts.alias` maps a short name to a full one, `fonts.dir` maps

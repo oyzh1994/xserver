@@ -2138,12 +2138,27 @@ places itself, and no tray host on this architecture can move it).
   `ReparentNotify` fix the same client threw `TrayIcon couldn't be displayed`.
 - `mvn test` 312/312.
 
-**What the live check did not establish**: a *click* on the menu-bar icon reaching the client. The
-click path is pinned in process (the test above), and the menu-bar half was attempted with
-`tools/host-drag.c` (which is working: a click at the clock's coordinates opens Notification Centre),
-but the tray client kept exiting between the round trips that finding the icon's coordinates and
-pressing it take, so the run never had both ends alive at once. Worth doing by hand once: add a tray
-icon from a client that stays up, click it, and watch the client's log.
+**The click, measured again 2026-09-26, and it found a real bug in the bridge.** Two things were
+established and one is still open:
+
+- **The platform does deliver a menu-bar click to AWT.** A standalone probe - a `TrayIcon` with a
+  mouse listener and nothing else - printed `CLICK button=1 at=1060,12` when its icon was clicked.
+  The earlier "the client kept exiting" was the *client*, not the platform.
+- **The coordinates are screen coordinates, and the bridge assumed they were its own.** AWT reports a
+  status item's click in screen space, and a status item's own geometry is not something it exposes;
+  the first version of `TrayBridge.clicked` looked the position up in the strip of icons it had
+  composed, found nothing for x=1060 on a strip 24 wide, and sent the client nothing. A click now
+  falls back to the icon itself (its centre) when the position is outside the strip, which is what a
+  tray icon means anyway. `TrayBridgeTest` still passes, including the in-strip case.
+- **Still not shown end to end**, and the reason is now the *client*: the Java tray client on the VM
+  aborts with libxcb's `xcb_xlib_threads_sequence_lost` assertion when the synthetic event arrives -
+  AWT and Xlib on two threads, which is the client's own problem and not this server's. Worth doing by
+  hand with a client that does not do that (termora's terminal, or a GTK application).
+
+**A detail the live check did show**: the icon in the menu bar is a *square with a light background*
+rather than a cut-out disc, because `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual - so a
+client's icon window has no alpha and its transparent corners arrive opaque. Publishing a 32 bit ARGB
+visual would fix the shape, and is a small item of its own.
 
 **Traps.**
 
@@ -2642,8 +2657,9 @@ metrics are the *ink* ones, and `fonts.dir`'s count line is the only line to ski
 name usually begins with a digit.
 
 **What is not there**: BDF files are recognised by name but not parsed (PCF is what the fonts on a
-font path are), a compressed `.pcf.gz` is read into memory whole, and the *default* path is one
-directory plus the built-ins rather than the platform's own font configuration.
+font path are), and a compressed `.pcf.gz` is read into memory whole. The default path is this
+server's own directory followed by the machine's (`/usr/share/fonts/X11/misc`, `/usr/share/fonts/misc`,
+`/opt/X11/share/fonts/misc`, each only if it exists) and then the built-ins.
 
 **The notes below are the reading that preceded it, kept for the detail.** The reading is done - `libXfont`'s `src/bitmap/pcfread.c`, which is the format's
 own implementation - and the shape it has to fit is already here: a reader only has to produce a
