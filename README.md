@@ -340,7 +340,11 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   change as it happens, or once per `Subtract` at the bounding levels. What a notify carries is a
   bounding box, and the rectangles are available through `Subtract`'s repair region. `xeyes` prints a
   warning about the missing `XInputExtension` and falls back, and a compositing window manager has
-  nothing to build on.
+  nothing to build on. **XInput2 has been measured and not started** (`docs/backlog.md`, B4): a
+  forwarded GTK application grabs through `XIGrabDevice` the moment the extension exists - JavaFX's
+  GTK backend calls `gdk_device_grab`, and GDK resolves it there - so an advertisement without the
+  device-grab family would cost the application its menus rather than its gestures. It is one piece of
+  work or none.
   **RandR is there**, in the shape this server has: one CRTC, one output and one mode covering the
   whole screen, a real physical size (so a client can compute a DPI), and a `ScreenChangeNotify` to
   the clients that asked for one when the screen grows - which is what C1's screen growth had no way
@@ -403,7 +407,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   context menu therefore opens next to its window on the X screen, not under the menu-bar icon: the
   menu is a window the client places itself, and no tray host here can move it. And the icon is
   **opaque**: `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual, so a client's icon window
-  has no alpha and its transparent corners arrive as a light square.
+  has no alpha and its transparent corners arrive as a light square. Publishing a 32 bit visual does
+  **not** fix that - the alpha is dropped when the client's drawing reaches the screen's framebuffer
+  (which has none by design, `Framebuffer.opaque`), so the shape needs a per-window store and is part
+  of the compositing work, not a property change. Measured, `docs/backlog.md` C9.
 - **Fonts are real X fonts.** `fixed`, `6x13`, `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD
   names they answer to - are served from tables captured off a reference server, and **any other name
   is looked up on the font path**: `fonts.alias` maps a short name to a full one, `fonts.dir` maps

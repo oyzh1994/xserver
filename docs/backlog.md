@@ -81,8 +81,9 @@ A prompt that starts a fresh session on this, verbatim:
 | [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
+| ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
-| B4 | XInput2 | extension | L |
+| B4 | XInput2 - **measured 2026-09-26** (`tools/XiProbe`): advertising it without the device-grab family would break GTK's menus, so it cannot be landed in pieces | extension | L (a week with the live checks) |
 | B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
 | C8 | one host window per client toplevel | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
@@ -180,6 +181,7 @@ The kit, and what each piece is for:
 | `CursorProbe` | the same for `SelectCursorInput`: two windows with different glyph cursors, the pointer warped between them, every `CursorNotify` printed. |
 | `ClipboardProbe` | plays one end of the clipboard bridge against a live server - `read` prints what a client would paste, `write <text>` takes the selection and serves it, `owner` prints who holds it - so the host's own pasteboard can be the other end of the check. |
 | `XProxy` | a byte-level X11 proxy: logs a client's request/event stream against a *real* server, which is the only way to compare what a client sends to Xvfb with what it sends here. |
+| `XiProbe` | the XInput2 questions (`XIQueryVersion`, `XIQueryDevice`, `XIGetClientPointer`, `XISelectEvents`), printed as fields **and** bytes, with an XTEST button press so the events a selection actually produces can be read off - the harness B4's measurements were taken with. |
 | `Crop`, `Pixel`, `Diff`, `Compare` | small image helpers (Crop magnifies a region around a point). |
 
 The test bed (as of 2026-09-24):
@@ -1783,7 +1785,7 @@ whether that is "clipped" (today's behaviour) before advertising.
 
 ---
 
-### [ ] B4. XInput2. **L**
+### [ ] B4. XInput2. **L** - measured 2026-09-26 (`tools/XiProbe`); the item cannot be done partially
 
 **Current.** Not advertised; `xeyes` prints a warning about the missing `XInputExtension` and falls
 back to core input, and that fallback works for every client tested.
@@ -1803,6 +1805,73 @@ layout are again positional; capture from Xvfb.
 
 **Verify.** `xinput list` on the VM; `xev -event device` prints XI2 events; the applications still
 receive input exactly once.
+
+**Measured 2026-09-26, and the plan above is too small to be safe - which is the finding.** The tool
+this item needed (`tools/XiProbe`, new) was written and run against Xvfb and against this server, and
+what it found is that **the version this plan describes would break the client it is meant to help**.
+The evidence is in three parts.
+
+**1. Advertising the extension changes what GDK does, not just what it could do.** EasyShell is
+JavaFX, and JavaFX's Linux backend is GTK: `libglassgtk3.so` calls `gdk_device_grab`/`gdk_device_ungrab`
+(measured with `nm -D` on the AppImage's own copy), and **`libgdk-3.so` resolves
+`XIGrabDevice`/`XIUngrabDevice`** where they exist (measured with `strings`, alongside
+`XISelectEvents`, `XIQueryVersion`, `XIQueryDevice` and `XIQueryPointer`). GDK3's device grab *is*
+`XIGrabDevice` once the extension is there, and every menu, drag and modal dialog a forwarded GTK
+application opens goes through one. A server that advertises `XInputExtension` and then answers
+`XIGrabDevice` with `BadRequest` therefore breaks EasyShell's context menus - the exact thing §7 spends
+four bullets on - and the same applies to every XI2 grab, passive grab, `XIAllowEvents` and
+`XIQueryPointer` a toolkit sends. "Advertise and answer the queries first" is not a smaller version of
+this item; it is a worse one.
+
+**2. The wire facts are now measured, so the next session does not have to derive them.** All of these
+are in `tools/XiProbe`'s output and comments:
+
+- **The mask bits are not the core ones.** `XI_KeyPress` is `1<<2`, `XI_ButtonPress` `1<<4`,
+  `XI_ButtonRelease` `1<<5`, `XI_Motion` `1<<6` - one higher than the core event code, with
+  `XI_DeviceChanged` at `1<<1`. Measured one bit at a time: `1<<3` selects nothing and lets the core
+  events through, `1<<4` delivers an XI2 `ButtonPress` **and suppresses the core one**, `1<<6`
+  delivers a `Motion`. (The fork's generated `XIEventMask` has these right - `BUTTON_PRESS(0b10000)` -
+  which is the one place its numbering was *not* off by one.)
+- **An XI2 event is a `GenericEvent` (type 35) whose first twelve bytes are the header** - type,
+  extension opcode, sequence, length, evtype, deviceid - with the XI2 body starting at the
+  **timestamp**. There is no 32 bit `full_sequence` on the wire: assuming one (the XGE spec's other
+  events have it) puts every field four bytes late, and the timestamp then reads as 1 and the detail
+  as the root window's id. The length field is `total/4 - 8`.
+- **The fixed part of a device event is 68 bytes**, then `button_mask`, `valuator_mask` and
+  `axisvalues`, each sized by the two length fields. A reference answers an XTEST button press with
+  120 bytes: 68 + 8 words of button mask + 2 words of valuator mask + one `FP3232` axis.
+- **`XIGetClientPointer` answers `BadWindow` for the root window** on a reference server (measured,
+  minor 45, bad value `0x1ff`), so it is asked about a window the client made.
+- **A reference does not deliver an XI2 `ButtonRelease` to a client that did not select the XI2
+  `ButtonPress`** - measured: mask `1<<5` alone is quiet and the core pair flows; `(1<<4)|(1<<5)`
+  delivers both XI2 events and suppresses both core ones. So the "emulated core event" rule is per
+  pointer-down/up *pair*, not per event.
+- **`XIQueryDevice` is a header plus a variable number of `XIDeviceInfo` records**, each carrying its
+  own name and a list of `DeviceClass` records whose length is in the class. A reference answers six
+  devices for a stock Xvfb (two masters, four slaves); the honest answer here is two masters, and the
+  class bodies start at the sixth byte of each class (reading them at the eighth makes a key class
+  report its first keycode as its key count).
+
+**3. `tools/XiProbe` is the harness.** `XiProbe <host> <port>` prints the version, the client pointer
+and the whole device list, parsed **and** as raw bytes; `XiProbe <host> <port> device <id>` narrows it
+to one device; `XiProbe <host> <port> select <mask> [deviceid] [root]` selects XI2 events, warps the
+pointer in and drives a button through XTEST, printing every message with both rails visible (it
+selects the core masks too, so "no XI2 event" and "the gesture never happened" can be told apart - a
+quiet run means different things and only having both in one output says which). Against this server
+it prints `XInputExtension is not offered by this server`, which is today's honest state.
+
+**What the next session should do**, in order: land the extension with the queries *and* the event
+delivery *and* the device-grab family in one go, verify each request against Xvfb with `XiProbe`, and
+only then advertise. The pieces are: a minimal `XProtocolPlugin` (the fork's `x11-protocol-xinput` is
+not published to the local Maven repository, so nothing generated is available - the request decoding
+has to be hand-written, as `XkbExtension` does for `SetMap`, and the replies written as bytes, as
+`XkbExtension.getKbdByName` does); a two-master device model; the selection store; the XI2 event built
+from the core event at the delivery funnel; and `XIGrabDevice`/`XIUngrabDevice`/`XIAllowEvents` and the
+passive pair, which with one master pointer are the core grabs with an XI2 face.
+
+**Size, honestly.** This is a week of work with the live checks, not the half-day the §0 table's `L`
+implies, and it is the one item where a half-finished state is *worse* than not starting: the failure
+mode is not "a client loses gestures", it is "a forwarded GTK application's menus stop working".
 
 ---
 
@@ -2426,8 +2495,32 @@ established and one is still open:
 
 **A detail the live check did show**: the icon in the menu bar is a *square with a light background*
 rather than a cut-out disc, because `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual - so a
-client's icon window has no alpha and its transparent corners arrive opaque. Publishing a 32 bit ARGB
-visual would fix the shape, and is a small item of its own.
+client's icon window has no alpha and its transparent corners arrive opaque. ~~Publishing a 32 bit ARGB
+visual would fix the shape, and is a small item of its own.~~
+
+**That last sentence is wrong, and it was measured rather than argued (2026-09-26).** The fix it
+proposes was designed and then abandoned: **publishing a 32 bit visual cannot give the icon its alpha
+back, because the alpha is thrown away before the tray ever reads the pixels.** Three facts settle it,
+and each is in the code rather than in a guess:
+
+- A window's drawing goes straight into the **screen's** framebuffer, and `Framebuffer.opaque()`
+  forces every pixel stored there to `0xFF……` - deliberately, because a screen has no alpha
+  (`Framebuffer.opaque`'s comment says so: `GXclear` and `GXinvert` produce values with a zero top
+  byte, and a backend that honours alpha then draws holes). An ARGB32 window's drawing therefore
+  *reaches* the framebuffer with its alpha already gone.
+- `TrayBridge.capture` reads that framebuffer, and forces the byte itself a second time
+  (`framebuffer.pixel(x, y) | 0xFF000000`), which is belt and braces over the same thing.
+- The only other store a docked window has is A9's backing store, and `XWindow.buffer()` allocates a
+  `Framebuffer` too - the same opacity rule, for the same reason.
+
+So the shape a client draws with alpha only exists where a **per-window ARGB surface** exists, and
+there is none: that is B5's architecture (a store per window, and the composite to the screen done in
+the tick), not a one-line property change. Publishing the 32 bit visual without it would be worse than
+doing nothing, because the client would then draw its icon with a transparent background and the tray
+would show the *screen's* colour through the holes rather than the icon's shape.
+
+The item stays where it is until B5 lands; what is recorded here is that its remaining part is B5's and
+not a small item of its own.
 
 **Traps.**
 
@@ -3103,14 +3196,13 @@ than no file. The two facts a pipeline needs are in the script's own comments.
 be produced here - there is no CI service in this checkout - so the item stays open until the script
 is wired to one and seen to run.
 
-**Found on the way, and not fixed: a server with no display serves into the void.** With
-`-Djava.awt.headless=true` and the default backend, a client that maps a window makes the tick thread
-call `JavaFxBackend.start`, whose toolkit startup never returns: the request threads go on answering
-clients, the tick thread is parked, and the log's last words are a raw JavaFX stack trace and
-`nothing to show on display :95: the window holds its last frame`. Nothing tells the user that nothing
-will ever be shown. That is a backend-selection question rather than a CI one - the honest behaviour
-is a line saying the toolkit could not start and either a refusal to start or a fall back to the
-headless backend - and it wants its own item.
+**Found on the way, and now its own item and done: a server with no display serves into the void.**
+With `-Djava.awt.headless=true` and the default backend, a client that maps a window made the tick
+thread call `JavaFxBackend.start`, whose toolkit startup never returned: the request threads went on
+answering clients, the tick thread was parked, and the log's last words were a raw JavaFX stack trace
+and `nothing to show on display :95: the window holds its last frame`. That is a backend-selection
+question rather than a CI one, and **E7** is the item - the toolkit startup is bounded, the fallback
+to the headless backend happens, and what the server *says* about it is honest now.
 
 ---
 
@@ -3326,6 +3418,53 @@ is missing) answer three different questions and each duplicates part of the oth
 is done, the README's "Known limitations" and the design notes' "Deliberately not done" are usually
 where the change has to be *recorded*, or the next reader re-derives it. Treat the tick as part of the
 item, not as an afterthought.
+
+---
+
+### [x] E7. A server that shows nothing must not say it opened a window. **S** - done 2026-09-26
+
+**What it was.** E2's orphan, which it says "wants its own item": with no display, the server falls
+back to the headless backend and warns that nothing can be shown - and then, one line later, when a
+client mapped its first window, logged
+
+```
+WARN BackendFactory - ...nothing can be shown on this machine, so the server is running headless - clients are served and no window is opened
+INFO XServer         - opened a window for display :64 showing java.awt.Rectangle[x=0,y=0,width=166,height=166]
+```
+
+Two lines, one of them false, about the one thing a user is trying to find out. Nothing was broken
+(the client was served and drew - 71 requests from `xclock`), so this is honesty rather than
+behaviour: the sentence a user follows to find where their application went named a window that does
+not exist. The idle line had the same fault from the other side - `nothing to show on display :64: the
+window holds its last frame`, said for the headless backend and for a session with no backend at all,
+which is *every* idle moment of per-client mode's master session.
+
+**What changed.** `DisplayBackend.isHeadless()` - which already existed, with both the headless and
+VNC backends overriding it, and had **no caller** - now decides what the log says:
+`XServer.openedMessage` chooses between "opened a window for display :N showing ..." and "display :N is
+served by the <name> backend, which opens no window: showing ...", and the idle line says "the window
+holds its last frame" only where there is a window. The method's contract is written down where the
+caller can read it: it is "opens no window **on this machine**", not "draws nothing" - a VNC backend
+draws for every viewer - which is why VNC counts.
+
+**Measured 2026-09-26, live.** A server started with `-Djava.awt.headless=true`, and `xclock` from the
+VM against it: the toolkit startup gives up after its ten seconds with the reason, the fallback
+warning follows, and the next line is now
+
+```
+INFO XServer - display :64 is served by the headless backend, which opens no window: showing java.awt.Rectangle[x=0,y=0,width=166,height=166]
+```
+
+and the idle moments say `no window is showing it`. `HeadlessWindowTest` (3 tests) pins the decision
+and the contract it rests on; **`aBackendWithNoWindowIsNotDescribedAsHavingOpenedOne` fails without the
+fix** (`a window that does not exist: opened a window for display :95 showing ...`). The decision is a
+pure function deliberately, because the case that went wrong is the one a machine *with* a display
+cannot otherwise reach.
+
+**Still open, and it is a client's, not this server's**: the JavaFX toolkit dumps a raw
+`RenderJob.run: internal exception` / `ArrayIndexOutOfBoundsException` stack trace to stderr on the
+way to giving up. The server now says what happened in its own words; the trace underneath it is the
+platform's and there is no switch that turns it off.
 
 ---
 

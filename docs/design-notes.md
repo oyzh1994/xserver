@@ -262,7 +262,10 @@ before the pointer does, and the crossing events that say so - see above - then 
 Both backends now add the viewport origin and clamp to the screen
 (`JavaFxBackend.screenCoordinate`); the server logs the viewport it opened for a session
 (`opened a window for display :N showing java.awt.Rectangle[...]`) at INFO, which is how to tell
-whether a given setup is affected.
+whether a given setup is affected. A backend with **no** window says that instead - `display :N is
+served by the headless backend, which opens no window: showing ...` - because the sentence above is
+what a user follows to find where their application went, and a server that fell back to headless
+used to claim a window beside its own warning that nothing could be shown (E7).
 
 ## A screen bigger than the window looks
 
@@ -971,6 +974,30 @@ The other things measured on the way:
   server says `0x1f`) - JavaFX sends it as an application starts, and an error there is a client that
   is told its request was malformed rather than unsupported.
 
+## An extension is advertised only when the client can use all of it
+
+The rule an extension's absence follows here is not "is there something behind it" but "would a
+client that took us at our word be worse off than one that fell back". Two extensions were added for
+the opposite reason - XINERAMA and XKEYBOARD - because their *absence* was not a fallback at all:
+`xdotool` dereferences the null `XkbGetMap` a server without XKEYBOARD hands back, and dies in its own
+startup (A4). Those cost three small replies and one keymap.
+
+XInput2 is the case where the rule says no, and it was measured rather than assumed (B4). JavaFX's
+Linux backend is GTK, `libglassgtk3.so` calls `gdk_device_grab`/`gdk_device_ungrab`, and
+**`libgdk-3.so` resolves `XIGrabDevice`/`XIUngrabDevice` where they exist** - measured with `strings`
+on the AppImage's own copy of each library. GDK3's device grab *is* `XIGrabDevice` once the extension
+is advertised, and every menu, drag and modal dialog a forwarded GTK application opens goes through
+one. A server that answers `XIQueryVersion` and then refuses `XIGrabDevice` therefore does not give
+that application better scrolling; it takes away its menus. Advertising it is one piece of work or
+none, and the measurement is in the backlog's B4 so the next session does not have to find it again.
+
+The other half of the same rule is what a client is *told* when something is missing, and it is worth
+stating because it is not symmetric: an error is worse than an empty answer. A refusal is an X
+protocol error, and Xlib's default handler ends the client's process - which is why `GetKbdByName`
+answers "not loaded" rather than erroring, why RandR answers an empty `GetOutputProperty` reply, and
+why `PerClientFlags` says "none supported". A client that gets an answer it can read falls back; one
+that gets an error does not get the chance.
+
 ## The pointer's history
 
 `GetMotionEvents` answers from a bounded ring per screen - 256 entries, Xorg's own
@@ -1369,6 +1396,13 @@ in the macOS menu bar, measured before any of this was written. That is one smal
   copies the window's rectangle out of the framebuffer every 200 ms and hands it to the menu bar, and
   an icon that something covers reads as what covers it - which is what a user looking at the screen
   would see too.
+  **And the icon comes out opaque**, which is the same fact seen from the other side: the screen's
+  framebuffer stores no alpha - `Framebuffer.opaque` forces every pixel opaque, deliberately, because
+  a backend that honours alpha would draw the holes `GXclear` and `GXinvert` leave - so a client's
+  transparent corners have already lost their transparency by the time the bridge reads them. The
+  item's own note said publishing a 32 bit `_NET_SYSTEM_TRAY_VISUAL` would fix the shape; it cannot,
+  and it would make things worse (the client would draw a transparent background and the menu bar
+  would show the screen's colour through it). The shape needs a store per window, which is B5.
 - **The selection is taken at startup.** An application asks whether a notification area exists while
   it is starting and never asks again, so a tray that appears when the first window does is a tray
   that application has already given up on.
