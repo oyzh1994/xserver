@@ -84,8 +84,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
-| B5 | DAMAGE / Composite / Present / SYNC (and real translucency) | extension | L |
-| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bleed into its parent's frame (one framebuffer), so this needs B5's per-window store first | host window | L (B5 first) |
+| [~] B5 | DAMAGE **done**, and the per-window store is in **for windows with an alpha channel** - real translucency, and the tray icon's shape - 2026-09-26; the *general* store, Composite, Present and SYNC still open | extension | L |
+| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bleed into its parent's frame, so it waits on the *general* per-window store (B5's alpha half is in) | host window | L (B5's general half first) |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
@@ -1952,9 +1952,35 @@ mode is not "a client loses gestures", it is "a forwarded GTK application's menu
 
 ---
 
-### [~] B5. DAMAGE done 2026-09-26; Composite, Present and SYNC still open. **L**
+### [~] B5. DAMAGE done; the per-window store is in for alpha windows (2026-09-26); Composite, Present and SYNC still open. **L**
 
-**Current.** ~~None of the four.~~ **DAMAGE is there now**; the other three are not. The model is
+**The per-window store, and how much of it is in (2026-09-26).** The plan called for "a per-window
+backing store, a damage region per window, Composite and Present and SYNC over it, and a final
+composite to the framebuffer in the display tick" - and one slice of that is now real: **a window whose
+visual has an alpha channel keeps its own pixels** (`XWindow.ownPixels`, a `Framebuffer` with alpha),
+draws into them, and is composited onto the screen from them. So the visual the server advertises
+means something: a translucent fill is translucent rather than opaque, a covered alpha window keeps its
+pixels and gets them back with no `Expose`, and the tray's icon - a disc on a transparent background -
+keeps its shape instead of arriving as a light square (C9's leftover). `TranslucentWindowTest` (4
+tests) and `TrayBridgeTest`'s `anIconWithAnAlphaVisualKeepsItsTransparentCorners` pin it, and
+`mvn test` is 350/350.
+
+Two protocol rules had to change with it, and each had made an ARGB window impossible to *create* or to
+draw translucently into:
+
+- **a child need not share its parent's depth** - `CreateWindow` refused it as a `BadMatch`, and the
+  ARGB window every compositing toolkit creates is a child of the root at depth 32 under a depth 24
+  root (what has to exist is a visual of that depth, which is checked separately); and
+- **a graphics context converts its colours in the visual of the drawable it was created on**, not the
+  screen's root visual - otherwise the half-transparent foreground a core request expresses alpha with
+  arrives opaque.
+
+**What is left of the store is the general case**, and C8 is what needs it: every window keeping its
+pixels, not only the alpha ones, so that a frame per top level can show a window's own pixels rather
+than a rectangle of the shared screen. That is the larger half - it changes what drawing means for
+every window, and it is what the C8 entry says it waits on.
+
+**Current of the rest.** ~~None of the four.~~ **DAMAGE is there now**; the other three are not. The model is
 "every request draws straight into one framebuffer and a revealed window is asked to redraw with an
 `Expose`" (README's "A revealed window is restored by asking it to draw"). A 32-bit ARGB visual is
 advertised, but with no compositor a translucent window simply draws its pixels opaquely.
@@ -2516,9 +2542,11 @@ over by it. That is exactly what `docs/design-notes.md` predicted when it reject
 ("per-window native windows would either lose dialogs or cost a second rendering model"), and the
 measurement now says the prediction is right.
 
-**So C8 depends on B5.** A frame per top level is only honest once each window has pixels of its own to
-be that frame's picture - the per-window store B5 describes. Until then the union frame is the correct
-choice: everything the user sees is what the X screen shows, and only the *frame's* size and position
+**So C8 depends on B5, and part of that is now in (2026-09-26).** A window whose visual has an alpha
+channel already keeps its own pixels (B5's store, measured with `TranslucentWindowTest`) - so the
+machinery this item needs exists for alpha windows. What C8 still needs is the **general** case: every
+window keeping its pixels, which is the larger half of the store and changes what drawing means for
+every window. Until then the union frame is the correct choice: everything the user sees is what the X screen shows, and only the *frame's* size and position
 are wrong, rather than its pixels.
 
 **Traps the prototype cost, each one a way to get it wrong quietly** - worth having before the code is
@@ -2633,8 +2661,19 @@ established and one is still open:
   AWT and Xlib on two threads, which is the client's own problem and not this server's. Worth doing by
   hand with a client that does not do that (termora's terminal, or a GTK application).
 
-**A detail the live check did show**: the icon in the menu bar is a *square with a light background*
-rather than a cut-out disc, because `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual - so a
+**Fixed 2026-09-26 with the per-window store (B5).** `_NET_SYSTEM_TRAY_VISUAL` now publishes the 32 bit
+ARGB visual, the client's icon window is made with it, and such a window keeps its own pixels and is
+composited - so a transparent corner stays transparent. Measured in process:
+`TrayBridgeTest.anIconWithAnAlphaVisualKeepsItsTransparentCorners` asserts the composed menu-bar image
+has a transparent corner and the disc's colour at its centre. **Live, the icon reaches the menu bar but
+a screenshot could not confirm its shape**: the icon is docked and handed over (the server logs "an
+icon is in the menu bar now"), and it goes away with its client, but it was not found in the captures -
+and an A/B with the 24 bit visual could not find it either, so that is the tool, not the change. The
+record below is what the item said before the store existed.
+
+**The detail the live check showed, when the icon was still opaque**: it was a *square with a light
+background* rather than a cut-out disc, because `_NET_SYSTEM_TRAY_VISUAL` published the root's 24 bit
+visual - so a
 client's icon window has no alpha and its transparent corners arrive opaque. ~~Publishing a 32 bit ARGB
 visual would fix the shape, and is a small item of its own.~~
 

@@ -429,6 +429,38 @@ only one that converted back; everything else already treated a depth 8 store as
 that found it is `DrawHandlers`' `PutImage landed: ... values=`, which prints the distinct bytes a
 small image put down: three values where a mask should have had a gradient is what named the cause.
 
+## A window with an alpha channel keeps its pixels
+
+The screen's framebuffer is opaque by design ("The screen is opaque"), so a client that asks for the
+32 bit ARGB visual and draws something translucent had the alpha dropped on the way in: the visual was
+advertised and meant nothing, and the tray's own icon - a disc on a transparent background - arrived in
+the menu bar as a square with a light background. **A window whose visual has an alpha channel now
+keeps its own pixels** (`XWindow.ownPixels`, a `Framebuffer` with `alpha` set) and is composited.
+
+**Where it draws.** `DrawHandlers.target` is the one place a drawing request is pointed at a surface,
+so that is where the choice is made: such a window gets a rasterizer over its own store, in the
+window's own coordinates and clipped to the **whole window** rather than to the part of it that shows -
+a covered window goes on drawing, which is the point of keeping them. `afterDrawing` then composites
+what the request wrote onto the screen, clipped to `visibleRegion()` so it cannot paint over what is
+above it, with `Compositor.compositeOver` - the same blend every other composite here uses, so the
+identity argument in "The hot path in the blend" covers this too. `GetImage` on such a window reads the
+store; painting its background writes into the store; and the reveal path
+(`WindowHandlers.repaintUnder`) composites the store rather than painting and exposing, which is why a
+covered window gets its pixels back without an `Expose`.
+
+**The two protocol rules that had to change with it**, both of which made an ARGB window impossible
+before this and neither of which is obvious from the symptom:
+
+- **A child need not share its parent's depth.** `WindowHandlers.create` refused a window whose depth
+  differed from its parent's as a `BadMatch` - and the ARGB window every compositing toolkit creates is
+  a child of the root, depth 32 under a depth 24 root. What has to exist is a *visual* of that depth,
+  which is checked separately. (Xvfb cannot settle this one: it advertises no depth 32 visual at all.)
+- **A graphics context converts its colours in the visual of the drawable it was created on.** This was
+  hard-coded to the screen's root visual, so a client that created a context on its ARGB window and set
+  a half transparent foreground got an opaque one - the alpha a core drawing request can *only* express
+  that way. A real client does create its context on the window it draws on, which is why the bug hid
+  behind "the client asked for the wrong thing".
+
 ## The hot path in the blend
 
 The compositor's pixel loop is where every request ends up, and it was written for clarity: per pixel

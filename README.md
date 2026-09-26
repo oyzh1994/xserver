@@ -264,7 +264,7 @@ specification, and each worked around rather than patched upstream:
   managers can never see which fields a client asked to change. That event is assembled as raw
   bytes instead.
 
-## The screen is opaque
+## The screen is opaque, and a window with alpha is not
 
 One invariant is worth stating because breaking it produces a bug that hides from every
 server-side test: **the framebuffer only ever stores opaque pixels**. X has no alpha on the screen -
@@ -278,6 +278,14 @@ black: `xwd`, the tests and every protocol-level check agree the screen is right
 shows nothing. `Framebuffer` therefore forces every stored pixel opaque, and `XGC` initialises its
 foreground to opaque black rather than zero - a client that draws with a graphics context's default
 foreground is extremely common.
+
+**A window whose visual has an alpha channel is the exception, and it is the only one.** What such a
+client draws is meant to be composited over what is under it, so it cannot be written to an opaque
+screen at all: those windows draw into a store of their own (in their own coordinates, the whole
+window and not only the part that shows), and the part that shows is composited over the screen with
+the same blend every other composite here uses. A translucent fill is translucent, a covered window
+keeps its pixels and gets them back, and the window the screen holds is still an ordinary opaque
+picture - which is what the rest of this section is about.
 
 If a window is ever blank again, `-Dxserver.dumpFrame=<prefix>` writes the JavaFX image and the
 framebuffer behind it to PNG files once a second. Comparing the two says immediately whether the
@@ -416,12 +424,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   a window of the X screen like any other - this server has one surface, so a window off it would
   have no pixels to read - and its image is copied into the menu bar on top of that. A client's own
   context menu therefore opens next to its window on the X screen, not under the menu-bar icon: the
-  menu is a window the client places itself, and no tray host here can move it. And the icon is
-  **opaque**: `_NET_SYSTEM_TRAY_VISUAL` publishes the root's 24 bit visual, so a client's icon window
-  has no alpha and its transparent corners arrive as a light square. Publishing a 32 bit visual does
-  **not** fix that - the alpha is dropped when the client's drawing reaches the screen's framebuffer
-  (which has none by design, `Framebuffer.opaque`), so the shape needs a per-window store and is part
-  of the compositing work, not a property change. Measured, `docs/backlog.md` C9.
+  menu is a window the client places itself, and no tray host here can move it. And the icon keeps its
+  **shape**: `_NET_SYSTEM_TRAY_VISUAL` publishes the 32 bit ARGB visual, the client's icon window is
+  made with it, and a window with an alpha channel keeps its own pixels and is composited - so a
+  transparent corner stays transparent instead of arriving as a light square. What a *screenshot* of
+  the menu bar shows has not been confirmed: the icon is handed to the menu bar (the server logs it)
+  but was not found in the captures, which is the trap C9's own record warns about.
 - **Fonts are real X fonts.** `fixed`, `6x13`, `7x13`, `9x15`, `10x20` and `12x24` - and the XLFD
   names they answer to - are served from tables captured off a reference server, and **any other name
   is looked up on the font path**: `fonts.alias` maps a short name to a full one, `fonts.dir` maps
