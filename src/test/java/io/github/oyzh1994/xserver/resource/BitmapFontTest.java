@@ -200,6 +200,41 @@ class BitmapFontTest {
         }
     }
 
+    /**
+     * A font is loadable by the name the server itself reports for it, and by a pattern - the two
+     * halves of the same client gesture, and the reason no X font set could be built here.
+     *
+     * <p>A client that lists fonts gets the font's <em>own</em> XLFD name back (see
+     * {@link #anAliasedFontIsReportedUnderItsOwnName}) and then loads it by that name; Xlib's
+     * font-set machinery also builds a <em>pattern</em> from the base name and the charset it wants
+     * and loads that. Both names used to miss the table and land on the Java approximation, whose
+     * font has no {@code CHARSET_REGISTRY}/{@code CHARSET_ENCODING} properties at all - so every
+     * charset came back missing and {@code XCreateFontSet} failed. Measured against Xvfb: it answers
+     * {@code ISO8859}/{@code 1} for both names where this server answered neither (backlog C10).
+     *
+     * <p>Each assertion is the table's own answer (ascent 11, descent 2, 23 properties), which is
+     * what the approximation cannot produce: without the two lookups the name is unknown, the font
+     * is a JVM font, and its numbers are its own.
+     */
+    @Test
+    void aFontIsLoadableByItsOwnNameAndByAPattern() throws Exception {
+        String xlfd = "-Misc-Fixed-Medium-R-SemiCondensed--13-120-75-75-C-60-ISO8859-1";
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            assertEquals(java.util.List.of(xlfd), client.listFonts(xlfd, 64),
+                    "the name a ListFontsWithInfo reply carries has to be in the font list too, or "
+                            + "the client is told a name the server then cannot find");
+            for (String name : new String[] {xlfd, "-misc-fixed-*-iso8859-1", "fixed"}) {
+                int font = client.allocateId();
+                client.openFont(font, name);
+                byte[] reply = client.queryFont(font);
+                assertEquals(11, (short) RawXClient.readShort(reply, 52), "ascent for " + name);
+                assertEquals(2, (short) RawXClient.readShort(reply, 54), "descent for " + name);
+                assertEquals(23, RawXClient.readShort(reply, 46),
+                        "the real font's properties for " + name);
+            }
+        }
+    }
+
     private static String metric(byte[] reply, int at) {
         return String.format("lb=%d rb=%d width=%d asc=%d desc=%d",
                 (short) RawXClient.readShort(reply, at), (short) RawXClient.readShort(reply, at + 2),

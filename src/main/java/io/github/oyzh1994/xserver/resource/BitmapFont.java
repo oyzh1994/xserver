@@ -2008,11 +2008,108 @@ public final class BitmapFont {
         BY_NAME.put("9x15", FONT_9X15);
         BY_NAME.put("10x20", FONT_10X20);
         BY_NAME.put("12x24", FONT_12X24);
+        // Each font is also reachable by its own XLFD name, and that is the name a client ends up
+        // loading it by: it is what ListFontsWithInfo reports, so a client that lists fonts and then
+        // opens one - which is exactly what Xlib's font-set machinery does - asks for
+        // "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1" and not for "fixed".
+        //
+        // Without this the lookup fell through to the Java approximation, which has **no
+        // CHARSET_REGISTRY/CHARSET_ENCODING properties at all** (measured against a reference
+        // server, 2026-09-26: the reference answered those two for the XLFD name, this server
+        // answered neither). Xlib's `XCreateFontSet` reads a font's charset from those properties,
+        // so every charset came back missing and no font set could be built - which is why no X
+        // input method worked here (backlog C10). The listing was right and the loading was not.
+        for (Font font : java.util.List.of(FIXED, FONT_7X13, FONT_9X15, FONT_10X20, FONT_12X24)) {
+            BY_NAME.putIfAbsent(font.xlfd().toLowerCase(java.util.Locale.ROOT), font);
+        }
     }
 
-    /** The font a client asked for by name, or null when it is not one of these. */
+    /**
+     * The font a client asked for by name, or null when it is not one of these.
+     *
+     * <p>A name with a wildcard in it is a <em>pattern</em>, and resolving one is not a nicety: it
+     * is how a font-set client asks. Xlib's {@code XCreateFontSet} builds a pattern out of the base
+     * name and the charset it is looking for and opens *that*, so a server that treats a pattern as
+     * a name it has never heard of hands back the Java approximation - whose font has no
+     * {@code CHARSET_REGISTRY}/{@code CHARSET_ENCODING} properties at all - and every charset comes
+     * back missing. Measured against a reference server on 2026-09-26: for
+     * {@code -misc-fixed-*-iso8859-1} the reference answered {@code ISO8859}/{@code 1} and this
+     * server answered neither, which is the second half of why no font set could be built here
+     * (backlog C10; the first half was the alias name in {@code ListFontsWithInfo}).
+     */
     static Font forName(String name) {
-        return name == null ? null : BY_NAME.get(name.trim().toLowerCase(java.util.Locale.ROOT));
+        if (name == null) {
+            return null;
+        }
+        String key = name.trim().toLowerCase(java.util.Locale.ROOT);
+        Font exact = BY_NAME.get(key);
+        if (exact != null) {
+            return exact;
+        }
+        if (key.indexOf('*') < 0 && key.indexOf('?') < 0) {
+            return null;
+        }
+        // The tables own five fonts, so the first of them a pattern matches is the answer - in a
+        // fixed order, so the same request resolves the same way twice.
+        for (Font font : java.util.List.of(FIXED, FONT_7X13, FONT_9X15, FONT_10X20, FONT_12X24)) {
+            if (matches(key, font.name()) || matches(key, font.xlfd())) {
+                return font;
+            }
+        }
+        return null;
+    }
+
+    /** Whether a font name matches an X font pattern: {@code *} is any run, {@code ?} exactly one. */
+    public static boolean matches(String pattern, String name) {
+        return matches(pattern.toLowerCase(java.util.Locale.ROOT), 0,
+                name.toLowerCase(java.util.Locale.ROOT), 0);
+    }
+
+    private static boolean matches(String pattern, int p, String name, int n) {
+        while (p < pattern.length()) {
+            char c = pattern.charAt(p);
+            if (c == '*') {
+                while (p < pattern.length() && pattern.charAt(p) == '*') {
+                    p++;
+                }
+                if (p == pattern.length()) {
+                    return true;
+                }
+                for (int i = n; i <= name.length(); i++) {
+                    if (matches(pattern, p, name, i)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            if (n >= name.length()) {
+                return false;
+            }
+            if (c != '?' && c != name.charAt(n)) {
+                return false;
+            }
+            p++;
+            n++;
+        }
+        return n == name.length();
+    }
+
+    /**
+     * The names the table's fonts answer to, each font's own XLFD - what a server lists them under
+     * besides the short aliases.
+     *
+     * <p>{@code ResourceHandlers.SERVER_FONTS} adds these, and it has to: a {@code ListFontsWithInfo}
+     * reply names a font by its XLFD, so a client that lists fonts and then asks about the name it
+     * was handed - which is what Xlib's font-set machinery does, one request after the other - has
+     * to be able to find it. Naming a font that this server cannot then list is what made
+     * {@code XCreateFontSet} fail with every charset missing (backlog C10, measured 2026-09-26).
+     */
+    public static java.util.List<String> names() {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (Font font : java.util.List.of(FIXED, FONT_7X13, FONT_9X15, FONT_10X20, FONT_12X24)) {
+            names.add(font.xlfd());
+        }
+        return names;
     }
 
     private BitmapFont() {

@@ -116,7 +116,17 @@ public final class ResourceHandlers {
      * to the first of them, which is what {@code XLoadQueryFont} relies on when it asks for one
      * name. Only the entries actually listed here exist - the font path below is informational.
      */
-    private static final List<String> SERVER_FONTS = List.of(
+    private static final List<String> SERVER_FONTS = buildServerFonts();
+
+    /**
+     * The names the server lists, which are the built-in aliases plus each table font's own XLFD
+     * name - the name its {@code ListFontsWithInfo} reply carries. A client that lists a font and
+     * then asks about the name it was handed has to be able to find it, and Xlib's font-set
+     * machinery is exactly that client: without the XLFD names here it was told "no such font" one
+     * request after being told the font's name, and every charset came back missing (backlog C10).
+     */
+    private static List<String> buildServerFonts() {
+        List<String> names = new ArrayList<>(List.of(
             "fixed",
             "6x13", "6x13bold", "7x13", "7x13bold", "8x13", "8x13bold", "9x15", "9x15bold",
             "10x20", "12x24", "nil", "nil2",
@@ -136,7 +146,10 @@ public final class ResourceHandlers {
             "times", "times-bold", "times-italic",
             "courier", "courier-bold", "courier-oblique",
             "symbol", "lucida", "lucida-bold", "new century schoolbook",
-            "terminal", "clean", "micro", "vga", "screen");
+            "terminal", "clean", "micro", "vga", "screen"));
+        names.addAll(io.github.oyzh1994.xserver.resource.BitmapFont.names());
+        return List.copyOf(names);
+    }
 
     /**
      * The colour database, as 0xRRGGBB. This is a curated subset of {@code rgb.txt}: the names
