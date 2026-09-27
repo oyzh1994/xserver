@@ -528,6 +528,17 @@ the one thing that *is* measured: with GLX present the client takes a different 
 sends differ. A client that wants OpenGL needs the extension and one that does not may be hurt by it,
 so the default is off and the switch is the user's.
 
+**Why, in the toolkit's own words** (`-Dprism.verbose=true`, 2026-09-27). Without GLX: *"ES2 Prism:
+Error - GLX extension is not supported"* and it falls straight to the software pipeline. With it:
+JavaFX initialises its X11 GL factory, **creates a context**, queries the GL, and only then reports
+*"System GPU doesn't meet the es2 pipe requirement"* and falls back - **to the same software pipeline**.
+So the extension buys JavaFX nothing and costs it a half-taken GL path, which is why the user's
+animations (a caret, a hover) were the thing that noticed. **It is not a speedup anywhere here**: a GL
+client without a GPU renders in software and ships every frame as `PutImage` (769 MB in 5.6 s
+measured), where the reference shares the buffer instead - `glxgears` runs at ~190 FPS here against
+2832 against Xvfb. Speed would need a GPU on the client with DRI3/Present, or a real GL in the server
+with indirect GLX.
+
 So the extension is a handshake, and the handshake is what `extension/GlxExtension` implements: the
 version, both config lists, the two server strings, contexts, and a drawable's attributes. **The one
 decision it rests on is the direct context.** `GLXCreateContext` carries a flag, and a client told

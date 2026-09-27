@@ -2235,6 +2235,12 @@ gesture can be reproduced. A client that wants OpenGL needs GLX; one that does n
 so the server no longer advertises it unless `--glx` asks, and the default is exactly the pre-GLX
 behaviour.
 
+**The mechanism is now measured, and it is in B6's entry**: with GLX advertised, JavaFX's Prism gets
+*further* into its ES2 attempt - `GLX extension is not supported` and it stops, against initialising
+the GL factory, creating a context and querying the GL before rejecting it - and then falls back to its
+software pipeline either way. A toolkit halfway down its GL path is a toolkit whose animation state is
+not what it would have been, which is the shape of both symptoms.
+
 **What to do if it comes back, in order.** (1) Confirm the server was started **without** `--glx` and
 re-try the same gesture. (2) Compare the focus: `GetInputFocus`/the focus chain against Xvfb's while
 EasyShell runs - a JavaFX window that does not believe it is active explains *both* symptoms at once,
@@ -2307,6 +2313,36 @@ bug):
   body straight away shifts every field by three bytes - invisible in a request whose body is ignored
   (a screen number) and wrong in every one where it is not. `GlxProbe` caught it on the first run:
   `QueryServerString` answered `BadValue` for the name.
+
+**Why advertising it changes anything, and why it is not a speedup - both measured 2026-09-27, with
+JavaFX's own words** (`JAVA_TOOL_OPTIONS=-Dprism.verbose=true` on the VM client, which is the only way
+to see *why* a toolkit takes the path it takes):
+
+```
+without GLX ("ES2 Prism: Error - GLX extension is not supported")
+  Prism pipeline init order: es2 sw -> GLFactory could not be initialized -> Fallback to Prism SW
+
+with GLX ("System GPU doesn't meet the es2 pipe requirement")
+  Prism pipeline init order: es2 sw -> GLX CreateNewContext, IsDirect, GetDrawableAttributes ->
+  Fallback to Prism SW
+```
+
+**The end state is the same** - JavaFX renders with its **software** pipeline either way, because its
+ES2 pipeline refuses a software GL - so **GLX buys JavaFX no speed. **What it changes is how far the
+attempt gets**: with the extension present the toolkit initialises the GL factory, **creates a context**
+and queries the GL before rejecting it, and a client halfway into its GL path is a client whose
+animation/pulse state is not the state it would have been in. That is the mechanism behind the owner's
+report (a menu that stops highlighting, a caret that stops blinking, while input-driven drawing keeps
+working), and it is why the default is off.
+
+**And it is compatibility, not efficiency, for the clients that do use it.** A GL client on a machine
+with no GPU renders with **software Mesa (llvmpipe) in its own process** and ships **every frame as
+`PutImage`** - 769 MB in 5.6 seconds measured against the reference - where the reference hands the same
+frames over through a shared DRI buffer. Measured end to end: `glxgears` runs at **~190 FPS against
+this server and 2832 FPS against Xvfb**, because one of them carries the pixels as requests and the
+other does not. A real speedup would need a **GPU on the client side** with DRI3/Present (shared
+buffers instead of uploads) or **server-side GL** with indirect GLX (a real GL in the server) - neither
+of which exists here, by design.
 
 **`tools/GlxProbe`** is the harness (checked into the kit, and in `tools/sweep.sh`, where it is now a
 comparison rather than a missing feature).
