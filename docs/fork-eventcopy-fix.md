@@ -1,5 +1,13 @@
 # E1's fix: the generator must honour a copy's own number
 
+**Not pursued, by the owner's decision of 2026-09-27, and this file is kept as the record rather than
+as a to-do**: the library is neither forked, built nor republished for five wrong bytes, and a
+class-level override of the generated events would mean taking Lombok, which this project will not
+depend on. **The fix that ships is the rewrite in `ClientOutput.EVENT_NUMBERS`** - the seventh entry in
+the README's "Bugs worked around in the protocol library" - pinned by `client/EventTypeByteTest`. What
+follows is what is wrong *upstream*, the patch, the verification, and the traps of building that
+library, for anyone who ever takes it on.
+
 The sibling document to the backlog entry: the patch, why it is that line, and how it was verified.
 It lives here because **the fork it patches is not under version control** - `~/IdeaProjects/other/x11`
 is a plain directory - so a fix in it is a change nobody can review and nothing can restore.
@@ -108,3 +116,17 @@ both together pass all five tests, so the rewrite can stay until the artifact is
 afterwards. Note that this machine's `~/.m2` now holds the fixed artifact while Maven Central holds
 the buggy one, so a fresh clone still resolves the buggy one - and the rewrite is what makes that
 harmless.
+
+## The fallback, if the rewrite is ever dropped: a same-named-class override (measured 2026-09-27)
+
+Five classes under `src/main/java/com/github/moaxcp/x11/protocol/xproto/` - `ButtonReleaseEvent`,
+`KeyReleaseEvent`, `LeaveNotifyEvent`, `FocusOutEvent`, `CirculateRequestEvent` - would shadow the
+library's, because this project's `target/classes` precedes the dependency on the classpath and javac
+prefers a source in the compilation. Two facts make it safe, and both were checked: **nothing else in
+the library constructs or references those five classes** (their only references are inside their own
+files), and this server never *decodes* them, so only `write`, `getNumber` and `getResponseCode`
+matter. The cost is the code: the generated classes are ~150 lines each and Lombok-built (`@Value
+@Builder`), so an override is either "copy them verbatim and take Lombok" (rejected by the owner) or
+"write them out without it" (~450 lines, `read` can be dropped, generated from the library's own
+sources by a script so it can be refreshed). It was set aside in favour of the rewrite, not rejected
+as wrong.

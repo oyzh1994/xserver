@@ -302,8 +302,11 @@ specification, and each worked around rather than patched upstream:
   (`ButtonRelease` is `ButtonPress` with another number, `LeaveNotify` is `EnterNotify`, and so on)
   and the generator emitted each with the number of the event it copies. On the wire a release then
   looked like a second press, a leave like an enter and a focus-out like a focus-in. `ClientOutput`
-  rewrites the five type bytes; `docs/fork-eventcopy-fix.md` is the generator fix, written and
-  verified, waiting on the fork's release.
+  rewrites the five type bytes, and **that is where the fix lives**: the library is deliberately not
+  forked, built or republished for five bytes (nor given a Lombok dependency, which a class-level
+  override of the generated events would need), and `client/EventTypeByteTest` reads the bytes off
+  the wire so the correction cannot be lost. `docs/fork-eventcopy-fix.md` records what is wrong
+  upstream and how to build it, for anyone who ever wants to.
 
 ## The screen is opaque, even though the windows behind it are not
 

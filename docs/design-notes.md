@@ -1813,7 +1813,8 @@ does not - is `backlog.md`, which is written to be worked through item by item.
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`, and three of its faults are
   patched in `ClientOutput` rather than worked around at each caller, because every reply and event
   already passes through there: the generator ignores the `number` on an `eventcopy`, which is why
-  `ClientOutput.EVENT_NUMBERS` rewrites five event type bytes; a reply's length field is computed from
+  `ClientOutput.EVENT_NUMBERS` rewrites five event type bytes - and where the correction deliberately
+  stays, the library being neither forked nor rebuilt for it (E1); a reply's length field is computed from
   the wrong base and short replies are emitted unpadded; and **a generic event's length field is never
   written at all**. The last one is the one that hides: Present's completion notification arrived as
   thirty two bytes where a reference sends forty, with the same kind, mode and serial inside, so every

@@ -86,7 +86,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
 | ~~B5~~ | ~~DAMAGE, **every window keeps its own pixels**, and **Composite, Present and SYNC**~~ **done 2026-09-27** - the general store, RENDER included, and the three a compositor needs | extension | L |
 | ~~C8~~ | ~~one host window per client toplevel~~ **declined 2026-09-27**: built twice (the second time on B5's store, and it worked), then rejected - the requirement is **one host window per application** | host window | L |
-| [~] E1 | the `eventcopy` generator fix in the protocol fork: **the patch is written, published locally and verified**; the fork still needs version control and a release | engineering | S (in the fork) |
+| ~~E1~~ | ~~the `eventcopy` generator fix~~ **closed 2026-09-27**: the library is not forked, built or republished (the owner's decision, and no Lombok), so the rewrite in `ClientOutput` **is** the fix - the seventh of the library's defects worked around here - pinned by `EventTypeByteTest` | engineering | S |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
@@ -4378,15 +4378,34 @@ property is checked - there is no client that can be made to exercise every mask
 
 ---
 
-### [~] E1. The `eventcopy` generator fix lives in the protocol fork. **S** (in the fork) - **fix written and verified 2026-09-27**; what is left is the release, which is the fork owner's
+### [x] E1. The `eventcopy` generator fix lives in the protocol fork. **S** - **closed 2026-09-27 by the owner's decision: the fix stays in this repository, and the library is neither forked, built nor republished**
 
-**Blocked on the fork, measured 2026-09-26.** `~/IdeaProjects/other/x11` **is not a git checkout**
-(`git status` says "not a repository"), so a fix there is a change nobody can commit or review, and
-the artifacts this project builds against live in the local Maven repository - so regenerating and
-publishing them also affects the fork's other dependants. Two ways forward, both the fork owner's to
-choose: put the fork under version control first, or replace the five `<eventcopy>` entries in
-`xproto.xml` with full `<event>` entries (which the generator honours) and re-publish. The workaround
-(`ClientOutput.EVENT_NUMBERS`) stays until then, and it is correct as it stands.
+**The decision, 2026-09-27, and it is what closes the item.** The owner will not fork the library,
+build it, or republish its artifacts - that work is out of proportion to five wrong bytes - and
+**Lombok is not a dependency this project will take on**. So the rewrite in `ClientOutput` is not a
+stopgap any more: **it is the fix**, the seventh entry in the README's "Bugs worked around in the
+protocol library" beside six of the same kind (a wrong list decoder, a wrong reply length, a wrong
+modifier-map count...), and it is pinned by a test that reads the bytes off the wire.
+
+**The fallback, if it ever needs revisiting, is a same-named-class override (option B), and it was
+checked before being set aside.** Five classes at
+`src/main/java/com/github/moaxcp/x11/protocol/xproto/` - `ButtonReleaseEvent`, `KeyReleaseEvent`,
+`LeaveNotifyEvent`, `FocusOutEvent`, `CirculateRequestEvent` - would shadow the library's, because
+this project's own `target/classes` precedes the dependency on the classpath and javac prefers a
+source in the compilation. Two facts make it *safe* (measured): **nothing else in the library
+constructs or references those five classes** (the only references are inside their own files), and
+this server never *decodes* them, so only `write`/`getNumber` matter. What it costs is the code: each
+class is ~150 lines of Lombok-generated boilerplate (`@Value @Builder`), so the override means either
+taking Lombok - rejected above - or writing those classes out without it (~450 lines, since `read`
+can be dropped), generated from the library's own sources by a script so it can be refreshed. That is
+the price of "the class itself is right" over "the bytes are right", and the owner chose the bytes.
+
+**Why the rewrite is enough.** Every event this server sends passes through
+`ClientOutput.writeEvent`, which is where the five bytes are corrected; the interface surface is
+`XEvent` (`write`, `getNumber`, `getResponseSize`), so no other path can produce them; and the
+symptom the item is about - a release arriving as a press, a leave as an enter, a focus-out as a
+focus-in - is what `EventTypeByteTest` now fails on if the correction is removed (measured against the
+published artifact: 4 of 5 cases fail).
 
 **Current.** `ClientOutput.EVENT_NUMBERS` rewrites five event type bytes by hand, because the
 generator in the `moaxcp/x11-protocol` fork ignores the `number` on an `eventcopy` and renumbers
@@ -4396,10 +4415,10 @@ sequentially. The workaround is documented in the README and in the design notes
 protocol defines most of the aliases - will be wrong again, and the failure mode is silent and
 confusing: a release arriving as a press is exactly the bug this workaround fixes.
 
-**The fix is written and verified (2026-09-27); only the *release* is left, and that is the fork
-owner's.** `docs/fork-eventcopy-fix.md` is the patch, the reasoning and the recipe, kept in this
-repository because the fork is not under version control and a fix in a directory nobody can restore
-is not a fix. What it says, in short:
+**And the upstream fix is written and verified anyway (2026-09-27), then set aside** - it is the
+record of what is wrong *there*, kept because it costs nothing to keep and because it names the traps
+of building that library. `docs/fork-eventcopy-fix.md` is the patch, the reasoning and the recipe.
+What it says, in short:
 
 - The generator *reads* a copy's number and then takes the copied event's **whole unit list** as its
   own - including the first unit, the `NUMBER` field, which carries the *ref's* constant. So the copy
@@ -4412,9 +4431,9 @@ is not a fix. What it says, in short:
   fixed generator (the rewrite is then a no-op), and fails only when neither is there: with the
   published artifact back and `EVENT_NUMBERS` disabled, **4 of 5 fail** - a `KeyRelease` arrives as
   type 2, a `ButtonRelease` as 4, a `LeaveNotify` as 7, a `FocusOut` as 9.
-- What is left: version-control the fork, publish a corrected artifact, then delete
-  `ClientOutput.EVENT_NUMBERS` and its comment. **Nothing in this repository has to change before
-  that** - measured, the rewrite and the fix are compatible.
+- It is *not* pursued, by the decision above. If it ever is: publish a corrected artifact first,
+  then the rewrite can be deleted - measured, the two are compatible, so the order does not matter
+  and nothing in this repository has to change until then.
 - **A trap of this machine**: the fork's Gradle wrapper cannot read the class files of the default
   JDK 27 (`Unsupported class file major version 71`), so the build needs `JAVA_HOME` pointed at a
   JDK 21, and a local publish needs the signing tasks off (an init script disabling
