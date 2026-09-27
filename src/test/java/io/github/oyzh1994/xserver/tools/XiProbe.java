@@ -68,6 +68,7 @@ public final class XiProbe {
         String mode = args.length > 2 ? args[2] : "query";
         boolean dump = false;
         int deviceId = ALL_DEVICES;
+        String propertyName = "XServerBacklogProbe";
         int selectMask = BUTTON_MOTION_MASK;
         int selectDevice = ALL_MASTER_DEVICES;
         boolean selectRoot = false;
@@ -97,6 +98,15 @@ public final class XiProbe {
                         i++;
                     }
                 }
+                case "getprop" -> {
+                    propertyName = args[++i];
+                    if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
+                        deviceId = Integer.parseInt(args[++i]);
+                    }
+                    if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
+                        PROPERTY_UNITS = Integer.parseInt(args[++i]);
+                    }
+                }
                 case "dump" -> dump = true;
                 default -> {
                 }
@@ -121,6 +131,10 @@ public final class XiProbe {
                 return;
             }
             queryVersion(wire, opcode, dump);
+            if (mode.equals("getprop")) {
+                getProperty(wire, opcode, deviceId, propertyName, dump);
+                return;
+            }
             // A window of the client's own, because the root is refused (see getClientPointer).
             int window = createWindow(wire);
             getClientPointer(wire, opcode, window, dump);
@@ -130,6 +144,66 @@ public final class XiProbe {
                 queryDevice(wire, opcode, ALL_DEVICES, dump);
             }
         }
+    }
+
+    /**
+     * {@code XIGetProperty}, the *device property* read - the request this server refuses, which cost
+     * a forwarded client a protocol error as it started.
+     *
+     * <p>A property that does not exist is the interesting case, because it is the only answer this
+     * server could give: it has no device properties at all. What a reference answers for one is what
+     * this asks for - by name, so a reader can see whether the answer is a reply with
+     * {@code type = None} or an error, and the reply's bytes settle where its fields are, since Xlib
+     * reads them positionally.
+     */
+    private static int PROPERTY_UNITS = 7;
+
+    private static void getProperty(Wire wire, int opcode, int device, String name, boolean dump)
+            throws Exception {
+        int property = internAtom(wire, name);
+        byte[] request = new byte[PROPERTY_UNITS * 4];
+        request[0] = (byte) opcode;
+        request[1] = 59;                            // XIGetProperty
+        Wire.writeShort(request, 2, PROPERTY_UNITS);
+        Wire.writeShort(request, 4, device);        // deviceid
+        Wire.writeInt(request, 8, property);
+        Wire.writeInt(request, 12, 0);              // type: AnyPropertyType
+        Wire.writeInt(request, 16, 0);              // offset
+        Wire.writeInt(request, 20, 1000);           // len, in four byte units
+        // delete (24) and padding stay zero.
+        wire.send(request);
+        byte[] reply = replyTo(wire, "XIGetProperty");
+        System.out.println("XIGetProperty device=" + device + " property=" + name + " (atom "
+                + property + ") -> " + reply.length + " bytes");
+        if (reply.length >= 32) {
+            // byte 0 says whether this is a reply (1) or an error (0), and an error's code is byte 1
+            // - the difference between "this server has no such property" and "this request was not
+            // understood", which look the same in a dump of zeros.
+            System.out.println("  byte0=" + (reply[0] & 0xFF) + " errorCode=" + (reply[1] & 0xFF)
+                    + " type=" + Wire.readInt(reply, 8)
+                    + " bytesAfter=" + Wire.readInt(reply, 12)
+                    + " numItems=" + Wire.readInt(reply, 16)
+                    + " format=" + (reply[20] & 0xFF));
+        }
+        hex("XIGetProperty", reply);
+    }
+
+    /** {@code InternAtom}, for naming a property in a request built here. */
+    private static int internAtom(Wire wire, String name) throws Exception {
+        // The core InternAtom: header, the onlyIfExists byte, a two byte name length, two bytes of
+        // padding, then the name at eight. (The length is at 4 and not at 8 - writing it at 8 puts
+        // zero there, which interns "None" and answers atom 0, which then reads as a server that
+        // refuses the property request.)
+        byte[] request = new byte[(8 + name.length() + 3) & ~3];
+        request[0] = 16;                            // InternAtom
+        request[1] = 0;                             // onlyIfExists: no, make it
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, name.length());
+        for (int i = 0; i < name.length(); i++) {
+            request[8 + i] = (byte) name.charAt(i);
+        }
+        wire.send(request);
+        return Wire.readInt(replyTo(wire, "InternAtom"), 8);
     }
 
     /**

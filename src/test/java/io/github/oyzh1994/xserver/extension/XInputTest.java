@@ -48,6 +48,7 @@ class XInputTest {
     private static final int XI_QUERY_VERSION = 47;
     private static final int XI_QUERY_DEVICE = 48;
     private static final int XI_QUERY_POINTER = 40;
+    private static final int XI_GET_PROPERTY = 59;
 
     /**
      * {@code XI_ButtonPress | XI_ButtonRelease}: measured to be {@code 1<<4 | 1<<5}, not the core
@@ -265,6 +266,45 @@ class XInputTest {
             // And the next request that does have a reply gets its own back, undisturbed.
             byte[] query = request(client, opcode, XI_GET_CLIENT_POINTER, window);
             assertEquals(0, query[8] & 0xFF, "set: this client never chose a pointer");
+        }
+    }
+
+    /**
+     * A device property read is answered "absent", not refused - and the reply's shape is a
+     * reference's, measured rather than reasoned.
+     *
+     * <p>A forwarded {@code EasyShell} asks this as it starts, between two {@code InternAtom} calls,
+     * and the refusal was a {@code BadRequest}: an unknown minor reached the decoder, which throws.
+     * The reply is thirty two bytes whose only non-zero fields are the header's, and byte 1 carries
+     * the <em>minor opcode</em> - measured by asking about two devices and watching it stay 59, which
+     * is what makes it the request's number and not the device's.
+     *
+     * <p>The request is <b>six units</b>: a reference refuses seven with {@code BadLength}, so the
+     * shorter form is what a client sends and what this decoder reads.
+     */
+    @Test
+    void theDevicePropertyReadIsAnsweredAbsentRatherThanRefused() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int property = client.internAtom("XServerBacklogProbe");
+            byte[] request = new byte[24];
+            request[0] = (byte) opcode;
+            request[1] = XI_GET_PROPERTY;
+            RawXClient.writeShortAt(request, 2, 6);
+            RawXClient.writeShortAt(request, 4, 2);          // the pointer device
+            RawXClient.writeIntAt(request, 8, property);
+            RawXClient.writeIntAt(request, 12, 0);           // type: AnyPropertyType
+            RawXClient.writeIntAt(request, 20, 1000);        // len, in four byte units
+            client.sendRequest(request);
+
+            byte[] reply = client.readReply();               // refuses by throwing
+            assertEquals(1, reply[0] & 0xFF, "a reply, not an error - and a property read expects one,"
+                    + " so accepting the request and answering nothing would be worse");
+            assertEquals(XI_GET_PROPERTY, reply[1] & 0xFF, "the minor opcode, where a reference puts it");
+            assertEquals(0, RawXClient.readInt(reply, 8), "type = None: no such property");
+            assertEquals(0, RawXClient.readInt(reply, 12), "bytes_after");
+            assertEquals(0, RawXClient.readInt(reply, 16), "num_items");
+            assertEquals(0, reply[20] & 0xFF, "format");
         }
     }
 
