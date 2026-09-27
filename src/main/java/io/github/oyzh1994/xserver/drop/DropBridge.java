@@ -282,11 +282,6 @@ public final class DropBridge {
         return draggingOwner != 0;
     }
 
-    /** Whether the drag is one of the bridge's own - the host's, going the other way. */
-    public boolean isHostDragInFlight() {
-        return target != 0 || !uris.isEmpty();
-    }
-
     /**
      * Asks the dragging client what it is offering, as a {@code SelectionRequest} for
      * {@code text/uri-list}.

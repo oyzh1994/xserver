@@ -1227,7 +1227,7 @@ back. A client that takes the server at its word is not being unreasonable; the 
 The other half of the same rule is what a client is *told* when something is missing, and it is worth
 stating because it is not symmetric: an error is worse than an empty answer. A refusal is an X
 protocol error, and Xlib's default handler ends the client's process - which is why `GetKbdByName`
-answers "not loaded" rather than erroring, why RandR answers an empty `GetOutputProperty` reply, and
+answers a layout where it has one and "not loaded" where it does not, why RandR answers an empty `GetOutputProperty` reply, and
 why `PerClientFlags` says "none supported". A client that gets an answer it can read falls back; one
 that gets an error does not get the chance.
 
@@ -1724,8 +1724,8 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   the repeat delay and rate can be changed at all) and the version handshake are real, and a client
   that compiles its own keymap can load it (`SetMap` - `xkbcomp <file> <display>` puts a layout on this
   keyboard, and both rails read the one table afterwards). What is deliberately not there: choosing a
-  layout **by name** (`setxkbmap` asks `GetKbdByName`, and the answer is "not loaded" because that
-  wants a keymap compiler inside a display server), the map's types, actions and behaviours, the
+  layout **by name** - which this server now serves off tables captured from a reference, and which
+  `setxkbmap` still cannot use because it sets a layout by *compiling and uploading* it (B1), the map's types, actions and behaviours, the
   compatibility map, `GetNames`, the indicator names, the XKB events, every control other than repeat,
   and `LatchLockState` - accepted and doing nothing, because a client locking a modifier would be
   locking the machine's own keyboard for every other client. The per-client flags are all unsupported

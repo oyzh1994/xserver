@@ -24,11 +24,6 @@ final class Layouts {
         return TABLES.get(name);
     }
 
-    /** The names this server can be asked for, for a message that says no. */
-    static java.util.Set<String> names() {
-        return TABLES.keySet();
-    }
-
     private static final Map<String, int[][]> TABLES = Map.ofEntries(
             Map.entry("us", us()),
             Map.entry("gb", gb()),

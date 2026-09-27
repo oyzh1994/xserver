@@ -57,11 +57,6 @@ final class Layouts {
         return TABLES.get(name);
     }
 
-    /** The names this server can be asked for, for a message that says no. */
-    static java.util.Set<String> names() {
-        return TABLES.keySet();
-    }
-
     private static final Map<String, int[][]> TABLES = Map.ofEntries(
 HEADER
     # A trailing comma is fine in an array initialiser and not in a method's argument list, so the last

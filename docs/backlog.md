@@ -1683,9 +1683,9 @@ remainder and it is **not** what it looks like:
   not, and never did - measured, **no request at all follows** the reply, and the same error is printed
   for the honest `loaded = 0` answer this server used to give.
 
-**What is still not here.** *Selecting a layout by name* - `setxkbmap`, and anything else that asks
-the server to compile one - because that is a keymap compiler in the server and this is a display
-server. The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`
+**What is still not here.** *Setting a layout by name in a way `setxkbmap` accepts* - it is answered,
+and the layout is installed, but the client then compiles the keymap itself and uploads it, and the
+upload is what this server does not take far enough (see the top of this entry). The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`
 requests above are accepted and dropped, so a client that sets names and reads them back gets
 nothing); every keyboard control other than repeat - slow keys, bounce keys, sticky keys, mouse keys,
 AccessX, the two internal modifier maps - is accepted by `SetControls` and not applied, and reported
