@@ -69,7 +69,12 @@ mvn exec:java -Dexec.args="--backend vnc --vnc-password-file ~/.xserver-vnc-pass
 ```
 
 Any VNC client works (`vnc://host:5900`), including the ones on phones; macOS's Screen Sharing
-**requires** a password, so use `--vnc-password-file` if that is the client. With `--vnc-ws-port`, a
+**requires** a password, so use `--vnc-password-file` if that is the client - on the Mac, Finder's
+**Cmd-K** takes `vnc://host:5900` directly. `--vnc-port 0` takes any free port and prints the one it
+got, which is the honest way to run it beside anything else. **This mode opens no host window** - that
+is what lets it run on a machine with no display - and it implies `--single-window`, so every client
+shares the one screen; X clients connect exactly as they otherwise do (`DISPLAY=host:N`), and a VNC
+client's mouse and keyboard *are* the X pointer and keyboard. With `--vnc-ws-port`, a
 browser reaches it too - `noVNC` pointed at `ws://host:6080`, with **nothing to install and no bridge
 process**: open its `vnc.html` and put the host and port in the URL (the page itself is not served by
 this server, only the RFB inside the WebSocket). What is sent is raw

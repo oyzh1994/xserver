@@ -95,8 +95,40 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 5.1 | TCP | a client on the VM at `192.168.22.1:61` | it connects and works |
 | 5.2 | a unix socket and `--no-tcp`/`--no-unix`/`--local` | a client on this machine | the transports restrict exactly as asked |
 | 5.3 | `--auth` and the no-credentials case | `AuthProbe` | a client with no credentials is refused; with the cookie it connects |
-| 5.4 | VNC: raw and ZRLE frames, the cursor pseudo-encoding, a password, the clipboard | `--backend vnc`, a VNC viewer, `ZrleEncoderTest` | the screen appears, the pointer is drawn, the clipboard crosses |
+| 5.4 | VNC: raw and ZRLE frames, the cursor pseudo-encoding, a password, the clipboard | `--backend vnc`, a VNC viewer, `ZrleEncoderTest` | the screen appears, the pointer is drawn, the clipboard crosses - the recipe is below |
 | 5.5 | VNC over WebSocket, in a browser | `--vnc-ws-port`, noVNC | the screen appears with no bridge process |
+
+**The VNC recipe, as one command.** This is the mode where the server opens no window at all and the
+whole screen is served over RFB - so it runs on a machine with no display, and what a VNC client's
+mouse and keyboard do is drive the X pointer and keyboard (`RfbSession` -> `input.pointerMoved` /
+`keyChanged` / `buttonChanged`).
+
+```sh
+# A password file is one line; macOS's Screen Sharing insists on a password.
+echo 'my-password' > ~/.xserver-vnc-pass
+mvn exec:java -Dexec.args="--backend vnc --vnc-port 0 --geometry 1300x800 \
+    --vnc-password-file ~/.xserver-vnc-pass --vnc-ws-port 6080"
+# the log then says:  VNC on port <N>: connect with vnc://<this machine>:<N>
+#                     VNC over WebSocket on port 6080: point noVNC at ws://<this machine>:6080/
+```
+
+Then: **macOS** Finder -> Cmd-K -> `vnc://<host>:<N>` (the built-in Screen Sharing); **a phone** any VNC
+app; **a browser** noVNC's `vnc.html` at `ws://<host>:6080` - nothing to install, no bridge process.
+`--vnc-port 0` takes any free port and prints it, which is the honest way to run it beside anything
+else. Before bothering with a viewer, the objective check is one line - a real VNC server answers with
+its protocol version:
+
+```sh
+python3 -c "import socket; print(socket.create_connection(('127.0.0.1', <N>)).recv(12))"   # RFB 003.008
+```
+
+**Either/or with the host window**: `--backend vnc` opens no window (that is what lets it run without a
+display), so this and the JavaFX window are two modes rather than two features at once - **and it
+implies `--single-window`**, every client sharing the one screen, which is what a VNC-served X display
+has always looked like. X clients connect exactly as they otherwise do (`DISPLAY=<host>:<N>`); VNC is
+only how a person watches and drives it. **Encodings**: raw, and ZRLE when the client lists it; `Tight`
+and `CoRRE` are not implemented, and raw is mandatory for every client, so any viewer works - it is
+bandwidth on a slow link that suffers, not compatibility.
 | 5.6 | session persistence | `--detach-on-close --control-port N` | clients survive the window, `attach`/`detach`/`status` answer |
 
 ## 6. Engineering
