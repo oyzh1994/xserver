@@ -1374,6 +1374,29 @@ an attempt:
 - AWT reports it as `keyTyped`, which is the same event as an ordinary character and needs no second
   hook.
 
+## A drag out of a forwarded application
+
+The other direction looks harder than it is, and the reason is that **X does say when a drag has
+started** - just not in a message. A client that decides to drag takes the `XdndSelection` and starts
+talking to whatever is under the pointer, so the selection's owner *is* the announcement, and it is
+the one thing a server can see before the application has committed to a target. `DropBridge` watches
+it, asks the owner for `text/uri-list` the moment it appears, and the answer is in hand by the time
+the user's gesture has travelled far enough for the host window's toolkit to raise a drag-detected.
+
+That ordering is the whole design, and it is why nothing has to be lazy. The host's drag has to be
+started from the gesture already in progress - the pointer is about to leave the host window, and
+after that there is nothing left to start it from - and a toolkit's drag source wants its files at
+that moment rather than a promise, because a `Dragboard` holds real files. Asking on sight is what
+makes both true at once: the client answers in the time the user takes to move a few pixels, and a
+client that has not answered by then simply does not set a drag off.
+
+Two smaller things follow from where the pieces live. The ask is a `SelectionRequest` **event** and
+not a request, because the bridge is the requestor and the client is the owner - the same inversion
+the host clipboard's fetch runs on - and the answer comes back through the same `sendEvent` routing
+the clipboard uses. And the bridge's own window owns the same selection during a host-to-X drag, so
+that case is filtered out rather than mistaken for an application dragging: the two directions share
+one selection name and nothing else.
+
 ## A drag from the host's desktop
 
 X's drag and drop is client to client, and the *source* drives it: it takes the `XdndSelection`,

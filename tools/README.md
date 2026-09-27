@@ -224,6 +224,16 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   (None is the whole of each) and not flags, and **the order the event and the pixels are read in
   changes the answer** - the reference's present is asynchronous, so asking for the pixels before
   reading the completion samples a race and reports that nothing was copied.
+- `DragOutProbe` - a forwarded application that is dragging files **out** of itself, which is C5's
+  other half: it takes the `XdndSelection` (the only signal X gives that a drag has started) and
+  answers the server's request for `text/uri-list`. It exists because whether a real application
+  offers a drag is up to the application, so the host's side cannot be driven from the two on this
+  bed - and `DragOutProbe <host> <port> path...` plus `/tmp/drag x1 y1 x2 y2` (post a hand's gesture
+  inside the host window) exercises the whole path: the server sees the drag, asks, and starts a
+  platform drag carrying the files. **Its own first version never saw the request**, because it
+  synchronised with `geometry()` after taking the selection and a reply read skips events - the
+  server asks while *processing* the `SetSelectionOwner`, so the request is already on the wire. A
+  probe never round-trips after the request it is waiting for.
 - `SyncProbe` - the harness for SYNC, the second of B5's three: the version handshake (asked twice,
   because whether the answer is the server's version or the client's is a rule the reply settles),
   the system counters, a counter created, set, changed and read back, `GetPriority`/`SetPriority`, and

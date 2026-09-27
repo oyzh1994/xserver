@@ -69,7 +69,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| C5 | host → X drag and drop (XDND); the drag *out* is still open | host window | M |
+| ~~C5~~ | ~~host → X drag and drop (XDND)~~ **done 2026-09-27**: both directions, the drag out through the `XdndSelection` | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
@@ -2905,7 +2905,7 @@ made one, is declined).
 
 ---
 
-### [ ] C5. Host ↔ X drag and drop (XDND). **M** - the host-to-X half is done 2026-09-24, not ticked
+### [x] C5. Host ↔ X drag and drop (XDND). **M** - both halves done: the host's drag into an application (2026-09-24) and an application's drag out to the host (2026-09-27)
 
 **What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
@@ -2932,24 +2932,54 @@ it carries; a target that answers `XdndStatus` is dropped on and can ask for the
 `file:///…` one per line out of the property; a window that does not publish `XdndAware` is left
 alone. Disabling the `XdndEnter` send fails two of them.
 
-**What is not done, and why this is not ticked: dragging *out* of a forwarded application.** A JavaFX
-window cannot start a platform drag - the platform's drag is the user's gesture and the toolkit only
-reports one - so there is no drag to hand a client's `XdndEnter` to. That needs a native drag source
-(and on macOS a pasteboard file promise the client's `text/uri-list` request fills in lazily), which is
-the second half of this item.
+**Dragging *out* of a forwarded application is done too (2026-09-27), and the reason it was left
+open was wrong.** The entry said a JavaFX window cannot start a platform drag - it can, from a
+drag-detected handler - and that the payload had to be a lazily-filled pasteboard promise. Neither is
+what the working design needs, because **X does say when a drag has started**: a client that decides
+to drag takes the `XdndSelection`, and that is the one signal a server can see. So:
 
-**Also unverified: a real application receiving a real drop.** The item's Verify says "drag a file from
-Finder into a forwarded `xterm` (it should print the path)" - but **`xterm` does not speak XDND**; it
-is a client from before drag and drop, and nothing it does will ever print a dropped path. The clients
-that take drops are toolkits - GTK, Qt, and Swing's `TransferHandler` - so a forwarded GTK application
-(or termora's terminal) is the thing to try.
+- **`DropBridge` watches the drag selection.** `XServer.setSelectionOwner` tells it, exactly as it
+  tells the clipboard bridge, and a client taking it is a drag in progress. The bridge's own window
+  owns the same selection during a host-to-X drag, which is filtered out.
+- **It asks the client what it offers, the moment it sees the drag** - a `SelectionRequest` for
+  `text/uri-list`, sent as an event because here the bridge is the requestor and the client the owner
+  (the same shape as the host clipboard's fetch). The answer arrives through `AtomHandlers.sendEvent`
+  like the clipboard's does, and the property it names holds one URI per line.
+- **Asked on sight, not when the platform wants it**, and that is the whole timing argument: the
+  host's drag has to be started from the gesture already in progress, JavaFX's dragboard holds real
+  files rather than a promise, and a client answers in the time it takes the user to move a few
+  pixels. What has not answered by then does not set a drag off.
+- **`InputSink.draggingOut()`/`dragOutFiles()`** are what a backend asks from its drag-detected
+  handler, and `JavaFxBackend` starts a real drag with the files when they say so.
 
-**The reason given here for not trying it has since been corrected (2026-09-26, C10's re-measurement):
-posted `CGEvent`s *do* reach the host window** - a click and a typed character both arrive, and a
-script can even post straight to the server's pid when the window will not come forward. What a script
-still cannot do is make it a *file* drag: Finder's drag carries a file promise, and a posted event
-carries no files. So the honest state is "the gesture is scriptable in principle, the payload is
-not" - and the thing to try is a real drag by hand, with a real client that takes drops.
+**Verified end to end, with a script, which the entry said could not be done.** `tools/DragOutProbe`
+stands in for the application - it takes the drag selection and answers with a file list, which is the
+half a platform cannot produce in process - and then:
+
+```
+$ tools/kit.sh DragOutProbe 127.0.0.1 6061 /tmp/one.txt /tmp/two.txt      # the forwarded app drags
+  dragging out: window=0x200001 offering file:///tmp/one.txt file:///tmp/two.txt
+  answered a request for the file list
+$ /tmp/drag 400 300 900 400                                              # a hand's gesture, posted
+$ ls /tmp/dragout-target
+  one.txt  two.txt
+```
+
+with the server's own log naming each step: `a forwarded application is dragging from 0x200001`,
+`the dragging client offers 2 file(s)`, and `a drag of 2 file(s) left a forwarded application`. **The
+drop landed in a Finder window opened on a scratch directory and Finder copied both files into it,
+with their contents intact** - so the whole path is measured, not just the server's half of it.
+
+**What is still not verified by that: a real application offering a real drag.** The probe decides to
+drag; whether EasyShell or termora do - and what they put in the drag - is up to them, and neither has
+been driven into a drag by hand. That is a five-minute check for somebody at the machine, and it is
+the honest remainder rather than the item.
+
+**And the earlier note about a hand being needed was about the *other* direction.** "Finder's drag
+carries a file promise and a posted event carries no files" is true of dragging *from* the desktop
+*into* an application, which is the half that was already done; it was never true of dragging out,
+where the payload comes from the X client and the posted events only have to move the mouse. The two
+were conflated here for three days.
 
 ---
 
