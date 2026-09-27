@@ -99,6 +99,38 @@ class WindowStoreTest {
         }
     }
 
+    /**
+     * A window takes a copy *from a pixmap* into its own pixels, and the screen shows it from there.
+     *
+     * <p>This is the shape a caret blink draws with, and it is the one drawing path the rest of the
+     * suite never exercises: {@code RawXClient} had no {@code CopyArea} at all until this test, so
+     * nothing sent one. It has to be pinned separately because copying a pixmap into a window is
+     * where the store's coordinate rules meet a source that has no origin on the screen - the
+     * destination's origin is 0 (its pixels *are* its coordinates) while a screen-drawing window's
+     * would be its absolute position, and getting that wrong leaves the copy in the store but not on
+     * the screen, or the other way round.
+     */
+    @Test
+    void aWindowTakesACopyFromAPixmapIntoItsOwnPixels() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 600, 0, 100, 100);
+            client.mapWindow(window);
+            sync(client, window);
+
+            int pixmap = client.allocateId();
+            client.createPixmap(pixmap, client.root(), 100, 100, 24);
+            int gc = client.createGC(client.allocateId(), client.root(), GREEN);
+            client.fillRectangle(pixmap, gc, 0, 0, 100, 100);
+            client.copyArea(pixmap, window, gc, 0, 0, 0, 0, 100, 100);
+            sync(client, window);
+
+            waitForColor(650, 50, GREEN, "the copy from the pixmap reached the screen");
+            assertEquals(GREEN, client.pixelAt(window, 50, 50),
+                    "and it is in the window's own pixels, so a read answers with it");
+        }
+    }
+
     // ------------------------------------------------------------------
 
     /**

@@ -1104,6 +1104,29 @@ public final class RawXClient implements AutoCloseable {
         out.flush();
     }
 
+    /**
+     * CopyArea: a rectangle from one drawable to another. Nothing else in the kit sends one, and it
+     * is how a caret blink puts a frame on the screen - into a pixmap, then copied to the window -
+     * so a window that keeps its own pixels has to take the copy there rather than straight onto the
+     * screen (B5, {@code WindowStoreTest}).
+     */
+    public void copyArea(int srcDrawable, int dstDrawable, int gc, int srcX, int srcY, int dstX,
+                         int dstY, int width, int height) throws IOException {
+        byte[] request = new byte[28];
+        request[0] = 62;                            // CopyArea
+        writeShort(request, 2, 7);
+        writeInt(request, 4, srcDrawable);
+        writeInt(request, 8, dstDrawable);
+        writeInt(request, 12, gc);
+        writeShort(request, 16, srcX);
+        writeShort(request, 18, srcY);
+        writeShort(request, 20, dstX);
+        writeShort(request, 22, dstY);
+        writeShort(request, 24, width);
+        writeShort(request, 26, height);
+        send(request);
+    }
+
     /** The children of a window, which for a root is every window the client has made. */
     public int[] queryTree(int window) throws IOException {
         byte[] request = new byte[8];
