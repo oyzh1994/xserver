@@ -42,6 +42,31 @@ class AlphaMaskTest {
         assertEquals(0xFF000000, mask(0xFF).pixelAt(0, 0), "full coverage is opaque");
     }
 
+    /**
+     * And a colour written *into* an A8 picture is stored the same way, so that it reads back as the
+     * same coverage. The write and the read are one convention: a mask a client fills through RENDER
+     * - which is what a compositor does to build the alpha ramp it attenuates a frame by - has to
+     * come back out the way {@link #anA8MasksCoverageIsItsAlpha} reads it.
+     *
+     * <p>Found with a real compositor, and the fault is invisible from either end alone: `picom`
+     * fills a **1x1** A8 picture with the opacity and composites a frame through it, and a
+     * `writePixel` that put the whole ARGB value in the store left the alpha in the top byte, where
+     * the format's mask never looks. The mask read as **zero coverage everywhere**, so every masked
+     * composite wrote nothing at all - the screen was black, the compositor was running happily, and
+     * `--opacity-rule` did nothing. The request is accepted either way; only the picture is empty.
+     */
+    @Test
+    void writingAColourIntoAnA8PictureStoresItsCoverage() {
+        Picture picture = mask(0);
+        picture.writePixel(0, 0, 0x40000000);
+        assertEquals(0x40000000, picture.pixelAt(0, 0),
+                "a quarter alpha written in is a quarter coverage read back");
+
+        Picture opaque = mask(0);
+        opaque.writePixel(0, 0, 0xFF000000);
+        assertEquals(0xFF000000, opaque.pixelAt(0, 0), "and full alpha is full coverage");
+    }
+
     @Test
     void aColourPictureIsNotDecodedTwice() {
         VisualInfo argb32 = VisualInfo.argb32(0x200);

@@ -703,6 +703,14 @@ public final class RenderExtension implements Extension {
                 throw ProtocolException.badValue(repeat);
             }
             picture.setRepeat(repeat);
+            if (log.isDebugEnabled()) {
+                // The repeat mode is what decides whether a source smaller than the composite is
+                // tiled or reads as empty. A compositor's alpha mask is a **1x1** picture it samples
+                // at an offset *outside* it, so a repeat of None reads as nothing and the frame comes
+                // out blank - which is a bug report that looks nothing like its cause.
+                log.debug("SetPicture repeat={} on {} ({})", repeat, picture.drawable(),
+                        picture.width() + "x" + picture.height());
+            }
         }
         if (values.has(Cp.ALPHA_MAP)) {
             Picture alphaMap = values.alphaMap() == 0 ? null : requirePicture(values.alphaMap());
@@ -859,6 +867,12 @@ public final class RenderExtension implements Extension {
                 request.getSrcX(), request.getSrcY(), request.getMaskX(), request.getMaskY(),
                 request.getDstX(), request.getDstY(), Short.toUnsignedInt(request.getWidth()),
                 Short.toUnsignedInt(request.getHeight()));
+        if (log.isDebugEnabled()) {
+            // How many pixels the request actually wrote. A composite that is accepted and writes
+            // nothing is a different bug from one that writes the wrong colour, and the difference is
+            // invisible in the request log - it is what a compositor's blank frame turns out to be.
+            log.debug("  -> wrote {} pixels, {} blocked", compositor.written(), compositor.blocked());
+        }
     }
 
     private void fillRectangles(XServer server, ClientConnection client, FillRectangles request) {

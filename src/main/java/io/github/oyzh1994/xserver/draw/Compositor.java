@@ -61,6 +61,16 @@ public final class Compositor {
      * A diagnostic: nothing in the server's behaviour depends on either.
      */
     private int written;
+    /** Pixels the last request wrote, for a caller that reports what a request did. */
+    public int written() {
+        return written;
+    }
+
+    /** Pixels the last request left alone because the destination would not take them. */
+    public int blocked() {
+        return blocked;
+    }
+
     private int blocked;
 
     private static final int TRANSPARENT = 0;

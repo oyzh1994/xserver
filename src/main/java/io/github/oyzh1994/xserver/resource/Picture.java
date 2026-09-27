@@ -454,6 +454,28 @@ public final class Picture extends XResource {
      * filled paths arrive this way; the glyph path already decodes through the format, which is why
      * text was unaffected.
      */
+    /**
+     * The colour as this picture's drawable stores it, which is the inverse of {@link #stored}.
+     *
+     * <p>**A depth 8 drawable's store holds a byte per pixel, not an ARGB value** - that is the
+     * convention the rest of the server keeps ({@code ImageCodec} writes the byte its client sent,
+     * {@code stored} decodes it through the format on the way out), and a RENDER write that put an
+     * ARGB value there instead kept its alpha in the top byte where the format's mask never looks.
+     *
+     * <p>Found with a real compositor: `picom` attenuates a frame by compositing a **1x1 depth-8
+     * alpha picture** as the mask, and its `FillRectangles` into that picture wrote `0x80000000`,
+     * which read back as alpha 0 - so the mask was empty, every masked composite wrote nothing, and
+     * the screen was black with the compositor running happily. The same fault made `--opacity-rule`
+     * a no-op, and it is the shape of bug that costs a session: a rejected request would have said
+     * so, and this one is accepted and writes the wrong byte.
+     */
+    private int storedForm(int argb) {
+        if (window != null) {
+            return argb;                            // a window's store is ARGB, at every depth here
+        }
+        return drawableDepth() == 8 ? format.fromArgb(argb) : argb;
+    }
+
     private int stored(int x, int y) {
         int pixel = store.pixel(drawableX + x, drawableY + y);
         if (format.isAlphaOnly() || drawableDepth() == 8) {
@@ -599,7 +621,7 @@ public final class Picture extends XResource {
         if (!isWritable(x, y)) {
             return;
         }
-        store.setPixel(drawableX + x, drawableY + y, argb);
+        store.setPixel(drawableX + x, drawableY + y, storedForm(argb));
         if (window != null && window.keepsOwnPixels()) {
             // Remember that the window's store changed at this pixel, so the composite that puts it
             // on the screen knows which part of it to copy.
