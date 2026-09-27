@@ -372,12 +372,24 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
     desynchronised at its first device event and stalled before drawing a pixel. With the fix,
     EasyShell renders through the proxy, complete, and every stream checks out against its own length
     fields.
-  **Its first real use (2026-09-27) is clean**: EasyShell's request profile against Xvfb and against
-  this server line up request for request, and the three differences are the *reference's* own
-  environment - `GetAtomName` for `X11VNC_TICKER` and the root properties x11vnc leaves on Xvfb,
-  `CreateColormap` for visuals Xvfb has and this server deliberately does not, and a `GetMotionEvents`
-  probe the client simply does not make here. That is what "no difference" looks like on a tool that
-  can now show one.
+  **Its first real use (2026-09-27) is clean, and it is now a method**: run the *same* client through
+  the proxy against a reference and directly against this server, drive **the same interaction** on
+  both with the same driver (`xdotool` on the VM, not XTEST from here - the driver's own startup
+  queries are a third of the traffic and using two drivers compares the drivers), and compare
+  interaction-only profiles by request name and by **(extension, minor)**. EasyShell's profile comes
+  out request for request: `QueryExtension` 70/70, `GetInputFocus` 21/21, `GetProperty` 19/19,
+  `GetKeyboardMapping` 18/18, `GetModifierMapping` 14/14, WarpPointer/GrabServer/ChangeProperty and
+  the whole RENDER/XKEYBOARD/XFixes/XTEST/XInput set within a couple of each other. The only
+  differences are a *name* (`Enable` here against `BIG-REQUESTS Enable` there) and about 25% more
+  *drawing* on this side (`PutImage` 408 against 314, the picture churn to match) - this server's
+  compositing path against a server that draws straight to the screen, which is a performance note and
+  not a protocol difference. An earlier run of the same comparison was misled twice and both are
+  recorded here because they look like findings: comparing profiles from **different drivers**, and
+  comparing a run's **startup** against another's **interaction** (mark the log, or the window is
+  wrong). The three differences the startup comparison *did* show are the reference's own environment:
+  `GetAtomName` for `X11VNC_TICKER` and the root properties x11vnc leaves, `CreateColormap` for
+  visuals Xvfb has and this server deliberately does not, and a `GetMotionEvents` probe the client
+  does not make here.
   A fifth argument adds a **raw dump**
   (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per message as
   `<conn> <direction> <hex>`, for when the *bytes* are what is being hunted - that is how

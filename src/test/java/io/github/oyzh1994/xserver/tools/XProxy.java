@@ -27,7 +27,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p><b>Reconstructed 2026-09-24</b> after the original was lost with `/tmp`: the framing, the setup
  * exchange, the BigRequests handling and the request descriptions are the original's (they were read
  * back from a session log), but its opcode/event name table was longer - here anything not in the
- * short table prints as {@code op-<n>}. The behaviour that matters (walk the byte stream, log one
+ * short table prints as {@code op-<n>} (and every extension request carries its minor opcode, which is
+ * the only label two servers' extension traffic can be compared by). The behaviour that matters (walk the byte stream, log one
  * line per message) is unchanged.
  */
 public final class XProxy {
@@ -133,9 +134,16 @@ public final class XProxy {
                     System.arraycopy(head, 0, header, 0, 4);
                     System.arraycopy(rest, 0, header, 4, 4);
                 }
+                // An extension request carries its own minor opcode in the second byte, and without
+                // it two servers' extension traffic cannot be compared at all - every one of them
+                // prints as the same `op-<major>` line. Which extensions a server numbers where also
+                // differs, so the minor is the only common label.
+                String minor = clientToServer && (header[0] & 0xFF) >= 128
+                        ? " minor=" + (header[1] & 0xFF) : "";
                 System.out.println((clientToServer ? "C>S" : "S>C") + " op=" + (header[0] & 0xFF)
                         + " b2b3=" + ((head[2] & 0xFF) | ((head[3] & 0xFF) << 8))
-                        + (header.length > 4 ? " b4b7=" + card32(header, 4) : ""));
+                        + (header.length > 4 ? " b4b7=" + card32(header, 4) : "")
+                        + minor);
                 int extra = 0;
                 if (clientToServer) {
                     if (units == 0) {
@@ -233,6 +241,11 @@ public final class XProxy {
         int type = message[0] & 0xFF;
         if (clientToServer) {
             line.append(String.format("req %-3d %-24s", type, name(type)));
+            if (type >= 128 && message.length > 1) {
+                // An extension request's minor opcode: the only label two servers' extension
+                // traffic can be compared by, since they number the extensions differently.
+                line.append(String.format(" minor=%-3d", message[1] & 0xFF));
+            }
             if (message.length >= 12) {
                 line.append(" win=0x").append(Integer.toHexString(card32(message, 4)));
             }
@@ -323,15 +336,44 @@ public final class XProxy {
             case 26 -> "GrabPointer";
             case 27 -> "UngrabPointer";
             case 28 -> "GrabButton";
-            case 33 -> "GrabKeyboard";
-            case 34 -> "UngrabKeyboard";
-            case 37 -> "GrabServer";
-            case 38 -> "UngrabServer";
-            case 39 -> "QueryPointer";
-            case 40 -> "GetMotionEvents";
-            case 41 -> "TranslateCoordinates";
+            // **The input range is off by one in the numbering people quote from memory**: 33 is
+            // `GrabKey` (not `GrabKeyboard`), 36 is `GrabServer` (not 37), and 119 is
+            // `GetModifierMapping`. Read off the protocol's own list rather than reconstructed: a
+            // wrong name here reads as a wrong measurement, which is how an hour went on
+            // 2026-09-27 comparing a profile that named the wrong requests.
+            case 33 -> "GrabKey";
+            case 34 -> "UngrabKey";
+            case 35 -> "AllowEvents";
+            case 36 -> "GrabServer";
+            case 37 -> "UngrabServer";
+            case 38 -> "QueryPointer";
+            case 39 -> "GetMotionEvents";
+            case 40 -> "TranslateCoordinates";
+            case 41 -> "WarpPointer";
             case 42 -> "SetInputFocus";
             case 43 -> "GetInputFocus";
+            case 44 -> "QueryKeymap";
+            case 45 -> "OpenFont";
+            case 47 -> "QueryFont";
+            case 78 -> "CreateColormap";
+            case 79 -> "FreeColormap";
+            case 84 -> "AllocColor";
+            case 88 -> "FreeColors";
+            case 91 -> "QueryColors";
+            case 93 -> "CreateCursor";
+            case 94 -> "CreateGlyphCursor";
+            case 95 -> "FreeCursor";
+            case 100 -> "ChangeKeyboardMapping";
+            case 102 -> "ChangeKeyboardControl";
+            case 103 -> "GetKeyboardControl";
+            case 105 -> "ChangePointerControl";
+            case 106 -> "GetPointerControl";
+            case 112 -> "SetCloseDownMode";
+            case 113 -> "KillClient";
+            case 116 -> "SetPointerMapping";
+            case 117 -> "GetPointerMapping";
+            case 118 -> "SetModifierMapping";
+            case 119 -> "GetModifierMapping";
             case 53 -> "CreatePixmap";
             case 54 -> "FreePixmap";
             case 55 -> "CreateGC";
@@ -353,12 +395,9 @@ public final class XProxy {
             case 75 -> "PolyText16";
             case 76 -> "ImageText8";
             case 77 -> "ImageText16";
-            case 88 -> "CreateCursor";
-            case 93 -> "CreateColormap";
             case 98 -> "QueryExtension";
             case 99 -> "ListExtensions";
             case 101 -> "GetKeyboardMapping";
-            case 116 -> "NoOperation";
             case 128 -> "BIG-REQUESTS Enable";
             case 139 -> "RENDER";
             default -> "op-" + opcode;

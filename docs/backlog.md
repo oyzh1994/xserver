@@ -107,6 +107,13 @@ in E0), and the measurement rules that go with them. Read that file before runni
 some of the rules exist because ignoring them produced an afternoon of chasing an imaginary rendering
 bug - and one of them, the pointer outliving every client, is new in E0 and has the same shape.
 
+**The same-client-two-servers comparison is finally available (2026-09-27)**, which is what `XProxy`
+was written for and never managed: `XProxy` truncated every generic event (XI2's), so every real
+toolkit desynchronised at its first device event. Fixed, and the first use is in
+`tools/README.md` - EasyShell's profile against Xvfb and against this server, for the same interaction
+driven by the same driver, agrees request for request. That is the instrument for the next "why does
+this client behave differently here" question; use it before re-deriving one by hand.
+
 ### [x] E0. Finish the verification kit. **S** - done 2026-09-25
 
 Restored on 2026-09-24: `Drive`, `WinTree`, `Focus`, `Pixel`, `Xwd`, `Blocks`, `Colors`, `Shift`,
