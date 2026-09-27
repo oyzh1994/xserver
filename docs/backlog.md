@@ -63,7 +63,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A15~~ | ~~a filled polygon's scanline crossings are taken half a pixel low~~ **done 2026-09-25**: the `xlogo` difference is now 0 pixels | correctness | S |
 | ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
 | ~~A13~~ | ~~`AllowEvents` freeze/thaw: a `Sync` grab stops the device, `AllowEvents` starts it again~~ **done 2026-09-26** (X's grab states, the held queue, the replay, and the pointer's two positions) | correctness | M |
-| A16 | a click outside a context menu leaves EasyShell spinning on `XIQueryPointer` - measured, identical on the build before B5's store | correctness | M |
+| ~~A16~~ | ~~a click outside a context menu leaves EasyShell spinning on `XIQueryPointer`~~ **done 2026-09-27**: the reply's `child` was the deepest window instead of the queried window's own child | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | ~~C2~~ | ~~raise/activate the host window when a client window appears~~ **done 2026-09-25** (the live A/B is inconclusive: the bed activates it either way) | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
@@ -1413,39 +1413,67 @@ fidelity gap rather than a failure a user meets.
 
 ---
 
-### [ ] A16. A click into the content area after a context menu makes EasyShell spin on `XIQueryPointer`. **M** - measured 2026-09-27, open, and *not* a regression of B5
+### [x] A16. `XIQueryPointer`'s `child` was the deepest window, so a client walking the tree never reached the bottom. **M** - done 2026-09-27
 
-**What is measured.** With EasyShell running against a `--single-window` server, this gesture
+**What a user met.** With EasyShell running against this server, this gesture
 
 ```
-right-click a host-list entry   (opens the context menu, 157x378 at 55,127)
+right-click a host-list entry   (opens the context menu)
 leave the menu and re-enter it six times   (the menu survives 6/6 - §7's gate)
-left-click at (900,620), outside the menu, in the content area
+left-click somewhere in the content area, outside the menu
 ```
 
-closes the menu and then leaves the client **spinning**: it sends `XIQueryPointer` ~3700 times a
-second and nothing else, for as long as it is left alone. The request log around the click shows the
-sequence that starts it - `LeaveNotify` on the menu, `XI2 Enter` on the main window, `ChangeCursor`,
-`XI2 GrabDevice`, `GetProperty`, `ChangeProperty`, a `PropertyNotify`, then **`GrabServer`** - and
-after the `GrabServer` the `XIQueryPointer` flood and not one other request. No `UngrabServer`
-follows, so the client is stuck inside its own server-grab section, polling the pointer for something
-that never arrives.
+closes the menu and then leaves the client **spinning**: `XIQueryPointer` ~3700 times a second and
+nothing else, until it is killed, with the server too busy to answer anything else. `GrabServer` is in
+the log just before it, and no `UngrabServer` ever follows.
 
-**It is not B5's doing.** The same gesture against a worktree at `17f4be9` (the commit before the
-general store) does exactly the same thing: the same `button 1 down at (900,620)`, the same
-`GrabServer`, and 21879 `XIQueryPointer` requests in five seconds. Two builds, one behaviour.
+**It is not B5's doing** - a worktree at `17f4be9` does exactly the same thing - and **it is not the
+client's either**: against Xvfb, with the same client, the same geometry (1300x800) and the same
+scripted gesture, EasyShell's CPU time does not move (2s -> 3s over forty seconds). So it is a
+difference between two servers, and the reference has the answer.
 
-**Why it is worth an item anyway.** The server is the other half of the conversation and the likely
-place the missing piece is: something the client asked for before or during that grab was answered in
-a way that left it waiting. `GrabServer`/`UngrabServer` are worth checking first - whether this server
-implements them at all, and whether the freeze they ask for is what a client can rely on - then the
-`ChangeCursor`/`PropertyNotify` pair just before the grab, since B4's record already has one instance
-of a *reply* in this area (`XIChangeCursor` had none) making EasyShell ask `XIQueryPointer` a million
-times in two minutes. The harness is the one above; it needs no Xlib, only `tools/kit.sh Drive`,
-`WinTree` and `Shot`.
+**The measurement that found it: a byte-transparent tap in front of Xvfb.** `XProxy` parses, and
+EasyShell hangs through it, so the reference stream came from a plain TCP relay on the VM
+(`python3 /tmp/tap.py 6099 6098 /tmp/tap.log`, logging both directions while a toggle file exists) with
+the client pointed at `DISPLAY=192.168.22.147:99`. Decoding that stream by request gives the reference's
+answer, and its shape is the whole item:
 
-**Until it is fixed**: a scripted EasyShell gesture must not dismiss a menu by clicking into the
-content area - press `Escape`, or click another menu item's position, or kill the client afterwards.
+```
+GrabServer
+XIQueryPointer(root)        -> child = the client's toplevel
+XIQueryPointer(toplevel)    -> child = None
+UngrabServer
+GetInputFocus
+XIChangeCursor / XISetFocus
+```
+
+Two queries, and the walk is over. This server answered `input.pointerWindow()` for both - **the
+deepest window the pointer is in** - and for the second query that window *is the one being asked
+about*, so the answer named itself. A client that descends with this (ask about W, ask about the child
+the reply names, until the answer is None) can never reach the bottom: it asks about W again, and
+again, at 3700 requests a second.
+
+**The fix** is `XInputExtension.childOf`: the queried window's **own child** that contains the pointer,
+walking up from the pointer's window; null when the pointer is in the queried window itself or not in
+it at all. `XInputTest.theChildIsTheQueriedWindowsOwnChildAndNotTheDeepestWindow` pins it and
+**fails without the fix** (the reply names the window itself, `0x200002`, where None belongs).
+
+**Verified live**: the request mix after the same gesture is ordinary application traffic with **7**
+`XIQueryPointer` in the last 3000 log lines (it was ~2000), the button release arrives 170 ms after
+the press, `UngrabServer` follows, and the client stays responsive.
+
+**What the grab does here, measured on the way, and worth knowing**: this server's `GrabServer` holds
+the request lock, so during a grab *no* other client's request runs - including the XTEST client whose
+button release would end the client's own wait, and including the display tick, which takes the same
+lock. A reference server defers other clients' requests but keeps rendering and input. That is a
+fidelity gap, not this bug's cause (the loop continued after the release was let through when the grab
+was disabled for the experiment), and it is recorded here rather than as an item of its own because a
+grab that lasts is already a misbehaving client.
+
+**For the scripts**: clicking into the content area to dismiss a menu is fine now, but the gesture
+above is the harness if it ever comes back - `tools/kit.sh Drive` for the input, `WinTree` to see the
+menu, and a request-mix count off the server log, which is what turns "the app feels stuck" into a
+number.
 
 ---
 
@@ -2063,14 +2091,14 @@ default per-client mode):
 - **termora** renders (tab bar, sidebar with 我的主机, the ASCII logo) and its context menu survives
   **6/6**.
 
-**A behaviour that looked like a regression, and is not: EasyShell spins on `XIQueryPointer` after a
-click outside its context menu.** The measurement, because the isolation is worth having: the click at
-(900,620) makes the client `GrabDevice`, `ChangeCursor`, `GrabServer` and then ask `XIQueryPointer`
-~3700 times a second, sending nothing else, until it is killed. **The previous build does exactly the
-same thing with the same gesture** - checked with a worktree at `17f4be9` against the same client and
-the same six out-and-back passes, 21879 queries in five seconds, the same `button 1 down at (900,620)`
--> `GrabServer` -> flood. So it is EasyShell's (or GDK's) behaviour on this server, open before this
-change and still open; it is **A16** now, with what to check first and the harness to reproduce it.
+**A behaviour that looked like a regression, and was not.** A click outside EasyShell's context menu
+made the client `GrabDevice`, `ChangeCursor`, `GrabServer` and then ask `XIQueryPointer` ~3700 times a
+second, sending nothing else, until it was killed. **The build before the store does exactly the same
+thing** with the same gesture (a worktree at `17f4be9`: 21879 queries in five seconds, the same
+`button 1 down` -> `GrabServer` -> flood), so it was not this change - and it turned out not to be the
+client's either: against Xvfb its CPU does not move. It is a bug of this server's own, in
+`XIQueryPointer`'s `child` field, and it is **A16, fixed the same day** - see that entry for the tap
+that found it and the two-query walk a reference answers.
 
 **What is left of B5 is the other three**: Composite, Present and SYNC. The store makes them
 reachable in a way they were not - a window's pixels are now somewhere to hand a compositor - but none

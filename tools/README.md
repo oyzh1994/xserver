@@ -282,6 +282,15 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   a comma separated list because they share one window - `fullscreen on,off` is the request and its
   withdrawal on one connection.
 - `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
+- `tap.py` - the same idea, but **byte-transparent and it does not parse anything**, which is what
+  makes it usable where `XProxy` is not (a client that objects to the parsing hangs - EasyShell does,
+  after its first `QueryExtension`). `python3 tools/tap.py 6099 6098 /tmp/tap.log` listens on the
+  port display `:99` would use and forwards to the server on `:98`, logging both directions as
+  `<time> c<connection> C2S|S2C <bytes> <hex>`. **It logs only while `/tmp/tap-on` exists** -
+  `touch /tmp/tap-on`, do the gesture, `rm /tmp/tap-on` - because logging a repainting client writes
+  megabytes a second. This is how A16's answer was read off Xvfb, whose own server logs nothing:
+  decode the `C2S` stream as requests (`opcode, data(minor), length` and skip the body) and the
+  reference's sequence is right there. It runs on the *VM*, in front of Xvfb.
 
 The two XFixes probes are how A8's rules were taken from a reference server. Their output against Xvfb and
 against this server is identical once the things a server assigns for itself are normalised away

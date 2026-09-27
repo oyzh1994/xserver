@@ -1603,3 +1603,14 @@ End-to-end checks that do need one:
 - **A regression test is only worth writing once it has been seen to fail without the fix.** Several
   of the tests here were rewritten after the first version passed against the bug (`pointerKnown`, the
   border clip, and the sprite-damage ordering all needed a sharper test before they meant anything).
+- **When the difference is between two servers and Xvfb cannot log, tap the wire instead of reading
+  the source.** `tools/tap.py` is a byte-transparent relay - it parses nothing, which is what makes it
+  usable in front of a real client where the parsing `XProxy` hangs it - started on the VM in front of
+  Xvfb, with the client pointed at `DISPLAY=host:99` and logging switched on for the seconds that
+  matter. Decoding the client's stream as requests (`opcode, data, length`, skip the body) is then the
+  reference's own answer, in order. That is what A16 turned on: this server's `XIQueryPointer` reply
+  named the deepest window instead of the queried window's own child, and the reference's stream shows
+  the two-query walk (`child` = the toplevel, then `None`) that the wrong answer turns into a thousand
+  a second. **Prefer a measurement of the two servers to an argument about which is right** - three
+  sessions of reasoning about that flood produced nothing, and the tap produced the answer in an
+  afternoon.
