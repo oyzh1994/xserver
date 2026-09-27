@@ -297,6 +297,13 @@ specification, and each worked around rather than patched upstream:
 - **`ConfigureRequestEvent`'s builder hides `value_mask`** behind private methods, so window
   managers can never see which fields a client asked to change. That event is assembled as raw
   bytes instead.
+- **A generator that ignores an `eventcopy`'s own number** is the deepest one, because it is in the
+  *generator* rather than in a class: five of `xproto.xml`'s events are declared as copies of another
+  (`ButtonRelease` is `ButtonPress` with another number, `LeaveNotify` is `EnterNotify`, and so on)
+  and the generator emitted each with the number of the event it copies. On the wire a release then
+  looked like a second press, a leave like an enter and a focus-out like a focus-in. `ClientOutput`
+  rewrites the five type bytes; `docs/fork-eventcopy-fix.md` is the generator fix, written and
+  verified, waiting on the fork's release.
 
 ## The screen is opaque, even though the windows behind it are not
 
