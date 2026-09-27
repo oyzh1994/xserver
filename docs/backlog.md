@@ -86,7 +86,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
 | ~~B5~~ | ~~DAMAGE, **every window keeps its own pixels**, and **Composite, Present and SYNC**~~ **done 2026-09-27** - the general store, RENDER included, and the three a compositor needs | extension | L |
 | ~~C8~~ | ~~one host window per client toplevel~~ **declined 2026-09-27**: built twice (the second time on B5's store, and it worked), then rejected - the requirement is **one host window per application** | host window | L |
-| E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
+| [~] E1 | the `eventcopy` generator fix in the protocol fork: **the patch is written, published locally and verified**; the fork still needs version control and a release | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
@@ -4334,7 +4334,7 @@ property is checked - there is no client that can be made to exercise every mask
 
 ---
 
-### [ ] E1. The `eventcopy` generator fix lives in the protocol fork. **S** (in the fork)
+### [~] E1. The `eventcopy` generator fix lives in the protocol fork. **S** (in the fork) - **fix written and verified 2026-09-27**; what is left is the release, which is the fork owner's
 
 **Blocked on the fork, measured 2026-09-26.** `~/IdeaProjects/other/x11` **is not a git checkout**
 (`git status` says "not a repository"), so a fix there is a change nobody can commit or review, and
@@ -4352,11 +4352,32 @@ sequentially. The workaround is documented in the README and in the design notes
 protocol defines most of the aliases - will be wrong again, and the failure mode is silent and
 confusing: a release arriving as a press is exactly the bug this workaround fixes.
 
-**Plan.** Fix the generator (emit the `number` the protocol XML gives), regenerate, delete
-`EVENT_NUMBERS`, and keep a test that compares every event class's number against the protocol
-definition.
+**The fix is written and verified (2026-09-27); only the *release* is left, and that is the fork
+owner's.** `docs/fork-eventcopy-fix.md` is the patch, the reasoning and the recipe, kept in this
+repository because the fork is not under version control and a fix in a directory nobody can restore
+is not a fix. What it says, in short:
 
-**Verify.** The suite's event tests plus a raw client that checks a `KeyRelease`'s type byte.
+- The generator *reads* a copy's number and then takes the copied event's **whole unit list** as its
+  own - including the first unit, the `NUMBER` field, which carries the *ref's* constant. So the copy
+  is emitted with the ref's type byte. The patch copies the list and replaces that one field.
+- Published to the local repository and read back: `ButtonReleaseEvent.NUMBER` 4 -> **5**,
+  `KeyRelease` 2 -> **3**, `LeaveNotify` 7 -> **8**, `FocusOut` 9 -> **10**, `CirculateRequest`
+  26 -> **27**, with the events they copy unchanged.
+- **`client/EventTypeByteTest` is new** and is the test this item's plan asked for - but written
+  against the *wire* rather than against the classes, so it passes with the rewrite, passes with a
+  fixed generator (the rewrite is then a no-op), and fails only when neither is there: with the
+  published artifact back and `EVENT_NUMBERS` disabled, **4 of 5 fail** - a `KeyRelease` arrives as
+  type 2, a `ButtonRelease` as 4, a `LeaveNotify` as 7, a `FocusOut` as 9.
+- What is left: version-control the fork, publish a corrected artifact, then delete
+  `ClientOutput.EVENT_NUMBERS` and its comment. **Nothing in this repository has to change before
+  that** - measured, the rewrite and the fix are compatible.
+- **A trap of this machine**: the fork's Gradle wrapper cannot read the class files of the default
+  JDK 27 (`Unsupported class file major version 71`), so the build needs `JAVA_HOME` pointed at a
+  JDK 21, and a local publish needs the signing tasks off (an init script disabling
+  `org.gradle.plugins.signing.Sign`). Both are in the recipe file.
+
+**Verify.** `mvn -o test -Dtest=EventTypeByteTest` (5 cases: key, button, leave, focus, and the
+circulate request this server never sends, pinned where it lives).
 
 ---
 
