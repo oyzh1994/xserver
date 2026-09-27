@@ -90,6 +90,7 @@ A prompt that starts a fresh session on this, verbatim:
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
+| A17 | a frame JavaFX draws on a timer never reaches the screen - the caret does not blink, and it is older than this session's changes | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
@@ -2206,6 +2207,43 @@ which is exactly the `IncludeInferiors` question in A9.
 `xdpyinfo -ext DAMAGE -ext Composite`.
 
 ---
+
+### [ ] A17. Reports of a menu with no hover colour and a caret that does not blink - not reproduced, and `--glx` is the one measured difference. **M**
+
+**What the user saw**, on 2026-09-27, running the build with GLX advertised: a right-click menu whose
+hovered item has **no background colour** (clicking works), and a search box that takes focus and
+accepts typing but whose **caret never blinks**.
+
+**What measuring it found, and the honest shape of the answer is "state-dependent".** Two `xwd`
+captures of the whole screen 0.3 s apart, with the box clicked and the focus left to settle:
+
+```
+this server, default (no GLX):   frames 3, 4 and 5 differ from frame 1 by 40 pixels   - the caret
+this server, --glx:              every later frame differs from frame 1 by 42 pixels   - see below
+```
+
+so **the caret does blink here**, and the same check earlier in the session measured *zero* difference
+- because the box was not in the state that blinks. Both symptoms are the kind a toolkit **gates on
+the window being active**: a JavaFX caret blinks, and a control's hover is animated, only while the
+window is focused. Nothing in this session's changes is implicated by any of it, and the two builds
+behave alike in every state that could be controlled from a script.
+
+**What is measured, and it is why `--glx` is opt-in.** Advertising GLX changes what a toolkit does
+with its own drawing: with it on, EasyShell (JavaFX, GTK/Glass) probes GLX and the frames it then
+sends are different - which is the mechanism behind the user's report, whether or not the exact
+gesture can be reproduced. A client that wants OpenGL needs GLX; one that does not may be hurt by it,
+so the server no longer advertises it unless `--glx` asks, and the default is exactly the pre-GLX
+behaviour.
+
+**What to do if it comes back, in order.** (1) Confirm the server was started **without** `--glx` and
+re-try the same gesture. (2) Compare the focus: `GetInputFocus`/the focus chain against Xvfb's while
+EasyShell runs - a JavaFX window that does not believe it is active explains *both* symptoms at once,
+and a scripted click is exactly the kind of thing that lands in a different focus state than a hand.
+(3) If only the caret is affected, the blink's own requests are `CreatePixmap`, `CreatePicture`,
+`FillRectangles` (RENDER minor 26), a burst of `PutImage` and a whole-window
+`CopyArea(pixmap -> window)` - so a pixmap that does not take the fill, or a frame that lands in the
+window and not on the screen, are the two places to look, and `Shot --window <id>` reads a window's
+own pixels back for the comparison.
 
 ### [x] B6. GLX / OpenGL. **XL** - done 2026-09-27, and it needed no renderer: a software GL client renders itself and blits
 

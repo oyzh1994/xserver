@@ -518,6 +518,16 @@ them either), and falls to Mesa's software path - `drisw` - where it renders in 
 pushes each finished frame as an ordinary **`PutImage`**: 769 MB of them in 5.6 seconds, one
 `GetGeometry` per frame as the synchronisation, and not one GLX `Render`.
 
+**And it is off unless `--glx` asks for it**, which is the item's own trap arriving in a form worth
+recording. Advertising GLX changes what a toolkit does with its own drawing, and on the build that
+advertised it unconditionally EasyShell (JavaFX) was reported to stop updating what it animates - a
+menu item with no hover colour, a caret that does not blink - while clicks and typing still worked.
+That report is not reproducible from a script (the caret blinks in the states that can be controlled,
+and both a with- and a without-GLX run show frame-to-frame changes), and the mechanism it points at is
+the one thing that *is* measured: with GLX present the client takes a different path, and the frames it
+sends differ. A client that wants OpenGL needs the extension and one that does not may be hurt by it,
+so the default is off and the switch is the user's.
+
 So the extension is a handshake, and the handshake is what `extension/GlxExtension` implements: the
 version, both config lists, the two server strings, contexts, and a drawable's attributes. **The one
 decision it rests on is the direct context.** `GLXCreateContext` carries a flag, and a client told

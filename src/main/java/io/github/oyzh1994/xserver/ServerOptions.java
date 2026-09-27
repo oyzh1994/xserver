@@ -60,6 +60,17 @@ public final class ServerOptions {
     /** True when every client shares one window instead of getting one of its own. */
     private boolean singleWindow;
     /**
+     * Whether GLX is advertised. **Off by default, and that is a measurement rather than caution.**
+     *
+     * <p>Advertising it changes what a toolkit does with its own rendering. EasyShell renders through
+     * JavaFX, and with GLX present JavaFX takes a path on which its *animations* stop advancing: a
+     * menu item no longer highlights under the pointer and a text caret stops blinking, while clicks
+     * and typing still work - because the input never went through the thing that stopped. A client
+     * that wants OpenGL (a browser, `glxgears`, a game) needs it, and one that does not is hurt by it,
+     * so it is the user's to turn on.
+     */
+    private boolean glx;
+    /**
      * How large a screen may be grown to. The setup reply's width and height are sixteen bit
      * fields, so a screen beyond 65535 could not be described to a client at all; the default is a
      * picture the size of a large desktop rather than that hard ceiling, and a framebuffer of
@@ -166,6 +177,7 @@ public final class ServerOptions {
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
                 case "--no-tray" -> options.tray = false;
+                case "--glx" -> options.glx = true;
                 case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
@@ -408,6 +420,11 @@ public final class ServerOptions {
 
     public boolean perClientWindows() {
         return !singleWindow;
+    }
+
+    /** Whether GLX is advertised; off unless {@code --glx} asked for it. See the field. */
+    public boolean glx() {
+        return glx;
     }
 
     /** How many framebuffer pixels a logical pixel is. */

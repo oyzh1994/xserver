@@ -44,8 +44,11 @@ class GlxTest {
 
     @BeforeAll
     static void startServer() throws IOException {
+        // **`--glx` is required, and that is the point of the flag**: the extension is advertised
+        // only when the user asks for it, because a client that finds it changes what it does with
+        // its own drawing (see ServerOptions.glx - a caret stops blinking under JavaFX).
         server = new XServer(ServerOptions.parse(new String[]{"--display", ":" + DISPLAY,
-                "--geometry", "600x400", "--backend", "headless", "--no-unix"}));
+                "--geometry", "600x400", "--backend", "headless", "--no-unix", "--glx"}));
         server.start();
     }
 
@@ -53,6 +56,21 @@ class GlxTest {
     static void stopServer() {
         if (server != null) {
             server.stop();
+        }
+    }
+
+    @Test
+    void itIsNotAdvertisedUnlessItIsAskedFor() throws IOException {
+        XServer quiet = new XServer(ServerOptions.parse(new String[]{"--display", ":"
+                + (DISPLAY + 30), "--geometry", "600x400", "--backend", "headless", "--no-unix"}));
+        quiet.start();
+        try (RawXClient client = RawXClient.connect(DISPLAY + 30)) {
+            assertEquals(0, client.queryExtension("GLX"),
+                    "GLX changes what a toolkit does with its own drawing, so it is the user's to"
+                            + " turn on - a server that advertises it by default hurts every client"
+                            + " that does not want it");
+        } finally {
+            quiet.stop();
         }
     }
 
