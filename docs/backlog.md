@@ -76,7 +76,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | ~~B4~~ | ~~XInput2~~ **done 2026-09-26**: the protocol's spine, the events, the device grabs, and XInput 1's device list (which AWT segfaults without) - see the entry for what that cost | extension | L |
-| [~] B1 | XKEYBOARD: read, set, and a layout **by name** off tables captured from a reference; `setxkbmap` still reports failure - the missing half is the xkbcomp *upload*, not the by-name load | extension | M-L |
+| ~~B1~~ | ~~XKEYBOARD: read, set, and a layout **by name**~~ **done 2026-09-27**: `setxkbmap -layout <name>` works (its reply has to carry the keymap), `GetNames` is answered, and all seven layouts are byte-identical to the reference's | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | ~~E4~~ | ~~per-client framebuffer memory~~ **done 2026-09-26**: allocation is lazy (verified live); freeing while a client is connected is declined, with its reasons in the entry | engineering | M |
@@ -1480,7 +1480,7 @@ number.
 
 ## 3. B - Extensions a reference server has
 
-### [~] B1. XKEYBOARD. **M-L** - read, *set* (`xkbcomp` loads a layout), and now **choosable by name** off tables captured from a reference (2026-09-27); `setxkbmap` still reports failure, and that is the xkbcomp upload path rather than this
+### [x] B1. XKEYBOARD. **M-L** - done 2026-09-27: `setxkbmap -layout <name>` now works against this server (exit 0), the reply's shape is what was missing, `GetNames` is answered, and every layout this server has is byte-identical to the reference's
 
 **Done 2026-09-25.** `extension/XkbExtension` advertises `XKEYBOARD` and answers what a client asks
 before it will trust the keyboard: the version handshake (`UseExtension`), the keymap (`GetMap`, built
@@ -1648,7 +1648,9 @@ and one media key where this one excludes nothing beyond the modifier map.
 **A layout by name is in (2026-09-27), off tables captured from a reference, and the reason it is not
 "a compiler in the server" is that it never needed to be one.** A display server compiles nothing: the
 tables are read off a server that can ({@code tools/GenLayouts}, {@code tools/gen-layouts.sh}) - the
-same trick D3 uses for the standard fonts - and served under the name a client asks for.
+same trick D3 uses for the standard fonts - and served under the name a client asks for. **(The
+bullet below is kept as it was written, but its "sixth of a list of counted strings" is the reader's
+off-by-two, corrected higher up this entry: the strings are six and the symbols one is the fifth.)**
 
 - **What a client asks with is not the word "de".** {@code setxkbmap -layout de} sends the components
   the rules file resolved to, `pc+de+inet(pc105)`, as the sixth of a list of counted strings. Which
@@ -1668,8 +1670,62 @@ same trick D3 uses for the standard fonts - and served under the name a client a
 - **Every client is told to re-read it** (`MappingNotify`), which is the same notification `SetMap`
   sends and the reason a client that missed it would go on typing the old layout.
 
-**And `setxkbmap` still prints `Error loading new keyboard description`**, which is the honest
-remainder and it is **not** what it looks like:
+**Closed 2026-09-27: `setxkbmap -layout <name>` works, and the missing half was the *reply*, not an
+upload.** The paragraph below is kept because it is what the item believed for two sessions, and both
+of its claims were measured and are wrong; what settled it was reading the client's code and the
+reference's bytes.
+
+- **`strace` on a real `setxkbmap -layout de` against a reference shows no `SetMap` at all.** It
+  sends the XKB handshake, **one `GetKbdByName`**, and then a root property update - there is no second
+  way, and no client-side compiler in the path. So `setxkbmap` sets a layout by asking the *server*
+  to, and the reference's answer to that request is what has to be reproduced.
+- **The answer is a header plus embedded component replies, read by position.**
+  `XkbGetKeyboardByName` (Xlib, `XKBGetByName.c`) gives up when `reported` is zero and then reads, for
+  every bit set in it, one whole component reply out of the same buffer - a map reply for
+  `Types|Symbols`, a compat reply, a names reply, a geometry reply - and finally insists the buffer was
+  consumed exactly. This server installed the layout and answered `reported = 0`, which is
+  indistinguishable from "not loaded": that is why the error was still printed. The reply now carries
+  the map this server answers `GetMap` with, embedded whole, under a header whose length counts it,
+  and `reported` claims exactly the three parts that map carries (0x0d).
+- **The request's own shape was wrong here too, and harmlessly so.** It is a **twelve** byte fixed part
+  (`deviceSpec`, `want`, `need`, `load`, pad) and **six** counted strings - keymap, keycodes, types,
+  compat, symbols, geometry - with the symbols string **fifth**, not the sixth of eight as the reader
+  assumed: the phantom string its two-byte offset error counted first happened to sit in front, so the
+  right string came out of the wrong field. Measured with `strace`, and the string count is why a
+  request built with eight is refused by a reference with `BadLength`.
+- **`GetNames` is answered now, and it used to be refused** - the one answer this extension must never
+  give, because Xlib's default error handler ends the process. Its atoms live in the reply's *tail*,
+  in the order keycodes, geometry, symbols, physical symbols, types, compat (read off a reference's own
+  reply); what this server reports is the symbols component the client asked for, which is the one
+  component it acts on, and `which = 0` when no layout has been chosen by name.
+
+**Measured 2026-09-27**: `tools/XkbProbe` gained `getkbdname` and `getnames` (both print the reply as
+bytes, with each tail word resolved through `GetAtomName`), and `tools/XProxy` gained a raw dump
+(`XProxy listenPort host port logFile rawFile`) which is how `setxkbmap`'s request was read off the
+wire. Then: **`setxkbmap -layout <name>` exits 0 with no error for `us`, `gb`, `de`, `fr`, `es`, `ru`
+and `cn`, and `xmodmap -pke` after each is byte-identical to Xvfb's in the same layout**;
+`xkbcomp -w 0 <map> <display>` still exits 0 and `xmodmap -pke` shows the uploaded map; `setxkbmap
+-print`/`-query`, `xset q`, `xset r rate 200 50` and `xdotool` all still work, with **no `rejected`
+line in the server log** for any of them. `extension/XkbTest` grew two cases (the by-name reply's
+structure, read the way Xlib reads it, and the names reply) and both fail with the fix taken out -
+a `reported` of zero fails the first with `expected: <13> but was: <0>`, and a refused `GetNames`
+fails the second with the error `setxkbmap` used to die on. `mvn test` 378/378.
+**Live on `.147`**, both forwarded applications on a `--single-window` server: **EasyShell** renders,
+its context menu opens at the same geometry a reference gives it (157x378+75+132) and survives the
+out-and-back gesture **3/3 with a controlled harness** (fresh server, fresh client, pointer parked
+first - see the trap below), and typing after `setxkbmap -layout de` puts `zy` in its search box,
+which is the German keycodes (29 = z, 52 = y) on both rails at once. **termora** renders, its menu
+opens and survives **3/3**, and both ask `XIGetProperty` and are answered.
+
+**The trap this measurement cost the most time to, and it is the kit's own rule 5/6 generalised.** The
+out-and-back gesture looked broken (the menu closed) on the new build in two runs and fine on the old
+build in two - and it was *the runs*, not the code: with the server **and** the client restarted and
+the pointer **parked** before it maps anything, the same build survives 3/3, and the code was never
+implicated. A menu measurement needs a fresh server, a fresh client and a parked pointer; anything
+less measures the previous run.
+
+**The earlier reasoning, which the paragraph above replaces - `setxkbmap` still prints `Error loading
+new keyboard description`**, which is the honest remainder and it is **not** what it looks like:
 
 - **A reference server refuses this request too** - Xvfb answers `BadAccess` to the very bytes a real
   `setxkbmap -layout ru` sends it, captured off the wire - and `setxkbmap` reports **success** there
@@ -1688,21 +1744,20 @@ refused.** The log names it - `GetNames rejected the request (error 17): not imp
 request GetNames` - and a refusal is exactly what this server's own documents say is worse than an
 empty answer, because Xlib's default handler ends the process (that is what killed `setxkbmap` here
 before `GetKbdByName` was answered). `GetNames` is not in the list of requests this extension accepts
-and drops, so it falls through to the error. The fix is small and the *reply's shape* is the work:
-**a reference refuses the request too** - Xvfb answers `BadAccess` to a hand-built `GetNames` at the
-length that gets past `BadLength`, which is two units for `deviceSpec` and a CARD32 `which` - so there
-is nothing to copy and the next step is the protocol's own reply layout rather than a guess.
+and drops, so it falls through to the error. **Fixed the same day** - the paragraph above has the
+reply's shape and the measurement; the "a reference refuses it too" in this paragraph was the same
+malformed-probe mistake: a hand-built `GetNames` gets a reply from Xvfb once its length and pad word
+are right.
 
-**What is still not here.** *Setting a layout by name in a way `setxkbmap` accepts* - it is answered,
-and the layout is installed, but the client then compiles the keymap itself and uploads it, and the
-upload is what this server does not take far enough (see the top of this entry). The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`
-requests above are accepted and dropped, so a client that sets names and reads them back gets
-nothing); every keyboard control other than repeat - slow keys, bounce keys, sticky keys, mouse keys,
-AccessX, the two internal modifier maps - is accepted by `SetControls` and not applied, and reported
-by `GetControls` as not enabled; `LatchLockState` is accepted and does nothing; and no XKB event is
-ever sent, because nothing here changes a layout in a way a client would need to hear about.
-`XkbMap` publishes four types of its own whatever the client sets, so a map that relies on types this
-server has no equivalent for is applied as characters only.
+**What is still not here.** The compatibility map and the indicator names are absent (the four
+`Set...` requests above are accepted and dropped, so a client that sets names and reads them back gets
+nothing - `GetNames` answers, but with the symbols component a by-name load recorded rather than with
+whatever a client set); every keyboard control other than repeat - slow keys, bounce keys, sticky
+keys, mouse keys, AccessX, the two internal modifier maps - is accepted by `SetControls` and not
+applied, and reported by `GetControls` as not enabled; `LatchLockState` is accepted and does nothing;
+and no XKB event is ever sent, because nothing here changes a layout in a way a client would need to
+hear about. `XkbMap` publishes four types of its own whatever the client sets, so a map that relies on
+types this server has no equivalent for is applied as characters only.
 
 ---
 
@@ -2029,10 +2084,25 @@ decoder and throws rather than being decoded and refused. Two things follow:
   layout, measured off a reference rather than guessed, which is a session's worth of the same work
   `GetNames` below needs: a request whose reply this server has no class for.
 
+**Fixed the same day (2026-09-27), because the answer was measurable in one session after all.** Both
+forwarded applications ask it as they start - the property is `libinput Tapping Enabled` on device 2 -
+and it is now **answered "absent"** rather than refused: the reply is a reference's, whose only
+non-zero fields are the header's (`type = None`, `bytes_after = 0`, `num_items = 0`, `format = 0`),
+because this server has no device properties at all. Two measured details, both of which a guess would
+have got wrong in a way that reads as a plausible number: the request's fixed part is **six** four byte
+units (a reference refuses a seven unit one with `BadLength`, so the `delete` byte a longer reading puts
+at the end is not part of it), and the reply's byte 1 carries the request's *minor opcode* - measured by
+asking about two different devices and watching it stay 59. `tools/XiProbe` gained a `getprop` mode
+(`XiProbe <host> <port> getprop <name> [device] [units]`) which prints the reply as bytes, and
+`extension/XInputTest` a case that fails without the fix (the refusal arrives as an `IOException` from
+the client side). `README.md`'s XI2 bullet and `docs/design-notes.md`'s "an error is worse than an
+empty answer" both carry it now.
+
 **What is still not here**, deliberately and visibly refused rather than accepted: touch, tablets,
 barriers and the raw event family (a client asks for them by name and this server has no device behind
-them), the device property requests, and the hierarchy's changing requests. A client that asks for one
-gets a protocol error, which is the honest answer.
+them), the rest of the device property family (`XIListProperties` and the change/delete requests), and
+the hierarchy's changing requests. A client that asks for one gets a protocol error, which is the
+honest answer.
 
 **The reconnaissance that came first, kept because it is why the item was done whole.** The tool this
 item needed (`tools/XiProbe`, new) was written and run against Xvfb and against this server before

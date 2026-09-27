@@ -182,14 +182,24 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setkeys zero|all` (the per-key bitmap, which the reference ignores) and `setrepeat off|on` (the
   `RepeatKeys` control). It prints the reply before and after and a core `GetKeyboardControl`
   beside them, which is how each of those three was measured against Xvfb rather than assumed.
+  **The two requests whose replies are the work** (B1's last half) have modes of their own:
+  `getkbdname <symbols>` sends the by-name load a real `setxkbmap` sends (six counted strings, the
+  symbols one fifth - a request with eight is refused by a reference with `BadLength`, which is how
+  the count was measured) and `getnames [which]` sends a `GetNames`. Both print the reply as bytes
+  **with every tail word resolved through `GetAtomName`**, which is what makes a reply whose fields
+  are atom ids readable off the reference instead of guessed: `GetNames`' names live in the tail, not
+  in the fixed part the protocol's field list suggests.
 - `XiProbe` - the harness for B4 (XInput2), and the tool that says **why that item cannot be landed in
   pieces**. `XiProbe <host> <port>` prints the version handshake, `XIGetClientPointer` and the whole
   device list **parsed and as bytes**; `device <id>` narrows the list to one device; `select <mask>
   [deviceid] [root]` selects XI2 events on a window, warps the pointer in, drives a button through
   XTEST and prints every message - with the core masks selected as well, so a run that produces no
   XI2 event and a run whose gesture never happened can be told apart (a quiet run means different
-  things and only having both rails in one output says which). Against this server it prints
-  `XInputExtension is not offered by this server`, which is the honest state today.
+  things and only having both rails in one output says which). **A device property read has a mode
+  too**: `getprop <name> [device] [units]` sends an `XIGetProperty` for a property and prints the
+  reply - which is how the answer to "this device has no such property" was read off Xvfb (a plain
+  reply, `type = None`, nothing after the header) and how the request's length was settled (six four
+  byte units; a reference refuses seven with `BadLength`).
   **Run it against Xvfb before writing anything**: a mask bit that looks wrong is wrong
   (`1<<3` selects nothing where `1<<4` is `ButtonPress`, and a wrong mask is *accepted* and changes
   nothing, which reads as a server that cannot deliver a device event at all), an XI2 event is a
@@ -339,7 +349,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   the root, and then a read of the window's own `_NET_WM_STATE` to see what came back. The actions are
   a comma separated list because they share one window - `fullscreen on,off` is the request and its
   withdrawal on one connection.
-- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server.
+- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server. A fifth
+  argument adds a **raw dump** (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per
+  message as `<direction> <hex>`, for when the *bytes* are what is being hunted - that is how
+  `setxkbmap`'s own `GetKbdByName` request was read (and it is the same job `strace -e writev` does on
+  the VM, which needs no proxy at all and is what B1 ended up using).
 - `tap.py` - the same idea, but **byte-transparent and it does not parse anything**, which is what
   makes it usable where `XProxy` is not (a client that objects to the parsing hangs - EasyShell does,
   after its first `QueryExtension`). `python3 tools/tap.py 6099 6098 /tmp/tap.log` listens on the
@@ -458,7 +472,12 @@ These cost hours each, the first time:
    pointer is not part of a connection: a run that starts wherever the last one left it gets a
    crossing at the map on one run and not on the next, and a diff between two servers then shows the
    *previous* run's difference. `FocusProbe` and `MenuProbe` warp to a point no window of theirs
-   reaches before they map, for exactly this reason - and it was found the hard way.
+   reaches before they map, for exactly this reason - and it was found the hard way. **The same rule
+   applies to a real application driven through XTEST, and there the *server* is part of the state
+   too**: measuring a menu opening and surviving a leave-and-re-enter needs a fresh server, a fresh
+   client and the pointer parked *first* - anything less measures the previous run, and it produced
+   a wrong "this change broke the menus" for an afternoon (B1, 2026-09-27: the same build is 3/3 when
+   the three are controlled and 0/2 when they are not).
 6. **The *button* state outlives every client too, and it is worse than the pointer.** A probe run
    that ends with a button down makes the next run's press a duplicate the server drops - and the
    measurement then reads as "the press was never delivered", not as "the state was dirty". It cost

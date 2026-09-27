@@ -385,8 +385,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   toolkit's menus go through - and the XI2 twin of every core input event this server delivers, with
   the core one withheld from a client that selected the device one. `xeyes` no longer warns, `xinput`
   lists the devices, and JavaFX's GTK backend and Swing's AWT both work through it rather than around
-  it. Not there, and refused rather than ignored: touch, tablets, barriers, the raw event family and
-  the device properties - this server has no device behind them.
+  it. A **device property read** (`XIGetProperty`, which GTK asks as an application starts) is
+  answered "absent" - format 0, type `None`, no items, the same reply a reference gives for a property
+  that does not exist, and the same shape RandR's `GetOutputProperty` is answered with here. Not there,
+  and refused rather than ignored: touch, tablets, barriers, the raw event family, and the rest of the
+  device property family (`XIListProperties` and the change/delete requests) - this server has no
+  device behind them.
 - **DAMAGE, and the three a compositor needs: Composite, Present and SYNC.** A client that wants to
   hear what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that
   reads pixels rather than drawing them - creates a damage object and is told, at X's own levels:
@@ -423,18 +427,22 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   extension and `GetKeyboardMapping` read, which is how `xkbcomp <file> <display>` loads a chosen
   layout. **The repeat delay and rate are settable through XKB and no other way** - the core protocol
   has no request for either - so `SetControls` with `RepeatKeys` changes them, and a client that wants
-  a 200 ms delay gets one. **A layout can also be chosen by name**: `GetKbdByName` loads one of a set captured off a reference
-  server (`us`, `gb`, `de`, `fr`, `es`, `ru`, `cn`), the mapping every client then reads is that
-  layout's own - byte for byte what a reference reports - and every client is told to re-read it. What
-  is *not* there: `setxkbmap` still reports `Error loading new keyboard description` even though the
-  layout is installed, because a reference server *refuses* the same request and `setxkbmap` really
-  sets a layout by compiling it and uploading it (`SetMap`), which this server does not take far
-  enough; a variant is answered as its base layout; the
+  a 200 ms delay gets one. **A layout can also be chosen by name, and `setxkbmap` is what does it**:
+  `setxkbmap -layout de` exits 0 against this server, and every keycode then answers what a reference
+  server answers in that layout - `xmodmap -pke` is byte-identical to Xvfb's for `us`, `gb`, `de`,
+  `fr`, `es`, `ru` and `cn`, and every client is told to re-read the mapping. What makes that work is
+  the reply *carrying the keymap*: Xlib reads a by-name reply by position (one embedded component
+  reply per bit of `reported`, and it gives up entirely when that is zero), so a server that installs
+  the layout but answers nothing is indistinguishable from one that did not. What
+  is *not* there: a variant is answered as its base layout; the
   map's types, actions and behaviours (a client gets its characters right and everything else as it
-  was), the compatibility map, the indicator names, `GetNames`, every keyboard control other than
+  was), the compatibility map, the indicator names, every keyboard control other than
   repeat (slow keys, mouse keys, AccessX and the rest are accepted and not applied, and reported as
   not enabled), the "detectable auto-repeat" a client can ask for, and locking or latching a modifier
-  from a client, which would lock the machine's own keyboard for everyone. One caveat worth knowing: a
+  from a client, which would lock the machine's own keyboard for everyone. `GetNames` is answered, but
+  only for the one component this server can honestly name - the symbols component the client itself
+  asked for - and `SetNames` is accepted and dropped, so a client that *sets* names and reads them
+  back gets the name from its own by-name load rather than the one it set. One caveat worth knowing: a
   `GetMap` reply has to carry XKB's four mandatory key types or Xlib rejects the whole reply, so a
   server that offers *fewer* is not gracefully degraded, it is a `null` keymap the client will fault
   on.

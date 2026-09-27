@@ -1146,28 +1146,52 @@ different characters depending on the toolkit. Measured with `xev` driven by the
 servers: 26 lines of keysym output, identical line for line, over Escape, a letter, Shift, Caps Lock,
 Shift+Caps Lock, Return and the keypad.
 
-**A client can also *set* the keymap** (B1), and **there are two ways a client tries**. Measured:
-`setxkbmap -layout de` first asks `GetKbdByName`, and a reference server **refuses that request**
-(`BadAccess` to the very bytes a real `setxkbmap` sends), so what actually sets a layout on a
-reference is the *second* way - the client compiles the keymap itself and uploads it with `SetMap`.
-This server answers the first now (a layout by name, off tables captured from a reference: see below)
-and still fails the second, which is why `setxkbmap` reports `Error loading new keyboard description`
-here while the layout it asked for is in fact installed and every client reads it. **The missing half
-is the upload** (`SetMap` plus the `SetCompatMap`/`SetNames`/`SetGeometry` a compiler sends with it),
-not the by-name load.
-That now works: the keysyms of the map a client sends are applied to the one table both rails read,
-so a German keymap loaded that way makes keycode 52 answer `y Y` from `xmodmap -pke` and `0x79 0x59`
-from `XkbProbe`. **`GetKbdByName` is answered with a layout where this server has one**, off tables captured from a
+**A client can also *set* the keymap** (B1), and **the way `setxkbmap` does it is the by-name load,
+not a compiler in the server and not a compiler in the client.** That was measured twice, and both
+times the obvious reading was wrong. `strace` on `setxkbmap -layout de` against a reference shows the
+whole of what it sends: the XKB handshake, one `GetKbdByName`, and then a root property update - **no
+`SetMap`, and nothing else at all**; and the by-name request gets a plain reply from a reference, not
+the `BadAccess` an earlier session measured (that was a hand-built probe request of the wrong length,
+and a probe that is refused measures nothing). So `setxkbmap` sets a layout by *asking the server
+to*, and a server that answers has to answer the way a reference does.
+
+**And the way a reference answers is what this server had to get right: `reported` is not a flag, it
+is a list of the component replies that follow it in the buffer.** Xlib's `XkbGetKeyboardByName`
+checks `reported` and gives up when it is zero, then reads, for every bit set in it, one whole
+component reply - the map for `Types|Symbols`, a compat reply, a names reply, a geometry reply, in
+that order - and finally insists the buffer was consumed exactly. So a reply that says `loaded = 1`
+and carries nothing is not a partial answer, it is the same failure as not being loaded: this server
+installed the requested layout and `setxkbmap` still printed `Error loading new keyboard description`.
+What the reply carries now is the map this server answers a `GetMap` with, embedded whole, under a
+header whose length counts it, with `reported` claiming exactly the parts that map carries (`Types`,
+`ClientSymbols`, `ServerSymbols`).
+
+**`GetKbdByName` is answered with a layout where this server has one**, off tables captured from a
 reference (`tools/gen-layouts.sh`) - the same trick D3 uses for the standard fonts, and the reason no
 compiler is needed: a display server compiles nothing, it serves what a server that can has already
 produced. What a client asks with is not the name but the components the rules file resolved to
-(`pc+de+inet(pc105)`), and which of the request's strings that is was measured rather than read: with
-`-variant nodeadkeys` it is that string and nothing else that moves. The mapping a client reads
-afterwards is the layout's own, **byte for byte the same as a reference's** in the same layout. The
-four requests a compiler sends on its way to its own upload - `SetCompatMap`, `SetIndicatorMap`,
-`SetNames`, `SetGeometry` - are accepted and dropped, and the parts of `SetMap`
-this server has no place for (types, actions, behaviours, explicit components, modifier maps) are
-dropped too: a client gets its characters right and everything else as it was.
+(`pc+de+inet(evdev)`), and the request's own shape was read off the wire rather than out of a header:
+a twelve byte fixed part and **six** counted strings (keymap, keycodes, types, compat, symbols,
+geometry), of which the symbols string is the fifth - a request built with eight strings, which is
+what a first reading of the field names suggests, is refused by a reference with `BadLength`. The
+mapping a client reads afterwards is the layout's own, **byte for byte the same as a reference's** in
+the same layout: `xmodmap -pke` after `setxkbmap -layout <name>` is identical to the reference's for
+all seven layouts this server has, and the same command exits 0 with no error. The four requests a
+compiler sends on its way to its own upload - `SetCompatMap`, `SetIndicatorMap`, `SetNames`,
+`SetGeometry` - are accepted and dropped, and the parts of `SetMap` this server has no place for
+(types, actions, behaviours, explicit components, modifier maps) are dropped too, so a client that
+uploads its own compilation (`xkbcomp <file> <display>`) gets its characters right and everything else
+as it was - a German keymap loaded that way makes keycode 52 answer `y Y` from `xmodmap -pke` and
+`0x79 0x59` from `XkbProbe`.
+
+**A names request is answered with the one name that is true.** `GetNames` is what a client reads to
+learn which components are loaded, and refusing it is the worst answer this extension can give (the
+default Xlib error handler ends the process). The reply's shape was read off a reference's own reply -
+and its atoms live in the *tail*, not in the fixed part the protocol's field list suggests, in the
+order keycodes, geometry, symbols, physical symbols, types, compat. What this server reports is the
+symbols component it was asked to load, and nothing else: that is the client's own statement of the
+keymap it wanted and the one component this server acts on, so it is the only name here that is not
+somebody else's description of a keymap that is not loaded.
 
 **The four mandatory types are not optional, and that is the trap.** A `GetMap` reply has to carry at
 least `ONE_LEVEL`, `TWO_LEVEL`, `ALPHABETIC` and `KEYPAD`, and a reply with fewer is not trimmed by
@@ -1230,6 +1254,19 @@ protocol error, and Xlib's default handler ends the client's process - which is 
 answers a layout where it has one and "not loaded" where it does not, why RandR answers an empty `GetOutputProperty` reply, and
 why `PerClientFlags` says "none supported". A client that gets an answer it can read falls back; one
 that gets an error does not get the chance.
+
+**And for a request that expects a reply, silence is worse than both.** XI2's `XIGetProperty` - a
+*device* property read, which GTK sends as an application starts (a live EasyShell asks for
+`libinput Tapping Enabled` on the pointer device) - was refused, because an unknown minor reaches the
+hand-written decoder and throws; and "accept it and do nothing" was never an option, because the
+client would wait for a reply that is not coming. So it is **answered**, and the answer is a
+reference's, measured: this server has no device properties, and a reference answers a read of a
+property that does not exist with a plain reply whose only non-zero fields are the header's - `type =
+None`, `bytes_after = 0`, `num_items = 0`, `format = 0`. Two details of it were measured rather than
+reasoned, and a wrong guess at either would have looked like a plausible number rather than an error:
+the request's fixed part is **six** four byte units (a reference refuses a seven unit one with
+`BadLength`, so the `delete` byte a longer reading of the request puts at the end is not part of it),
+and the reply's byte 1 carries the request's minor opcode, which is what a reference puts there.
 
 ## The pointer's history
 
@@ -1723,13 +1760,13 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   (`GetMap`), the state (`GetState`), the controls (`GetControls`/`SetControls`, which is the only way
   the repeat delay and rate can be changed at all) and the version handshake are real, and a client
   that compiles its own keymap can load it (`SetMap` - `xkbcomp <file> <display>` puts a layout on this
-  keyboard, and both rails read the one table afterwards). What is deliberately not there: choosing a
-  layout **by name** - which this server now serves off tables captured from a reference, and which
-  `setxkbmap` still cannot use because it sets a layout by *compiling and uploading* it (B1), the map's types, actions and behaviours, the
-  compatibility map, `GetNames`, the indicator names, the XKB events, every control other than repeat,
-  and `LatchLockState` - accepted and doing nothing, because a client locking a modifier would be
-  locking the machine's own keyboard for every other client. The per-client flags are all unsupported
-  and `PerClientFlags` says so, detectable auto-repeat included.
+  keyboard, and both rails read the one table afterwards). Choosing a layout **by name** is served
+  too, off tables captured from a reference, and `setxkbmap` uses it: what is *not* here is the map's
+  types, actions and behaviours, the compatibility map, the indicator names, the XKB events, every
+  control other than repeat, `SetNames` (accepted and dropped, so a name a client *sets* is not one it
+  reads back), and `LatchLockState` - accepted and doing nothing, because a client locking a modifier
+  would be locking the machine's own keyboard for every other client. The per-client flags are all
+  unsupported and `PerClientFlags` says so, detectable auto-repeat included.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order. What that
   means for a *client* changed with B1: the reply is read from `Keymap`, so a layout chosen by name
