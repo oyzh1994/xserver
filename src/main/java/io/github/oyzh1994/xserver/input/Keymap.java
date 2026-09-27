@@ -29,6 +29,9 @@ public final class Keymap {
 
     private static final int[][] KEYSYMS = new int[MAX_KEYCODE + 1][];
 
+    /** Widened by {@link #useLayout}; see {@link #width()}. */
+    private static volatile int width = KEYSYMS_PER_KEYCODE;
+
     /**
      * Keycodes whose keysyms have been changed after the table above was built - by a client's
      * {@code ChangeKeyboardMapping}, or by the server itself for a character only the host could
@@ -271,13 +274,60 @@ public final class Keymap {
         };
     }
 
-    /** All keysyms for a keycode, exactly {@link #KEYSYMS_PER_KEYCODE} entries. */
+    /** All keysyms for a keycode, exactly {@link #width} entries. */
     public static int[] keysymsFor(int keycode) {
-        int[] result = new int[KEYSYMS_PER_KEYCODE];
-        for (int level = 0; level < KEYSYMS_PER_KEYCODE; level++) {
+        int[] result = new int[width];
+        for (int level = 0; level < width; level++) {
             result[level] = keysym(keycode, level);
         }
         return result;
+    }
+
+    /**
+     * How many keysyms a keycode carries, which a layout asked for by name widens.
+     *
+     * <p>This server's own keymap is two levels - base and shifted - and that was a deliberate
+     * simplification until there was a way to be more than that. A by-name layout is one: the levels
+     * a modifier picks are the *client's* arithmetic (the server sends keycodes, and
+     * {@code GetKeyboardMapping} says how many keysyms each carries), so a layout captured from a
+     * reference can be served at the reference's own width without this server understanding a
+     * single level beyond the second.
+     */
+    public static int width() {
+        return width;
+    }
+
+    /**
+     * Makes a layout this server was asked for by name the one it reports.
+     *
+     * <p>The tables are captured off a reference server ({@code tools/gen-layouts.sh}): compiling one
+     * is the keymap compiler this display server does not have, and the client that asks for a layout
+     * by name is a client that would otherwise have to compile it itself - which {@code setxkbmap}
+     * tries, and which this server does not implement far enough for it to work (B1's entry).
+     *
+     * @return false when this server has no such layout, which the caller answers honestly
+     */
+    public static synchronized boolean useLayout(String name) {
+        int[][] table = Layouts.table(name);
+        if (table == null) {
+            return false;
+        }
+        for (int row = 0; row < table.length; row++) {
+            ASSIGNED.put(Layouts.FIRST_KEYCODE + row, table[row].clone());
+        }
+        width = table.length == 0 ? KEYSYMS_PER_KEYCODE : table[0].length;
+        return true;
+    }
+
+    /** Whether this server has a layout under that name, for a request that names one. */
+    public static boolean hasLayout(String name) {
+        return name != null && Layouts.table(name) != null;
+    }
+
+    /** Puts the built-in two-level keymap back, which is what a server starts with. */
+    public static synchronized void useBuiltinLayout() {
+        ASSIGNED.clear();
+        width = KEYSYMS_PER_KEYCODE;
     }
 
     /** Keycodes assigned to each modifier row, as reported by {@code GetModifierMapping}. */

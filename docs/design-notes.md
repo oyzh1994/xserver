@@ -1146,17 +1146,26 @@ different characters depending on the toolkit. Measured with `xev` driven by the
 servers: 26 lines of keysym output, identical line for line, over Escape, a letter, Shift, Caps Lock,
 Shift+Caps Lock, Return and the keypad.
 
-**A client can also *set* the keymap** (B1), and the tool that does is `xkbcomp` rather than
-`setxkbmap`: measured, `setxkbmap -layout de` dies asking for `XkbGetKbdByName`, which wants the
-*server* to compile a keymap from a rules file - a server-side `xkbcomp`, which is not something this
-project is going to grow - while `xkbcomp <file> <display>` compiles one itself and sends `SetMap`.
+**A client can also *set* the keymap** (B1), and **there are two ways a client tries**. Measured:
+`setxkbmap -layout de` first asks `GetKbdByName`, and a reference server **refuses that request**
+(`BadAccess` to the very bytes a real `setxkbmap` sends), so what actually sets a layout on a
+reference is the *second* way - the client compiles the keymap itself and uploads it with `SetMap`.
+This server answers the first now (a layout by name, off tables captured from a reference: see below)
+and still fails the second, which is why `setxkbmap` reports `Error loading new keyboard description`
+here while the layout it asked for is in fact installed and every client reads it. **The missing half
+is the upload** (`SetMap` plus the `SetCompatMap`/`SetNames`/`SetGeometry` a compiler sends with it),
+not the by-name load.
 That now works: the keysyms of the map a client sends are applied to the one table both rails read,
 so a German keymap loaded that way makes keycode 52 answer `y Y` from `xmodmap -pke` and `0x79 0x59`
-from `XkbProbe`. `GetKbdByName` is answered "not loaded" rather than refused, because a refusal is an X
-error and Xlib's default handler ends the process: what the client gets instead is the protocol's own
-answer for a server that cannot compile, and `setxkbmap` reports "Error loading new keyboard
-description" instead of dying. The four requests a compiler sends on its way there - `SetCompatMap`,
-`SetIndicatorMap`, `SetNames`, `SetGeometry` - are accepted and dropped, and the parts of `SetMap`
+from `XkbProbe`. **`GetKbdByName` is answered with a layout where this server has one**, off tables captured from a
+reference (`tools/gen-layouts.sh`) - the same trick D3 uses for the standard fonts, and the reason no
+compiler is needed: a display server compiles nothing, it serves what a server that can has already
+produced. What a client asks with is not the name but the components the rules file resolved to
+(`pc+de+inet(pc105)`), and which of the request's strings that is was measured rather than read: with
+`-variant nodeadkeys` it is that string and nothing else that moves. The mapping a client reads
+afterwards is the layout's own, **byte for byte the same as a reference's** in the same layout. The
+four requests a compiler sends on its way to its own upload - `SetCompatMap`, `SetIndicatorMap`,
+`SetNames`, `SetGeometry` - are accepted and dropped, and the parts of `SetMap`
 this server has no place for (types, actions, behaviours, explicit components, modifier maps) are
 dropped too: a client gets its characters right and everything else as it was.
 

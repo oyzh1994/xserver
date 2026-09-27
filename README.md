@@ -423,8 +423,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   extension and `GetKeyboardMapping` read, which is how `xkbcomp <file> <display>` loads a chosen
   layout. **The repeat delay and rate are settable through XKB and no other way** - the core protocol
   has no request for either - so `SetControls` with `RepeatKeys` changes them, and a client that wants
-  a 200 ms delay gets one. What is *not* there: choosing a layout **by name** (`setxkbmap` asks for
-  `GetKbdByName`, which wants a keymap compiler inside the server - it says "not loaded" instead), the
+  a 200 ms delay gets one. **A layout can also be chosen by name**: `GetKbdByName` loads one of a set captured off a reference
+  server (`us`, `gb`, `de`, `fr`, `es`, `ru`, `cn`), the mapping every client then reads is that
+  layout's own - byte for byte what a reference reports - and every client is told to re-read it. What
+  is *not* there: `setxkbmap` still reports `Error loading new keyboard description` even though the
+  layout is installed, because a reference server *refuses* the same request and `setxkbmap` really
+  sets a layout by compiling it and uploading it (`SetMap`), which this server does not take far
+  enough; a variant is answered as its base layout; the
   map's types, actions and behaviours (a client gets its characters right and everything else as it
   was), the compatibility map, the indicator names, `GetNames`, every keyboard control other than
   repeat (slow keys, mouse keys, AccessX and the rest are accepted and not applied, and reported as

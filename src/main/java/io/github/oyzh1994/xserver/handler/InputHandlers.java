@@ -519,7 +519,7 @@ public final class InputHandlers {
         if (first + count - 1 > maxKeycode) {
             throw ProtocolException.badValue(first);
         }
-        int perKeycode = Keymap.KEYSYMS_PER_KEYCODE;
+        int perKeycode = Keymap.width();
         int[] keysyms = new int[count * perKeycode];
         for (int i = 0; i < count; i++) {
             int keycode = first + i;

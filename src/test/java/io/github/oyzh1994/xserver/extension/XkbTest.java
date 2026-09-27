@@ -43,6 +43,16 @@ class XkbTest {
     private static final int GET_MAP = 8;
     private static final int SET_MAP = 9;
     private static final int PER_CLIENT_FLAGS = 21;
+    private static final int GET_KBD_BY_NAME = 23;
+
+    /**
+     * The {@code GetKbdByName} a real {@code setxkbmap -layout de} sends, captured with
+     * {@code tools/tap.py} - the request's component strings are the rules file's own output and not
+     * the word "de", so the layout is one of them and which one was measured: this is the sixth.
+     */
+    private static final String GET_KBD_BY_NAME_DE =
+            "15000001bf00ff0001420017786672656538362b616c69617365732871776572747a2908636f6d706c"
+                    + "65746508636f6d706c6574651170632b64652b696e6574287063313035290970632870633130352900";
 
     /** {@code XkbUseCoreKbd}. */
     private static final int CORE_KEYBOARD = 0x0100;
@@ -207,6 +217,54 @@ class XkbTest {
             RawXClient.writeIntAt(request, header + 8 + i * 4, keysyms[i]);
         }
         return request;
+    }
+
+    /**
+     * A layout asked for **by name** is loaded, and the mapping a client reads afterwards is the
+     * layout's own.
+     *
+     * <p>The name is not what a client sends: {@code setxkbmap -layout de} asks for the components the
+     * rules file resolved to - {@code pc+de+inet(pc105)} - and the request below is that one, captured
+     * off the wire. The keysym for keycode 29 is what says the layout was really installed, because
+     * that key is `y` in the keymap this server starts with and `z` in German - the QWERTZ swap, and
+     * the same value a reference server reports for the same keycode in the same layout
+     * ({@code tools/GenLayouts} is where the table came from).
+     *
+     * <p><b>The layout is per server, not per client</b> - a keyboard is one keyboard - so this test
+     * puts the built-in layout back when it is done, or every test after it shares the German one.
+     */
+    @Test
+    void aLayoutAskedForByNameIsLoadedAndIsWhatClientsRead() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            try {
+                byte[] request = new byte[84];
+                byte[] body = hex(GET_KBD_BY_NAME_DE);
+                request[0] = (byte) client.queryExtension("XKEYBOARD");
+                request[1] = (byte) GET_KBD_BY_NAME;
+                // The captured bytes carry the request length, so they start at offset 2.
+                System.arraycopy(body, 0, request, 2, body.length);
+                client.sendRequest(request);
+                byte[] reply = client.readReply();
+                assertEquals(1, reply[10] & 0xFF,
+                        "the layout was loaded, which is the flag a client reads before going on");
+
+                int[] mapping = client.keyboardMapping(29, 1);
+                assertEquals(0x7a, mapping[0],
+                        "and keycode 29 is z, which is what makes this layout German rather than the "
+                                + "one this server starts with");
+            } finally {
+                io.github.oyzh1994.xserver.input.Keymap.useBuiltinLayout();
+            }
+        }
+    }
+
+    /** The bytes of a hex string, for a request built from a captured one. */
+    private static byte[] hex(String text) {
+        byte[] bytes = new byte[text.length() / 2];
+        for (int i = 0; i < bytes.length; i++) {
+            bytes[i] = (byte) Integer.parseInt(text.substring(i * 2, i * 2 + 2), 16);
+        }
+        return bytes;
     }
 
     // ------------------------------------------------------------------

@@ -224,6 +224,14 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   (None is the whole of each) and not flags, and **the order the event and the pixels are read in
   changes the answer** - the reference's present is asynchronous, so asking for the pixels before
   reading the completion samples a race and reports that nothing was copied.
+- `GenLayouts` - reads the keyboard layouts off a reference server and prints them as Java source for
+  `input/Layouts.java`; `tools/gen-layouts.sh` switches the reference with `setxkbmap` once per name
+  and assembles the file. The same trick as `GenBitmapFont` (D3): a display server cannot compile a
+  layout, so it serves tables captured off one that can. What it reads is the **core** mapping, and
+  the width is the reference's own - a client indexes the reply by the modifier state its own XKB
+  layer computes, so a narrower table would put the next key's symbols in the wrong place. Two traps
+  are in the script: a method is capped at 64KB of bytecode, so each layout is a method of its own,
+  and a trailing comma is legal in an array initialiser and not in a method's argument list.
 - `DragOutProbe` - a forwarded application that is dragging files **out** of itself, which is C5's
   other half: it takes the `XdndSelection` (the only signal X gives that a drag has started) and
   answers the server's request for `text/uri-list`. It exists because whether a real application

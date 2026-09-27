@@ -76,7 +76,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~B2~~ | ~~RandR~~ **done 2026-09-25** | extension | M |
 | ~~B3~~ | ~~Xinerama~~ **done 2026-09-25** (the three a client asks; the 1.1 extras measured and left) | extension | S-M |
 | ~~B4~~ | ~~XInput2~~ **done 2026-09-26**: the protocol's spine, the events, the device grabs, and XInput 1's device list (which AWT segfaults without) - see the entry for what that cost | extension | L |
-| [~] B1 | XKEYBOARD: read, set by a client that compiles its own map (`xkbcomp`), and the controls (repeat delay/rate, `RepeatKeys`); no compiler in the server, so no layout by name | extension | M-L |
+| [~] B1 | XKEYBOARD: read, set, and a layout **by name** off tables captured from a reference; `setxkbmap` still reports failure - the missing half is the xkbcomp *upload*, not the by-name load | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
 | ~~E4~~ | ~~per-client framebuffer memory~~ **done 2026-09-26**: allocation is lazy (verified live); freeing while a client is connected is declined, with its reasons in the entry | engineering | M |
@@ -1480,7 +1480,7 @@ number.
 
 ## 3. B - Extensions a reference server has
 
-### [~] B1. XKEYBOARD. **M-L** - read and *set* 2026-09-25 (`xkbcomp` loads a layout); choosing one *by name* needs a compiler in the server
+### [~] B1. XKEYBOARD. **M-L** - read, *set* (`xkbcomp` loads a layout), and now **choosable by name** off tables captured from a reference (2026-09-27); `setxkbmap` still reports failure, and that is the xkbcomp upload path rather than this
 
 **Done 2026-09-25.** `extension/XkbExtension` advertises `XKEYBOARD` and answers what a client asks
 before it will trust the keyboard: the version handshake (`UseExtension`), the keymap (`GetMap`, built
@@ -1644,6 +1644,44 @@ and one media key where this one excludes nothing beyond the modifier map.
 
   So the item's original "no client here asks for it" was right about `xkbcomp` and wrong about
   clients in general - and the delay and the rate could not be changed at all before this.
+
+**A layout by name is in (2026-09-27), off tables captured from a reference, and the reason it is not
+"a compiler in the server" is that it never needed to be one.** A display server compiles nothing: the
+tables are read off a server that can ({@code tools/GenLayouts}, {@code tools/gen-layouts.sh}) - the
+same trick D3 uses for the standard fonts - and served under the name a client asks for.
+
+- **What a client asks with is not the word "de".** {@code setxkbmap -layout de} sends the components
+  the rules file resolved to, `pc+de+inet(pc105)`, as the sixth of a list of counted strings. Which
+  field that is was **measured, not read**: with `-variant nodeadkeys` the sixth becomes
+  `pc+de(nodeadkeys)+inet(pc105)` and nothing else in the request moves. The layout is then the first
+  `+`-separated part this server has a table for, with a variant's parentheses dropped - a variant is
+  a keymap there are no tables for, and the base layout is the honest answer to it.
+- **The tables are the core mapping at the reference's own width** (seven keysyms per keycode), and
+  that is what makes it work: the server sends keycodes and the client does the level arithmetic, so a
+  client indexes `GetKeyboardMapping`'s reply by the modifier state its own XKB layer computes. This
+  server's own keymap stays two levels until a layout is installed, and nothing else changes when none
+  is.
+- **Measured, and it is byte for byte**: after `setxkbmap -layout ru` is answered, the whole
+  `GetKeyboardMapping` reply - 248 keycodes by seven levels - is **identical to the same request
+  against Xvfb in the same layout**, and `de` gives the QWERTZ swap (keycode 29 `z`, keycode 52 `y`)
+  and the umlauts at the reference's own levels. `XkbTest`'s new case fails with the install taken out.
+- **Every client is told to re-read it** (`MappingNotify`), which is the same notification `SetMap`
+  sends and the reason a client that missed it would go on typing the old layout.
+
+**And `setxkbmap` still prints `Error loading new keyboard description`**, which is the honest
+remainder and it is **not** what it looks like:
+
+- **A reference server refuses this request too** - Xvfb answers `BadAccess` to the very bytes a real
+  `setxkbmap -layout ru` sends it, captured off the wire - and `setxkbmap` reports **success** there
+  anyway, because it goes on to compile the keymap itself and upload it with `SetMap`. **So the
+  by-name load is not how a layout gets set on a reference at all**; it is the client's own compiler.
+- **That fallback is what this server is missing**, and it is where the next session should look: the
+  upload is `SetMap` plus `SetCompatMap`/`SetNames`/`SetGeometry`, the four this server accepts and
+  drops (see below). With the by-name answer in place the layout *is* installed and every client reads
+  it correctly - the error is `setxkbmap`'s own verdict, on its way to a fallback that then fails.
+- **This also corrects the entry above**, which said a client "can go on to `SetMap` instead": it does
+  not, and never did - measured, **no request at all follows** the reply, and the same error is printed
+  for the honest `loaded = 0` answer this server used to give.
 
 **What is still not here.** *Selecting a layout by name* - `setxkbmap`, and anything else that asks
 the server to compile one - because that is a keymap compiler in the server and this is a display

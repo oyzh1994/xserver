@@ -149,7 +149,7 @@ public final class XkbExtension implements Extension {
             case SetMapRequest r -> setMap(server, client, r);
             case LatchLockState r -> latchLockState(client, r);
             case PerClientFlags r -> perClientFlags(client, r);
-            case GetKbdByName r -> getKbdByName(client, r);
+            case GetKbdByName r -> getKbdByName(server, client, r);
             default -> throw ProtocolException.unimplemented(
                     "XKEYBOARD request " + request.getClass().getSimpleName());
         }
@@ -401,20 +401,60 @@ public final class XkbExtension implements Extension {
      * rules and nothing was reported back - so a client that has its own compiler (which
      * {@code setxkbmap} does) can go on to {@code SetMap} instead.
      */
-    private void getKbdByName(ClientConnection client, GetKbdByName request) {
-        log.debug("{} asked this server to load a keymap by name: there is no compiler here,"
-                + " answering \"not loaded\"", client);
+    private void getKbdByName(XServer server, ClientConnection client, GetKbdByName request) {
+        String name = layoutOf(request.layout());
+        boolean loaded = name != null && Keymap.useLayout(name);
+        if (loaded) {
+            // Every client resolves keycodes through its own copy of the mapping, so a layout that
+            // changed under them is a layout they have to be told to re-read - the same notification
+            // `SetMap` sends, and the reason a client that missed it would go on typing the old one.
+            server.broadcastMappingNotify((byte) 0, Keymap.MIN_KEYCODE,
+                    (byte) (Keymap.MAX_KEYCODE - Keymap.MIN_KEYCODE + 1));
+        }
+        log.debug("{} asked this server to load a keymap by name ({}): {}", client,
+                request.layout(), loaded ? "loaded " + name : "not a layout this server has");
         byte[] bytes = new byte[32];
         bytes[0] = 1;
         bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
         putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
         bytes[8] = (byte) Keymap.MIN_KEYCODE;
         bytes[9] = (byte) Keymap.MAX_KEYCODE;
-        bytes[10] = 0;                          // loaded: no
+        bytes[10] = (byte) (loaded ? 1 : 0);    // loaded
         bytes[11] = 0;                          // newKeyboard: no
-        putCard16(bytes, 12, 0, client.isBigEndian());   // found: nothing
-        putCard16(bytes, 14, 0, client.isBigEndian());   // reported: nothing
+        // found: the components that were found, which is **all of them** - this server serves a
+        // whole keymap, its own, and answering a subset would send the client to read a component
+        // that is missing from it (a symbols map with no types is one Xlib refuses). The bit
+        // numbering is XKB's: Keycodes 1, Types 2, Compat 4, Symbols 8, Geometry 16.
+        putCard16(bytes, 12, loaded ? 0x1F : 0, client.isBigEndian());
+        putCard16(bytes, 14, 0, client.isBigEndian());   // reported: nothing by name
         send(client, bytes);
+    }
+
+    /**
+     * The layout inside the symbols component string a client sends, or null.
+     *
+     * <p>What {@code setxkbmap -layout de} sends is not the word "de" but the components it resolved
+     * the rules file to - {@code pc+de+inet(pc105)} - so the name is one of the `+`-separated parts,
+     * and which one is a matter of trying them: the first part this server has a table for is the
+     * layout. `pc` and `inet(pc105)` are components of every request and no layout here, and a
+     * variant's parentheses are dropped because a variant is a keymap this server has no tables for -
+     * the request is answered, and answered as the base layout rather than as something invented.
+     */
+    private static String layoutOf(String components) {
+        if (components == null || components.isEmpty()) {
+            return null;
+        }
+        for (String part : components.split("\\+")) {
+            String base = part;
+            int parenthesis = base.indexOf('(');
+            if (parenthesis >= 0) {
+                base = base.substring(0, parenthesis);
+            }
+            if (Keymap.hasLayout(base)) {
+                return base;
+            }
+        }
+        return null;
     }
 
     private void send(ClientConnection client, byte[] bytes) {
@@ -550,18 +590,40 @@ public final class XkbExtension implements Extension {
      * only the fixed part, because the answer does not depend on any of it and the rest of the body
      * is already buffered by the connection.
      */
-    private record GetKbdByName() implements XRequest {
+    private record GetKbdByName(String layout) implements XRequest {
+
+        /** Which of the component strings carries the layout, measured - see the reader. */
+        private static final int SYMBOLS_FIELD = 5;
+
+        /** How many component strings a request carries, as the ones this bed's clients send do. */
+        private static final int FIELDS = 8;
 
         static GetKbdByName readGetKbdByName(com.github.moaxcp.x11.protocol.X11Input in)
                 throws IOException {
-            in.readCard8();                         // the major opcode, again
-            in.readCard16();                        // length
+            in.readPad(1);                          // the minor opcode, already known
+            int length = in.readCard16();           // the request length, in four byte units
             in.readCard16();                        // deviceSpec
-            in.readCard16();                        // need
             in.readCard16();                        // want
             in.readCard8();                         // load
             in.readCard8();                         // pad
-            return new GetKbdByName();
+            // The component names, as counted strings. **Which one is the layout is measured, not
+            // read out of a specification this fork has no class for**: with `setxkbmap -layout de`
+            // the sixth string is `pc+de+inet(pc105)` and with `-variant nodeadkeys` it becomes
+            // `pc+de(nodeadkeys)+inet(pc105)`, and nothing else in the request moves.
+            int remaining = length * 4 - 10;        // what is left after the fixed part
+            String layout = "";
+            for (int field = 0; field < FIELDS && remaining > 0; field++) {
+                int count = in.readCard8();
+                StringBuilder text = new StringBuilder(count);
+                for (int i = 0; i < count; i++) {
+                    text.append((char) in.readCard8());
+                }
+                remaining -= 1 + count;
+                if (field == SYMBOLS_FIELD) {
+                    layout = text.toString();
+                }
+            }
+            return new GetKbdByName(layout);
         }
 
         @Override
