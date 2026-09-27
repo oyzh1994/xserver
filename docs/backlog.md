@@ -3155,9 +3155,13 @@ its release marker when a Finder file is dropped on it, because *there the URI r
 **So the open question is not XDND but file transfer**, and XDND is URI-based by design - the target
 opens a path, it does not download a file. The ways out, in the order they are worth trying:
 
-- **A filesystem the client can see.** With the host's directory mounted on the client (a VMware/Parallels
-  shared folder, or an sshfs/NFS mount), the URI resolves and the drop works as it stands - the
-  cheapest thing to try, and it needs no code.
+- **A filesystem the client can see - and a mapping, which is now in (`--drop-mount H=C`,
+  2026-09-27).** With the host's directory mounted on the client (a VMware/Parallels shared folder, or
+  an sshfs/NFS mount) the URI resolves, and `--drop-mount /Users/me/Shared=/mnt/hgfs/Shared` rewrites
+  the path so the URI names the file at *its client path*. `DropBridge` matches the longest prefix and
+  leaves everything else alone; a test drops two files and checks one is rewritten and one is not, and
+  it fails with the mapping taken out. Without the option the path is reported as it is, which is
+  right for a client on this machine.
 - **Normalise the path the bridge reports - done 2026-09-27.** `JavaFxBackend` hands over
   `/private/tmp/...` (macOS's resolved `/tmp`), and a client that shares `/tmp` cannot find that, so
   `DropBridge.toUris` now reports the path without the prefix when what is left is the same file.

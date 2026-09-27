@@ -43,6 +43,7 @@ Options:
 | `--no-tray` | do not serve the notification area (the tray a client's icon docks in) |
 | `--glx` | advertise GLX, so a software OpenGL client (`glxgears`, a browser) can render; **off by default**, see below |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
+| `--drop-mount H=C` | where the host's path prefix `H` is on the client's filesystem, for a file dragged onto a forwarded application (see below) |
 | `--scale N\|auto` | screen pixels per logical pixel: `auto` is the host's own scale, 2 on a Retina panel (default 1) |
 | `--close-grace-ms N` | time a client gets to close itself when its window is closed (default 2000) |
 | `--detach-on-close` | closing the window leaves the clients running with no window instead of ending the session |
@@ -559,7 +560,8 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   URI-based: a target *opens* the file, it does not download it. Across machines that path does not
   exist, which is the whole of "nothing happens" (and why the same application running natively shows
   its release marker). A filesystem the client can see - a shared folder, an sshfs mount - makes the
-  drop work as it stands,
+  drop work, and `--drop-mount /Users/me/Shared=/mnt/hgfs/Shared` tells the bridge where that
+  directory is on the client's side, so the URI it hands over is one the application can open,
   and the outbound one's trigger was reverted because it took over drags the application meant to keep
   inside itself (which froze one client). `docs/backlog.md` C5 has the measurements and the corrected
   design. An application from before drag and drop - `xterm`, `xclock` - has no way to receive one and

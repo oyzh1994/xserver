@@ -78,6 +78,17 @@ public final class ServerOptions {
      */
     private int maxScreenWidth = 8192;
     private int maxScreenHeight = 8192;
+
+    /**
+     * Where the host's paths are on the client's filesystem, as {@code hostPrefix=clientPrefix} pairs.
+     *
+     * <p><b>A drop hands the application a path, and XDND cannot hand it anything else</b> - the
+     * target opens the file, it does not download it (measured: a real application answers the drag
+     * and then does nothing, because the path it was given is on the other machine). A user whose
+     * client can see the host's files - a shared folder, an sshfs or NFS mount - is one mapping away
+     * from a drag that works, and without a mapping the path is reported as it is.
+     */
+    private final java.util.List<String[]> dropMounts = new java.util.ArrayList<>();
     /** Whether the host clipboard is bridged to the X CLIPBOARD selection. */
     private boolean clipboard = true;
 
@@ -137,6 +148,20 @@ public final class ServerOptions {
      */
     private int vncWebSocketPort = -1;
 
+    private void parseDropMount(String value) {
+        int equals = value.indexOf('=');
+        if (equals <= 0 || equals == value.length() - 1) {
+            throw new IllegalArgumentException(
+                    "--drop-mount wants hostPrefix=clientPrefix, got " + value);
+        }
+        dropMounts.add(new String[] {value.substring(0, equals), value.substring(equals + 1)});
+    }
+
+    /** The host-to-client path mappings for a drop, in the order they were given. */
+    public java.util.List<String[]> dropMounts() {
+        return java.util.List.copyOf(dropMounts);
+    }
+
     public static ServerOptions parse(String[] args) {
         ServerOptions options = new ServerOptions();
         List<String> positional = new ArrayList<>();
@@ -175,6 +200,7 @@ public final class ServerOptions {
                 case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
+                case "--drop-mount" -> options.parseDropMount(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
                 case "--no-tray" -> options.tray = false;
                 case "--glx" -> options.glx = true;

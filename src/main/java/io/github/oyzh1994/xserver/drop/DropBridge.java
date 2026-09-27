@@ -92,8 +92,13 @@ public final class DropBridge {
     private long droppedAt;
     private boolean waitingForStatus;
 
+    /** Where the host's paths are on the client's side, longest prefix first - see {@link #forClient}. */
+    private final List<String[]> mounts;
+
     public DropBridge(XServer server) {
         this.server = server;
+        this.mounts = new ArrayList<>(server.options().dropMounts());
+        mounts.sort((a, b) -> Integer.compare(b[0].length(), a[0].length()));
         window = new XWindow(server.nextServerResourceId(), null, server.screen(),
                 server.screen().root(), server.screen().root().depth(), XWindow.INPUT_ONLY,
                 server.screen().root().visual(), 0, 0, 1, 1, 0);
@@ -489,15 +494,34 @@ public final class DropBridge {
      * how this was found: a real drop reached a forwarded application and the file was, from its side,
      * nowhere.
      */
-    private static List<String> toUris(List<String> paths) {
+    private List<String> toUris(List<String> paths) {
         List<String> uris = new ArrayList<>(paths.size());
         for (String path : paths) {
-            String normalised = userFacing(path);
+            String normalised = forClient(userFacing(path));
             uris.add(java.io.File.separatorChar == '\\'
                     ? "file:///" + encode(normalised.replace('\\', '/'))
                     : "file://" + encode(normalised));
         }
         return uris;
+    }
+
+    /**
+     * The path as the <em>client</em> will see it, when the user has said where the host's directory
+     * is on that side ({@code --drop-mount /Users/me/Shared=/mnt/hgfs/Shared}).
+     *
+     * <p>This is the one thing that makes a drag onto a forwarded application do something useful
+     * across machines: the application opens the path it is handed, so the path has to exist where
+     * the application runs. Without a mapping it is reported as it is, which is right for a client on
+     * this machine and for one that mounts the same path.
+     */
+    private String forClient(String path) {
+        for (String[] mount : mounts) {
+            String from = mount[0];
+            if (path.equals(from) || path.startsWith(from.endsWith("/") ? from : from + "/")) {
+                return mount[1] + path.substring(from.length());
+            }
+        }
+        return path;
     }
 
     /** The path without macOS's resolved-file prefix, when the remainder is the same file. */

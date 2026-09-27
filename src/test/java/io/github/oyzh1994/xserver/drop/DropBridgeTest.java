@@ -192,6 +192,46 @@ class DropBridgeTest {
         }
     }
 
+    /**
+     * A drop onto a shared directory is handed the path the <em>client</em> has it at, which is the
+     * one thing that makes the drag do something useful across machines - the application opens the
+     * path it is given (see the C5 entry).
+     */
+    @Test
+    void aPathUnderAMountIsHandedOverAtItsClientPath() throws IOException {
+        // A display of its own: the suite's own server already holds DISPLAY, and two servers cannot
+        // share a display number. 62 is below the range the suite binds.
+        XServer mounted = new XServer(ServerOptions.parse(new String[]{"--display", ":62",
+                "--geometry", "400x300", "--backend", "headless", "--single-window", "--no-unix",
+                "--drop-mount", "/Users/me/Shared=/mnt/hgfs/Shared"}));
+        mounted.start();
+        mounted.startEventLoop();
+        mounted.startDropBridge();
+        try (RawXClient target = RawXClient.connect(62)) {
+            try {
+                int window = takeDrops(target);
+                pointAt(target, 200, 150);
+                int enterAtom = target.internAtom("XdndEnter");
+                mounted.dropBridge().hostDropped(
+                        List.of("/Users/me/Shared/note.txt", "/Users/me/elsewhere.txt"), 200, 150);
+                assertNotNull(readMessage(target, enterAtom));
+
+                int property = target.internAtom("XSERVER_DROP_DATA");
+                target.convertSelection(window, target.internAtom(XDND_SELECTION),
+                        target.internAtom(URI_LIST), property, 0);
+                target.flush();
+                assertNotNull(target.readEvent(SELECTION_NOTIFY));
+                byte[] reply = target.getProperty(window, property, 0, true);
+                assertEquals("file:///mnt/hgfs/Shared/note.txt\r\n"
+                                + "file:///Users/me/elsewhere.txt\r\n",
+                        new String(reply, 32, RawXClient.readInt(reply, 16), StandardCharsets.UTF_8),
+                        "the mounted prefix is rewritten and everything else is left alone");
+            } finally {
+                mounted.stop();
+            }
+        }
+    }
+
     @Test
     void aWindowThatDoesNotTakeDropsIsLeftAlone() throws IOException {
         try (RawXClient target = RawXClient.connect(DISPLAY)) {
