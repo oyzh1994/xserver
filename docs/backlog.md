@@ -4185,11 +4185,20 @@ second thing falls out of it, and it is worth knowing: that run resolved the **p
 artifacts - not this machine's locally-patched one - and passed, which is E1's compatibility claim
 measured from the other side.
 
+**And the owner has settled what that pipeline would be (2026-09-27), which retires the guesswork the
+paragraph below warns about**: this repository lives on **Gitee as a code host only**, is going to be
+**mirrored to GitHub**, and continuous integration will run on **GitHub Actions**. So the missing file
+is a `.github/workflows/*.yml` whose one job runs `ci.sh` - a script that is already the whole
+interface, needing only a JDK and Maven - and it is to be written when the mirror exists rather than in
+advance. It is also settled that **the no-display case is not this project's own use**: the server is
+meant to be rendered by JavaFX on a desktop. The headless support stays regardless, because it is a
+*means* rather than a goal - it is what lets a container or a runner run the suite at all - and it costs
+a desktop run nothing (387 tests, 0 skipped there; the two guards skip only where skipping is right).
+
 **Left open.** The green run on a pull request (and the deliberately broken commit failing it) cannot
-be produced here - there is no CI service in this checkout - so the item stays open until the script
-is wired to one and seen to run. That is the repository host's: **Gitee takes its own pipeline
-format**, and a workflow file written blind for a service nobody has tried would be worse than none
-(the script's own comments say what a pipeline needs: a JDK that satisfies the pom and Maven).
+be produced here - there is no CI service in this checkout - so the item stays open until the script is
+wired to one and seen to run. With the decision above that is GitHub Actions, and the script's own
+comments say what a pipeline needs of it: a JDK that satisfies the pom, and Maven.
 
 **Found on the way, and now its own item and done: a server with no display serves into the void.**
 With `-Djava.awt.headless=true` and the default backend, a client that maps a window made the tick
