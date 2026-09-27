@@ -486,10 +486,6 @@ public final class Picture extends XResource {
             windowOwn = null;
             return;
         }
-        // RENDER's rail reaches a window through a picture, so this is where its drawings invalidate
-        // a backing store - the core rail does the same in DrawHandlers.afterDrawing. See
-        // XWindow.forgetBacking for why a drawing throws the saved pixels away.
-        window.forgetBacking();
         if (window.keepsOwnPixels()) {
             // The picture addresses the window's own store in the window's own coordinates, so there
             // is no translation to make. Writes reach everything the window owns - a covered window

@@ -672,13 +672,6 @@ public final class DrawHandlers {
             // in the same breath - which is the whole of this extension's hook into drawing.
             io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, drawable, drawn);
         }
-        if (drawable instanceof XWindow window) {
-            // A window that has just drawn is no longer the window its backing store was captured
-            // from: what it drew landed in the pixels that show, and the store does not have it. The
-            // next reveal of that window paints and exposes instead of putting the saved pixels back,
-            // which is the behaviour every window had before backing store existed.
-            window.forgetBacking();
-        }
         // Only the copy requests have anything to say: `GraphicsExpose`/`NoExpose` answer "what
         // happened to the part I could not copy", and a fill copies nothing. Sending one for every
         // drawing request - which is what this did - is a stray event into a client that is very
