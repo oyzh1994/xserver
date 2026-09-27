@@ -521,6 +521,16 @@ With every window composited from a store, forgetting the guard changes nothing 
 see; the reference is what says otherwise, and it says it plainly: repaint a redirected window there
 and its pixmap holds the new colour while the screen holds the old one.
 
+**Three things about the overlay had to be right, and a real compositor found all three.** Depth:
+it is the root's, because a compositor creates a RENDER picture on it with the *root's* format and a
+format that does not match the drawable's depth is `BadMatch` - which `picom` does not check, so the
+symptom was a segfault a long way from the cause. Redirection: a compositor redirects the root's whole
+subtree, the overlay included, and here being composited is the overlay's only path to the screen, so
+it is exempt. And background: a reference creates the overlay with `background = None`, so it
+contributes nothing until the compositor draws; this server approximates `None` by painting the
+desktop colour, which for a screen-sized window means the whole screen - so the server's own surface
+has no pixels at all until something draws into it.
+
 **The overlay window is the one part that could not be inherited.** A reference answers
 `GetOverlayWindow` with a screen-sized window of its own and the compositor draws its result there.
 Here a screen-sized window *above every other* is a problem twice over: every window in this server

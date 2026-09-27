@@ -209,7 +209,10 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   in `XServer.compositeOwnPixels` is what the probe pins. Two smaller readings came out of it: the
   version answered is the **server's** (a client asking for 0.4 and one asking for 0.2 are both told
   0.4), and a client **may draw into** a named window pixmap - the fill lands - where the
-  specification leaves it undefined, which is why the view is read-write.
+  specification leaves it undefined, which is why the view is read-write. It also prints the
+  **overlay's depth**, which is the field that decided whether `picom` runs at all: a depth-32 overlay
+  makes a compositor's RENDER picture on it `BadMatch`, and the crash that follows is a long way from
+  the cause.
 - `PresentProbe` - the harness for Present, the last of B5's three: the version (asked twice), the
   capabilities, then a window painted one colour and a pixmap another, a `SelectInput` for the
   completion, a `PresentPixmap`, and both the event and the pixels read back. **It is the one probe

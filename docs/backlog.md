@@ -2096,6 +2096,47 @@ present is asynchronous, so that order samples a race; read the other way the tw
 probe now reads the event first, and `PresentProbe` and `CompositeProbe` are both **identical to the
 reference line for line** in the sweep.
 
+**Verify, run 2026-09-27: `picom` against this server, and it found three more bugs.** The item's
+own Verify names a compositor, and running one was worth a session - every one of the three is
+invisible to the probes that were written for the extension, and two of them are invisible to the
+whole test suite:
+
+1. **The overlay was depth 32 where a reference's is depth 24**, and that made `picom` **segfault**.
+   It asks RENDER for a picture with the root's format and creates it on the overlay; a format that
+   does not match the drawable's depth is `BadMatch`, `picom` keeps the null picture and dereferences
+   it. The crash is a long way from the cause, and the `GetImage`-and-pixel-compare level of testing
+   never sees it. Found by printing the overlay's depth in `tools/CompositeProbe` and comparing with
+   the reference. **Fixed**, and `CompositeTest.theOverlayIsAsDeepAsTheRoot` fails without it.
+2. **The overlay was itself redirected**, which a compositor does - to the root's whole subtree,
+   including the window it draws its result on. On a reference that costs nothing (the display driver
+   shows the overlay by a path of its own); here being composited is the overlay's only path to the
+   screen, so the result went nowhere and the screen was **blank with `picom` running happily**.
+   **Fixed** with an explicit "the server's own surface is not redirected", and
+   `CompositeTest.theOverlayKeepsReachingTheScreenWhileItsSubtreeIsRedirected` fails without it.
+3. **The overlay painted its background over the screen.** This server approximates a window's
+   `background = None` by painting the desktop colour - harmless for an ordinary window, which draws
+   over it, and wrong for a screen-sized one: mapping the overlay turned the whole screen grey, and
+   `CompositeProbe` read it back as a difference from the reference while a window was redirected.
+   **Fixed** by giving the server's own surface no pixels until something draws into it
+   (`XWindow.transparentUntilDrawn`, and the composite skips a store that does not exist), and
+   `CompositeTest.creatingTheOverlayLeavesTheScreenAlone` fails when the fix is taken out.
+
+**And two things it found that are *not* fixed, recorded so the next session starts from here:**
+
+- **`picom`'s frames are intermittently black.** With a single window it composites the picture
+  correctly in some runs and leaves the screen black in others - three samples with the fix in place
+  gave two good and one black, and the same mixture before it, so it is **not** the overlay work that
+  decides it. What is known: the window's own content reaches `picom`'s back buffer through a
+  `Composite` with a **1x1 depth-8 alpha mask sampled at (1,1)** - outside the mask - so the answer
+  depends entirely on the repeat mode `picom` set on that picture, and a mask that reads transparent
+  leaves the back buffer cleared to black. That is the first place to look: log the repeat
+  `ChangePicture` sets on the mask picture, and check whether a 1x1 source is sampled the way the
+  reference samples it. **This is the same path as the second item below** and one diagnosis probably
+  explains both.
+- **`--opacity-rule` has no effect**: a window the rule matches is composited opaque here and
+  translucent against the reference (`/tmp` captures, same client, same flags). The mask is the
+  mechanism in both cases.
+
 **What is deliberately different, and it is one line.** `SyncProbe` is the sweep's seventh deliberate
 difference: `ListSystemCounters` answers **no** system counters here where the reference keeps eight
 elapsed-time counters for its own scheduler. This server has no scheduler to report on, and the
