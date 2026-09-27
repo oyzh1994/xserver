@@ -57,7 +57,6 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A10~~ | ~~`GetMotionEvents` returns nothing~~ **done 2026-09-24** | correctness | S |
 | ~~A12~~ | ~~window gravity, `winGravity` and `bitGravity`~~ **done 2026-09-26** (both halves, measured against the reference) | correctness | S-M |
 | ~~A8~~ | ~~XFixes selection/cursor notifications are never delivered~~ **done 2026-09-24** | correctness | S-M |
-| A6 | a keyboard-grab focus change is reported `NotifyNormal` | correctness | S |
 | ~~A5~~ | ~~`PointerRoot` focus reporting: the premise was wrong, five measured differences remain~~ **done 2026-09-25** | correctness | M |
 | ~~A1~~ | ~~passive grabs are recorded but never matched~~ **done 2026-09-25** | correctness | M |
 | ~~A15~~ | ~~a filled polygon's scanline crossings are taken half a pixel low~~ **done 2026-09-25**: the `xlogo` difference is now 0 pixels | correctness | S |
@@ -90,7 +89,7 @@ A prompt that starts a fresh session on this, verbatim:
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
-| A17 | a frame JavaFX draws on a timer never reaches the screen - the caret does not blink, and it is older than this session's changes | correctness | M |
+| ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
@@ -931,7 +930,7 @@ above a destroy-path bug rather than a rule that was wrong everywhere.
 
 **The original wording, kept for what it measured:**
 
-### [ ] A5old. The focus under `PointerRoot`: the premise was wrong, the details are not. **M**
+### [x] A5old. The focus under `PointerRoot`: the premise was wrong, the details are not. **M** - superseded: A5 has the record, and this is kept for what it measured
 
 **What the item claimed.** That with the focus on `PointerRoot` a server "is supposed to move the
 focus from window to window as the pointer moves and report each move", that this server does not, and
@@ -1838,7 +1837,7 @@ a future session that implements them has to come back to this paragraph.
 question has to get an answer. Measured: with the extension present the xdotool segfault below is
 **still** there, so Xinerama was not its cause - which is what A4's investigation needed ruled out.
 
-### [ ] B3old. Xinerama (the original wording). **M**/**S-M**
+### [x] B3old. Xinerama (the original wording). **M**/**S-M** - superseded: B3 has the record (the three a client needs, measured)
 
 **Current.** Not advertised: every client sees one monitor, which is also what this server has.
 
@@ -2086,6 +2085,16 @@ pixels, and a moved window keeps them; `PictureWindowDrawnTest` pins the region 
 on). `ownPixels`'s per-pixel `Rectangle` union was replaced with bounds arithmetic, because that loop
 is every pixel a RENDER request writes.
 
+**One path the suite never sent until 2026-09-27, and now does.** A17's own step (3) names the requests
+a caret blink makes, and the last of them is a whole-window `CopyArea` out of a pixmap - a request
+`RawXClient` could not build, so no test had ever sent one and the copy-into-a-store-window path was
+unpinned. `RawXClient.copyArea` and `WindowStoreTest.aWindowTakesACopyFromAPixmapIntoItsOwnPixels`
+close that: the copy has to land in the window's own pixels *and* reach the screen from there. Both
+halves matter and neither is obvious - a store window's own origin is 0 while a screen-drawing
+window's is its absolute position, so the coordinate rule is what is really being pinned. Confirmed
+by mutation rather than by the test passing: giving the store target the absolute origin fails it
+(and `aMovedWindowKeepsItsPixels` with it), which is what makes it a test rather than a restatement.
+
 **Verified live on `.147`, both clients** (`--single-window`, XTEST-driven, and EasyShell again in the
 default per-client mode):
 - **EasyShell** renders (frame dump read: toolbar, sidebar, welcome page, icons and Chinese text all
@@ -2208,7 +2217,7 @@ which is exactly the `IncludeInferiors` question in A9.
 
 ---
 
-### [ ] A17. Reports of a menu with no hover colour and a caret that does not blink - not reproduced, and `--glx` is the one measured difference. **M**
+### [x] A17. Reports of a menu with no hover colour and a caret that does not blink - not reproduced, and `--glx` is the one measured difference. **M** - closed 2026-09-27 by measurement: the client asks for no repaint, so the server has nothing to fail at
 
 **What the user saw**, on 2026-09-27, running the build with GLX advertised: a right-click menu whose
 hovered item has **no background colour** (clicking works), and a search box that takes focus and
@@ -2250,6 +2259,51 @@ and a scripted click is exactly the kind of thing that lands in a different focu
 `CopyArea(pixmap -> window)` - so a pixmap that does not take the fill, or a frame that lands in the
 window and not on the screen, are the two places to look, and `Shot --window <id>` reads a window's
 own pixels back for the comparison.
+
+**Re-measured and closed 2026-09-27, and the measurement that closes it is the client's own request
+log.** The entry above already said neither symptom reproduces from a script; this is the same answer
+with numbers, plus the one measurement it was missing - what the client *asks for* during the gesture.
+
+- **The caret blinks, with GLX and without.** Ten whole-screen `xwd` captures 0.2 s apart, the search
+  box clicked and the pointer parked away from it, hashed over the box's own rectangle: the region
+  alternates between exactly two states - frames 1,3,6,7,8,10 against 2,4,5,9 on the default build,
+  and 1,3,6,7,10 against 2,4,5,9 with `--glx`. The period the sampling can see is 0.8-1.0 s, which is
+  JavaFX's 500 ms on/off. **"The caret never blinks" is not this server's doing on either build.**
+- **The menu hover repaints nothing because the client draws nothing.** With the context menu open
+  and the pointer walked across its items in 1 px steps, the server's request log shows the menu
+  drawn exactly once (`CreatePixmap`/`CreatePicture`/`FillRectangles`/`PutImage`/`CopyArea`) and then
+  **no drawing request at all** while the pointer moves - only the `QueryExtension`/`QueryPointer`/
+  `WarpPointer` groups that are `xdotool`'s own, which is what makes the two separable. The screen
+  agrees: twelve pointer positions and a whole-screen `xwd` diff leave the menu's rectangle
+  **byte-identical**. A toolkit that does not repaint on hover has not failed to reach the screen; it
+  has not drawn.
+- **The reference agrees, as far as it could be made to.** On Xvfb, the same gesture and the same
+  captures also differ by **0 pixels**. (The Xvfb side is the weaker half on purpose: EasyShell's
+  saved state cannot be reset from a script, and two attempts to open the menu on the reference
+  landed in an already-open session's file list instead. The request log is the measurement; Xvfb is
+  the corroboration.)
+- **What a hover needs *is* delivered.** `FocusProbe` and `MenuProbe` are both identical to Xvfb in
+  this session's sweep - the gate §7 sets for this area - so the `EnterNotify`/`MotionNotify` and the
+  popup's grab are there. The live 6/6 below is the other half of that statement.
+- **Live, and this is the regression the item is answered with** (`.147`, XTEST-driven): EasyShell in
+  `--single-window` renders; its context menu survives six out-and-back passes **6/6**, with the same
+  2400 colours and 1373 dark pixels in its own rectangle after every one; typing `zz` puts both
+  characters in the search box; the caret alternates as above. termora renders and its menu survives
+  **6/6**. In the default per-client mode EasyShell's host window is on screen carrying the client's
+  own title (`EasyShell主页`, 1300x828).
+
+**Nothing in this server is changed by this item**, and the mitigation stands as it was: GLX is
+advertised only when `--glx` asks for it. The recipe above is kept for a report that arrives with a
+*gesture*, which is the one thing none of these measurements has - a script cannot make the hand's
+kind of motion, and that remains the honest hole in the answer.
+
+**What it does leave behind is a pin on the path its step (3) names.** The caret blink's last request
+is a `CopyArea` out of a pixmap into the window, and nothing in the kit had ever sent one - so the
+copy-into-a-store-window path was untested. `RawXClient.copyArea` and
+`WindowStoreTest.aWindowTakesACopyFromAPixmapIntoItsOwnPixels` close that (see B5's entry for what the
+test really pins, and the mutation that shows it bites). It is a small thing, but it is the part of
+this item that survives: a caret that stops blinking because a copy did not land would now fail in
+`mvn test` instead of needing another afternoon of `xwd` captures.
 
 ### [x] B6. GLX / OpenGL. **XL** - done 2026-09-27, and it needed no renderer: a software GL client renders itself and blits
 
@@ -3896,6 +3950,29 @@ definition.
 ---
 
 ### [ ] E6. Keep the three documents in step. **S, ongoing**
+
+**Swept 2026-09-27**, after A17 was re-measured and closed. The drift it found this time was in *this*
+file rather than in the other two, which is the shape worth recording:
+
+- **Two entries were still marked `[ ]` while the items they describe were superseded and finished** -
+  `A5old` ("the original wording, kept for what it measured") and `B3old` (the same for Xinerama). An
+  open-looking box on a closed item is the drift this item exists for, one step worse than the usual
+  form: it does not just omit what is done, it advertises it as waiting for somebody. Both now carry
+  the `- superseded:` marker `A4old` established.
+- **§0's table had a second, unticked `A6` row** while A6 was already ticked two lines above it - the
+  same fault in the table that is the first thing a new session reads. Removed.
+- **A17's own record needed the two other documents touched**, and got it: the README's `--glx` bullet
+  and the design notes' "GLX, and why a server without a GPU can run OpenGL" both said the caret
+  "blinks in the states that can be controlled"; both now carry the actual measurement (ten captures,
+  two alternating states, on *both* builds) and the sharper half - that the hover paints nothing
+  because the client issues no drawing request at all. The delivery-shipped text was not *wrong*; it
+  was weaker than what had been measured, which is the failure mode in the other direction and worth
+  the same correction.
+- **The reference sweep was re-run and is clean**: 13 probes identical, and the six that differ are
+  the six `tools/README.md` lists as deliberate (`ChangeCursorProbe`, `XiProbe`, `GlxProbe`,
+  `RandrProbe`, `XineramaProbe`, `ScreenSaverProbe`). No sixth-but-one difference, which is what a
+  finding would have looked like. `FocusProbe` and `MenuProbe` are among the identical, which is the
+  gate §7 sets for the input area and is what let A17 be answered without a code change.
 
 **Swept 2026-09-26**, after three sessions of work (XInput2, the C8 build-and-revert, the alpha store),
 and it found the drift it exists for - one entry that had been true and was not any more:

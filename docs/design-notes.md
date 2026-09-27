@@ -522,11 +522,15 @@ pushes each finished frame as an ordinary **`PutImage`**: 769 MB of them in 5.6 
 recording. Advertising GLX changes what a toolkit does with its own drawing, and on the build that
 advertised it unconditionally EasyShell (JavaFX) was reported to stop updating what it animates - a
 menu item with no hover colour, a caret that does not blink - while clicks and typing still worked.
-That report is not reproducible from a script (the caret blinks in the states that can be controlled,
-and both a with- and a without-GLX run show frame-to-frame changes), and the mechanism it points at is
-the one thing that *is* measured: with GLX present the client takes a different path, and the frames it
-sends differ. A client that wants OpenGL needs the extension and one that does not may be hurt by it,
-so the default is off and the switch is the user's.
+That report is not reproducible from a script, and re-measuring it on 2026-09-27 came at it from the
+side the first attempt could not: **the client's own requests**. The caret blinks on both builds (ten
+captures 0.2 s apart, the search box's rectangle alternating between exactly two states); and while
+the pointer crosses an open context menu the client issues **no drawing request at all** - the menu is
+drawn once, and after that the screen is byte-identical across twelve pointer positions. A toolkit
+that does not repaint on hover has not failed to reach the screen; it has not drawn. The mechanism the
+report points at is still the one thing that *is* measured: with GLX present the client takes a
+different path, and the frames it sends differ. A client that wants OpenGL needs the extension and one
+that does not may be hurt by it, so the default is off and the switch is the user's.
 
 **Why, in the toolkit's own words** (`-Dprism.verbose=true`, 2026-09-27). Without GLX: *"ES2 Prism:
 Error - GLX extension is not supported"* and it falls straight to the software pipeline. With it:

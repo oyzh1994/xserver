@@ -124,8 +124,12 @@ questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothin
 **OpenGL works with `--glx`, and the server has no renderer of its own.** It is **off by default**,
 because advertising it changes what a toolkit does with its own drawing: on the build that advertised
 it unconditionally, EasyShell (JavaFX) was reported to stop updating the things it animates - a menu
-item with no hover colour, a caret that does not blink - while clicks and typing still worked, and with
-it on the frames the client sends are measurably different. A client that wants OpenGL needs it and one
+item with no hover colour, a caret that does not blink - while clicks and typing still worked. With it
+on the frames the client sends are measurably different. Re-measured 2026-09-27: the caret **does**
+blink on both builds (ten captures 0.2 s apart, the box's own rectangle alternating between exactly
+two states), and the hover paints nothing because the client issues **no drawing request at all**
+while the pointer crosses the menu - so the report is a toolkit's animation state, not a frame this
+server dropped. A client that wants OpenGL needs it and one
 that does not may be hurt by it, so it is the user's switch. With it on, it advertises GLX - 1.4, the
 version,
 the two config lists, contexts - and grants a **direct** context, which is the whole trick: a software
