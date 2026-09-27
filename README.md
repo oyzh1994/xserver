@@ -385,12 +385,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   toolkit's menus go through - and the XI2 twin of every core input event this server delivers, with
   the core one withheld from a client that selected the device one. `xeyes` no longer warns, `xinput`
   lists the devices, and JavaFX's GTK backend and Swing's AWT both work through it rather than around
-  it. A **device property read** (`XIGetProperty`, which GTK asks as an application starts) is
-  answered "absent" - format 0, type `None`, no items, the same reply a reference gives for a property
-  that does not exist, and the same shape RandR's `GetOutputProperty` is answered with here. Not there,
-  and refused rather than ignored: touch, tablets, barriers, the raw event family, and the rest of the
-  device property family (`XIListProperties` and the change/delete requests) - this server has no
-  device behind them.
+  it. The two **device property reads** are answered "none" rather than refused - `XIGetProperty`
+  (which GTK asks as an application starts) says "absent" for any property, and `XIListProperties`
+  says the device has none, which is what `xinput list-props` prints as *does not report any
+  properties*. Both are the shapes a reference answers for a property that is not there, and the same
+  shape RandR's `GetOutputProperty` is answered with here. Not there, and refused rather than ignored:
+  touch, tablets, barriers, the raw event family, and the device property requests that *change*
+  something (`XIChangeProperty`, `XIDeleteProperty`) - this server has no device behind them.
 - **DAMAGE, and the three a compositor needs: Composite, Present and SYNC.** A client that wants to
   hear what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that
   reads pixels rather than drawing them - creates a damage object and is told, at X's own levels:

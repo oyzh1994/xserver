@@ -15,6 +15,7 @@ these is meant to carry out, so keep them working.
 | the reference display | `tools/xvfb.sh` | `start`/`stop`/`status` for the VM's `Xvfb :98` plus `x11vnc`: the other side of every comparison, and the three flags it needs are easy to get wrong (below) |
 | one-command comparison | `tools/compare.sh` | the six steps a rendering comparison takes - both beds, the same gesture on each, the same capture tool, the `Xwd` diff and the `Blocks` grid - as one command |
 | the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
+| the XDND pair | `tools/xdnd-source.py`, `tools/xdnd-target.py` | **a real GTK3 drag source and a real GTK3 drop target**, for the C5 work: run them as **two processes** (a drag inside one GTK process never uses XDND at all - GDK shortcuts it) and drive the gesture with XTEST. This is the "real toolkit on the other end" that dropped a Finder file into a real target on this server, and it prints every step, so a conversation that stops halfway is visible as the step that never arrived. Needs PyGObject + GTK3, which the VM has |
 | the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window. **Both ends on the same point make it a click**, which is how D1's live check closes a window the way a user does (the close button is at the top left of the title bar, about 14,13 in from the bounds the first tool prints) |
 
 Run a tool with the test classpath - `tools/kit.sh` is that line with the classpath filled in, which
@@ -199,7 +200,11 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   too**: `getprop <name> [device] [units]` sends an `XIGetProperty` for a property and prints the
   reply - which is how the answer to "this device has no such property" was read off Xvfb (a plain
   reply, `type = None`, nothing after the header) and how the request's length was settled (six four
-  byte units; a reference refuses seven with `BadLength`).
+  byte units; a reference refuses seven with `BadLength`). **`listprops [device]`** is its twin for
+  `XIListProperties` - the count is a CARD16 at 8 and the atoms follow the header, which is how the
+  empty answer this server gives was built. The pseudo-devices (`0`, `1`) are **refused** by a
+  reference for both property requests, which is also measured here and is why this server refuses
+  them.
   **Run it against Xvfb before writing anything**: a mask bit that looks wrong is wrong
   (`1<<3` selects nothing where `1<<4` is `ButtonPress`, and a wrong mask is *accepted* and changes
   nothing, which reads as a server that cannot deliver a device event at all), an XI2 event is a
@@ -349,7 +354,14 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   the root, and then a read of the window's own `_NET_WM_STATE` to see what came back. The actions are
   a comma separated list because they share one window - `fullscreen on,off` is the request and its
   withdrawal on one connection.
-- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server. A fifth
+- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server. **Fixed
+  2026-09-27: it assumed every request has an eight byte head, and `BIG-REQUESTS`' `Enable` is four**
+  (xcb sends it on every connection), so it desynchronised one message in and hung the client with
+  nothing logged on either side - the long-standing "EasyShell hangs through `XProxy`, the reason was
+  never found" is that bug, and it is why the tool now reads four bytes, takes the length from them,
+  and treats an extended length as "the length field is zero" rather than "the opcode is 139". It
+  cannot proxy the VM-to-reference direction (the client hangs for that reason, whatever it is), so
+  for a reference capture compile it **on the VM** - `java` is there. A fifth
   argument adds a **raw dump** (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per
   message as `<direction> <hex>`, for when the *bytes* are what is being hunted - that is how
   `setxkbmap`'s own `GetKbdByName` request was read (and it is the same job `strace -e writev` does on

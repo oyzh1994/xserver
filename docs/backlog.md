@@ -69,7 +69,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| [~] C5 | host ↔ X drag and drop (XDND): both directions built, **both fail against a real application** - the entry has the measurements | host window | M |
+| [~] C5 | host ↔ X drag and drop (XDND): **drag in works with a real GTK target** (measured end to end 2026-09-27); drag out still needs the corrected trigger and a hand | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
@@ -2098,6 +2098,22 @@ asking about two different devices and watching it stay 59. `tools/XiProbe` gain
 the client side). `README.md`'s XI2 bullet and `docs/design-notes.md`'s "an error is worse than an
 empty answer" both carry it now.
 
+**And the same measurement finished the read half of the family the next hour: `XIListProperties`
+(minor 56) was refused too, and `xinput list-props 2` is what says so** - it died with `BadRequest`
+here and printed the device and its two properties against a reference. It is now answered with an
+empty list, whose layout was read off a reference's reply for a device that *has* properties
+(`XiProbe listprops 2`): a bare header, the count as a CARD16 at 8, the atoms after the header, and
+byte 1 carrying the request's minor opcode - the empty answer is that reply with the count at zero.
+`xinput list-props 2` against this server now prints `Device 'Virtual core pointer' does not report
+any properties.` and exits 0.
+
+**One thing that measurement corrected in the property read, made an hour earlier**:
+{@code XIAllDevices} and {@code XIAllMasterDevices} are selectors, not devices, and a property
+belongs to a device - a reference answers an **error** for both requests with device 0, which
+`XiProbe listprops 0` shows as a message of zeros. The first version of `getProperty` accepted them
+(`checkDevice`, which is right for the queries) and answered "absent"; it now refuses them, like the
+list does.
+
 **What is still not here**, deliberately and visibly refused rather than accepted: touch, tablets,
 barriers and the raw event family (a client asks for them by name and this server has no device behind
 them), the rest of the device property family (`XIListProperties` and the change/delete requests), and
@@ -3037,7 +3053,7 @@ made one, is declined).
 
 ---
 
-### [~] C5. Host ↔ X drag and drop (XDND). **M** - **neither direction works with a real application yet**, and both were built
+### [~] C5. Host ↔ X drag and drop (XDND). **M** - **the drag-IN half is verified against a real GTK target (2026-09-27); the drag-out trigger is still the reverted one**, and the applications' own answer to either is not settled
 
 **What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
@@ -3095,6 +3111,58 @@ two clients this bed has, after the owner tried them by hand:**
 `DropBridgeTest`'s three tests passed throughout, and the probe that "verified" the drag out was one
 the bridge itself had asked to answer. Both directions need a real toolkit on the other end before
 either is called done.
+
+**Measured again 2026-09-27 with the real toolkit the entry asked for, and the drag-IN half works.**
+`tools/xdnd-target.py` (new) is a **GTK3 drop target** - the same GDK a forwarded application uses -
+and a real Finder drag onto it, on this server, ends with the target printing
+`DATA ['file:///private/tmp/xdnddir/dropped.txt']`. The whole path is in this server's own log:
+`a host drag is over the window with 1 file(s); accepted=true` → `the host dropped 1 file(s) at
+824,487` → `DropBridge: dropping 1 file(s) on 0x200002` → the target's `XdndStatus`, its
+`ConvertSelection`, and the `text/uri-list` the bridge served. **So the bridge's conversation is one
+a real toolkit accepts**, and the earlier "the application never answers" is a fact about the
+*two applications this bed has* (both were tried again this session and neither was reproducible
+with a scripted drag - see below) rather than about the protocol.
+
+**What that session cost, in harness facts worth not re-deriving:**
+
+- **A drag between two windows of *one* GTK process never uses XDND.** GDK handles it internally, so
+  a source and a target in the same script produce a drop, a `drag-drop` signal, and **not one
+  `XdndEnter` on the wire** - measured by decoding the capture and finding no XDND atom in it. The
+  pair has to be **two processes** (`tools/xdnd-source.py` and `tools/xdnd-target.py`), and that is
+  the mistake to avoid: it looks exactly like a working drag.
+- **`tools/host-drag.c` is too abrupt to deliver a *drop*.** Its 24 moves then an immediate mouse-up
+  move a window fine (C1/C7) and produce drag-*over* events here, but no `drag-drop`; a variant with a
+  pause before the mouse-up (`/tmp/host-drag2`, 300 ms before the moves and 700 ms before the button
+  goes up) delivers it every time. The kit's tool is the one to fix if this is done again.
+- **In this environment any new shell command raises the IDE window over Finder**, so a *Finder-sourced*
+  drag only works inside a single command that re-raises Finder first (`open -a Finder …; sleep 2;
+  drag`) - and even then the source went flaky after the first two drags. **The scriptable, repeatable
+  oracle is the two GTK processes**; the Finder drag is for a human's hand.
+- **`tools/tap.py` logs byte *chunks*, not messages.** A reader has to reassemble the stream before it
+  can decode anything, and the C2S setup is 12 bytes **plus the auth name and data** (each padded to
+  four) - a framer that assumes a bare 12 desynchronises immediately and looks like a client that
+  sends nothing. `XProxy` does the framing for you, which is why its own two framing bugs mattered so
+  much (next paragraph).
+
+**And the tool that made those captures possible was broken, in a way that hid itself.** `XProxy`
+assumed every request has an eight byte head; `BIG-REQUESTS`' `Enable` is **four**, and xcb sends it
+on every connection, so the proxy desynchronised one message in and the client hung with nothing
+logged on either side - which is the long-standing "EasyShell hangs through `XProxy`, the reason was
+never found" in `tools/README.md`. Fixed, and two more with it: the extended length is triggered by a
+**zero length field**, not by opcode 139 (whose ordinary `Enable` form is three units), and a server's
+messages always have the full eight byte header, so only a four byte *request* is short. With those,
+`XProxy` walks a GTK client's whole stream. It still cannot be used for this measurement from the Mac
+(the VM-to-Mac direction is what failed before), so it was compiled **on the VM** - `java` is there
+(`/tmp/kit`), and `tools/tap.py` is the fallback when it is not.
+
+**What is still open in C5, precisely.** The drag-in *code* has now been exercised by a real toolkit
+and works; **the drag-out trigger has not been touched since it was reverted**, and it is the half
+that needs the corrected condition (start the platform drag only when the gesture **leaves the host
+window with the button still down**) plus a hand to confirm that the applications' own internal drags
+and menus still work. The two applications this bed has were tried again with the Finder drag this
+session and did not reproduce the earlier "no answer" - the scripted gesture is not reliable enough in
+this environment to call that settled either way, and `tools/xdnd-*.py` is the instrument for the next
+attempt: put the GTK target on this server and compare, step by step, what it is told.
 
 **The earlier reasoning, kept because it is what the code is built on:**
 

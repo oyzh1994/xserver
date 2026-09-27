@@ -92,33 +92,64 @@ public final class XProxy {
                     out.flush();
                     continue;
                 }
-                byte[] header = readFully(in, 8);
-                if (header == null) {
+                // **A request is not always eight bytes.** The head is read as four - the opcode, the
+                // data byte and the length - and the rest follows from that length, because a request
+                // whose length field says one unit is exactly those four bytes. That is not a corner
+                // case: it is `BIG-REQUESTS`' `Enable`, which libxcb sends on *every* connection as
+                // the third request, so a proxy that assumes eight desynchronises one message in and
+                // hangs the client with no error on either side - which is what `XProxy` did to every
+                // GTK client, and what the kit's notes recorded as "EasyShell hangs through it, the
+                // reason was never found" (2026-09-27).
+                byte[] head = readFully(in, 4);
+                if (head == null) {
                     System.out.println((clientToServer ? "C>S" : "S>C") + " end of stream");
                     return;
                 }
+                int units = (head[2] & 0xFF) | ((head[3] & 0xFF) << 8);
+                int whole4 = units * 4;
+                byte[] header;
+                // The four byte case is a *request* only: everything a server sends is a reply, an
+                // error or an event, and all three have the full header.
+                if (clientToServer && whole4 == 4) {
+                    header = head;
+                } else {
+                    byte[] rest = readFully(in, 8 - 4);
+                    if (rest == null) {
+                        return;
+                    }
+                    header = new byte[8];
+                    System.arraycopy(head, 0, header, 0, 4);
+                    System.arraycopy(rest, 0, header, 4, 4);
+                }
                 System.out.println((clientToServer ? "C>S" : "S>C") + " op=" + (header[0] & 0xFF)
-                        + " b2b3=" + ((header[2] & 0xFF) | ((header[3] & 0xFF) << 8))
-                        + " b4b7=" + card32(header, 4));
+                        + " b2b3=" + ((head[2] & 0xFF) | ((head[3] & 0xFF) << 8))
+                        + (header.length > 4 ? " b4b7=" + card32(header, 4) : ""));
                 int extra = 0;
                 if (clientToServer) {
-                    if ((header[0] & 0xFF) == 139) {
-                        // BigRequests: the real length is the first four bytes of the body.
+                    if (units == 0) {
+                        // BigRequests' extended form, and **a zero length field is what triggers it** -
+                        // not the opcode. The opcode alone is the wrong test: 139 is also the ordinary
+                        // `Enable` request, whose length field is three, and reading its body as an
+                        // extended length asks for gigabytes and hangs the pump.
                         byte[] extended = readFully(in, 4);
-                        int units = card32(extended, 0);
-                        int body = Math.max(0, units * 4 - 12);
-                        byte[] whole = new byte[12 + body];
+                        if (extended == null) {
+                            return;
+                        }
+                        int bigUnits = card32(extended, 0);
+                        int body = Math.max(0, bigUnits * 4 - 8);
+                        byte[] whole = new byte[8 + body];
                         System.arraycopy(header, 0, whole, 0, 8);
-                        System.arraycopy(extended, 0, whole, 8, 4);
                         byte[] rest = body == 0 ? new byte[0] : readFully(in, body);
-                        System.arraycopy(rest, 0, whole, 12, body);
+                        if (rest == null) {
+                            return;
+                        }
+                        System.arraycopy(rest, 0, whole, 8, body);
                         dump(whole, clientToServer);
                         out.write(whole);
                         out.flush();
                         continue;
                     }
-                    int length = (header[2] & 0xFF) | ((header[3] & 0xFF) << 8);
-                    extra = Math.max(0, length * 4 - 8);
+                    extra = Math.max(0, whole4 - 8);
                 } else if ((header[0] & 0x7F) == 1) {
                     // A reply is thirty two bytes plus whatever its length field counts.
                     int length = (header[4] & 0xFF) | ((header[5] & 0xFF) << 8)
@@ -131,9 +162,9 @@ public final class XProxy {
                 if (body == null) {
                     return;
                 }
-                byte[] whole = new byte[8 + extra];
-                System.arraycopy(header, 0, whole, 0, 8);
-                System.arraycopy(body, 0, whole, 8, extra);
+                byte[] whole = new byte[header.length + extra];
+                System.arraycopy(header, 0, whole, 0, header.length);
+                System.arraycopy(body, 0, whole, header.length, extra);
                 describe(whole, clientToServer);
                 dump(whole, clientToServer);
                 out.write(whole);
