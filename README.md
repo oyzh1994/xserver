@@ -73,8 +73,9 @@ Any VNC client works (`vnc://host:5900`), including the ones on phones; macOS's 
 browser reaches it too - `noVNC` pointed at `ws://host:6080`, with **nothing to install and no bridge
 process**: open its `vnc.html` and put the host and port in the URL (the page itself is not served by
 this server, only the RFB inside the WebSocket). What is sent is raw
-frames of the damage since the last update, which is fine on a LAN and wasteful on a slow link; the
-compressed encodings are on the list in [docs/backlog.md](docs/backlog.md) (D2).
+frames of the damage since the last update - **raw, or ZRLE when the client lists it**, which every
+VNC client does and which is what makes a desktop of text or flat colour cheap; `Tight` and `CoRRE` are
+the encodings still on the list in [docs/backlog.md](docs/backlog.md) (D2).
 
 ## Architecture
 
