@@ -48,6 +48,10 @@ A prompt that starts a fresh session on this, verbatim:
 
 ## 0. All items at a glance
 
+**§9 at the end of this file is a different kind of list**: capabilities this server does not have at
+all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
+candidates rather than as items. Nothing here points at them yet.
+
 | id | item | area | size |
 |----|------|------|------|
 | ~~E0~~ | ~~finish the verification kit~~ **done 2026-09-25** | engineering | S |
@@ -4637,3 +4641,84 @@ high-value items come first:
 
 Items that are *observations* rather than features - A6, A10, A12, A13 - can be folded into whatever
 phase touches their code; none of them is worth a branch of its own.
+
+---
+
+## 9. What this server does not have, as an X server, measured 2026-09-27
+
+Not items that were worked and left: **capabilities a client could ask for and this server does not
+have at all.** The inventory was taken the only way that means anything - against a reference server -
+by comparing `xdpyinfo`'s extension list on both sides and then walking the *core* protocol's requests
+one by one:
+
+- **The core protocol is complete at the dispatch level: all 120 requests xproto defines have a case
+  in `RequestDispatcher`**, and all but two do real work. The two that do nothing are deliberate and
+  commented: `ChangeHosts` (host-based access control is not enforced - the display is open or it wants
+  a cookie) and `SetAccessControl` (the same switch, read-only). `KillClient`, `SetCloseDownMode`,
+  `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
+  `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
+- **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way:
+  the reference advertises **23** and this server **17**, of which **16 are shared**. The difference is
+  seven the reference has and this server does not - the table below - and one this server has and that
+  reference build does not: **DPMS**, which is B7's work (the sweep documents it as a deliberate
+  difference).
+
+| extension | what it is | who asks | here |
+|-----------|-----------|----------|------|
+| `DOUBLE-BUFFER` (Xdbe) | a client draws into an off-screen back buffer and swaps | toolkits that refuse to flicker (older GTK/Qt paths, games); most fall back to normal drawing | **absent** |
+| `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | **absent** |
+| `MIT-SHM` | shared-memory images, so pixels do not travel over the socket | every toolkit probes it; all of them fall back | **absent, declined** - B8 has the reasons |
+| `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | **absent** |
+| `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | **absent** |
+| `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | **absent** |
+| `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | **absent** |
+
+And the holes *inside* extensions this server does have, from the same walk of the request surface:
+
+| hole | the requests | who would notice |
+|------|--------------|------------------|
+| SYNC **alarms** | `CreateAlarm`, `ChangeAlarm`, `DestroyAlarm`, `QueryAlarm` | a client that wants a server-side timer (frame pacing, idle timeouts) - refused today |
+| Present's **MSC** | `PresentNotifyMSC` | a client that paces itself against the display's refresh (a compositor, a video player) - refused today |
+| Shape's **rectangles** | `ShapeGetRectangles` | a client reading a window's shape back rather than setting one |
+| XFixes' tail | `XFixesGetCursorImageAndName`, `XFixesChangeSaveSet` | rare; `GetCursorImage` (without the name) is here |
+| **XI1** beyond the device list | `SelectExtensionEvent`, `GetSelectedExtensionEvents`, `GetDeviceMotionEvents`, `ChangeDeviceControl`, `ListDeviceProperties`, XI1's `GrabDevice` | an XI1-era client; AWT uses XI1 only for the device list, which is done |
+| **pointer acceleration** | `ChangePointerControl` accepts and ignores; `GetPointerControl` replies with a constant 2/1/4 | a client that sets acceleration and reads it back gets the constant - the *host's* pointer is what accelerates here |
+| **host access control** | `ChangeHosts`, `SetAccessControl` | `xhost +`, `xauth`-style host rules - no-ops today, which is a security decision rather than a gap |
+
+**What the list is worth, honestly.** *No client in this bed asks for any of them*, and that is
+measured rather than assumed: a client that queries an absent extension gets "not present" rather than
+a refusal, so the evidence is the **request profiles** - EasyShell's profile against the reference and
+against this server agrees request for request (the A/B method), and a sweep of thirty client tools
+against this server produced no refusals beyond the known two. None of them reached for Xdbe, Xv, RECORD
+or the rest. So these are capabilities a *different* client would use, and each one is worth sizing by
+**what breaks without it**, in the order that argument is strongest:
+
+- **F1. `PresentNotifyMSC` and the SYNC alarms** - the two that a *modern* client could plausibly reach
+  for (a compositor pacing itself, a toolkit's frame timer), both small: the reply layouts, plus an MSC
+  counter this server increments per present. **S-M.**
+- **F2. `RECORD`** - the one with a real client in this project's own orbit (`x11vnc -record`, and the
+  kit's own recordings would become scriptable without XProxy). Its surface is
+  `CreateContext`/`RegisterClients`/`EnableContext` and then a stream of event data. **M.**
+- **F3. `X-Resource`** - small, and it makes "who is using the memory" answerable, which E4's per-client
+  framebuffer work left as a question. **S.**
+- **F4. `Generic Event Extension`** - a handshake and a version, so a client that checks for generic
+  events is told yes rather than falling back. **S.** (Worth doing whichever of the others is: it is
+  what makes XI2's own events *findable* by a client that looks for them properly.)
+- **F5. `DOUBLE-BUFFER`** - a real feature (back buffer, swap, swap interval) whose clients all fall
+  back today, and B5's store makes the back buffer nearly free. **M.**
+- **F6. `XVideo`** - a port/adapter model with no hardware behind it here; a player's fallback is the
+  path it takes now, so the value is *only* for a client that refuses to fall back. **M-L, and the
+  weakest case of the six.**
+- **F7. `SECURITY`** - untrusted connections. **M**, and it interacts with `--auth` (A7): it is a real
+  answer to "how do I run a client I do not trust", which today is "you do not".
+
+**Not intended, and the reason, so that a later session does not size them as gaps**: `DRI3`/`DRI2`
+and `XFree86-VidMode.DGA` (there is no GPU behind the host window, and B6 measured that a GL client
+renders itself and blits); `XDMCP` (this server presents *the host's own window*, so there is no login
+to serve - D2's VNC is the remote path, and it is done); `MIT-SHM` (B8); `Xevie`, `LBX`,
+`MIT-SUNDRY-NONSTANDARD`, `XPrint`, `XTrap` (dead protocols, with no client anywhere).
+
+**Verify (any of them).** `xdpyinfo` against this server must list the extension; the probe for it
+belongs in `tools/` beside the others and in `tools/sweep.sh`, so its answers are compared against the
+reference line for line - that is the standard every other extension here met, and the reason the
+sweep exists.
