@@ -1,6 +1,7 @@
 package io.github.oyzh1994.xserver.tools;
 
 import com.github.moaxcp.x11.protocol.X11LittleEndianOutputStream;
+import com.github.moaxcp.x11.protocol.present.NotifyMSC;
 import com.github.moaxcp.x11.protocol.present.Pixmap;
 import com.github.moaxcp.x11.protocol.present.QueryCapabilities;
 import com.github.moaxcp.x11.protocol.present.QueryVersion;
@@ -128,6 +129,27 @@ public final class PresentProbe {
             System.out.println("  window at 20,20 now reads " + String.format("#%08X", pixel)
                     + (pixel == (0xFF000000 | PIXMAP_COLOR)
                             ? " (the pixmap arrived)" : " (the pixmap did not arrive)"));
+
+            // NotifyMSC: the client asks to be told when the display reaches a given media stream
+            // counter, which is how a compositor or a video player paces itself. Nothing is drawn,
+            // so the whole measurement is the completion that comes back - its kind, mode and serial.
+            send(client, opcode, NotifyMSC.builder()
+                    .window(window)
+                    .serial(9)
+                    .targetMsc(0).divisor(0).remainder(0)
+                    .build());
+            client.flush();
+            client.readTimeoutMillis(1500);
+            byte[] msc = client.readEvent();
+            if (msc == null) {
+                System.out.println("  NotifyMSC -> no completion event arrived");
+            } else if (msc.length < 32) {
+                System.out.println("  NotifyMSC -> a " + msc.length + " byte message arrived");
+            } else {
+                System.out.println("  NotifyMSC length=" + msc.length + " eventType="
+                        + (msc[8] & 0xFF) + " kind=" + msc[10] + " mode=" + msc[11]
+                        + " serial=" + RawXClient.readInt(msc, 20));
+            }
         }
     }
 

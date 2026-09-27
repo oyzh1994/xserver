@@ -50,7 +50,8 @@ OUT="${OUT:-/tmp/xs-sweep}"
 # The probes that take a host and a port and nothing else, and the two that need one argument.
 PROBES="PointProbe GravityProbe PolyProbe WindowStateProbe DamageProbe CursorProbe ChangeCursorProbe
         GlyphCursorProbe XiProbe GlxProbe RandrProbe XineramaProbe ScreenSaverProbe SelectionProbe
-        FontProbe FocusProbe AllowEventsProbe MenuProbe CompositeProbe SyncProbe PresentProbe"
+        FontProbe FocusProbe AllowEventsProbe MenuProbe CompositeProbe SyncProbe PresentProbe
+        XgeProbe ResProbe"
 PROBES="$PROBES GrabProbe:button"
 if [ $# -gt 0 ]; then
     PROBES="$*"

@@ -324,14 +324,24 @@ public final class XServer {
         // sets is what stops a window being composited onto the screen (B5's third part). Registered
         // after RENDER because what a compositor draws with is RENDER.
         extensions.register(new io.github.oyzh1994.xserver.extension.CompositeExtension(), 0, 0);
-        // SYNC defines one error (BadFence, and BadCounter and BadAlarm share it in the plugin's
-        // numbering) and no events: counters and fences, which is how a client asks whether
-        // something has happened. Registered with Composite because a compositor paces itself with
-        // fences and reads windows through Composite.
-        extensions.register(new io.github.oyzh1994.xserver.extension.SyncExtension(), 0, 3);
+        // SYNC defines two events (CounterNotify and AlarmNotify, in the plugin's numbering) and
+        // three errors (BadCounter, BadAlarm and BadFence). Counters, fences and alarms: how a
+        // client asks whether something has happened, and how it asks to be told when it does.
+        // Registered with Composite because a compositor paces itself with fences and reads windows
+        // through Composite.
+        extensions.register(new io.github.oyzh1994.xserver.extension.SyncExtension(), 2, 3);
         // Present defines no events of its own: its completion notifications are GenericEvents, which
         // live at core event 35 and not in an extension's range. One error, BadPresent.
         extensions.register(new io.github.oyzh1994.xserver.extension.PresentExtension(), 0, 1);
+        // The Generic Event Extension owns no requests but a version handshake, and no events or
+        // errors of its own - its whole job is to tell a client that the generic events this server
+        // already sends are findable the way the protocol intends (F4). Registered last so no
+        // existing extension's opcode moves.
+        extensions.register(new io.github.oyzh1994.xserver.extension.XgeExtension(), 0, 0);
+        // X-Resource is requests and replies only, so it too owns no event or error codes: it
+        // answers who is using the memory, which E4's lazy allocation left with nothing to read
+        // (F3). Registered last for the same reason as XGE.
+        extensions.register(new io.github.oyzh1994.xserver.extension.ResExtension(), 0, 0);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }

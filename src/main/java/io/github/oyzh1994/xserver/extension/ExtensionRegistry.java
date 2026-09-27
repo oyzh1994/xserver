@@ -38,8 +38,15 @@ public final class ExtensionRegistry {
      */
     public synchronized <T extends Extension> T register(T extension, int eventCount, int errorCount) {
         byte opcode = nextOpcode++;
-        byte firstEvent = nextEvent;
-        byte firstError = nextError;
+        // An extension that defines no events of its own reports **zero**, not the next free code:
+        // measured with `QueryExtension` against a reference (tools/XgeProbe and tools/ResProbe),
+        // which answers first_event=0 and first_error=0 for BIG-REQUESTS, XC-MISC, Composite,
+        // Present and XGE - every one of them a requests-and-replies extension - while SHAPE (one
+        // event, no errors) answers 64/0. Reporting the registry's counter instead is invisible to a
+        // client that only ever looks at the ranges it needs, which is why it went unnoticed until
+        // an extension with neither range was added.
+        byte firstEvent = eventCount == 0 ? 0 : nextEvent;
+        byte firstError = errorCount == 0 ? 0 : nextError;
         nextEvent += eventCount;
         nextError += errorCount;
 

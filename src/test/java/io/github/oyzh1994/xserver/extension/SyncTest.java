@@ -2,6 +2,7 @@ package io.github.oyzh1994.xserver.extension;
 
 import io.github.oyzh1994.xserver.ServerOptions;
 import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.test.RawXClient;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -9,7 +10,9 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
+import static io.github.oyzh1994.xserver.extension.SyncExtension.ALARM_ACTIVE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -36,6 +39,18 @@ class SyncTest {
     private static final int TRIGGER_FENCE = 15;
     private static final int RESET_FENCE = 16;
     private static final int QUERY_FENCE = 18;
+    private static final int CREATE_ALARM = 8;
+    private static final int QUERY_ALARM = 10;
+    private static final int DESTROY_ALARM = 11;
+
+    /** Every {@code XSyncCA*} bit: a create that carries all of an alarm's fields. */
+    private static final int CA_ALL = 0x3F;
+    private static final int ALARM_NOTIFY = 1;
+
+    private static final int POSITIVE_TRANSITION = 0;
+    private static final int POSITIVE_COMPARISON = 2;
+    private static final int NEGATIVE_TRANSITION = 1;
+    private static final int ABSOLUTE = 0;
 
     private static XServer server;
 
@@ -122,7 +137,189 @@ class SyncTest {
         }
     }
 
+    /**
+     * An alarm is a trigger the server watches for the client: the counter crosses the threshold and
+     * the notification arrives, carrying the value that crossed it and the threshold it crossed.
+     *
+     * <p>The order is the measurement, as it is everywhere a notification is involved: the
+     * {@code AlarmNotify} is read first, and the state afterwards, because a server that fires and a
+     * server that only accepts the requests look identical until the counter moves.
+     */
+    @Test
+    void anAlarmFiresWhenItsCounterCrossesTheThreshold() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = opcode(client);
+            int firstEvent = eventBase(client);
+            int counter = client.allocateId();
+            int64Request(client, opcode, CREATE_COUNTER, counter, 0L);
+
+            int alarm = client.allocateId();
+            createAlarm(client, opcode, alarm, counter, 10L, POSITIVE_TRANSITION, 0L);
+            assertEquals(ALARM_ACTIVE, alarmState(client, opcode, alarm, counter), "armed");
+
+            int64Request(client, opcode, CHANGE_COUNTER, counter, 20L);
+            byte[] event = client.readEvent();
+            assertEquals(firstEvent + 1, event[0] & 0x7F,
+                    "the notification is a real extension event at firstEvent + 1, not a generic one");
+            assertEquals(alarm, RawXClient.readInt(event, 4), "for the alarm that fired");
+            assertEquals(20L, int64(event, 8), "carrying the value that crossed the threshold");
+            assertEquals(10L, int64(event, 16), "and the threshold it crossed");
+            assertEquals(ALARM_ACTIVE, event[28] & 0xFF, "a transition stays armed after firing");
+
+            // 20 is already above the threshold, so moving further up is not a crossing.
+            int64Request(client, opcode, CHANGE_COUNTER, counter, 5L);
+            client.readTimeoutMillis(400);
+            assertNull(client.readEvent(), "a move on the same side of the threshold is not a cross");
+        }
+    }
+
+    /**
+     * A comparison is the other kind of test, and the difference is only visible after it has fired
+     * once: the alarm goes **inactive**, and moving the counter further the same way - or back across
+     * the threshold - produces nothing more.
+     */
+    @Test
+    void aComparisonFiresOnceAndGoesInactive() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = opcode(client);
+            int counter = client.allocateId();
+            int64Request(client, opcode, CREATE_COUNTER, counter, 0L);
+            int alarm = client.allocateId();
+            createAlarm(client, opcode, alarm, counter, 10L, POSITIVE_COMPARISON, 0L);
+
+            int64Request(client, opcode, CHANGE_COUNTER, counter, 20L);
+            byte[] event = client.readEvent();
+            assertEquals(alarm, RawXClient.readInt(event, 4), "the comparison fires");
+            assertEquals(1, event[28] & 0xFF, "and the notification says it is inactive now");
+
+            int64Request(client, opcode, CHANGE_COUNTER, counter, 5L);
+            client.readTimeoutMillis(400);
+            assertNull(client.readEvent(), "once inactive it does not fire again");
+            int64Request(client, opcode, CHANGE_COUNTER, counter, -30L);
+            client.readTimeoutMillis(400);
+            assertNull(client.readEvent(), "not even going back across the threshold");
+
+            assertEquals(1, alarmState(client, opcode, alarm, counter), "and the alarm says so too");
+        }
+    }
+
+    /**
+     * The combination a reference refuses, and the reason it can: a transition moves its own
+     * threshold by its delta, so a negative transition with a positive delta would move the
+     * threshold up - where the counter has just come down from - and could never fire again.
+     */
+    @Test
+    void aTransitionWhoseDeltaMovesTheWrongWayIsRefused() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = opcode(client);
+            int counter = client.allocateId();
+            int64Request(client, opcode, CREATE_COUNTER, counter, 0L);
+
+            int wrongWay = client.allocateId();
+            sendAlarm(client, opcode, wrongWay, counter, 10L, NEGATIVE_TRANSITION, 100L);
+            client.flush();
+            // A one-way request reports nothing, so the refusal is read off the stream directly.
+            byte[] refusal = client.readEvent();
+            assertEquals(0, refusal[0] & 0x7F, "an error, not a reply");
+            assertEquals(ProtocolException.MATCH, refusal[1],
+                    "BadMatch, which is what a reference answers");
+            assertEquals(wrongWay, RawXClient.readInt(refusal, 4), "on the alarm's own id");
+        }
+    }
+
+    /** An alarm is a resource: destroying it makes it unknown, with SYNC's own BadAlarm. */
+    @Test
+    void aDestroyedAlarmIsUnknown() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = opcode(client);
+            int firstError = errorBase(client);
+            int counter = client.allocateId();
+            int64Request(client, opcode, CREATE_COUNTER, counter, 0L);
+            int alarm = client.allocateId();
+            createAlarm(client, opcode, alarm, counter, 10L, POSITIVE_TRANSITION, 0L);
+
+            byte[] destroy = new byte[8];
+            destroy[0] = (byte) opcode;
+            destroy[1] = (byte) DESTROY_ALARM;
+            RawXClient.writeShortAt(destroy, 2, 2);
+            RawXClient.writeIntAt(destroy, 4, alarm);
+            client.sendRequest(destroy);
+            client.flush();
+
+            byte[] request = new byte[8];
+            request[0] = (byte) opcode;
+            request[1] = (byte) QUERY_ALARM;
+            RawXClient.writeShortAt(request, 2, 2);
+            RawXClient.writeIntAt(request, 4, alarm);
+            client.sendRequest(request);
+            client.flush();
+            byte[] refusal = client.readEvent();
+            assertEquals(0, refusal[0] & 0x7F, "an error, not a reply");
+            assertEquals(firstError + 1, refusal[1],
+                    "BadAlarm, which is the extension's error base plus one");
+            assertEquals(alarm, RawXClient.readInt(refusal, 4), "naming the alarm");
+        }
+    }
+
     // ------------------------------------------------------------------
+
+    private static void createAlarm(RawXClient client, int opcode, int alarm, int counter,
+                                    long value, int testType, long delta) throws IOException {
+        sendAlarm(client, opcode, alarm, counter, value, testType, delta);
+        client.flush();
+    }
+
+    /** CreateAlarm with every field present, as {@code tools/SyncProbe} writes it. */
+    private static void sendAlarm(RawXClient client, int opcode, int alarm, int counter,
+                                  long value, int testType, long delta) throws IOException {
+        byte[] request = new byte[44];
+        request[0] = (byte) opcode;
+        request[1] = (byte) CREATE_ALARM;
+        RawXClient.writeShortAt(request, 2, 11);
+        RawXClient.writeIntAt(request, 4, alarm);
+        RawXClient.writeIntAt(request, 8, CA_ALL);
+        RawXClient.writeIntAt(request, 12, counter);
+        RawXClient.writeIntAt(request, 16, ABSOLUTE);
+        RawXClient.writeIntAt(request, 20, (int) value);
+        RawXClient.writeIntAt(request, 24, (int) (value >> 32));
+        RawXClient.writeIntAt(request, 28, testType);
+        RawXClient.writeIntAt(request, 32, (int) delta);
+        RawXClient.writeIntAt(request, 36, (int) (delta >> 32));
+        RawXClient.writeIntAt(request, 40, ALARM_NOTIFY);
+        client.sendRequest(request);
+    }
+
+    /** {@code QueryAlarm}'s reply: the trigger, the delta, and the state at offset 37. */
+    private static int alarmState(RawXClient client, int opcode, int alarm, int counter)
+            throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = (byte) QUERY_ALARM;
+        RawXClient.writeShortAt(request, 2, 2);
+        RawXClient.writeIntAt(request, 4, alarm);
+        client.sendRequest(request);
+        byte[] reply = client.readReply();
+        assertEquals(counter, RawXClient.readInt(reply, 8),
+                "the trigger the alarm reports, which is the counter it watches");
+        return reply[37] & 0xFF;
+    }
+
+    private static long int64(byte[] bytes, int offset) {
+        return (RawXClient.readInt(bytes, offset) & 0xFFFFFFFFL)
+                | ((long) RawXClient.readInt(bytes, offset + 4) << 32);
+    }
+
+    private static int eventBase(RawXClient client) throws IOException {
+        int[] info = client.queryExtensionInfo("SYNC");
+        assertTrue(info[0] != 0, "the extension has to be advertised");
+        return info[2];
+    }
+
+    private static int errorBase(RawXClient client) throws IOException {
+        int[] info = client.queryExtensionInfo("SYNC");
+        assertTrue(info[0] != 0, "the extension has to be advertised");
+        return info[3];
+    }
 
     private static int[] initialize(RawXClient client, int major, int minor) throws IOException {
         byte[] request = new byte[8];

@@ -94,6 +94,19 @@ public final class ResourceTable {
         return result;
     }
 
+    /**
+     * Every live resource with no client owner: the server's own, which is the root window, the
+     * predefined fonts and colormaps, and the windows the bridges create.
+     *
+     * <p>They are a group rather than a special case because a client can name them - the root
+     * window above all - and a request that asks about a resource's owner has to have an answer for
+     * them. X-Resource is where that shows: a reference reports its own resources as a client with
+     * resource base zero (F3).
+     */
+    public List<XResource> serverResources() {
+        return resourcesOf(null);
+    }
+
     /** Live resources of a given class owned by a client, used to reverse-map windows etc. */
     public <T extends XResource> List<T> resourcesOfType(ClientConnection client, int resourceClass) {
         List<T> result = new ArrayList<>();

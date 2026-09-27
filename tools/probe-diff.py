@@ -32,6 +32,12 @@ SUBSTITUTIONS = [
     (r"firstError=\d+", "firstError=?"),
     (r"selection=\d+", "selection=ATOM"),
     (r"atom=\d+", "atom=ATOM"),
+    # SYNC's counters and alarms are printed in decimal, because that is how a client reads a 64 bit
+    # value back, and their ids come from the range the *server* handed the client - so they differ
+    # between two servers for the same reason an atom id does. The value itself is not normalised:
+    # it is what the test is about.
+    (r"counter=\d+", "counter=?"),
+    (r"alarm=\d+", "alarm=?"),
     (r"cursorSerial=\d+", "cursorSerial=SERIAL"),
     (r"type=\d+", "type=E"),
 ]
