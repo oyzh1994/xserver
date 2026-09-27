@@ -70,11 +70,6 @@
         </dependency>
         <dependency>
             <groupId>com.github.moaxcp.x11.x11-protocol</groupId>
-            <artifactId>x11-protocol-xinerama</artifactId>
-            <version>${x11.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.github.moaxcp.x11.x11-protocol</groupId>
             <artifactId>x11-protocol-randr</artifactId>
             <version>${x11.version}</version>
         </dependency>
@@ -144,7 +139,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.12</version>
+            <version>1.6.3</version>
         </dependency>
 
         <dependency>
