@@ -3077,7 +3077,7 @@ made one, is declined).
 
 ---
 
-### [~] C5. Host ↔ X drag and drop (XDND). **M** - **neither direction works with a real application yet** (the owner's hands, 2026-09-27); a real *GDK* target does receive the drag, which is where the next attempt should start
+### [~] C5. Host ↔ X drag and drop (XDND). **M** - **the drag in works, owner-verified 2026-09-27**, once the client can open the path it is handed (`--drop-mount`); the drag out is still the reverted trigger
 
 **What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
@@ -3174,15 +3174,27 @@ opens a path, it does not download a file. The ways out, in the order they are w
   file on disk. That is a per-application convention rather than a protocol, so it only helps the
   applications that implement it.
 
-**Correction, the same day, from the owner's own hands: it does *not* work in EasyShell.** Dragging a
-file from Finder onto a forwarded EasyShell still does nothing, while the *macOS* build of the same
-application shows its `松开鼠标以释放文件` marker - so whatever the bridge gets wrong is something the
-GTK target above tolerates and EasyShell does not. The paragraph below is kept because the measurement
-is real (a real GDK target does receive the URI), but **the item is not done in either direction** and
-the claim "drag-in verified" was too strong: a target that accepts is not the same as the application
-that has to.** What to try next, with `tools/xdnd-*.py` as the instrument: run the GTK *target* and
-EasyShell side by side on this server and compare what each is sent, step by step, for the same
-Finder drag - the difference between "GDK accepts" and "EasyShell ignores" is the answer.
+**The owner's own hands then closed it (2026-09-27): the drag in works, in a configuration where the
+client can open the file.** With a directory of the host's shared into the VM and the server started
+with `--drop-mount /Users/oyzh/MacDrop=/mnt/hgfs/MacDrop` - any mount will do, the point is that the
+*path in the URI exists where the application runs* - a file dragged from that directory onto a
+forwarded EasyShell arrives and the application uses it. **First configuration in which this direction
+has been seen to work with a real application**, and it fits everything measured below: the protocol
+path was already right, and the missing piece was a path the client could open.
+
+**What it costs is the configuration** - the owner's words: it works, but setting it up is a nuisance.
+The alternative that removes that step was offered and **declined**: a server-side "push"
+(`--drop-push user@host:/dir`) that copies the dropped file to the client machine's directory and hands
+over *that* path, so any file could be dragged from anywhere. Declined because it **writes files,
+silently, onto another machine** - so if it is ever added it has to be opt-in, and it is worth saying
+what it is not: it copies to the machine *running the client*, not to whatever host the application's
+own session points at (that step, if it happens at all, is the application's own).
+
+**And the earlier correction is kept because it is what the two halves look like apart**: *without* a
+filesystem the client can see, dragging a file from Finder onto a forwarded EasyShell does nothing at
+all, while the *macOS* build of the same application shows its `松开鼠标以释放文件` marker. The
+measurement below is why: the application is handed a URI naming a *host* path, and it opens paths, it
+does not download files.
 
 **Measured 2026-09-27 with a real toolkit on the other end: a real GDK *target* receives the files.**
 `tools/xdnd-target.py` (new) is a **GTK3 drop target** - the same GDK a forwarded application uses -

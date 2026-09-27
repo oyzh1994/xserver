@@ -568,7 +568,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   exist, which is the whole of "nothing happens" (and why the same application running natively shows
   its release marker). A filesystem the client can see - a shared folder, an sshfs mount - makes the
   drop work, and `--drop-mount /Users/me/Shared=/mnt/hgfs/Shared` tells the bridge where that
-  directory is on the client's side, so the URI it hands over is one the application can open,
+  directory is on the client's side, so the URI it hands over is one the application can open:
+  **verified against a real forwarded application on 2026-09-27** - a file dragged from the shared
+  directory arrives and the application uses it (the drag has to start *inside* that directory);
+  what it is *not* is a file transfer - XDND names a path, and a target opens it,
   and the outbound one's trigger was reverted because it took over drags the application meant to keep
   inside itself (which froze one client). `docs/backlog.md` C5 has the measurements and the corrected
   design. An application from before drag and drop - `xterm`, `xclock` - has no way to receive one and
