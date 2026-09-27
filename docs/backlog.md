@@ -86,7 +86,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
 | [~] B5 | DAMAGE **done**, and **every window keeps its own pixels** (2026-09-27) - the general store, RENDER included; Composite, Present and SYNC still open | extension | L |
-| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bled into its parent's frame; **the general per-window store it waited on is now in** (B5, 2026-09-27), so it can be written again | host window | L |
+| ~~C8~~ | ~~one host window per client toplevel~~ **done 2026-09-27**: built once and reverted in 2026-09-26 (a dialog's pixels bled into its parent's frame), rebuilt on B5's general store and verified live | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
@@ -1846,7 +1846,8 @@ It becomes relevant the moment the server hosts more than one host window (per-c
 does) or a multi-monitor host: the honest answer then is one Xinerama head per host window.
 
 **Plan.** Advertise the extension, answer `QueryVersion` and `QueryScreens` with one head per screen
-today (and per host window once C8 lands).
+today; **C8 has since made one head per host window the honest answer**, since a screen is now shown
+by one window per top level, and it is not done.
 
 **Traps.** Head coordinates are screen coordinates, so a client may create a window at the origin of a
 head that is not the root's - which in per-client mode means a window outside the viewport. Decide
@@ -2610,8 +2611,10 @@ product decision rather than a technical one, and it is one line to change if it
 content, and a client that maximises itself resizes its own window, which the screen now grows to fit
 (C1) - so the request is written back to the property and the client's own resize does the rest.
 
-**Left open**: `WM_TRANSIENT_FOR` still only exists as a property - with one host window per client
-(see C8) there is nothing for a transient to be relative to.
+**Left open**: `WM_TRANSIENT_FOR` still only exists as a property. It used to say "with one host
+window per client there is nothing for a transient to be relative to" - **C8 has changed that**: a
+dialog now has its parent's host window to be placed against, so a real transient relationship (and a
+dialog that follows the window it belongs to) is possible where it was not. Nothing reads it yet.
 
 ---
 
@@ -2663,14 +2666,52 @@ not" - and the thing to try is a real drag by hand, with a real client that take
 
 ---
 
-### [ ] C8. One host window per client toplevel. **L** - built and measured 2026-09-26; **B5's general store landed 2026-09-27, so its blocker is gone**
+### [x] C8. One host window per client toplevel. **L** - done 2026-09-27: the store it needed (B5) landed, and the frames are built from it
 
-**The blocker is gone (2026-09-27).** This item was reverted because a frame shows a rectangle of the
-**screen** and a window's pixels were not its own - a dialog's content appeared in its parent's frame,
-measured live (the paragraph below). Every window now keeps its own pixels (B5), so a frame per top
-level has something honest to show: `XWindow.ownPixels` is the window's own content, including the
-parts another window covers. What C8 still has to do is read **that** instead of the screen rectangle
-it used to blit - the prototype's design and every trap it cost are below, and they are unchanged.
+**What is in (2026-09-27).** A client's screen is shown by **one host window per mapped top level**.
+The session the connection opens with frames the largest of them - the same rule the host window's
+title has always come from - and every other top level gets a session of its own, created and closed
+by the display tick as windows are mapped and unmapped. A popup is never framed: an override-redirect
+window belongs inside the window it appears over.
+
+**What each frame shows, which is what the first attempt got wrong.** Not the screen's rectangle (the
+screen holds every window the client has mapped, so a dialog lands in its parent's frame as well) and
+not the top level's own store either (a toolkit's top level is a frame whose content window covers it
+completely). It is the **subtree composite**: `draw/WindowSubtree` lays the top level's subtree down
+bottom to top from the windows' own stores, each mapped window painting what it owns at its offset, a
+child over its parent, an unmapped one painting nothing. `WindowSubtreeTest` pins the two halves -
+identical to the screen inside the window's rectangle, and **an overlapping sibling is not in it**.
+
+**Measured live on `.147`, which is what the first attempt failed on.** With the server in per-client
+mode and EasyShell running, clicking 设置 opened `应用设置` **in a host window of its own**
+(`750x678`), and the main window stayed `1300x728` - it did not grow and jump to the union - with the
+dialog's pixels nowhere in it. Closing the dialog took its frame with it. termora renders in its own
+host window, and single-window mode is untouched (its context menu still survives the six
+out-and-back passes 6/6).
+
+**`mvn test` 361/361**, with `draw/WindowSubtreeTest` (2) and `test/PerToplevelWindowTest` (2) new -
+the latter pinning both halves of the user-visible promise: a dialog gets a window of its own with the
+right viewport, and a window that goes away takes its frame with it.
+
+**The traps, each measured, and three of them are new to this attempt:**
+
+- **a drag belongs to one window** - `applyRequestedSize` resizes the frame's own window, where
+  reading the request off the shared `InputState` (which is where it used to live, now per frame)
+  applied one frame's drag to every top level the client had. `ScreenResizeTest`'s "the screen did not
+  grow" was the first sign of it the first time.
+- **the damage is taken once per screen per frame** and handed to each of its windows; taken per
+  window, the first would get all of it and the rest none.
+- **the per-screen work belongs to the primary session alone** (the XFixes cursor announcement), or a
+  client with three windows announces the same cursor change three times.
+- **a frame is remembered by its client's name with a number**, so two frames do not open on top of
+  each other; and a closed connection closes every frame it had.
+- and the **whole-screen session** (single-window mode, and the master screen in per-client mode) is
+  unchanged: it still shows the whole screen, or nothing.
+
+**The historical record, kept because the measurement is the reason this took two attempts:** the
+prototype of 2026-09-26 was green (350/350, five tests) and reverted after the live capture showed a
+dialog's content filling its parent's frame. The design it prototyped and the traps it cost are below,
+and the rebuilt version follows them.
 
 
 **What it is.** A connection gets one host window showing the **union** of every top level it has

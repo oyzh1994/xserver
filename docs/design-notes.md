@@ -8,36 +8,76 @@ Everything here was measured on macOS with JavaFX 25 loaded from the classpath, 
 clients (`xclock`, `xeyes`, `xcalc`, and a JavaFX application) from a Linux VM over TCP. Where a
 statement is a platform fact rather than a preference, that is said.
 
-## One screen per client connection, one window per screen
+## One screen per client connection, one window per top level
 
 A connection is given a `Screen` of its own when it connects (`XServer.openClientScreen`, called from
 the handshake before the setup reply), so a client's windows live on a screen no other client can
 draw into, and the setup reply names that screen's root as the only one the client sees.
 
-This is what makes each forwarded application appear as its own window, and it is deliberately not
-the alternative - one native window per X top-level window, as XQuartz does. That model needs every
-window's pixels kept separately, because two windows of one client (a dialog over its parent) overlap
-and the covered one's content has to survive; this server has one framebuffer per screen, draws
-straight into it and keeps no obscured content, so per-window native windows would either lose
-dialogs or cost a second rendering model. One screen per client gets the same user-visible result
-for the case that matters (one forwarded application = one window) and keeps a client's own dialogs,
-menus and popups overlapping correctly inside its window.
+This is what makes each forwarded application appear as its own window - and, since C8, **one window
+per top level**: a client's screen is shown by a host window for each top level it has mapped, so an
+application that opens a dialog beside its parent gets a window for the dialog and keeps the parent's
+window at the parent's own size.
 
-**And that paragraph is now measured rather than argued (C8, 2026-09-26).** The per-top-level model was
-built - a `HostWindow` per X top level, each with its own backend, viewport, title and input sink, and
-five tests pinning the rules, `mvn test` 350/350 - and then looked at. With EasyShell's 工具 dialog
-open in per-client mode the menu bar does show two windows, and a screen capture of the **main
-window's own area** is filled with the *dialog's* content: the scan table and its buttons, with the
-main window's sidebar only at the edges. A frame shows a rectangle of the screen, and the dialog's
-pixels are in the main window's rectangle too, because there is one surface for both. The dialog is
-shown twice and the window under it looks taken over by it - so the model was reverted, and the item
-now says what it needs: pixels of its own per window, which is B5's per-window store.
+**The model was built twice, and the first time is worth keeping.** It was built on 2026-09-26 with
+each top level in a native window of its own, while a frame still showed a rectangle of the *screen* -
+and the screen holds every window the client has mapped, so a dialog's content appeared inside its
+parent's frame as well. Measured with EasyShell's 工具 dialog open in per-client mode: the menu bar
+showed two windows as intended, and a screen capture of the **main window's own area** came back
+filled with the *dialog's* table and buttons, the main window's sidebar only at the edges. A frame
+needs pixels of the window's own, which is B5's per-window store; that landed the next day and the
+item was rebuilt on top of it.
 
-The host window shows a **sub-rectangle** of the screen (`DisplayBackend.setViewport`): the union of
-the client's mapped top-level windows, so a small application arrives in a small window rather than
-in a screen-sized one with black around it. The screen grows when a window is dragged past it - see
-"The screen grows with the window" below - and never shrinks; a window larger than the screen is
-clipped until the drag that needs the room grows it.
+### What each frame shows
+
+Not the screen's rectangle, and **not the top level's own store either**: a toolkit's top level is a
+frame whose content window covers it completely, so its own pixels are not what the user sees. It is
+the subtree composite (`draw/WindowSubtree`) - the top level's subtree laid down bottom to top, each
+mapped window painting what it owns at its offset inside the top level, a child over its parent, and
+an unmapped one painting nothing so its parent's pixels show through. That is kept in a `Framebuffer`
+the size of the window and redrawn from the damage the screen accumulated inside it, and it is what
+makes a dialog's frame contain the dialog and its parent's frame contain the parent, however the two
+overlap on the screen.
+
+`WindowSubtreeTest` pins both halves: the composite is pixel for pixel what the screen shows inside
+the window's rectangle, and an overlapping sibling is **not** in it. Borders are deliberately out -
+they are painted onto the screen rather than kept in a store, and a top level of a forwarded
+application has none.
+
+### Which window is which, and what it cost
+
+A connection has one session per host window (`ScreenSession`): the one it opened with frames the
+**largest** mapped top level - the same rule the host window's title has always come from, so the
+application's own window is the one the connection "is" - and every other top level gets a session of
+its own, created and closed by the display tick as windows are mapped and unmapped. A popup is never
+framed: an override-redirect window is transient and belongs inside the window it appears over, which
+is also why an application's frame does not follow it.
+
+Each of these cost something to get right, and each is a way to get it wrong quietly:
+
+- **a drag of a frame resizes that frame's window** and not every top level the client has. The
+  request used to be read off the shared `InputState`, which applied one frame's drag to all of them -
+  `ScreenResizeTest`'s "the screen did not grow" was the first sign of it.
+- **the damage is taken once per screen per frame** and handed to each of its windows. Taking it per
+  window gives the first the whole of it and the rest none.
+- **the per-screen work belongs to the primary session alone** - the XFixes cursor announcement is one
+  thing about one screen, and a client with three windows would otherwise announce it three times.
+- **a frame is remembered by its client's name with a number**, so two frames of one client do not
+  open on top of each other.
+- and the screen's own session keeps showing the **whole screen** in single-window mode, where there is
+  one window for every client, and nothing at all in per-client mode, where it is not shown to anybody.
+
+### The viewport, and the screen that grows
+
+A frame's viewport (`DisplayBackend.setViewport`) is **the window it frames**, which is what keeps the
+input mapping unchanged: the backend turns a point in its host window into a point on the screen by
+adding the viewport's origin, and for a frame that origin is where the window is. The master screen -
+single-window mode - shows the whole of itself; a session with no window of its own falls back to the
+union of the client's mapped top levels (`contentBounds`), which is what a client that has mapped
+nothing but popups gets.
+
+The screen grows when a window is dragged past it - see "The screen grows with the window" below - and
+never shrinks; a window larger than the screen is clipped until the drag that needs the room grows it.
 
 **The cost of it is anything that is infrastructure rather than an application.** An X input method,
 a window manager, a clipboard manager and a drag-and-drop source are all X clients that draw windows
