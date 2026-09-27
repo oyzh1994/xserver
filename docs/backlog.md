@@ -2015,6 +2015,20 @@ length field is the size in four byte units **minus eight**; `FP1616` is four by
 `XIGetClientPointer` is answered `BadWindow` for the *root* on a reference, so a probe that asks about
 the root measures nothing.
 
+**And the live runs name one of those refusals, which is worth having in writing (2026-09-27).** A
+forwarded client asked **XInput2 minor 59, `XIGetProperty`** - a *device property* read, the family this
+entry refuses - and the server answered `BadRequest`, because an unknown minor reaches the hand-written
+decoder and throws rather than being decoded and refused. Two things follow:
+
+- **It is the *documented* refusal, arriving the hard way** (a decode failure and a protocol error,
+  rather than a request decoded and answered "no"), and the entry's own warning applies: a refused XI2
+  request **crashed a client here once already** - `libawt_xawt.so` on `ListInputDevices`. A client that
+  reads a property and gets an error is the same shape.
+- **The clean answer is not free**: `XIGetProperty` expects a *reply*, so "accept and do nothing" would
+  leave the client waiting for one - worse than the error it gets now. Answering it means the reply's
+  layout, measured off a reference rather than guessed, which is a session's worth of the same work
+  `GetNames` below needs: a request whose reply this server has no class for.
+
 **What is still not here**, deliberately and visibly refused rather than accepted: touch, tablets,
 barriers and the raw event family (a client asks for them by name and this server has no device behind
 them), the device property requests, and the hierarchy's changing requests. A client that asks for one
