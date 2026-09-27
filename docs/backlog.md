@@ -3136,6 +3136,40 @@ two clients this bed has, after the owner tried them by hand:**
 the bridge itself had asked to answer. Both directions need a real toolkit on the other end before
 either is called done.
 
+**Measured 2026-09-27 with a controlled drag source, and the answer is not the protocol: EasyShell
+*does* answer, and the file is on the wrong machine.** A JavaFX drag source of this project's own
+(`/tmp/HostDragSource.java`: a fixed, always-on-top window holding a real file) started a **real
+platform drag** onto a forwarded EasyShell on this server, and the log shows the whole conversation:
+the bridge sends `XdndEnter`/`XdndPosition`/`XdndDrop`, EasyShell fires a burst of `InternAtom` (GDK
+resolving the type atoms it was just told about), then **`SendEvent` twice - its `XdndStatus` - and
+`ConvertSelection` six times, asking for the data**, which the bridge serves with a `SelectionNotify`
+each time. So the entry's "the application never answers: no `XdndStatus`, and no `ConvertSelection`"
+is **stale for this build**: the app answers exactly as it should.
+
+What it cannot do is *read the file*. What the bridge hands over is a **host path** -
+`file:///private/tmp/xdnddir/dropped.txt` - and the client is on another machine, where that path does
+not exist (on Linux not even `/private/tmp` exists). That is the whole of "nothing happens", and it
+also explains the owner's own observation exactly: the **macOS build of the same application** shows
+its release marker when a Finder file is dropped on it, because *there the URI resolves*.
+
+**So the open question is not XDND but file transfer**, and XDND is URI-based by design - the target
+opens a path, it does not download a file. The ways out, in the order they are worth trying:
+
+- **A filesystem the client can see.** With the host's directory mounted on the client (a VMware/Parallels
+  shared folder, or an sshfs/NFS mount), the URI resolves and the drop works as it stands - the
+  cheapest thing to try, and it needs no code.
+- **Normalise the path the bridge reports - done 2026-09-27.** `JavaFxBackend` hands over
+  `/private/tmp/...` (macOS's resolved `/tmp`), and a client that shares `/tmp` cannot find that, so
+  `DropBridge.toUris` now reports the path without the prefix when what is left is the same file.
+  **The same function was escaping only spaces**, which breaks on the names files actually have - a
+  `#` starts a fragment, a `%` starts an escape, and a non-ASCII name (the common case for this
+  server's own user) is not a byte a URI may carry raw. Both directions now escape and decode UTF-8
+  byte by byte, with tests on each (`DropBridgeTest`, two new cases).
+- **Serve the bytes.** An application that fetches the *contents* over the selection (a target like
+  `text/plain` or `application/octet-stream`) could be satisfied by this bridge - it already has the
+  file on disk. That is a per-application convention rather than a protocol, so it only helps the
+  applications that implement it.
+
 **Correction, the same day, from the owner's own hands: it does *not* work in EasyShell.** Dragging a
 file from Finder onto a forwarded EasyShell still does nothing, while the *macOS* build of the same
 application shows its `松开鼠标以释放文件` marker - so whatever the bridge gets wrong is something the

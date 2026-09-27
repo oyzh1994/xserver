@@ -1472,6 +1472,18 @@ message of this form: all of XDND, the `WM_DELETE_WINDOW` reply an application s
 anything else in EWMH. It is one branch in `AtomHandlers.sendEvent` and two tests in
 `ClientMessageTest`, and it had been there since SendEvent was written.
 
+
+**What a drop cannot do across machines, measured 2026-09-27.** The bridge is a correct XDND source -
+a real application answers it (`XdndStatus`, then `ConvertSelection` for the data, which this bridge
+serves) - and the application still does nothing, because what it is handed is a **URI on the host's
+filesystem**. XDND is URI-based by design: a target *opens* the path, it does not download the file.
+For a client on the same machine, or one whose filesystem has the host's directory (a shared folder,
+an sshfs mount), that is exactly right; for a client on another machine the path is nowhere, which is
+the whole of "nothing happens". The other half of the same finding is that the path has to be one a
+target can *use*: macOS reports a dragged file as its resolved path (`/private/tmp/...` for `/tmp`),
+and a URI has to escape what a URI cannot carry raw (`#`, `%`, and every non-ASCII byte of a name) -
+both fixed in `DropBridge`, both with tests.
+
 ## What the frame does when the client asks for something
 
 Two things an application asks its window manager for reach the host window, and both are read off

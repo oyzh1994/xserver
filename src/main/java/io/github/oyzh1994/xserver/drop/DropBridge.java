@@ -471,17 +471,77 @@ public final class DropBridge {
             }
             path = path.substring(slash);
         }
-        return path.replace("%20", " ");
+        return decode(path);
     }
 
-    /** The dropped paths as URIs, which is what a target understands. */
+    /**
+     * The dropped paths as URIs, which is what a target understands.
+     *
+     * <p><b>Every byte outside the unreserved set is escaped, and only spaces were before</b> - which
+     * breaks on the names files actually have: `#` starts a fragment, `%` starts an escape, and a
+     * non-ASCII name (which is the common case for this server's own user) is not a byte a URI may
+     * carry raw. The escape is UTF-8, byte by byte, which is what a target decodes.
+     *
+     * <p><b>And the path is the one the user sees, not the one the platform resolved.</b> macOS
+     * reports a dragged file as {@code /private/tmp/...} because `/tmp` is a symlink to it, so a
+     * target that shares `/tmp` - a client on the same machine, or a mounted directory - is handed a
+     * path that does not exist for it. The prefix is dropped when what is left still exists, which is
+     * how this was found: a real drop reached a forwarded application and the file was, from its side,
+     * nowhere.
+     */
     private static List<String> toUris(List<String> paths) {
         List<String> uris = new ArrayList<>(paths.size());
         for (String path : paths) {
+            String normalised = userFacing(path);
             uris.add(java.io.File.separatorChar == '\\'
-                    ? "file:///" + path.replace('\\', '/').replace(" ", "%20")
-                    : "file://" + path.replace(" ", "%20"));
+                    ? "file:///" + encode(normalised.replace('\\', '/'))
+                    : "file://" + encode(normalised));
         }
         return uris;
+    }
+
+    /** The path without macOS's resolved-file prefix, when the remainder is the same file. */
+    private static String userFacing(String path) {
+        if (path.startsWith("/private/") && new java.io.File(path.substring("/private".length()))
+                .exists()) {
+            return path.substring("/private".length());
+        }
+        return path;
+    }
+
+    /** A path as the URI form: everything but the unreserved set and the separator escaped, UTF-8. */
+    private static String encode(String path) {
+        StringBuilder out = new StringBuilder(path.length() + 8);
+        for (byte b : path.getBytes(java.nio.charset.StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            boolean plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+                    || c == '-' || c == '.' || c == '_' || c == '~' || c == '/';
+            if (plain) {
+                out.append((char) c);
+            } else {
+                out.append('%').append(String.format("%02X", c));
+            }
+        }
+        return out.toString();
+    }
+
+    /** The inverse: every {@code %XX} decoded as the UTF-8 byte it stands for. */
+    private static String decode(String uri) {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream(uri.length());
+        for (int i = 0; i < uri.length(); i++) {
+            char c = uri.charAt(i);
+            if (c == '%' && i + 2 < uri.length()) {
+                int hi = Character.digit(uri.charAt(i + 1), 16);
+                int lo = Character.digit(uri.charAt(i + 2), 16);
+                if (hi >= 0 && lo >= 0) {
+                    bytes.write((hi << 4) | lo);
+                    i += 2;
+                    continue;
+                }
+            }
+            byte[] raw = String.valueOf(c).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            bytes.write(raw, 0, raw.length);
+        }
+        return new String(bytes.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
     }
 }

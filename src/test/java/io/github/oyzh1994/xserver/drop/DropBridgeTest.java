@@ -125,6 +125,73 @@ class DropBridgeTest {
         }
     }
 
+    /**
+     * The URI list a target is handed escapes what a URI has to escape - not only the spaces the
+     * first version handled.
+     *
+     * <p>Measured against a real drop: the bridge offers paths from the host, so a name with a `#`
+     * (which starts a fragment), a `%` (which starts an escape) or a non-ASCII character (the common
+     * case for this server's own user) has to be escaped or the target decodes a different file - or
+     * none. The escape is UTF-8 byte by byte, which is what a toolkit decodes.
+     */
+    @Test
+    void anEscapedNameSurvivesAsAURITheTargetCanDecode() throws IOException {
+        try (RawXClient target = RawXClient.connect(DISPLAY)) {
+            int window = takeDrops(target);
+            pointAt(target, 200, 150);
+            // The atom is interned first, like the test above: interning is a round trip, and a
+            // message read before it would be the reply to it rather than the drag.
+            int enterAtom = target.internAtom("XdndEnter");
+            server.dropBridge().hostDropped(List.of("/tmp/a b#c%20.txt", "/tmp/中文.txt"), 200, 150);
+            assertNotNull(readMessage(target, enterAtom));
+
+            int property = target.internAtom("XSERVER_DROP_DATA");
+            target.convertSelection(window, target.internAtom(XDND_SELECTION),
+                    target.internAtom(URI_LIST), property, 0);
+            target.flush();
+            assertNotNull(target.readEvent(SELECTION_NOTIFY), "the source has to answer");
+
+            byte[] reply = target.getProperty(window, property, 0, true);
+            int length = RawXClient.readInt(reply, 16);
+            assertEquals("file:///tmp/a%20b%23c%2520.txt\r\nfile:///tmp/%E4%B8%AD%E6%96%87.txt\r\n",
+                    new String(reply, 32, length, StandardCharsets.UTF_8),
+                    "every byte outside the unreserved set escaped, UTF-8, and `%` itself escaped -"
+                            + " which is what makes the name come back as the file that was dropped");
+        }
+    }
+
+    /**
+     * macOS hands a dragged file over as its *resolved* path - {@code /private/tmp/...} for anything
+     * under `/tmp`, which is a symlink - and a target that shares `/tmp` cannot open that. The bridge
+     * reports it without the prefix when what is left is the same file, which is what a user dragged.
+     */
+    @Test
+    void aResolvedPathIsReportedAsThePathTheUserSees() throws IOException {
+        java.nio.file.Path real = java.nio.file.Files.createTempFile("drop", ".txt");
+        try (RawXClient target = RawXClient.connect(DISPLAY)) {
+            int window = takeDrops(target);
+            pointAt(target, 200, 150);
+            int enterAtom = target.internAtom("XdndEnter");
+            server.dropBridge().hostDropped(List.of("/private" + real), 200, 150);
+            assertNotNull(readMessage(target, enterAtom));
+
+            int property = target.internAtom("XSERVER_DROP_DATA");
+            target.convertSelection(window, target.internAtom(XDND_SELECTION),
+                    target.internAtom(URI_LIST), property, 0);
+            target.flush();
+            assertNotNull(target.readEvent(SELECTION_NOTIFY));
+            byte[] reply = target.getProperty(window, property, 0, true);
+            // Only macOS has the resolved-path prefix; elsewhere the path is the path.
+            String expected = new java.io.File("/private" + real).exists() && new java.io.File("/private").exists()
+                    ? "file://" + real : "file://" + "/private" + real;
+            assertEquals(expected + "\r\n",
+                    new String(reply, 32, RawXClient.readInt(reply, 16), StandardCharsets.UTF_8),
+                    "the path a client on the same filesystem can actually open");
+        } finally {
+            java.nio.file.Files.deleteIfExists(real);
+        }
+    }
+
     @Test
     void aWindowThatDoesNotTakeDropsIsLeftAlone() throws IOException {
         try (RawXClient target = RawXClient.connect(DISPLAY)) {
@@ -192,14 +259,17 @@ class DropBridgeTest {
             assertEquals(source.internAtom(URI_LIST), RawXClient.readInt(request, 20),
                     "and what is asked for is text/uri-list, which is what a file drag carries");
 
+            // An escaped name on the way in too: a client that offers a file with a space or a
+            // non-ASCII character sends it per cent encoded, and the path this side hands on has to
+            // be the file it names.
             source.setStringProperty(bridge.windowId(), property, source.internAtom(URI_LIST),
-                    "file:///root/notes.txt\r\nfile:///root/photo.png\r\n");
+                    "file:///root/notes.txt\r\nfile:///root/%E4%B8%AD%E6%96%87%20notes.png\r\n");
             source.sendSelectionNotify(bridge.windowId(), 0, bridge.windowId(),
                     source.internAtom(XDND_SELECTION), source.internAtom(URI_LIST), property);
             source.flush();
             source.geometry(window);
 
-            assertEquals(List.of("/root/notes.txt", "/root/photo.png"), bridge.dragOutPaths(),
+            assertEquals(List.of("/root/notes.txt", "/root/中文 notes.png"), bridge.dragOutPaths(),
                     "one URI per line is what text/uri-list is, and the paths come back in order");
 
             // A client that gives the selection up is no longer dragging.

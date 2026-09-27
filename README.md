@@ -553,9 +553,13 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 - **Drag and drop is bridged both ways and neither direction is finished.** A file dragged from the
   desktop is offered to the application under the pointer as an XDND drag, and a drag that starts
   inside an application is turned into the host's own drag - but **both stop short with a real
-  toolkit**: the inbound one is accepted by a real GDK *drop target* (the file arrives), and still
-  not by the applications this bed has - EasyShell reacts to the drag and then never asks for the
-  data,
+  toolkit**: the inbound one is accepted by a real GDK *drop target* (the file arrives) and by
+  EasyShell's own protocol handling (measured: it answers `XdndStatus` and asks for the data), and the
+  application still does nothing with it - because what it is handed is a **host path**, and XDND is
+  URI-based: a target *opens* the file, it does not download it. Across machines that path does not
+  exist, which is the whole of "nothing happens" (and why the same application running natively shows
+  its release marker). A filesystem the client can see - a shared folder, an sshfs mount - makes the
+  drop work as it stands,
   and the outbound one's trigger was reverted because it took over drags the application meant to keep
   inside itself (which froze one client). `docs/backlog.md` C5 has the measurements and the corrected
   design. An application from before drag and drop - `xterm`, `xclock` - has no way to receive one and
