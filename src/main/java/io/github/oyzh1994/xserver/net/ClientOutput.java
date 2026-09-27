@@ -96,6 +96,17 @@ public final class ClientOutput {
     private volatile boolean broken;
 
     /**
+     * Who is told about every message this connection sends, or null for nobody.
+     *
+     * <p>RECORD needs each message as a whole, with its bytes, and this is the only place all of them
+     * pass through: replies, events, errors, structs and the raw images extensions format themselves.
+     * The listener runs on the caller's thread, in the order the messages were queued, which is the
+     * order a recorder has to see them in - and it is called <em>before</em> the queue, so what a
+     * recorder is told is what will be sent even if the client has stopped reading.
+     */
+    private volatile Listener listener;
+
+    /**
      * True when bytes have been buffered but not yet handed to the socket. A caller holding a
      * reply in here holds a client waiting for it, which is why the request loop asks.
      */
@@ -112,6 +123,18 @@ public final class ClientOutput {
 
     public boolean isBigEndian() {
         return bigEndian;
+    }
+
+    /** Sets the listener told about every message. Null is nobody, which is the default. */
+    public void setListener(Listener listener) {
+        this.listener = listener;
+    }
+
+    /** Told one finished message, in the order it was queued. */
+    @FunctionalInterface
+    public interface Listener {
+
+        void message(byte[] bytes);
     }
 
     /** True once a write has failed; the connection is torn down by the owner. */
@@ -152,6 +175,18 @@ public final class ClientOutput {
     public synchronized void writeStruct(com.github.moaxcp.x11.protocol.XStruct struct)
             throws IOException {
         write(serialize(struct::write));
+    }
+
+    /**
+     * The bytes a struct would be sent as, without sending them.
+     *
+     * <p>RECORD wants the connection setup reply as the client-started element (F2), which is the one
+     * message the server has to hand over rather than merely observe: the listener sees it go past,
+     * but by then it is already queued for the socket.
+     */
+    public synchronized byte[] encode(com.github.moaxcp.x11.protocol.XStruct struct)
+            throws IOException {
+        return serialize(struct::write);
     }
 
     /**
@@ -288,6 +323,10 @@ public final class ClientOutput {
     private void write(byte[] bytes) throws IOException {
         if (broken) {
             throw new IOException("connection is broken");
+        }
+        Listener observation = listener;
+        if (observation != null) {
+            observation.message(bytes);
         }
         if (!queue.offer(bytes)) {
             broken = true;

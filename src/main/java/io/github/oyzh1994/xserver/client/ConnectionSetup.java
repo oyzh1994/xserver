@@ -210,8 +210,19 @@ public final class ConnectionSetup {
 
         // The setup reply's own length field is at bytes 4..8, so it must not be rewritten the
         // way ordinary replies are.
-        client.output().writeStruct(setup);
+        byte[] reply = client.output().encode(setup);
+        client.output().writeRaw(reply);
         client.flush();
+        // The setup reply is what a recorder is given as the client-started element: the bytes it
+        // needs to rebuild the client that produced the rest of the stream. It is handed over rather
+        // than merely observed because the listener below is attached after it - a reference does not
+        // record the setup reply as an ordinary server message, and attaching the listener first put
+        // a second, redundant datum in front of every recording (F2, measured).
+        server.recordClientStarted(client, reply);
+        // Everything this connection sends from here on passes through the output, so that is where
+        // RECORD sees it (F2): one hook covers replies, events, errors and every hand-encoded image
+        // an extension writes.
+        client.output().setListener(bytes -> server.recordServerMessage(client, bytes));
         log.debug("setup sent to {}", client.peer());
     }
 

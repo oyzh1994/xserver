@@ -342,9 +342,62 @@ public final class XServer {
         // answers who is using the memory, which E4's lazy allocation left with nothing to read
         // (F3). Registered last for the same reason as XGE.
         extensions.register(new io.github.oyzh1994.xserver.extension.ResExtension(), 0, 0);
+        // RECORD is how a client is told what another client did (F2). It defines one error
+        // (BadContext) and no events, so its event range is empty and QueryExtension reports zero for
+        // it. Registered last so no existing extension's opcode moves.
+        extensions.register(new io.github.oyzh1994.xserver.extension.RecordExtension(), 0, 1);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Recording: what lets RECORD see every message (F2)
+    // ------------------------------------------------------------------
+
+    /**
+     * Who is told about every protocol message, or {@link ProtocolRecorder#NONE}.
+     *
+     * <p>The calls are on the path of every request and every event, so the field is read once per
+     * message and the default implementation does nothing at all.
+     */
+    private volatile io.github.oyzh1994.xserver.extension.ProtocolRecorder recorder =
+            io.github.oyzh1994.xserver.extension.ProtocolRecorder.NONE;
+
+    /** The client whose request is being executed right now, and its sequence number. */
+    private volatile ClientConnection currentRequestClient;
+    private volatile short currentRequestSequence;
+
+    /** Sets the recorder. Null puts the no-op one back. */
+    public void recorder(io.github.oyzh1994.xserver.extension.ProtocolRecorder recorder) {
+        this.recorder = recorder == null
+                ? io.github.oyzh1994.xserver.extension.ProtocolRecorder.NONE : recorder;
+    }
+
+    /** One request as it arrived, for the recorder. Called from the client's request loop. */
+    public void recordClientRequest(ClientConnection client, byte[] request, short sequenceNumber) {
+        recorder.clientRequest(client, request, sequenceNumber);
+    }
+
+    /**
+     * One message on its way out.
+     *
+     * <p>The attribution - which client and which sequence number the recorder is told this belongs
+     * to - is the request being executed at this moment, which is what a reference records: a reply
+     * names the client that asked, and an event produced with no request in flight names nobody.
+     */
+    public void recordServerMessage(ClientConnection client, byte[] message) {
+        recorder.serverMessage(client, message, currentRequestClient, currentRequestSequence);
+    }
+
+    /** A connection's setup reply, the client-started element of a recording. */
+    public void recordClientStarted(ClientConnection client, byte[] setupReply) {
+        recorder.clientStarted(client, setupReply);
+    }
+
+    /** A connection ended, the client-died element of a recording. */
+    public void recordClientDied(ClientConnection client) {
+        recorder.clientDied(client);
     }
 
     // ------------------------------------------------------------------
@@ -2030,6 +2083,9 @@ public final class XServer {
             if (client.isShuttingDown()) {
                 return;
             }
+            // What a recorded message is attributed to: the request being executed now.
+            currentRequestClient = client;
+            currentRequestSequence = client.sequenceNumber();
             if (options.logRequests()) {
                 log.debug("{} opcode {} minor {}", client, opcode & 0xFF, minorOpcode & 0xFF);
             }
@@ -2042,6 +2098,8 @@ public final class XServer {
             log.error("{} opcode {} failed", client, opcode & 0xFF, e);
             client.sendError(ProtocolException.IMPLEMENTATION, 0);
         } finally {
+            currentRequestClient = null;
+            currentRequestSequence = 0;
             serverLock.unlock();
         }
     }
@@ -2070,6 +2128,9 @@ public final class XServer {
             }
             // Windows owned by this client get destroyed, which generates destroy notifications.
             dispatcher.destroyClientResources(client);
+            // The departure comes after everything the client's own requests caused, which is where a
+            // recording has it: the last request's notifications, then the client-died element.
+            recordClientDied(client);
         } finally {
             // A client that grabbed the server will never send UngrabServer, so drop every hold it
             // accumulated or the remaining clients would block forever.

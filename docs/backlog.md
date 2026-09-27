@@ -101,13 +101,13 @@ A prompt that starts a fresh session on this, verbatim:
 
 **§9 at the end of this file is a different kind of list**: capabilities this server does not have at
 all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. **Three of the seven were built on 2026-09-28 (F1, F3, F4); these are
-the four that remain, when the owner wants to schedule new work:**
+candidates rather than as items. **Four of the seven were built on 2026-09-28 (F1, F2, F3, F4); these
+are the three that remain, when the owner wants to schedule new work:**
 
 | id | candidate | size | why it is first (or last) |
 |----|-----------|------|---------------------------|
 | ~~F1~~ | ~~`PresentNotifyMSC` + the SYNC alarms~~ **done 2026-09-28**: the alarms are in; `PresentNotifyMSC` was already answered, and the §9 claim that it was refused was stale | extension | S-M |
-| [ ] F2 | `RECORD` | M | `x11vnc -record` is a real client in this project's own orbit |
+| ~~F2~~ | ~~`RECORD`~~ **done 2026-09-28**: the eight requests and the stream, with one deliberate difference (no device-event stage) | extension | M |
 | ~~F3~~ | ~~`X-Resource`~~ **done 2026-09-28**: all six requests of 1.2, with two deliberate differences | extension | S |
 | ~~F4~~ | ~~`Generic Event Extension`~~ **done 2026-09-28**: advertised and answered, and it exposed a real `QueryExtension` defect that is now fixed | extension | S |
 | [ ] F5 | `DOUBLE-BUFFER` (Xdbe) | M | B5's store makes the back buffer nearly free |
@@ -4263,6 +4263,14 @@ caller at all.
   empty; and twenty idle connections grow the used heap by ~6 MB where twenty framebuffers alone
   would be 81 MB. **All three fail with the allocation put back in the constructor** - including the
   heap one, which then sees the 84 MB.
+  **The heap is read after a collection, as of 2026-09-28** (`settledHeap()`), and the number is now
+  **2.5-3 MB** (2541, 2607 and 2965 KB on three runs; the same test read 20572 KB and failed while the
+  suite ran in one JVM). Before that it read `totalMemory - freeMemory` directly, which is the live set
+  *plus* whatever the collector had not got round to - and the whole suite runs in one JVM, so the
+  same twenty connections "grew" it by 15.9 MB on one run and 20.1 MB on the next and failed the 20 MB
+  bound on a loaded machine while nothing was wrong. A framebuffer is strongly reachable from a live
+  connection and survives a collection, so collecting first measures what the item is about; what it
+  removes was never the connection's memory.
 - Live, against the server on the Mac, twenty `xdpyinfo` connections from the VM: resident memory
   went from 202 MB to **241 MB** with the lazy allocation and to **304 MB** without it - 101 MB
   before, 39 MB after, so about 62 MB of the difference is the framebuffers that are no longer
@@ -4672,19 +4680,19 @@ one by one:
   `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
   `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
 - **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way
-  (re-measured 2026-09-28, after F3 and F4 landed): the reference advertises **23** and this server
-  **19**, of which **18 are shared**. The difference is five the reference has and this server does
+  (re-measured 2026-09-28, after F2, F3 and F4 landed): the reference advertises **23** and this server
+  **20**, of which **19 are shared**. The difference is four the reference has and this server does
   not - the table below - and one this server has and that reference build does not: **DPMS**, which
-  is B7's work (the sweep documents it as a deliberate difference). **Two of the seven rows below are
-  now done**: the Generic Event Extension and X-Resource are advertised and answered, so the list of
-  absent extensions is five, not seven.
+  is B7's work (the sweep documents it as a deliberate difference). **Three of the seven rows below are
+  now done**: the Generic Event Extension, X-Resource and RECORD are advertised and answered, so the
+  list of absent extensions is four, not seven.
 
 | extension | what it is | who asks | here |
 |-----------|-----------|----------|------|
 | `DOUBLE-BUFFER` (Xdbe) | a client draws into an off-screen back buffer and swaps | toolkits that refuse to flicker (older GTK/Qt paths, games); most fall back to normal drawing | **absent** |
 | `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | ~~absent~~ **done 2026-09-28 (F4)** |
 | `MIT-SHM` | shared-memory images, so pixels do not travel over the socket | every toolkit probes it; all of them fall back | **absent, declined** - B8 has the reasons |
-| `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | **absent** |
+| `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | ~~absent~~ **done 2026-09-28 (F2)** |
 | `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | **absent** |
 | `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | ~~absent~~ **done 2026-09-28 (F3)** |
 | `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | **absent** |
@@ -4707,9 +4715,9 @@ a refusal, so the evidence is the **request profiles** - EasyShell's profile aga
 against this server agrees request for request (the A/B method), and a sweep of thirty client tools
 against this server produced no refusals beyond the known two. None of them reached for Xdbe, Xv, RECORD
 or the rest. So these are capabilities a *different* client would use, and the candidates below are
-ordered by **what breaks without it** - the first is the one to do if only one is done. **F1, F3 and
-F4 were taken on 2026-09-28** and are full entries with a measurement behind them; the four that
-remain (F2, F5, F6, F7) are still candidates for the owner to schedule rather than items somebody has
+ordered by **what breaks without it** - the first is the one to do if only one is done. **F1, F2, F3
+and F4 were taken on 2026-09-28** and are full entries with a measurement behind them; the three that
+remain (F5, F6, F7) are still candidates for the owner to schedule rather than items somebody has
 started.
 
 ### [x] F1. `PresentNotifyMSC` and the SYNC alarms. **S-M** - done 2026-09-28, and one half was already in
@@ -4760,14 +4768,89 @@ which is what a reference answers.
 line for line**, including both refusals and the inactive state of a comparison - plus `SyncTest`'s
 four new cases (fire, comparison-once, refusal, destroyed-alarm).
 
-### F2. `RECORD`. **M**
+### [x] F2. `RECORD`. **M** - done 2026-09-28
 
-The one with a real client in this project's own orbit: `x11vnc -record` uses it, and the kit's own
-recordings would become scriptable without `XProxy` sitting in the middle. Its surface is
-`CreateContext`, `RegisterClients`, `EnableContext` and then a stream of event data in the reply's
-`data` field. **Verify**: a context registered on this server and on Xvfb produces the same events for
-the same gesture - which is `XProxy`'s own comparison, done from inside the server instead of in front
-of it.
+**What it is.** The extension a client subscribes to in order to see *other* clients' traffic:
+`CreateContext` over a set of clients and a set of ranges, `EnableContext`, and then a stream of
+"replies", one per recorded element, on the enabling connection - which is what `x11vnc -record` does,
+and what `XProxy` does today by sitting in front of the server. `EnableContext` is the whole design:
+the request is answered by a stream that ends when the recorder says so, not by a reply.
+
+**Current.** All eight requests (`QueryVersion`, `CreateContext`, `RegisterClients`,
+`UnregisterClients`, `GetContext`, `EnableContext`, `DisableContext`, `FreeContext`), the one error
+`BadContext`, and the stream. There is **no generated protocol module for RECORD** in the x11 library,
+so the decoders and the `GetContext` reply are hand written the way XGE's and X-Resource's are, and
+`RecordTest` (nine cases) pins the offsets.
+
+**What is not guessable, measured with `tools/RecordProbe` against Xvfb**, and now written into
+`RecordExtension`'s class comment:
+
+- **The version is the server's own 1.13**, whatever the client asked for - SYNC's and XGE's rule, not
+  Present's echo.
+- **The client specs come first on the wire and the ranges follow**, while the `GetContext` *reply* has
+  them the other way round (each spec immediately followed by its own ranges). Reading a request the
+  reply's way turns the client's spec into a range, which is what this server did until the probe's
+  first run said so. An extension slot in a range is **six** bytes - a pair of major codes *and* a pair
+  of minor ones - and a five byte reading shifts every field after it.
+- **A spec is resolved when the request arrives**: `CurrentClients` becomes the clients connected now,
+  each named by its resource base, `FutureClients` becomes the literal **2**, and `AllClients` both,
+  deduplicated by resource. A spec that is a client's own base is that client. One combination is
+  deliberately *not* compared, because no rule reconciles it: `[current,future]` comes back with seven
+  specs on a reference where `[all]` - the same set - comes back with eight.
+- **A datum's header is 32 bytes** and its length counts the data **after** the header (length 913 for a
+  3652 byte client-started payload). Type 1, category, the enabling request's sequence number, the
+  element header, `clientSwapped`, the recorded client's base, the server time, the recorded sequence
+  number, eight bytes of padding.
+- **A client's arrival is a `ClientStarted` whose data is its whole setup reply** (which is how a
+  recorder learns its resource base), and **the setup reply is not also a `FromServer` message** - the
+  first version recorded both, which put a redundant datum in front of every client. **A departure is a
+  `ClientDied` whose data is the client's last sequence number**, four bytes in the recorded client's
+  order: measured with a range that covered *one* request of the six a client sent, and the sixth
+  arrived - so it is the sequence and not a count of what was recorded.
+- **A `FromServer` element is a datum of its own and consecutive `FromClient` elements share one** -
+  three requests arrive as one datum if nothing is delivered between them, and each delivered event or
+  reply arrives alone.
+- **The element header decides the stamps per element**: four bytes of server time on a server element
+  when `FromServerTime` is set; on a client element four bytes of time and four of the client's
+  sequence, each only when its bit is set. The width matters: the probe's own parse consumes the batch
+  exactly, so a wrong width moves every element after it.
+- **A datum is attributed to the request that was being executed when it was written** - a reply names
+  the client that asked, an event with no request behind it names nobody (base 0, sequence 0).
+- **No stream ever ends with `EndOfData`** - not on a disable, not on a free, not on a second enable
+  (measured three ways), so this server sends none either. A second enable while a context is enabled
+  does nothing at all.
+
+**One deliberate difference, and it is this server's execution model rather than a gap.** A reference
+processes input on a loop of its own and therefore records **device elements**: a pointer gesture came
+back as three (`MotionNotify`, the XTEST request, `ButtonPress`...) with the *input-driven events
+attributed to nobody*, because no request was in flight when they were delivered. This server derives
+its XI2 events inside the delivered core event, so there is no device stage to record and the events
+that do appear are attributed to the request that produced them (the `XTEST` request, which is itself
+recorded from the wire). The sweep's gesture is therefore **protocol-only**; the input half is behind
+`--input` and is measured on its own. A second, cosmetic difference: the reference gives every request
+of one batch the same stamp, while this server takes its clock once per request.
+
+**Verify**: `tools/RecordProbe` run against Xvfb and against this server - **identical line for line,
+and it is in `tools/sweep.sh` now** (three numbers that differ by construction are normalised in
+`tools/probe-diff.py`: the clock, the setup reply's own size, and the release number). **Full sweep run
+of 2026-09-28: 17 of the 25 probes identical, `RecordProbe` among them**, and the same eight documented
+differences as before - no ninth. Plus `RecordTest`'s nine cases and `mvn -o test`.
+
+**Live on `.147` (2026-09-28)**, the whole round's regression, server on the Mac in the mode the clients
+use (`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders** (its menu bar,
+its host list with `aliyun SSH` and its welcome page, captured with `tools/kit.sh Shot`), **typing
+lands** - `xdotool` on the VM typed `al` into its search box and the box showed it while the host list
+filtered itself - and **its context menu opens and survives the out-and-back gesture** (right-click the
+host row, move the pointer away to `700,600` and back: the menu with 打开连接/打开SFTP/编辑连接/... is
+still there two seconds later, and the app takes more typing afterwards).
+**RECORD with a real client is what this round added**: `tools/RecordProbe` pointed at that same live
+server with a context over `AllClients` recorded EasyShell itself - its `ClientStarted` carrying the
+336 byte setup reply, a **910 KB `FromClient` batch** of its own `CreateGC`/`PutImage`/`CopyArea`/...
+requests at sequence 2250 and beyond, the events those produced, and its `ClientDied` when it was killed
+- which is the extension working on traffic nobody staged. **termora renders** too (title, toolbar,
+`我的主机 (1)`, its splash), and the only rejections in the whole log are the two known `window 0x0`
+probes each GTK client makes at startup. `mvn test` **416/416**, and the headless run **416 with its 2
+toolkit skips, BUILD SUCCESS**.
 
 ### [x] F3. `X-Resource`. **S** - done 2026-09-28
 

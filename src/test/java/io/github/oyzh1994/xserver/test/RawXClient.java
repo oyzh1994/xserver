@@ -87,6 +87,25 @@ public final class RawXClient implements AutoCloseable {
         socket.setReceiveBufferSize(bytes);
     }
 
+    /**
+     * How long a read waits before reporting silence, for a probe that reads a stream rather than an
+     * answer. {@link #readEvent} turns the timeout into {@code null}; the raw reads throw.
+     */
+    public void socketTimeout(int millis) throws IOException {
+        socket.setSoTimeout(millis);
+    }
+
+    /**
+     * Reads a fixed number of bytes straight off the wire, with no interpretation.
+     *
+     * <p>For a message whose layout this class cannot assume: RECORD's {@code EnableContext} answers
+     * with a stream of replies whose data is a recorded request, reply or event, and what is in them
+     * is what the probe is measuring.
+     */
+    public byte[] readBytes(int count) throws IOException {
+        return readFully(count);
+    }
+
     /** An id from this client's range, for a window it creates. */
     public int allocateId() {
         return idBase + nextId++;
@@ -1670,6 +1689,14 @@ public final class RawXClient implements AutoCloseable {
 
     /** The sequence number of the request whose reply is expected next. */
     private int outstandingSequence() {
+        return sequence;
+    }
+
+    /**
+     * How many requests this connection has sent, which is the sequence number of its last one - the
+     * number a recording's client-died element carries when it goes away.
+     */
+    public int sentRequests() {
         return sequence;
     }
 

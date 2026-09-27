@@ -301,6 +301,9 @@ public final class ClientConnection implements Runnable {
         bigEndian = firstByte == 'B';
         in = bigEndian ? new X11BigEndianInputStream(pushback)
                 : new X11LittleEndianInputStream(pushback);
+        // The RECORD listener is attached *after* the setup reply, in ConnectionSetup.sendSetup:
+        // a reference records that reply as the client-started element and not as an ordinary
+        // server message, so a recorder must not see it go past here (F2, measured).
         output = new ClientOutput(rawOut, bigEndian);
 
         SetupRequest request = SetupRequest.readSetupRequest(in);
@@ -349,6 +352,10 @@ public final class ClientConnection implements Runnable {
             currentOpcode = (byte) opcode;
             currentMinorOpcode = (byte) data;
 
+            // The request as it arrived, before anything decodes it: a recorder replays these bytes.
+            server.recordClientRequest(this,
+                    requestBytes(opcode, data, lengthUnits, headerBytes, body), sequenceNumber);
+
             dispatch(opcode, data, lengthUnits, body);
 
             // A reply still in the buffer is a client waiting for it, and a client waiting for a
@@ -389,6 +396,21 @@ public final class ClientConnection implements Runnable {
                 parserBytes.length + 1);
     }
 
+    /** One request as it arrived, header and body: what a recorder is given. */
+    private byte[] requestBytes(int opcode, int data, int lengthUnits, int headerBytes, byte[] body) {
+        byte[] bytes = new byte[headerBytes + body.length];
+        bytes[0] = (byte) opcode;
+        bytes[1] = (byte) data;
+        if (headerBytes == 4) {
+            putCard16(bytes, 2, lengthUnits);
+        } else {
+            // A BIG-REQUESTS header: the sixteen bit length is zero and the real one follows it.
+            putCard32(bytes, 4, lengthUnits);
+        }
+        System.arraycopy(body, 0, bytes, headerBytes, body.length);
+        return bytes;
+    }
+
     private void putCard16(byte[] bytes, int offset, int value) {
         if (bigEndian) {
             bytes[offset] = (byte) (value >> 8);
@@ -396,6 +418,20 @@ public final class ClientConnection implements Runnable {
         } else {
             bytes[offset] = (byte) value;
             bytes[offset + 1] = (byte) (value >> 8);
+        }
+    }
+
+    private void putCard32(byte[] bytes, int offset, int value) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 24);
+            bytes[offset + 1] = (byte) (value >> 16);
+            bytes[offset + 2] = (byte) (value >> 8);
+            bytes[offset + 3] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+            bytes[offset + 2] = (byte) (value >> 16);
+            bytes[offset + 3] = (byte) (value >> 24);
         }
     }
 

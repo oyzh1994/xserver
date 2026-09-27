@@ -291,6 +291,20 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   server's own), the pixmap bytes, the client-id masks, a named resource's size - and an id no client
   owns, which both servers refuse `BadValue`. It is a deliberately **different** run on the two
   servers; the differences and their reasons are in "What the sweep is expected to differ on".
+- `RecordProbe` - RECORD (F2), and the tool the whole extension was written from: a client creates a
+  context over a range of traffic, enables it, and every element of the recording arrives as a
+  reply-shaped datum on that connection, which the probe decodes field by field - the element header's
+  three stamps, the category, the client a message is attributed to, and (for a `ClientStarted`) the
+  size, status and version of the setup reply it carries, or (for a `ClientDied`) the four bytes of
+  its last sequence number. Flags choose what to vary: `--element-headers` for a single stamp,
+  `--free-enabled` for a stream that is freed while enabled, `--narrow` for a range covering one
+  request (which is how the `ClientDied` payload was told apart from a count of recorded items), and
+  `--input` to put XTEST behind the default gesture. The default gesture is protocol-only - create,
+  configure, map, a `GetProperty`, an unmapped client that arrives and leaves - because the probe must
+  produce the *same* traffic on both servers for the diff to mean anything. The run is **identical**
+  on both servers once the normaliser has, as usual, mapped the ids and the clock - plus, for this
+  probe, the size of the setup reply, which is a different reply on each server for the obvious
+  reason and is not what the extension is being measured for.
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -449,9 +463,11 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-28: 16 of the 23 probes identical.** The eight that
-differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
-is a run that agrees with the reference, and a run that reports a *ninth* one is a finding:
+each server assigns for itself). **Full run 2026-09-28, after F2: 17 of the 25 probes identical.** The
+eight that differ are all deliberate, and each is measured rather than assumed - a run that reports one
+of these is a run that agrees with the reference, and a run that reports a *ninth* one is a finding.
+`RecordProbe` is one of the seventeen: RECORD as this server streams it is byte-for-byte what the
+reference streams for the same gesture, element for element, which is the F2 entry's verify.
 
 - **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
   reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler

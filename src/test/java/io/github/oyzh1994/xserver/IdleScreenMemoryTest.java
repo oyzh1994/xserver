@@ -22,9 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * therefore holding a gigabyte of framebuffers for connections that had drawn nothing.
  *
  * <p>What is measured here is the allocation and not the heap: {@code Runtime} numbers move with the
- * garbage collector and a test that asserted on them would fail on a busy machine. The heap is
- * reported instead - see the message on the last test - and the assertions are on the thing that
- * decides it.
+ * garbage collector and a test that asserted on them uncollected would fail on a busy machine. The
+ * heap is reported as well - see the message on the last test - and the assertions are on the thing
+ * that decides it: {@link #settledHeap()} collects first, so the last test weighs what the
+ * connections <em>hold</em> rather than what they happened to have allocated.
  */
 class IdleScreenMemoryTest {
 
@@ -89,11 +90,11 @@ class IdleScreenMemoryTest {
     @Test
     void andIdleConnectionsBarelyMoveTheHeap() throws Exception {
         connect();
-        long before = usedHeap();
+        long before = settledHeap();
         for (int i = 0; i < 20; i++) {
             connect();
         }
-        long after = usedHeap();
+        long after = settledHeap();
         long growth = after - before;
         // 20 screens at 1300x800x4 would be 84 MB before this change; what is left is the connection
         // machinery itself, which is a few tens of kilobytes each. The bound is loose on purpose -
@@ -138,5 +139,21 @@ class IdleScreenMemoryTest {
     private static long usedHeap() {
         Runtime runtime = Runtime.getRuntime();
         return runtime.totalMemory() - runtime.freeMemory();
+    }
+
+    /**
+     * The heap in use once the garbage has been collected, which is the number this test is about.
+     *
+     * <p>{@link #usedHeap()} on its own is the live set <em>plus</em> whatever the collector has not
+     * got round to, and the whole suite runs in one JVM: measured that way the twenty connections
+     * "grew" the heap by 15.9 MB on one run and 20.1 MB on the next - enough to fail the bound - with
+     * nothing in either number but what earlier tests had left lying around. A framebuffer is
+     * strongly reachable from a live connection, so it survives a collection; what does not survive
+     * one was never this test's business.
+     */
+    private static long settledHeap() throws InterruptedException {
+        System.gc();
+        Thread.sleep(50);
+        return usedHeap();
     }
 }

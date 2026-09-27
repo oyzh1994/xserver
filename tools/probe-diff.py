@@ -40,6 +40,19 @@ SUBSTITUTIONS = [
     (r"alarm=\d+", "alarm=?"),
     (r"cursorSerial=\d+", "cursorSerial=SERIAL"),
     (r"type=\d+", "type=E"),
+    # RECORD prints the stamps in front of each recorded element, and a stamp is a clock: the
+    # reference's is its uptime in milliseconds and this server's is its own monotonic clock, so the
+    # *value* is a difference by construction. What is compared is that a stamp is there, which the
+    # width of it decides - "stamps=8 request CreateWindow/32b+seq1" says four bytes of time and four
+    # of sequence arrived in front of a 32 byte request.
+    (r"time=\d+", "time=T"),
+    (r"@[0-9a-f]+", "@t"),
+    # A client-started datum carries a whole connection setup reply, and a setup reply's size is the
+    # server's own (a reference's is 3652 bytes, this server's 336). Named apart from every other
+    # size a probe prints so that only this one is normalised away; `release=` is a hex literal and
+    # the role mapping below already handles it.
+    (r"setupBytes=\d+", "setupBytes=N"),
+    (r"setupUnits=\d+", "setupUnits=N"),
 ]
 
 

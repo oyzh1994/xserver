@@ -103,7 +103,7 @@ io.github.oyzh1994.xserver
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
                   XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS, GLX, RENDER, Composite, SYNC,
-                  Present, X-Resource and the Generic Event Extension
+                  Present, X-Resource, RECORD and the Generic Event Extension
 ```
 
 Three decisions shape everything else:
@@ -438,6 +438,20 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   starts, and both a refusal *and* an error would leave it worse off than an answer it can read), there are no providers (`GetProviders` answers
   zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
   `xrandr --prop` prints no property lines.
+- **RECORD, which is how one client watches another's traffic.** A client creates a context over a set
+  of clients and a set of ranges - requests and replies, core and extension, delivered events, errors,
+  a client arriving and a client leaving - enables it, and from then on receives one reply per recorded
+  element on that connection: the request as it arrived, the reply or event it produced, the setup
+  reply a connecting client was given, the last sequence number a departing one sent. That is what
+  `x11vnc -record`, a replay tool and a test harness stand on, and it is the extension that lets a
+  recording be taken *inside* the server rather than in front of it - which is what `tools/XProxy` does
+  here, and what this replaces for anything that can ask. Measured against a reference with
+  `tools/RecordProbe`, which drives the same protocol-only gesture on a second connection and prints
+  every datum (category, element header, stamps, which client it is attributed to, and the payload
+  decoded) - identical element for element. One difference is this server's own execution model and is
+  documented rather than papered over: input is derived inside the delivered core event, so a recording
+  here has no *device* elements, and the events a request produces are attributed to that request where
+  a reference records a device stage of its own.
 - **XKEYBOARD answers what a client asks before it will trust the keyboard, and no more.** The
   version handshake, the keymap (`GetMap`), the modifier state (`GetState`) and the keyboard's
   controls (`GetControls`/`SetControls`) are there, the requests that have no answer here
