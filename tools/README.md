@@ -339,10 +339,14 @@ is a run that agrees with the reference, and a run that reports a *sixth* one is
   (B3: the three questions a client actually asks are answered - `QueryVersion`, `IsActive`,
   `QueryScreens` - and the 1.1 extras were measured and left). Xvfb also reports several heads; this
   server has one screen per client connection.
-- **`GlxProbe`** - **GLX is not present here at all** and the reference has it (1.4, through Mesa), so
-  this is the one difference that is a whole missing feature rather than a choice about one: the entry
-  is B6, and the sweep will stop reporting it the day it lands. It is also how the reference's own
-  answers were read (144 visual configs of 40 ints, 304 fbconfigs of 44 token/value pairs).
+- **`GlxProbe`** - GLX is **present on both and deliberately a subset here** (B6, done 2026-09-27).
+  What differs is the advertisement and the range: this server answers vendor `xserver` where the
+  reference answers `SGI`, an **empty** extension list where the reference lists 23 (which is the
+  honest part - no ES2, no shaders, and a client that wants them falls back), and four visual configs
+  to the reference's 144 and 304 fbconfigs, because it has four true-colour visuals. The request
+  surface, the layouts and the *contexts* agree: `CreateContext(direct)` created and `IsDirect` 1 on
+  both, `CreateContext(indirect)` refused here and created there - the one place the two disagree on
+  purpose, because indirect means GL commands over the wire and there is no renderer here.
 - **`ScreenSaverProbe`** - this server **implements DPMS** (B7) and the Xvfb built for this testbed
   does not, so our run has a `DPMS version 1.2 / capable = no / timeouts` section that its run has no
   line for. The one field that differs inside `QueryInfo` is `window`, which is `None` here and a

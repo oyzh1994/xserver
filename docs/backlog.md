@@ -90,7 +90,7 @@ A prompt that starts a fresh session on this, verbatim:
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
-| [~] B6 | GLX / OpenGL - **reconnaissance 2026-09-27** (a software client sends no GL commands; the harness and the two layouts to pin are in the entry) | extension | XL |
+| ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
 ---
@@ -2207,74 +2207,71 @@ which is exactly the `IncludeInferiors` question in A9.
 
 ---
 
-### [~] B6. GLX / OpenGL. **XL** - **reconnaissance done 2026-09-27**: the design is cheaper than this entry assumed, and its harness is in the kit
+### [x] B6. GLX / OpenGL. **XL** - done 2026-09-27, and it needed no renderer: a software GL client renders itself and blits
 
-**What changed in this entry's own estimate.** It said indirect GLX "needs a GL implementation on the
-server side". **It does not, for the clients that can run here at all.** Measured 2026-09-27 by tapping
-the wire (`tools/tap.py`) while `glxgears` ran against Xvfb, which has GLX 1.4 through Mesa:
+**What is in.** `extension/GlxExtension`: the handshake a software OpenGL client needs, and nothing
+that would need a GPU. The version, both config lists, both server strings, the client's own
+announcement, context create/destroy/make-current, whether a context is direct, the context query and
+a drawable's attributes. **A direct context is granted and an indirect one is refused** - that is the
+decision the whole thing rests on, see below.
 
-- the client sends **no GL commands at all**. 769 MB of its 5.6 seconds of traffic is ordinary
-  **`PutImage`** - frames it rendered itself - with one `GetGeometry` per frame as the synchronisation
-  (3758 and 1879 requests). Not one GLX `Render`/`RenderLarge`;
-- it asks for `DRI3`, `Present` and `MIT-SHM` and **the reference does not have them either** (they are
-  absent from its replies), so it renders in its own process through Mesa's software `drisw` path and
-  blits the result;
-- the whole GLX surface it touches is **nine requests**: `QueryVersion`, `ClientInfo`,
-  `GetVisualConfigs`, `GetFBConfigs`, `CreateContext`, `IsDirect`, `MakeContextContextCurrent`,
-  `QueryContext`, `GetDrawableAttributes`.
+**Verified with the item's own tools, on `.147`** (the two that the item's Verify names, installed
+with `mesa-utils`):
 
-So a server needs **no GL implementation** for software clients: it needs enough of GLX for the client
-to take that path, and then the frames arrive as requests this server already answers. What that costs
-is the extension's query and context surface, not a renderer.
+```
+$ DISPLAY=192.168.22.1:61 glxinfo | head -4        $ DISPLAY=192.168.22.1:61 glxgears
+display: 192.168.22.1:61  screen: 0                948 frames in 5.0 seconds = 189.564 FPS
+direct rendering: Yes
+server glx vendor string: xserver
+server glx version string: 1.4
+```
 
-**The reference's answers, read with `tools/GlxProbe`** (new, and checked in): GLX **1.4**, server
-string `SGI`, version string `1.4`, a long extension list (`GLX_ARB_create_context*`, `GLX_EXT_*`,
-`GLX_MESA_*`), **144 visual configs of 40 ints each**, and **304 fbconfigs of 44 token/value pairs
-each** - the fbconfig list is *self-describing*, which is what makes it implementable without
-reverse-engineering: a client reads tokens, and a server may send any subset it has.
+and a `GetImage` of the screen while it ran shows the three gears - blue, red and green - drawn by
+OpenGL on this server. The reference runs the same binary at 2832 FPS, so ours is slower (the client
+renders in software and pushes every frame over the wire as `PutImage`, which it does against Xvfb
+too: 315 FPS through a byte-transparent tap there), but it renders.
 
-**Two layouts the probe got wrong first, and they are the kind that cost an hour each**: the GLX
-opcode numbering from 18 upwards is `QueryExtensionsString`, `QueryServerString`, `ClientInfo`,
-`GetFBConfigs`, ... (one apart from the "obvious" reading - `QueryServerString` is 19, not 18), and
-**the two string requests carry no string** (`QueryServerString` is screen and name only), while
-`MakeContextCurrent` carries a **leading `oldContextTag`**. Mesa's own `glxproto.h` on the VM is the
-authority: `/usr/include/GL/glxproto.h`.
+**Why no renderer was needed, and this is the measurement that reframed the item.** The entry said
+indirect GLX "needs a GL implementation on the server side". Tapping the wire (`tools/tap.py`) while
+`glxgears` ran against Xvfb says otherwise: **the client sends no GL commands at all** - 769 MB of
+`PutImage` in 5.6 seconds, its own rendered frames, one `GetGeometry` per frame as the
+synchronisation. It asks for `DRI3`, `Present` and `MIT-SHM` and the reference has them no more than
+this server does, so it renders in-process through Mesa's software `drisw` path and blits. A client
+that is granted a **direct** context never sends a GL request; one told "no" would send its commands
+over the wire, which is the renderer this server does not have - which is why the indirect case is
+refused at the context rather than at every draw call.
 
-**The one trick that makes it work**: a server must grant a **direct** context. Granted direct, the
-client renders locally and blits; refused, it would send GL commands over the wire, which is a renderer
-this server does not have. `IsDirect` answering 1 is therefore not a detail - it is the decision the
-whole design rests on, and it is only honest because the pixels really do arrive afterwards.
+**What is deliberately not advertised, and it is the honest part.** The extension string is **empty**:
+a client is told GLX 1.4 core and no extensions, so a toolkit that wants `CreateContextAttribsARB` -
+the ES2/shaders path - finds it missing and takes its own fallback instead of being handed a context
+that cannot draw. The entry's own trap was "do not advertise GLX before it works"; what makes it work
+is that the client draws, and what keeps the trap shut is that nothing is promised beyond it.
 
-**What is left, in the order it should be done.**
+**The layouts are measured, and two cost an hour each** (they are the kind that read as a client
+bug):
 
-1. **`GetVisualConfigs`' field layout, and this is the first thing to measure.** Mesa answers **40
-   ints per visual**; the GLX 1.2 specification has 18, and the header's `__GLXvisualConfig`
-   (`glxint.h`, the same file in every copy of the old X11 tree) has 30 -
-   `vid, class, rgba, redSize, greenSize, blueSize, alphaSize, redMask, greenMask, blueMask,
-   alphaMask, accumRedSize, accumGreenSize, accumBlueSize, accumAlphaSize, doubleBuffer, stereo,
-   bufferSize, depthSize, stencilSize, auxBuffers, level, visualRating, transparentPixel,
-   transparentRed, transparentGreen, transparentBlue, transparentAlpha, transparentIndex,
-   visualSelectGroup` - so Mesa's *server* is not answering with that struct either. The layout has to
-   be pinned by correlating Xvfb's reply with `glxinfo`'s own visual list (which prints the same
-   fields by name, one visual at a time), or from Mesa's server-side `glxvisuals.c`. **Do not guess
-   it**: a client reads `numProps` ints per visual into its own fixed struct, so a layout that is a
-   few ints out is a client reading its own field boundaries wrong.
-2. **`GetFBConfigs`** - the token/value pairs, whose tokens are in `glxtokens.h`; `GLX_VISUAL_ID`
-   (0x800b) is the one that has to agree with a visual the server offers.
-3. The context surface (`CreateContext`, `IsDirect`, `MakeContextCurrent`, `QueryContext`,
-   `GetDrawableAttributes`), and the version and string answers, which are the easy half.
-4. Then `glxinfo` and `glxgears`, and a comparison against Xvfb through `tools/sweep.sh`.
+- the opcodes are Mesa's, from `/usr/include/GL/glxproto.h` on the VM: from 18 up they are
+  `QueryExtensionsString`, `QueryServerString`, `ClientInfo`, `GetFBConfigs` - one apart from the
+  obvious reading, and `QueryServerString` is 19, not 18;
+- **the two string requests carry no string**: `QueryServerString` is screen and name only, and its
+  reply carries the length at offset 12 with the text after the thirty two byte header;
+- **the length is the text plus the NUL.** A reference answers 4 for `"1.4"`, and a client reads
+  exactly that many bytes into a string it has already allocated - one short and `glxinfo` printed
+  `1.4` followed by two characters of whatever came next in memory;
+- `GetVisualConfigs` answers **40 ints per visual**: eighteen fields and then eleven `(token, value)`
+  pairs, where the GLX 1.2 specification's struct has eighteen and the header's
+  `__GLXvisualConfig` has thirty. Pinned by running `tools/GlxProbe` against Xvfb and correlating its
+  first config with `glxinfo`'s own table for the same visual id - never by guessing, because a client
+  reads `numProps` ints per visual into a fixed struct and a layout a few ints out is a client reading
+  its own field boundaries wrong;
+- `GetFBConfigs` answers `(token, value)` pairs and is **self-describing**, so it may carry any subset;
+- **the decoder has to skip the request header** (`minor`, then `length`) before the body. Reading the
+  body straight away shifts every field by three bytes - invisible in a request whose body is ignored
+  (a screen number) and wrong in every one where it is not. `GlxProbe` caught it on the first run:
+  `QueryServerString` answered `BadValue` for the name.
 
-**The trap stands, and it is why nothing is half-landed**: *do not advertise GLX before it works*. A
-client that sees the extension tries it instead of falling back - and the client that matters here is
-EasyShell, which runs on JavaFX and currently renders correctly through its software pipeline. A GLX
-that answers queries but cannot grant a context would change its path for the worse.
-
-**Verify.** `glxinfo` and `glxgears` on the VM - **`mesa-utils` is now installed there** (2026-09-27),
-so both exist. The reference's numbers to beat: `glxinfo` reports GLX 1.4 with `direct rendering: Yes`,
-and `glxgears` runs at **2832 FPS** directly and 315 FPS through the tap.
-
----
+**`tools/GlxProbe`** is the harness (checked into the kit, and in `tools/sweep.sh`, where it is now a
+comparison rather than a missing feature).
 
 ### [x] B7. DPMS and the XScreenSaver extension. **S** - done 2026-09-25
 

@@ -24,6 +24,10 @@ import sys
 # hands out, and its own clock.
 SUBSTITUTIONS = [
     (r"major=\d+", "major=?"),
+    # A probe that prints the extension's own opcode ("GLX major opcode = 150") is printing what the
+    # *server* assigned, which is not a decision the client can compare - the dispatch table is the
+    # same either way.
+    (r"major opcode = \d+", "major opcode = ?"),
     (r"firstEvent=\d+", "firstEvent=?"),
     (r"firstError=\d+", "firstError=?"),
     (r"selection=\d+", "selection=ATOM"),

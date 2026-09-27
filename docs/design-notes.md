@@ -504,6 +504,61 @@ window. Measured live with the two clients: EasyShell's window renders identical
 menu survives the out-and-back gesture 6/6, termora's 6/6 - and the one behaviour that looked like a
 regression was measured on the *previous* build too (see the B5 entry in `docs/backlog.md`).
 
+## GLX, and why a server without a GPU can run OpenGL
+
+OpenGL looked like the one thing this server could never do: direct rendering needs a driver talking
+to the same GPU the host window is on, and indirect GLX - the old path, where the client sends GL
+commands over the wire - needs a GL implementation *inside* the server. Neither is here. **And neither
+is needed, for the clients that can run on a machine without a GPU at all.**
+
+That is a measurement, not an argument (2026-09-27): `tools/tap.py` in front of Xvfb, `glxgears`
+running through it, and the client's own stream read back request by request. The client sends **no GL
+commands**. It asks for `DRI3`, `Present` and `MIT-SHM`, gets none of them (the reference does not have
+them either), and falls to Mesa's software path - `drisw` - where it renders in its own process and
+pushes each finished frame as an ordinary **`PutImage`**: 769 MB of them in 5.6 seconds, one
+`GetGeometry` per frame as the synchronisation, and not one GLX `Render`.
+
+So the extension is a handshake, and the handshake is what `extension/GlxExtension` implements: the
+version, both config lists, the two server strings, contexts, and a drawable's attributes. **The one
+decision it rests on is the direct context.** `GLXCreateContext` carries a flag, and a client told
+"direct" renders itself and blits its frames here; a client told "indirect" sends its GL commands
+instead, and there is nothing here to execute them. So direct is granted and **indirect is refused** -
+a client that wants the wire path is better off failing at the context than at every draw call.
+
+**And nothing is promised beyond it.** The extension string is empty: a client is told GLX 1.4 core
+and no extensions, so a toolkit that wants `CreateContextAttribsARB` - the ES2/shaders path - finds it
+missing and takes its own fallback rather than being handed a context that cannot draw. EasyShell is
+that client here: it asks GLX its questions, finds nothing it can use, and renders through JavaFX's
+software pipeline exactly as it did before (measured live, with GLX advertised). The item's own trap -
+"do not advertise GLX before it works" - is kept by making "works" mean *a client draws*, and by
+keeping the advertisement to the part that does.
+
+**The layouts are measured, and three of them read as a client bug if you guess them:**
+
+- the opcodes are Mesa's, from `glxproto.h`: from 18 up they are `QueryExtensionsString`,
+  `QueryServerString`, `ClientInfo`, `GetFBConfigs`. One apart from the obvious reading, and
+  `QueryServerString` is 19, not 18.
+- **the two string requests carry no string** - `QueryServerString` is screen and name, and the reply
+  carries the length at offset 12 with the text after the fixed part - **and that length is the text
+  plus its NUL**. A reference answers 4 for `"1.4"`, and a client reads exactly that many bytes into a
+  buffer it has already allocated: one short and `glxinfo` prints the string followed by whatever
+  happens to be next in memory.
+- **`GetVisualConfigs` answers forty ints per visual**, where the specification's struct has eighteen
+  and the header's `__GLXvisualConfig` has thirty. It was pinned by running `tools/GlxProbe` against
+  Xvfb and laying its first config beside `glxinfo`'s own table for the same visual id - eighteen
+  fields, then eleven `(token, value)` pairs. A client reads `numProps` ints per visual into a fixed
+  struct, so a layout a few ints out is that client reading its own field boundaries wrong.
+- **the request body starts three bytes in**: a decoder is handed the input at the request's *minor*
+  byte, so `minor` and `length` have to be read before the body. Reading the body straight away shifts
+  every field by three bytes, which is invisible in a request whose body is ignored (a screen number)
+  and wrong in every one where it is not - `GlxProbe` caught it on the first run, `QueryServerString`
+  answering `BadValue` for the name.
+
+What this does **not** give: hardware rendering (there is no GPU in the path), shaders and ES2 (the
+extension list is empty and `CreateContextAttribsARB` is refused), and GLX pixmaps, pbuffers and
+windows. A client that needs any of those is told so and falls back, which is the same answer it got
+before this existed - the difference is that `glxinfo` and `glxgears` now work.
+
 ## The hot path in the blend
 
 The compositor's pixel loop is where every request ends up, and it was written for clarity: per pixel

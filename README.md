@@ -94,7 +94,7 @@ io.github.oyzh1994.xserver
 ├── tray/         the notification area, shown in the host's menu bar
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
-                  XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER and DPMS
+                  XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS and GLX
 ```
 
 Three decisions shape everything else:
@@ -119,6 +119,16 @@ inside itself. `docs/backlog.md`'s C8 has the two attempts and why it is closed.
 `--single-window` restores the older shape, one shared screen with every client on it. A
 screen's pixels are allocated when something first draws into it, so a connection that only asks
 questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
+
+**OpenGL works, and the server has no renderer of its own.** It advertises GLX - 1.4, the version,
+the two config lists, contexts - and grants a **direct** context, which is the whole trick: a software
+GL client (Mesa on a machine with no GPU) renders in its own process and pushes each finished frame as
+an ordinary `PutImage`, so `glxgears` runs here and the gears are drawn by OpenGL. What is *not*
+advertised is any GLX *extension*: the list is empty, so a toolkit that wants the ES2/shaders path
+finds it missing and takes its own fallback rather than being handed a context that cannot draw. A
+client that asks for an *indirect* context is refused, because indirect means sending GL commands to
+the server, and there is nothing here to execute them. Measured, and the reason none of this needs a
+GL implementation: with `glxgears` against the reference, 769 MB of `PutImage` and not one GL request.
 
 **One framebuffer per screen, and every window keeps pixels of its own.** A window draws into its own
 store, in its own coordinates and clipped to what it owns - the whole window, not only the part that
