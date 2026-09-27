@@ -165,8 +165,30 @@ public final class ClientOutput {
     public synchronized void writeEvent(XEvent event) throws IOException {
         byte[] bytes = serialize(out -> event.write(out));
         correctEventType(bytes, event);
+        correctGenericEventLength(bytes, event);
         write(padTo(bytes, EVENT_SIZE));
         flush();
+    }
+
+    /**
+     * Writes the length of a {@code GenericEvent}, which the generated writer leaves at zero.
+     *
+     * <p>A generic event - Present's completion notification is the one this server sends - carries
+     * more than the thirty two bytes a reader assumes, and the only thing that says so is this field:
+     * "the number of extra four byte units". Left at zero the client reads the fixed part and leaves
+     * the rest in the stream, so **every event and reply after it is read from the wrong offset**.
+     * Measured with {@code tools/PresentProbe}: the reference's completion arrived as forty bytes and
+     * this server's as thirty two, with the same kind, mode and serial inside them - so the fields
+     * looked right and the client then hung on the next request.
+     *
+     * <p>Patched here for the same reason {@link #correctEventType} is: the fault is in a dependency,
+     * every event already passes through this method, and the real fix belongs in the generator.
+     */
+    private void correctGenericEventLength(byte[] bytes, XEvent event) {
+        if (!(event instanceof com.github.moaxcp.x11.protocol.XGenericEvent) || bytes.length < 8) {
+            return;
+        }
+        putCard32(bytes, 4, (bytes.length - EVENT_SIZE) / 4);
     }
 
     /**

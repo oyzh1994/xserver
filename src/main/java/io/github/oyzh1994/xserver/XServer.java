@@ -329,6 +329,9 @@ public final class XServer {
         // something has happened. Registered with Composite because a compositor paces itself with
         // fences and reads windows through Composite.
         extensions.register(new io.github.oyzh1994.xserver.extension.SyncExtension(), 0, 3);
+        // Present defines no events of its own: its completion notifications are GenericEvents, which
+        // live at core event 35 and not in an extension's range. One error, BadPresent.
+        extensions.register(new io.github.oyzh1994.xserver.extension.PresentExtension(), 0, 1);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }

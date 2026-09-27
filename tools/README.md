@@ -210,6 +210,17 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   version answered is the **server's** (a client asking for 0.4 and one asking for 0.2 are both told
   0.4), and a client **may draw into** a named window pixmap - the fill lands - where the
   specification leaves it undefined, which is why the view is read-write.
+- `PresentProbe` - the harness for Present, the last of B5's three: the version (asked twice), the
+  capabilities, then a window painted one colour and a pixmap another, a `SelectInput` for the
+  completion, a `PresentPixmap`, and both the event and the pixels read back. **It is the one probe
+  that serialises with the generated protocol classes rather than hand-built bytes** - a dozen fields,
+  several of them 64 bit - and SYNC's probe is why that is defensible: the generated *getters* listed
+  a fence's fields in the opposite order to the wire, but the generated *writer* is right, and a wrong
+  layout is still caught because the comparison is against a reference that refuses what it cannot
+  read. Two of its own readings were wrong first: `PresentPixmap`'s `valid` and `update` are regions
+  (None is the whole of each) and not flags, and **the order the event and the pixels are read in
+  changes the answer** - the reference's present is asynchronous, so asking for the pixels before
+  reading the completion samples a race and reports that nothing was copied.
 - `SyncProbe` - the harness for SYNC, the second of B5's three: the version handshake (asked twice,
   because whether the answer is the server's version or the client's is a rule the reply settles),
   the system counters, a counter created, set, changed and read back, `GetPriority`/`SetPriority`, and
@@ -334,7 +345,7 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-27: 14 of the 20 probes identical.** The seven that
+each server assigns for itself). **Full run 2026-09-27: 15 of the 21 probes identical.** The seven that
 differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
 is a run that agrees with the reference, and a run that reports an *eighth* one is a finding:
 
