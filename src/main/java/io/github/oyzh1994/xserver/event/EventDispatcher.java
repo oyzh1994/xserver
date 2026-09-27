@@ -148,7 +148,36 @@ public final class EventDispatcher {
                 delivered++;
             }
         }
+        // **And a client that selected only the device event, which neither list above holds.** The
+        // owner's mask and `otherClients` are the *core* selections; a client that called
+        // XISelectEvents and never asked for the core mask appears in neither, so it was reached by
+        // nothing - measured with `xinput test-xi2 --root`, whose mask is XI2 only: the server logged
+        // the button press delivered to the root and sent the client no event at all. GDK asks for
+        // both, which is why the tests written against it passed.
+        var xinput = server.xinput();
+        if (xinput != null) {
+            for (XWindow.Xi2Selection selection : window.xi2Selections()) {
+                ClientConnection client = selection.client();
+                if (client == owner || inOtherClients(window, client)) {
+                    continue;                       // already reached above, on one rail or the other
+                }
+                if (xinput.wants(client, window, maskBit)) {
+                    send(client, factory.create(client, window, null, 0, 0));
+                    delivered++;
+                }
+            }
+        }
         return delivered;
+    }
+
+    /** Whether a client is in the window's core-selection list, so it is not told twice. */
+    private static boolean inOtherClients(XWindow window, ClientConnection client) {
+        for (OtherClient other : window.otherClients()) {
+            if (other.client == client) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

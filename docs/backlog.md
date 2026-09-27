@@ -1824,6 +1824,23 @@ and on the event rail, the XI2 twin of every core event the server already deliv
 motion, the crossings and the focus - with the emulated core event **suppressed** for a client that
 selected the device one, which is what a reference was measured doing.
 
+**A delivery bug found by `xinput test-xi2`, and it is the case every test here was blind to.** The
+owner's mask and the list of "other clients" are the **core** selections, so a client that called
+`XISelectEvents` and never asked for a core mask appeared in neither list and was reached by nothing:
+the server logged the button press delivered to the window and sent the client no event at all.
+Measured live (`xinput test-xi2 --root 2` against this server: a selection recorded, the press
+delivered, nothing sent) and fixed in `EventDispatcher.deliverToWindow` - the window's XI2 selections
+are walked too, once, skipping anyone the two core lists already reached.
+`XInputTest.aClientThatSelectsOnlyTheDeviceEventStillGetsIt` is the regression test; every earlier test
+selected **both** rails, which is what GDK does and why none of them caught it.
+
+**And that live check produced a measurement worth keeping**: `xinput test-xi2` sends *two*
+`XISelectEvents` for the same device - the ordinary masks and then the raw ones - and the second
+**replaces** the first. Measured against Xvfb: the same probe printed only `RawButtonPress`/
+`RawButtonRelease`, no ordinary `ButtonPress`. So "last wins" is the reference's rule too (this server
+matches it), and what that client gets here is silence because the **raw event family is not
+implemented** - the documented gap below, not a fault.
+
 **Two requests turned out to be mandatory that the plan did not name, and both were found by a real
 client crashing.**
 

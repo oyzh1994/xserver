@@ -174,6 +174,45 @@ class XInputTest {
     }
 
     @Test
+    void aClientThatSelectsOnlyTheDeviceEventStillGetsIt() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int xtest = client.queryExtension("XTEST");
+            request(client, opcode, XI_QUERY_VERSION, 2, 0);
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 0, 0, 200, 200, 0x00FF00);
+            client.mapWindow(window);
+            client.flush();
+            // **No core mask at all** - which is the case the delivery missed. The owner's mask and
+            // the list of other clients are the *core* selections, so a client that only ever called
+            // XISelectEvents appears in neither and was reached by nothing: measured with `xinput
+            // test-xi2 --root`, where the server logged the button press delivered to the window and
+            // sent the client no event at all. GDK asks for both rails, which is why every test
+            // written against it passed.
+            byte[] select = new byte[20];
+            select[0] = (byte) opcode;
+            select[1] = XI_SELECT_EVENTS;
+            RawXClient.writeShortAt(select, 2, 5);
+            RawXClient.writeIntAt(select, 4, window);
+            RawXClient.writeShortAt(select, 8, 1);          // one mask record
+            RawXClient.writeShortAt(select, 12, 0);         // XIAllDevices
+            RawXClient.writeShortAt(select, 14, 1);         // one mask word
+            RawXClient.writeIntAt(select, 16, XI_BUTTONS);
+            client.sendRequest(select);
+            client.flush();
+
+            client.fakeMotion(xtest, 20, 20);
+            client.fakeButton(xtest, 1, true);
+            client.flush();
+
+            byte[] event = client.readEvent();
+            assertNotNull(event, "a client that asked only through XInput2 has to be told");
+            assertEquals(RawXClient.GENERIC_EVENT, event[0] & 0x7F, "and told the device event");
+            assertEquals(4, RawXClient.readShort(event, 8), "XI_ButtonPress");
+        }
+    }
+
+    @Test
     void theDeviceEventIsTheSizeAClientSizesItFrom() {
         // Built for a little endian reader, which is what every client in this suite is.
         Xi2Event event = Xi2Event.builder(false, (short) 1, 130)
