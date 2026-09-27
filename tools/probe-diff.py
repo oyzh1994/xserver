@@ -51,16 +51,22 @@ def normalise(line):
 def load(path):
     with open(path, encoding="utf-8") as handle:
         lines = [normalise(line) for line in handle]
-    # Window ids are handed out of the id space the *server* gives a client, so the same probe run
-    # against two servers names the same windows with different numbers - 0xc00001 here, 0x200001
-    # there. They are mapped to the order they first appear in, which is what the probe controls:
-    # "the window the grab is reported against" is the decision, its number is not.
+    # Resource ids are handed out of the id space the *server* gives a client, so the same probe run
+    # against two servers names the same window, drawable, damage object or pixmap with different
+    # numbers - 0xc00001 here, 0x200001 there, and the root is 0x1ff against 0x2. Every one of them
+    # is mapped to the order it first appears in, which is what the probe controls: "the window the
+    # grab is reported against" is the decision, its number is not.
+    #
+    # Every hex literal, not only the ones behind `win=`: a probe writes them in prose too ("the
+    # window the pointer will be over is 0xe00001"), and a mask like `modifiers=0x8000` is left alone
+    # by construction - the mapping is one-to-one within a run, so two servers that answer the same
+    # mask still agree, and two that answer different ones still differ.
     roles, numbered = {}, []
     for line in lines:
         def role(match):
             name = match.group(0)
-            return "win=" + roles.setdefault(name, "W%d" % len(roles))
-        numbered.append(re.sub(r"win=0x[0-9a-f]+", role, line))
+            return roles.setdefault(name, "R%d" % len(roles))
+        numbered.append(re.sub(r"0x[0-9a-f]+", role, line))
     return numbered
 
 
@@ -70,7 +76,7 @@ def main(argv):
         return 2
     left, right = load(argv[1]), load(argv[2])
     if left == right:
-        print("IDENTICAL apart from opcodes, atom ids, cursor serials and the clock")
+        print("IDENTICAL apart from opcodes, resource and atom ids, cursor serials and the clock")
         return 0
     sys.stdout.writelines(difflib.unified_diff(left, right, argv[1], argv[2]))
     return 1

@@ -307,6 +307,45 @@ over the wire; A2 in the backlog has the measurement. The kit's rule from it: **
 request is refused, read the server's log line before changing a single byte** - it named the exact
 exception, and had been there since the request was first tried.
 
+## What the sweep is expected to differ on
+
+`tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
+(`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
+each server assigns for itself). **Full run 2026-09-27: 13 of the 18 probes identical.** The five that
+differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
+is a run that agrees with the reference, and a run that reports a *sixth* one is a finding:
+
+- **`ChangeCursorProbe`** - this server refuses `XFixesChangeCursorByName` with `BadImplementation`,
+  where a reference **accepts every name and does nothing with it** (its cursor font has no glyph
+  names, so the lookup finds nothing and the cursor is left alone): both are "the name changes
+  nothing", one says so. Measured and recorded as A8's answer; the probe prints the refusal per name
+  rather than dying on it, which is what it used to do.
+- **`XiProbe`** - this server answers **XInput 2.0** and lists **two master devices**, where Xvfb
+  answers 2.4 and lists six (its own extra slaves). B4: XI 2.0 is what is implemented and the rest
+  (touch, tablets, barriers, raw events, device properties) is *refused* rather than half-answered.
+  The two versions are consistent with each other here - `XIQueryVersion` answers 2.0 too - which is
+  the point: a client is told the truth about what it may use.
+- **`RandrProbe`** - three fields. `GetScreenSizeRange` answers min = the screen's current size
+  (it never shrinks; `--max-screen` bounds the growth), where Xvfb's minimum is 1x1; the output
+  carries no per-output properties (a `GetOutputProperty` for one answers an empty reply); and the
+  output's physical size in millimetres is computed from the pixel size where Xvfb reports 0x0.
+- **`XineramaProbe`** - Xinerama 1.1's `GetState`/`GetScreenCount`/`GetScreenSize` are **refused**
+  (B3: the three questions a client actually asks are answered - `QueryVersion`, `IsActive`,
+  `QueryScreens` - and the 1.1 extras were measured and left). Xvfb also reports several heads; this
+  server has one screen per client connection.
+- **`ScreenSaverProbe`** - this server **implements DPMS** (B7) and the Xvfb built for this testbed
+  does not, so our run has a `DPMS version 1.2 / capable = no / timeouts` section that its run has no
+  line for. The one field that differs inside `QueryInfo` is `window`, which is `None` here and a
+  leftover id there.
+
+**Two things make a run lie, both measured on 2026-09-27.** The reference must be **clean** (`tools/xvfb.sh
+stop` and start again): a client killed while its windows were mapped can leave them behind on Xvfb,
+and `MenuProbe` then differs in the detail of its *first* crossing - `Nonlinear` against `Ancestor` -
+purely because the parked pointer is inside a leftover window on one server and on the root on the
+other. And this server must be started **`--no-clipboard --no-tray`**: those bridges are host-side
+features a reference has nothing like, and the clipboard bridge taking the `CLIPBOARD` selection when
+a client gives it up reads as an extra `SelectionNotify` from an owner the probe never made.
+
 ## What is missing
 
 The originals lived in `/tmp` and were deleted (by hand, to clear screenshots) on 2026-09-24. What was

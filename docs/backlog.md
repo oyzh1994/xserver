@@ -168,6 +168,7 @@ The kit, and what each piece is for:
 | tool | what it does |
 |------|--------------|
 | `RawXClient.java` (already in the repo, under `test/`) | the base for all of them: handshake, create windows, GC-filled rectangles, `GetImage`, XTEST. Everything below is a variation on it. |
+| `tools/sweep.sh` | **the reference sweep as one command**: every probe against Xvfb and against this server, the two runs diffed (`probe-diff.py`), and a line per probe saying identical or different. Added 2026-09-27 because each probe had been compared by hand once and nothing re-ran them all - so a change could drift an area nobody probed that day. Full run then: **13 of 18 identical**, and the five that differ are the deliberate ones listed in `tools/README.md`. |
 | `Drive` | XTEST driver: `M x y` motion, `P n`/`R n` press/release, `K kc` key, `W ms` wait. This is how a GUI is driven without xdotool. |
 | `Keys` | types a string through XTEST (needs the keymap from `GetKeyboardMapping`). |
 | `WinTree` | prints the window tree with geometry, class, map state, override-redirect, `WM_NAME`, `WM_CLASS`, `WM_TRANSIENT_FOR`. The per-client mode has no other way to see a client's windows from outside. |

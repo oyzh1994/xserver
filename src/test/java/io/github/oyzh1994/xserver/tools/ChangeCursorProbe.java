@@ -121,7 +121,25 @@ public final class ChangeCursorProbe {
         System.arraycopy(bytes, 0, request, 12, bytes.length);
         client.sendRequest(request);
         client.flush();
-        client.queryTree(window);                       // the reply, with any error still to come
+        // The round trip is only how the server is known to have processed the request, and **an
+        // error is delivered before the reply** - so a server that refuses this request answers the
+        // round trip with the error and the helper that waits for a reply reports it as a failure.
+        // That refusal is one of the answers this probe was built to measure (a reference accepts
+        // every name and does nothing with it; this server refuses the request outright, see A8), so
+        // it is printed and the probe carries on to the next name rather than dying here.
+        try {
+            client.queryTree(window);
+        } catch (java.io.IOException refused) {
+            System.out.printf("-- ChangeCursorByName(%s): refused (%s)%n", name,
+                    refused.getMessage());
+            // The server answered the refused request and *then* the round trip that followed it,
+            // so that reply is still queued: read it, or every later answer is one sequence out of
+            // step - which the client reports as "a reply was left unread, and every answer after
+            // it is suspect", and which is what the first version of this fix ran into.
+            client.readTimeoutMillis(5000);
+            client.readReply();
+            return;
+        }
         // An error for a request like this arrives asynchronously, so it is read here rather than
         // assumed away: a name the server does not know is refused, and the first version of this
         // probe swallowed that and reported "no change" for every name alike.
