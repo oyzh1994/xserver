@@ -1,3 +1,5 @@
+package io.github.oyzh1994.xserver.tools;
+
 import javafx.application.Application;
 import javafx.scene.Scene;
 import javafx.scene.control.Label;
