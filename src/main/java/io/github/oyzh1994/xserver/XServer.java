@@ -324,6 +324,11 @@ public final class XServer {
         // sets is what stops a window being composited onto the screen (B5's third part). Registered
         // after RENDER because what a compositor draws with is RENDER.
         extensions.register(new io.github.oyzh1994.xserver.extension.CompositeExtension(), 0, 0);
+        // SYNC defines one error (BadFence, and BadCounter and BadAlarm share it in the plugin's
+        // numbering) and no events: counters and fences, which is how a client asks whether
+        // something has happened. Registered with Composite because a compositor paces itself with
+        // fences and reads windows through Composite.
+        extensions.register(new io.github.oyzh1994.xserver.extension.SyncExtension(), 0, 3);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }

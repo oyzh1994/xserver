@@ -210,6 +210,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   version answered is the **server's** (a client asking for 0.4 and one asking for 0.2 are both told
   0.4), and a client **may draw into** a named window pixmap - the fill lands - where the
   specification leaves it undefined, which is why the view is read-write.
+- `SyncProbe` - the harness for SYNC, the second of B5's three: the version handshake (asked twice,
+  because whether the answer is the server's version or the client's is a rule the reply settles),
+  the system counters, a counter created, set, changed and read back, `GetPriority`/`SetPriority`, and
+  a fence walked through created-untriggered, triggered, reset and destroyed. **Its first run was
+  wrong in a way only a reference catches**: `CreateFence` carries the *drawable* first and the fence
+  second, which is the opposite of the order the generated class's getters list them in, and the
+  reference answers `BadDrawable` on the fence's own id when a probe believes the getters.
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -327,9 +334,19 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-27: 14 of the 19 probes identical.** The six that
+each server assigns for itself). **Full run 2026-09-27: 14 of the 20 probes identical.** The seven that
 differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
-is a run that agrees with the reference, and a run that reports a *seventh* one is a finding:
+is a run that agrees with the reference, and a run that reports an *eighth* one is a finding:
+
+- **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
+  reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler
+  to report on, and the reference's entries are variable length with a name stride a probe cannot
+  guess - the first version read one counter's name out of the next one's fields. Answering a count
+  with entries a client cannot parse would be worse than answering none. Everything else in the
+  extension agrees line for line: the version (`Initialize` answers **the server's** 3.1 to a client
+  asking for 3.1 and to one asking for 3.0), a counter's create/set/change/query over the full 64
+  bits, `GetPriority`/`SetPriority`, and a fence walked through untriggered, triggered, reset and
+  destroyed.
 
 - **`ChangeCursorProbe`** - this server refuses `XFixesChangeCursorByName` with `BadImplementation`,
   where a reference **accepts every name and does nothing with it** (its cursor font has no glyph
