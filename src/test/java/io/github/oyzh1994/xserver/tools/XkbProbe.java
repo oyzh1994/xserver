@@ -29,6 +29,7 @@ public final class XkbProbe {
     private static final int SET_CONTROLS = 7;
     private static final int GET_MAP = 8;
     private static final int GET_NAMES = 17;
+    private static final int GET_KBD_BY_NAME = 23;
     private static final int PER_CLIENT_FLAGS = 21;
     private static final int GET_DEVICE_INFO = 24;
 
@@ -53,15 +54,20 @@ public final class XkbProbe {
         }
         int which = args.length > 2 && !args[2].equals("dump") && !args[2].equals("setrate")
                 && !args[2].equals("setkeys") && !args[2].equals("setrepeat")
+                && !args[2].equals("getkbdname") && !args[2].equals("getnames")
                 ? Integer.decode(args[2]) : ALL_CLIENT_INFO;
         String dump = null;
         Integer setDelay = null;
         Integer setInterval = null;
         byte[] setBitmap = null;
         Boolean setRepeat = null;
+        String kbdName = null;
+        Integer namesWhich = null;
         for (int i = 2; i < args.length; i++) {
             switch (args[i]) {
                 case "dump" -> dump = args[++i];
+                case "getkbdname" -> kbdName = args[++i];
+                case "getnames" -> namesWhich = i + 1 < args.length ? Integer.decode(args[++i]) : 0x3fff;
                 case "setrate" -> {
                     setDelay = Integer.parseInt(args[++i]);
                     setInterval = Integer.parseInt(args[++i]);
@@ -151,6 +157,69 @@ public final class XkbProbe {
                 System.out.println("  dumped to " + dump);
             }
             printMap(map, which);
+            if (kbdName != null) {
+                byte[] kbdReply = getKbdByName(wire, opcode, kbdName);
+                System.out.println("GetKbdByName<" + kbdName + ">: " + hex(kbdReply));
+                printWords(wire, kbdReply);
+            }
+            if (namesWhich != null) {
+                byte[] namesReply = getNames(wire, opcode, namesWhich);
+                System.out.println("GetNames<0x" + Integer.toHexString(namesWhich) + ">: "
+                        + hex(namesReply));
+                printWords(wire, namesReply);
+            }
+        }
+    }
+
+    /**
+     * A reply as four byte words with their offsets and, where the word is an atom, the atom's name
+     * read back from the server - so a reply can be read off the reference instead of derived from a
+     * specification this fork has no class for. Words whose atom lookup fails print as {@code -}, and
+     * only replies small enough to be headers and names get looked up at all (a GetMap reply's arrays
+     * are not atoms and there would be hundreds of lookups).
+     */
+    private static void printWords(Wire wire, byte[] reply) {
+        boolean atoms = reply.length <= 256;
+        for (int at = 8; at + 4 <= reply.length; at += 4) {
+            int word = intAt(reply, at);
+            // The fixed part of an XKB reply is packed with counts, not atoms; asking the server to
+            // name one is an error in its log, so only the tail is looked up.
+            String name = (!atoms || at < 32) ? "" : atomName(wire, word);
+            System.out.printf("  %3d: 0x%08x (%d)  %s%n", at, word, word, name);
+        }
+    }
+
+    /** {@code GetAtomName}, for reading a reply whose fields are atom ids. */
+    private static String atomName(Wire wire, int atom) {
+        if (atom == 0) {
+            return "None";
+        }
+        try {
+            byte[] request = new byte[8];
+            request[0] = 17;                            // GetAtomName
+            Wire.writeShort(request, 2, 2);
+            Wire.writeInt(request, 4, atom);
+            wire.send(request);
+            while (true) {
+                byte[] message = wire.readMessage();
+                if (message == null) {
+                    return "-";
+                }
+                if ((message[0] & 0x7F) == 1) {
+                    byte[] whole = wire.withExtraData(message);
+                    int length = Wire.readShort(whole, 8);
+                    StringBuilder text = new StringBuilder();
+                    for (int i = 0; i < length; i++) {
+                        text.append((char) (whole[32 + i] & 0xFF));
+                    }
+                    return text.toString();
+                }
+                if (message[0] == 0) {
+                    return "-";
+                }
+            }
+        } catch (Exception e) {
+            return "-";
         }
     }
 
@@ -322,6 +391,62 @@ public final class XkbProbe {
         Wire.writeInt(request, 8, 0);               // all buttons
         Wire.writeInt(request, 12, 0);              // all LEDs
         return answer(wire, request, "GetDeviceInfo");
+    }
+
+    /**
+     * {@code XkbGetKbdByName}: "find this layout in a rules file and load it", which is what
+     * {@code setxkbmap} asks and what a server with no keymap compiler cannot do.
+     *
+     * <p><b>The request's name is a list of counted strings, and which one carries the layout is
+     * measured rather than read.</b> The reader in this server pulls the layout out of the sixth
+     * string (index 5), a position that was fixed by sending {@code setxkbmap -layout de} and the
+     * same with {@code -variant nodeadkeys} and watching only that string move. This probe sends the
+     * same string in that position and leaves the other seven empty, so a reference server's answer
+     * says whether that is the position it reads - which is the thing a reply built here depends on.
+     */
+    private static byte[] getKbdByName(Wire wire, int opcode, String symbols) throws Exception {
+        // The strings, as a real `setxkbmap -layout de` sends them, read off the wire (strace, see
+        // the backlog): the keycodes and geometry components are the ones the rules file resolved
+        // to, the types and compat maps are "complete", and the layout the user asked for is inside
+        // the symbols component. **Seven** counted strings and not five or eight - a request with
+        // eight is refused with BadLength, which is how the count was measured rather than read.
+        String[] fields = {" ", "", "evdev+aliases(qwertz)", "complete", "complete",
+                symbols, "pc(pc105)"};
+        int length = 10;
+        for (String field : fields) {
+            length += 1 + field.length();
+        }
+        byte[] request = new byte[(length + 3) & ~3];
+        request[0] = (byte) opcode;
+        request[1] = (byte) GET_KBD_BY_NAME;
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, USE_CORE_KBD);   // deviceSpec
+        Wire.writeShort(request, 6, 0xBF);           // want: all components but geometry
+        request[8] = (byte) 0xFF;                    // load: True, as Xlib writes it
+        int at = 10;
+        for (String field : fields) {
+            request[at++] = (byte) field.length();
+            for (int i = 0; i < field.length(); i++) {
+                request[at++] = (byte) field.charAt(i);
+            }
+        }
+        return answer(wire, request, "GetKbdByName");
+    }
+
+    /**
+     * {@code XkbGetNames}: the component names a client reads to know which keymap is loaded, and the
+     * one request this server refuses - which is worse than an empty answer, because Xlib's default
+     * error handler ends the client's process.
+     */
+    private static byte[] getNames(Wire wire, int opcode, int which) throws Exception {
+        byte[] request = new byte[12];
+        request[0] = (byte) opcode;
+        request[1] = (byte) GET_NAMES;
+        Wire.writeShort(request, 2, 3);
+        Wire.writeShort(request, 4, USE_CORE_KBD);   // deviceSpec
+        Wire.writeShort(request, 6, 0);              // pad
+        Wire.writeInt(request, 8, which);            // which: XkbAllNamesMask is 0x3fff
+        return answer(wire, request, "GetNames");
     }
 
     private static byte[] answer(Wire wire, byte[] request, String what) throws Exception {

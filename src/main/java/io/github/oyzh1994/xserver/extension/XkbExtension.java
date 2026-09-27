@@ -49,19 +49,22 @@ import java.util.List;
  *   <li>{@code SetControls}: how a client *changes* them ({@code XkbSetAutoRepeatRate} is this
  *       request), which is what A11 left open: the core protocol has no request for the delay or the
  *       rate at all.
- *   <li>{@code GetKbdByName}: answered "not loaded", because loading by name asks the server to
- *       compile a keymap and there is no compiler here.
+ *   <li>{@code GetKbdByName}: a layout <em>chosen by name</em>, which is what a display server does
+ *       instead of running a compiler - the tables are captured off a reference (see B1) and the
+ *       reply carries the map, so {@code setxkbmap} is satisfied without one.
+ *   <li>{@code GetNames}: which components are loaded, answered with the one name this server can
+ *       honestly report - the symbols component the client asked for.
  * </ul>
  *
  * <p><b>What is not here</b>, deliberately and visibly: the map's actions, behaviours, explicit
  * components and virtual-modifier map (a {@code GetMap} reply simply does not claim them, and a
- * {@code SetMap} request carrying them has them dropped); the compatibility map, {@code GetNames},
- * the indicator names and the XKB events; and every keyboard control other than repeat - slow keys,
- * bounce keys, sticky keys, mouse keys, AccessX, the internal modifier maps - each of which
- * {@code SetControls} accepts and does not apply, and {@code GetControls} reports as not enabled. A
- * layout can be *set* - by a client that compiles one itself, which is what {@code xkbcomp} does - but
- * not *chosen by name*, which is what {@code setxkbmap} asks for and what needs a keymap compiler in
- * the server.
+ * {@code SetMap} request carrying them has them dropped); the compatibility map, the indicator names
+ * and the XKB events; and every keyboard control other than repeat - slow keys, bounce keys, sticky
+ * keys, mouse keys, AccessX, the internal modifier maps - each of which {@code SetControls} accepts
+ * and does not apply, and {@code GetControls} reports as not enabled. {@code SetNames} is accepted and
+ * dropped like the other three a keymap compiler sends before {@code SetMap}, so a client that *sets*
+ * names and reads them back gets the symbols name from its own {@code GetKbdByName} rather than the
+ * one it set.
  *
  * <p>The request bodies are decoded with the generated classes, which are correct for every request
  * here (they are fixed size and read positionally); the <em>replies</em> are written as bytes,
@@ -84,6 +87,36 @@ public final class XkbExtension implements Extension {
      * more.
      */
     private static final int REPEAT_KEYS = 0x1;
+
+    /**
+     * The components a {@code GetKbdByName} reply says are in it: {@code XkbGBN_TypesMask},
+     * {@code XkbGBN_ClientSymbolsMask} and {@code XkbGBN_ServerSymbolsMask}. Those are exactly the
+     * parts {@link XkbMap}'s reply carries, and a client reads one embedded reply per bit it names,
+     * so claiming a part this server does not send is how a client ends up reading the wrong bytes.
+     */
+    private static final int REPORTED_PARTS = 0x01 | 0x04 | 0x08;
+
+    /**
+     * The component-name bits this server can answer: {@code XkbSymbolsNameMask} and
+     * {@code XkbPhysSymbolsNameMask} - {@code XkbComponentNamesMask} is 0x3f, and only these two of
+     * it are names this server has.
+     *
+     * <p>What the symbols component was asked for is the client's own statement of the keymap it
+     * wants loaded, and the one component this server acts on, so it is the one name that is true.
+     * The rest are not claimed: answering the request's keycodes or compat strings would report this
+     * server's own tables under a name that describes somebody else's, and the client would go
+     * looking for a component that is not here.
+     */
+    private static final int REPORTABLE_NAMES = 0x04 | 0x08;
+
+    /**
+     * The symbols component a by-name load was asked for, e.g. {@code pc+de+inet(evdev)}, and the
+     * one name this server can honestly report from {@code GetNames}.
+     *
+     * <p>Per-server state on purpose: the keymap tables are global, but the name describes what a
+     * client asked *this* server to load, and the two are set by the same request.
+     */
+    private volatile String symbolsName;
 
     private final XkbPlugin plugin = new XkbPlugin();
 
@@ -128,6 +161,7 @@ public final class XkbExtension implements Extension {
             case 7 -> SetControls.readSetControls(in);
             case 8 -> GetMap.readGetMap(in);
             case 9 -> SetMapRequest.read(in);
+            case 17 -> GetNamesRequest.read(in);
             case 21 -> PerClientFlags.readPerClientFlags(in);
             // 23 is GetKbdByName, "load this keymap for me": the one request that asks the SERVER to
             // compile a keymap from a rules file, which is what a server-side xkbcomp does. This
@@ -145,6 +179,7 @@ public final class XkbExtension implements Extension {
             case GetControls r -> getControls(server, client);
             case SetControls r -> setControls(server, client, r);
             case GetMap r -> getMap(client, r);
+            case GetNamesRequest r -> getNames(server, client, r);
             case Ignored r -> ignored(client, r);
             case SetMapRequest r -> setMap(server, client, r);
             case LatchLockState r -> latchLockState(client, r);
@@ -372,6 +407,10 @@ public final class XkbExtension implements Extension {
             keycode++;
         }
         if (changed > 0) {
+            // The keymap is now the client's own compilation, so the component name a by-name load
+            // recorded no longer describes what a client would be typing on - and a name that is
+            // wrong is worse than no name at all, so it goes.
+            symbolsName = null;
             server.broadcastMappingNotify((byte) 0, (byte) first, (byte) changed);
         }
         log.info("{} set the keymap through XKB: {} keycode(s) of keysyms applied, the types,"
@@ -385,8 +424,8 @@ public final class XkbExtension implements Extension {
     }
 
     /**
-     * {@code GetKbdByName}: "compile this rules/model/layout keymap and load it here", and the answer
-     * is that this server cannot - which is a reply, not an error.
+     * {@code GetKbdByName}: "find this layout in a rules file and load it here", which is what
+     * {@code setxkbmap} asks and what a server with no keymap compiler cannot do.
      *
      * <p><b>Measured, and this is why the request is handled at all.</b> {@code setxkbmap -layout de}
      * against this server used to die on {@code BadRequest} for this request - {@code X Error of
@@ -395,16 +434,30 @@ public final class XkbExtension implements Extension {
      * failure is refused. Xlib's default handler prints an error and exits, so the client never got
      * the chance to do anything else, and the item read as "no layout can be selected".
      *
-     * <p>The protocol has an answer for a server that cannot: the reply's {@code loaded} flag is
-     * false, which is what a client asks for when it wants to know whether the server did the work.
-     * That is what is sent, with {@code found} and {@code reported} empty - nothing was found in the
-     * rules and nothing was reported back - so a client that has its own compiler (which
-     * {@code setxkbmap} does) can go on to {@code SetMap} instead.
+     * <p><b>The reply is a header plus embedded component replies, and Xlib reads them by position -
+     * which is what makes "loaded = 1" alone useless.</b> {@code XkbGetKeyboardByName} checks
+     * {@code reported} first and gives up when it is zero, then reads, for every bit set in it, one
+     * whole component reply out of the same buffer: a map reply for {@code Types|Symbols}, a compat
+     * reply for {@code CompatMap}, a names reply for {@code KeyNames|OtherNames}, a geometry reply
+     * for {@code Geometry}, in that order, and finally insists the buffer was consumed exactly (the
+     * end of {@code XKBGetByName.c}). So a reply that says "loaded" but carries nothing is not a
+     * half-answer - it is the same failure as not being loaded at all, which is why this server
+     * installed the layout and {@code setxkbmap} still printed its error.
+     *
+     * <p>What is embedded is the map this server has: the very bytes {@link XkbMap} answers a
+     * {@code GetMap} with, under a header whose length counts it. {@code reported} names exactly the
+     * three parts that map carries - {@code Types}, {@code ClientSymbols}, {@code ServerSymbols}
+     * (0x0d) - so Xlib reads the map and nothing else, and the length is the map's own: forty bytes
+     * of {@code xkbGetMapReply} the client reads into the struct, plus the arrays it consumes.
      */
     private void getKbdByName(XServer server, ClientConnection client, GetKbdByName request) {
-        String name = layoutOf(request.layout());
+        String name = layoutOf(request.symbols());
         boolean loaded = name != null && Keymap.useLayout(name);
         if (loaded) {
+            // The names a client would read back with GetNames are the ones the request itself
+            // carries: it is the only statement about which components are loaded that this server
+            // has, and the symbols component is the one it acts on.
+            symbolsName = request.symbols();
             // Every client resolves keycodes through its own copy of the mapping, so a layout that
             // changed under them is a layout they have to be told to re-read - the same notification
             // `SetMap` sends, and the reason a client that missed it would go on typing the old one.
@@ -412,31 +465,122 @@ public final class XkbExtension implements Extension {
                     (byte) (Keymap.MAX_KEYCODE - Keymap.MIN_KEYCODE + 1));
         }
         log.debug("{} asked this server to load a keymap by name ({}): {}", client,
-                request.layout(), loaded ? "loaded " + name : "not a layout this server has");
-        byte[] bytes = new byte[32];
+                request.symbols(), loaded ? "loaded " + name : "not a layout this server has");
+        byte[] map = loaded
+                ? XkbMap.getMapReply(XkbMap.ALL_CLIENT_INFO_MASK, 0, 0, 0, 0, 0, 0,
+                        client.sequenceNumber() & 0xFFFF, client.isBigEndian())
+                : new byte[0];
+        byte[] bytes = new byte[32 + map.length];
         bytes[0] = 1;
         bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
         putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        // The length counts everything after the header, which is the embedded map reply whole - its
+        // own header included, because Xlib reads the first forty of those bytes into
+        // `xkbGetMapReply` and then takes that reply's length as the size of its arrays.
+        putCard32(bytes, 4, map.length / 4, client.isBigEndian());
         bytes[8] = (byte) Keymap.MIN_KEYCODE;
         bytes[9] = (byte) Keymap.MAX_KEYCODE;
         bytes[10] = (byte) (loaded ? 1 : 0);    // loaded
-        bytes[11] = 0;                          // newKeyboard: no
-        // found: the components that were found, which is **all of them** - this server serves a
-        // whole keymap, its own, and answering a subset would send the client to read a component
-        // that is missing from it (a symbols map with no types is one Xlib refuses). The bit
-        // numbering is XKB's: Keycodes 1, Types 2, Compat 4, Symbols 8, Geometry 16.
-        putCard16(bytes, 12, loaded ? 0x1F : 0, client.isBigEndian());
-        putCard16(bytes, 14, 0, client.isBigEndian());   // reported: nothing by name
+        bytes[11] = 0;                          // newKeyboard: the client may rebuild its copy
+        putCard16(bytes, 12, loaded ? REPORTED_PARTS : 0, client.isBigEndian());   // found
+        putCard16(bytes, 14, loaded ? REPORTED_PARTS : 0, client.isBigEndian());   // reported
+        System.arraycopy(map, 0, bytes, 32, map.length);
         send(client, bytes);
+    }
+
+    /**
+     * {@code GetNames}: the names a client reads to know which keymap is loaded.
+     *
+     * <p><b>This used to be refused, and a refusal is the worst answer this extension can give</b> -
+     * Xlib's default error handler ends the client's process, which is what killed {@code setxkbmap}
+     * here before {@code GetKbdByName} was answered. The reply is a header and, for every bit in its
+     * {@code which}, one four byte atom read out of the <em>tail</em> of the reply in a fixed order -
+     * keycodes, geometry, symbols, physical symbols, types, compat. The atoms are in the tail and not
+     * in the fixed part, which the protocol's field names suggest: {@code _XkbReadGetNamesReply}
+     * takes them from the extra data, and a reference's reply has them there (measured with
+     * {@code XkbProbe getnames}, and the field offsets below are that reply's).
+     *
+     * <p>What this server can honestly name is the symbols component, because it is the one it acted
+     * on: the client's own request said which keymap to load and this server loaded it. The other
+     * components it serves are its own (its four types, its modifier table), and none of them has a
+     * name from a rules file that this server could truthfully report - so they are not claimed in
+     * {@code which}, and a client that asks for them is told there is nothing, not given a name that
+     * would send it looking for a component this server does not have. Before any layout is asked
+     * for by name there is nothing to report at all, which is also what {@code which = 0} says.
+     */
+    private void getNames(XServer server, ClientConnection client, GetNamesRequest request) {
+        int which = request.which() & REPORTABLE_NAMES;
+        if (symbolsName == null || symbolsName.isEmpty()) {
+            which = 0;
+        }
+        java.util.List<Integer> atoms = new java.util.ArrayList<>();
+        for (int bit = 1; bit <= REPORTABLE_NAMES; bit <<= 1) {
+            if ((which & bit) != 0) {
+                atoms.add(server.atoms().intern(symbolsName));
+            }
+        }
+        byte[] bytes = new byte[32 + atoms.size() * 4];
+        bytes[0] = 1;
+        bytes[1] = (byte) XkbMap.CORE_KEYBOARD_DEVICE;
+        putCard16(bytes, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        putCard32(bytes, 4, atoms.size(), client.isBigEndian());     // length, in four byte units
+        putCard32(bytes, 8, which, client.isBigEndian());
+        bytes[12] = (byte) Keymap.MIN_KEYCODE;      // minKeyCode
+        bytes[13] = (byte) Keymap.MAX_KEYCODE;      // maxKeyCode
+        bytes[14] = (byte) XkbMap.typeCount();      // nTypes: the four types this server publishes
+        bytes[15] = 0;                              // groupNames: one group, and it is unnamed
+        putCard16(bytes, 16, 0, client.isBigEndian());  // virtualMods: none are used
+        bytes[18] = (byte) Keymap.MIN_KEYCODE;      // firstKey
+        bytes[19] = (byte) (Keymap.MAX_KEYCODE - Keymap.MIN_KEYCODE + 1);   // nKeys
+        bytes[20] = 0;                              // nKeyAliases: this server has no aliases
+        bytes[21] = 0;                              // nRadioGroups: nor radio groups
+        for (int i = 0; i < atoms.size(); i++) {
+            putCard32(bytes, 32 + i * 4, atoms.get(i), client.isBigEndian());
+        }
+        send(client, bytes);
+    }
+
+    /**
+     * {@code GetNames}: the request carries only the device and the mask of names wanted, so it is
+     * read for the mask alone - the reply, not the request, is where the work is.
+     */
+    private record GetNamesRequest(int which) implements XRequest {
+
+        static GetNamesRequest read(com.github.moaxcp.x11.protocol.X11Input in) throws IOException {
+            in.readPad(1);                          // the minor opcode, already known
+            in.readCard16();                        // length
+            in.readCard16();                        // deviceSpec
+            in.readCard16();                        // pad
+            return new GetNamesRequest(in.readCard32());
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xkb";
+        }
     }
 
     /**
      * The layout inside the symbols component string a client sends, or null.
      *
      * <p>What {@code setxkbmap -layout de} sends is not the word "de" but the components it resolved
-     * the rules file to - {@code pc+de+inet(pc105)} - so the name is one of the `+`-separated parts,
+     * the rules file to - {@code pc+de+inet(evdev)} - so the name is one of the `+`-separated parts,
      * and which one is a matter of trying them: the first part this server has a table for is the
-     * layout. `pc` and `inet(pc105)` are components of every request and no layout here, and a
+     * layout. `pc` and `inet(evdev)` are components of every request and no layout here, and a
      * variant's parentheses are dropped because a variant is a keymap this server has no tables for -
      * the request is answered, and answered as the base layout rather than as something invented.
      */
@@ -585,18 +729,28 @@ public final class XkbExtension implements Extension {
     }
 
     /**
-     * {@code GetKbdByName}: a keymap's name, and the flags saying which parts of it to load, followed
-     * by a list of component names. The generated plugin has no class for it, so it is read here -
-     * only the fixed part, because the answer does not depend on any of it and the rest of the body
-     * is already buffered by the connection.
+     * {@code GetKbdByName}: which components to look up and load, followed by the component names
+     * themselves. The generated plugin has no class for this request, so it is read here.
+     *
+     * <p><b>The fixed part is twelve bytes and there are six counted strings, and both were measured
+     * rather than read out of a header.</b> Captured off the wire ({@code strace} of
+     * {@code setxkbmap -layout de} against a reference, reproduced by {@code XkbProbe getkbdname}):
+     * {@code deviceSpec}, {@code want}, {@code need}, {@code load}, a pad byte, then
+     * <em>keymap</em>, <em>keycodes</em>, <em>types</em>, <em>compat</em>, <em>symbols</em>,
+     * <em>geometry</em> as counted strings. A request built with eight of them - the count a first
+     * reading of the field names suggests - is refused by the reference with {@code BadLength}, which
+     * is how the six were confirmed.
+     *
+     * <p>The first reader here assumed a ten byte fixed part, which shifted every string by one and
+     * made the layout appear in the sixth field instead of the fifth. It answered correctly anyway -
+     * the phantom string it counted first happens to sit in front - but it was reading the wrong
+     * field of a request it did not model, and the offsets above are the protocol's.
      */
-    private record GetKbdByName(String layout) implements XRequest {
+    private record GetKbdByName(String keycodes, String types, String compat, String symbols,
+                                String geometry) implements XRequest {
 
-        /** Which of the component strings carries the layout, measured - see the reader. */
-        private static final int SYMBOLS_FIELD = 5;
-
-        /** How many component strings a request carries, as the ones this bed's clients send do. */
-        private static final int FIELDS = 8;
+        /** {@code xkbGetKbdByNameReq}: the fixed part, before the counted strings. */
+        private static final int FIXED = 12;
 
         static GetKbdByName readGetKbdByName(com.github.moaxcp.x11.protocol.X11Input in)
                 throws IOException {
@@ -604,26 +758,21 @@ public final class XkbExtension implements Extension {
             int length = in.readCard16();           // the request length, in four byte units
             in.readCard16();                        // deviceSpec
             in.readCard16();                        // want
+            in.readCard16();                        // need
             in.readCard8();                         // load
             in.readCard8();                         // pad
-            // The component names, as counted strings. **Which one is the layout is measured, not
-            // read out of a specification this fork has no class for**: with `setxkbmap -layout de`
-            // the sixth string is `pc+de+inet(pc105)` and with `-variant nodeadkeys` it becomes
-            // `pc+de(nodeadkeys)+inet(pc105)`, and nothing else in the request moves.
-            int remaining = length * 4 - 10;        // what is left after the fixed part
-            String layout = "";
-            for (int field = 0; field < FIELDS && remaining > 0; field++) {
+            int remaining = length * 4 - FIXED;     // what is left for the strings
+            String[] fields = new String[6];
+            for (int field = 0; field < fields.length && remaining > 0; field++) {
                 int count = in.readCard8();
                 StringBuilder text = new StringBuilder(count);
                 for (int i = 0; i < count; i++) {
                     text.append((char) in.readCard8());
                 }
                 remaining -= 1 + count;
-                if (field == SYMBOLS_FIELD) {
-                    layout = text.toString();
-                }
+                fields[field] = text.toString();
             }
-            return new GetKbdByName(layout);
+            return new GetKbdByName(fields[1], fields[2], fields[3], fields[4], fields[5]);
         }
 
         @Override

@@ -81,6 +81,14 @@ public final class XkbMap {
     }
 
     /**
+     * How many key types this server defines, which a {@code GetNames} reply has to state: it is
+     * four, and a client that asks for the per-type names gets that many of them.
+     */
+    public static int typeCount() {
+        return buildTypes().length;
+    }
+
+    /**
      * The whole {@code GetMap} reply, header and arrays, in the byte order the client asked for.
      *
      * @param requested the {@code full} mask from the request

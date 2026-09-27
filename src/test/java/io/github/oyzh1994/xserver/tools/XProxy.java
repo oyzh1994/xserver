@@ -12,15 +12,17 @@ import java.util.concurrent.atomic.AtomicLong;
  * A byte-level X11 proxy that logs the protocol both ways, so a real client's request and event
  * streams can be read off a real server that cannot log them itself.
  *
- * <p>Usage: {@code XProxy listenPort targetHost targetPort logFile}. Point the client at
+ * <p>Usage: {@code XProxy listenPort targetHost targetPort logFile [rawFile]}. Point the client at
  * {@code DISPLAY=<host>:<listenPort - 6000>} and read the log. This is the only way to answer "does
- * the client send different requests to Xvfb than to this server" - the question behind several
+ * the client send different requests to Xvfb than this server" - the question behind several
  * backlog items (A5, A4, B2) - because it puts the *reference* server's own traffic in a file.
  *
  * <p>Only enough of the framing is understood to walk the streams: a request's length is in bytes
  * 2..3 (in four byte units), a reply's extra data is in bytes 4..7, and everything else is a fixed
- * thirty two byte event or error. Reply *bodies* are forwarded, not logged - extend `pump` to dump
- * them when hunting a malformed reply (backlog A4).
+ * thirty two byte event or error. The one-line-per-message log carries no bodies; when the *bytes*
+ * are what is being hunted, pass a fifth argument and every message, whole, is written there as
+ * {@code <direction> <message hex>} - which is how B1's `GetKbdByName` reply was read off a
+ * reference server rather than derived from a header (the same reason `XkbProbe` prints bytes).
  *
  * <p><b>Reconstructed 2026-09-24</b> after the original was lost with `/tmp`: the framing, the setup
  * exchange, the BigRequests handling and the request descriptions are the original's (they were read
@@ -31,6 +33,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class XProxy {
 
     static OutputStream log;
+    static OutputStream raw;
     static final AtomicLong started = new AtomicLong();
 
     public static void main(String[] args) throws Exception {
@@ -39,6 +42,9 @@ public final class XProxy {
         int targetPort = Integer.parseInt(args[2]);
         Path logPath = Path.of(args[3]);
         log = Files.newOutputStream(logPath);
+        if (args.length > 4) {
+            raw = Files.newOutputStream(Path.of(args[4]));
+        }
         started.set(System.currentTimeMillis());
         try (ServerSocket server = new ServerSocket(listenPort)) {
             System.out.println("proxy on " + listenPort + " -> " + targetHost + ":" + targetPort);
@@ -81,6 +87,7 @@ public final class XProxy {
                     byte[] whole = new byte[setup.length + extra];
                     System.arraycopy(setup, 0, whole, 0, setup.length);
                     System.arraycopy(body, 0, whole, setup.length, extra);
+                    dump(whole, clientToServer);
                     out.write(whole);
                     out.flush();
                     continue;
@@ -105,6 +112,7 @@ public final class XProxy {
                         System.arraycopy(extended, 0, whole, 8, 4);
                         byte[] rest = body == 0 ? new byte[0] : readFully(in, body);
                         System.arraycopy(rest, 0, whole, 12, body);
+                        dump(whole, clientToServer);
                         out.write(whole);
                         out.flush();
                         continue;
@@ -127,11 +135,31 @@ public final class XProxy {
                 System.arraycopy(header, 0, whole, 0, 8);
                 System.arraycopy(body, 0, whole, 8, extra);
                 describe(whole, clientToServer);
+                dump(whole, clientToServer);
                 out.write(whole);
                 out.flush();
             }
         } catch (Exception e) {
             System.out.println((clientToServer ? "C>S" : "S>C") + " pump ended: " + e);
+        }
+    }
+
+    /** Every message, whole, when the bytes are what is being hunted - a reply's shape, say. */
+    static synchronized void dump(byte[] message, boolean clientToServer) {
+        if (raw == null) {
+            return;
+        }
+        StringBuilder hex = new StringBuilder(message.length * 3);
+        for (byte b : message) {
+            hex.append(String.format("%02x", b & 0xFF));
+        }
+        try {
+            raw.write((clientToServer ? "C>S " : "S>C ").getBytes());
+            raw.write(hex.toString().getBytes());
+            raw.write('\n');
+            raw.flush();
+        } catch (Exception e) {
+            // best effort
         }
     }
 

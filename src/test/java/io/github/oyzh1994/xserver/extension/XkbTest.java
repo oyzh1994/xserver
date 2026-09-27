@@ -42,8 +42,12 @@ class XkbTest {
     private static final int LATCH_LOCK_STATE = 5;
     private static final int GET_MAP = 8;
     private static final int SET_MAP = 9;
+    private static final int GET_NAMES = 17;
     private static final int PER_CLIENT_FLAGS = 21;
     private static final int GET_KBD_BY_NAME = 23;
+
+    /** {@code XkbAllNamesMask}: everything a client can ask to have named. */
+    private static final int ALL_NAMES = 0x3FFF;
 
     /**
      * The {@code GetKbdByName} a real {@code setxkbmap -layout de} sends, captured with
@@ -237,14 +241,7 @@ class XkbTest {
     void aLayoutAskedForByNameIsLoadedAndIsWhatClientsRead() throws Exception {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             try {
-                byte[] request = new byte[84];
-                byte[] body = hex(GET_KBD_BY_NAME_DE);
-                request[0] = (byte) client.queryExtension("XKEYBOARD");
-                request[1] = (byte) GET_KBD_BY_NAME;
-                // The captured bytes carry the request length, so they start at offset 2.
-                System.arraycopy(body, 0, request, 2, body.length);
-                client.sendRequest(request);
-                byte[] reply = client.readReply();
+                byte[] reply = loadGermanByName(client);
                 assertEquals(1, reply[10] & 0xFF,
                         "the layout was loaded, which is the flag a client reads before going on");
 
@@ -256,6 +253,87 @@ class XkbTest {
                 io.github.oyzh1994.xserver.input.Keymap.useBuiltinLayout();
             }
         }
+    }
+
+    /**
+     * <b>A reply that says "loaded" and carries nothing is the same failure as not loading.</b> Xlib's
+     * {@code XkbGetKeyboardByName} reads the reply by position: it gives up when {@code reported} is
+     * zero, and for every bit that is set it reads one whole component reply out of the same buffer -
+     * the map for {@code Types|Symbols}, a compat reply, a names reply, a geometry reply, in that
+     * order - and then insists the buffer was consumed exactly. So this server used to install the
+     * layout by name and still leave {@code setxkbmap} printing {@code Error loading new keyboard
+     * description}: the flag was right and {@code reported} was zero.
+     *
+     * <p>What is asserted here is the structure a client walks, read the way Xlib reads it: the parts
+     * claimed, a map reply at offset 32 whose own length accounts for the whole tail, and the keysyms
+     * in that map being the loaded layout's - the German 'z' at keycode 29.
+     */
+    @Test
+    void aByNameLoadAnswersWithTheKeymapItself() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            try {
+                byte[] reply = loadGermanByName(client);
+                int reported = RawXClient.readShort(reply, 14);
+                assertEquals(0x0d, reported, "Xlib reads one embedded reply per bit set in `reported`,"
+                        + " and gives up before reading any when it is zero: types 0x01, client and"
+                        + " server symbols 0x04|0x08, which is exactly what the map here carries");
+
+                byte[] map = java.util.Arrays.copyOfRange(reply, 32, reply.length);
+                int mapExtra = RawXClient.readInt(map, 4) * 4;
+                assertEquals(reply.length - 32, 32 + mapExtra,
+                        "the tail is one whole map reply and nothing else, which is the accounting"
+                                + " Xlib insists on (`extraLen` has to reach zero)");
+                assertEquals(ALL_CLIENT_INFO, RawXClient.readShort(map, 12), "present, in the map");
+                assertEquals(8, map[10] & 0xFF, "and its own key range");
+                assertArrayEquals(new int[] {'z', 'Z'}, keysymsOf(map, 29));
+            } finally {
+                io.github.oyzh1994.xserver.input.Keymap.useBuiltinLayout();
+            }
+        }
+    }
+
+    /**
+     * {@code GetNames} was refused, and a refusal is the worst answer XKB has: Xlib's default error
+     * handler ends the process, which is what killed {@code setxkbmap} here before
+     * {@code GetKbdByName} was answered. What this server can honestly name is the symbols component
+     * it was asked to load - the client's own statement of the keymap it wanted - and that is what
+     * comes back, as an atom the client can read with {@code GetAtomName}.
+     */
+    @Test
+    void theNamesOfTheLoadedLayoutAreAnsweredRatherThanRefused() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            try {
+                int opcode = client.queryExtension("XKEYBOARD");
+                loadGermanByName(client);
+
+                byte[] names = getNames(client, opcode);
+                assertEquals(1, names[0] & 0xFF, "a reply, not an error");
+                assertEquals(0x0c, RawXClient.readInt(names, 8),
+                        "which: the symbols component and its physical twin, and nothing else - this"
+                                + " server has no other component it could honestly name");
+                assertEquals(8, names[12] & 0xFF, "minKeyCode");
+                assertEquals(Keymap.MAX_KEYCODE, names[13] & 0xFF, "maxKeyCode");
+                assertEquals(2, RawXClient.readInt(names, 4),
+                        "the atoms live in the tail, one per bit set in `which`");
+                assertEquals("pc+de+inet(pc105)", client.atomName(RawXClient.readInt(names, 32)));
+            } finally {
+                io.github.oyzh1994.xserver.input.Keymap.useBuiltinLayout();
+            }
+        }
+    }
+
+    /**
+     * The {@code GetKbdByName} a real {@code setxkbmap -layout de} sends, as bytes, and the reply to
+     * it. The captured body carries the request's length field, so it is copied in from offset 2.
+     */
+    private static byte[] loadGermanByName(RawXClient client) throws IOException {
+        byte[] request = new byte[84];
+        byte[] body = hex(GET_KBD_BY_NAME_DE);
+        request[0] = (byte) client.queryExtension("XKEYBOARD");
+        request[1] = (byte) GET_KBD_BY_NAME;
+        System.arraycopy(body, 0, request, 2, body.length);
+        client.sendRequest(request);
+        return client.readReply();
     }
 
     /** The bytes of a hex string, for a request built from a captured one. */
@@ -311,6 +389,21 @@ class XkbTest {
     /** The bytes of the reply, for a caller that only wants to know it was a reply. */
     private static byte[] getMapBytes(RawXClient client, int opcode) throws IOException {
         return getMap(client, opcode, ALL_CLIENT_INFO);
+    }
+
+    /**
+     * {@code GetNames}: device, a pad word, and the mask of names wanted - three units, which is the
+     * length a reference server's own {@code BadLength} check settles.
+     */
+    private static byte[] getNames(RawXClient client, int opcode) throws IOException {
+        byte[] request = new byte[12];
+        request[0] = (byte) opcode;
+        request[1] = (byte) GET_NAMES;
+        RawXClient.writeShortAt(request, 2, 3);
+        RawXClient.writeShortAt(request, 4, CORE_KEYBOARD);
+        RawXClient.writeIntAt(request, 8, ALL_NAMES);
+        client.sendRequest(request);
+        return client.readReply();
     }
 
     private static byte[] mapRequest(int opcode, int which) {
