@@ -375,24 +375,21 @@ clipped to, which is why the two are not one method.
 `WindowObscuringTest.unmappingAFrameGivesBackTheAreaItsContentWindowCovered` pins it and fails without
 the fix.
 
-**A window that asks for a backing store is not restored that way at all.** `backing_store` of
-`WhenMapped` or `Always` is a client saying "keep my pixels while I am covered", and a reference
-server does: measured with `tools/backing-store-probe.py`, uncovering such a window delivers **no
-`Expose`** and the pixels that come back are the ones that were there, where the same gesture on a
-window with the default `NotUseful` delivers one `Expose`. What is kept is the window's visible
-pixels at the moment it is covered - which is everything it had drawn, because this server clips
-every drawing request to what shows - copied out of the framebuffer into a buffer of the window's own
-and put back on the reveal. Three things throw that buffer away, and each is a way the saved pixels
-stop being what the window would show: **the client drew** (its drawing was clipped to the visible
-part, so it is not in the buffer), **the window moved or was resized** (this server does not carry a
-window's pixels along with it), and **the client turned the attribute off**. In each of those cases
-the reveal is the ordinary paint-and-`Expose`, which is what every window got before.
+**And no window is restored that way any more, because none of them is ever lost.** A reveal used to
+be paint-and-`Expose` for every window, unless the client had asked for a `backing_store` of
+`WhenMapped` or `Always` - a reference server then delivers **no `Expose`** and the pixels that come
+back are the ones that were there (measured with `tools/backing-store-probe.py`), where the default
+`NotUseful` delivers one. That is now what **every** window gets: a window's pixels are in a store of
+its own and the reveal composites them, so the attribute decides nothing but is still recorded and
+reported. `XWindow`'s old capture/restore buffer - which copied a window's visible pixels out of the
+screen before it was covered, and threw them away when the client drew, moved, resized or turned the
+attribute off - had nothing left to do and is gone.
 
-The region this needed is a third one beside `visibleRegion` and `coveredRegion`: `contentRegion`,
-the window's own rectangle minus its children and **ignoring what is above it**. It is the region the
-client's drawing lands in, and the reason it is needed at exactly one moment is that when a window is
-being covered, the covering window is already above it - so its visible region no longer contains the
-pixels that are about to be painted over, and those are the ones worth keeping.
+The region the store changed is the one beside `visibleRegion` and `coveredRegion`: what a window
+**owns** (`XWindow.ownRegion`) - its rectangle minus the bounding shapes, and minus neither its
+children nor what is above it. That is what a drawing request is clipped to, which is what lets a
+covered window go on drawing; the part that *shows* is still `visibleRegion`, and that is what the
+composite back to the screen is clipped to.
 
 **`save_under` is the other half and is deliberately not implemented, because the reference does not
 implement it either.** Xvfb advertises `save-unders NO` in its setup reply, and the probe's third
@@ -429,27 +426,59 @@ only one that converted back; everything else already treated a depth 8 store as
 that found it is `DrawHandlers`' `PutImage landed: ... values=`, which prints the distinct bytes a
 small image put down: three values where a mask should have had a gradient is what named the cause.
 
-## A window with an alpha channel keeps its pixels
+## Every window keeps its own pixels
 
-The screen's framebuffer is opaque by design ("The screen is opaque"), so a client that asks for the
-32 bit ARGB visual and draws something translucent had the alpha dropped on the way in: the visual was
-advertised and meant nothing, and the tray's own icon - a disc on a transparent background - arrived in
-the menu bar as a square with a light background. **A window whose visual has an alpha channel now
-keeps its own pixels** (`XWindow.ownPixels`, a `Framebuffer` with `alpha` set) and is composited.
+The server used to have one surface - the screen's framebuffer - and every window drew straight into
+it through a clip, so **obscured content was simply not kept**: a window that drew while something
+covered it lost what it drew, and a client that read a covered window back got whatever the window on
+top had painted at that rectangle. A window whose visual had an alpha channel was the one exception,
+because the screen has no alpha to keep (see "The screen is opaque"), and that exception is what the
+32 bit ARGB visual and the tray icon's shape rested on.
+
+**Now every window but the root keeps its own pixels** (`XWindow.ownPixels`, a `Framebuffer` sized to
+the window) and is composited onto the screen from them. The root is the exception because it *is* the
+screen: its pixels are the framebuffer's, which is what the display backends read.
 
 **Where it draws.** `DrawHandlers.target` is the one place a drawing request is pointed at a surface,
-so that is where the choice is made: such a window gets a rasterizer over its own store, in the
-window's own coordinates and clipped to the **whole window** rather than to the part of it that shows -
-a covered window goes on drawing, which is the point of keeping them. `afterDrawing` then composites
-what the request wrote onto the screen, clipped to `visibleRegion()` so it cannot paint over what is
-above it, with `Compositor.compositeOver` - the same blend every other composite here uses, so the
-identity argument in "The hot path in the blend" covers this too. `GetImage` on such a window reads the
-store; painting its background writes into the store; and the reveal path
-(`WindowHandlers.repaintUnder`) composites the store rather than painting and exposing, which is why a
-covered window gets its pixels back without an `Expose`.
+so that is where the choice is made: a window draws into its own store, in the window's own
+coordinates, and clipped to what it **owns** (`XWindow.ownRegion` - its rectangle with its own and its
+ancestors' bounding shapes taken out, and with neither its children nor whatever is above it
+subtracted) rather than to the part that shows. That is the whole point: a covered window goes on
+drawing, so what it drew is there when it is uncovered. `afterDrawing` then composites what the request
+wrote onto the screen, clipped to `visibleRegion()` so it cannot paint over what is above it. An
+ordinary window's store is opaque exactly as the screen is, so its composite is a straight copy; only
+an alpha visual's store keeps the alpha and goes through `Compositor.compositeOver`, whose identity
+argument is in "The hot path in the blend".
 
-**The two protocol rules that had to change with it**, both of which made an ARGB window impossible
-before this and neither of which is obvious from the symptom:
+**What follows from it, and each of these had to be decided rather than inherited:**
+
+- **A window's pixels come back without an `Expose`.** The reveal path (`repaintUnder`) composites the
+  store, so `backing_store` no longer decides whether a client is asked to redraw - every window is
+  kept, which is the reference's behaviour with backing store and is what a frame per top level needs
+  (C8). The area a window *gains* (a map, a resize, a restack) is still painted with its background and
+  still exposed: it is an area the client has to draw. A **move** is the one case that must not do
+  that - the pixels travel with the window, so painting a background there would wipe them - and
+  `visibilityChanged` distinguishes the two for that reason.
+- **`bitGravity` moves the pixels inside the store** (`applyBitGravityToStore`), not on the screen,
+  and `ownPixels` keeps what was drawn across a resize so there is something to move. A12's eleven
+  measured gravities are unchanged.
+- **A picture's write clip and its read clip are different regions.** RENDER addresses the window's
+  own store in the window's own coordinates (`Picture.refreshClip`), and a picture may write anywhere
+  the window owns - a covered window can be drawn into - while a read is still stopped by whatever
+  covers it, so a source picture cannot sample a sibling's pixels.
+- **`IncludeInferiors` is answered from the children.** A child's pixels are in a store of their own
+  and not in the parent's, so a read that falls in a child is taken from that child
+  (`XWindow.pixelFromInferiors`, topmost first) - which is what the window *shows* there.
+- **RENDER draws into the store and is composited when the request ends.** `Picture` remembers the
+  region it wrote (`takeWindowDrawn`) and `Compositor.finish` composites it. Before this a window's
+  RENDER picture pointed at the screen, so a toolkit drawing its ARGB window with cairo drew opaquely
+  onto the screen and left the store empty - the gap this item's first half recorded.
+- **The root's picture is the only one that still carries a screen translation**, and the root never
+  moves - so the class of bug `PictureOriginTest` was written for (a picture reading the position it
+  was created at) cannot come back for a window.
+
+**The two protocol rules that had to change with the alpha half**, both of which made an ARGB window
+impossible before it and neither of which is obvious from the symptom:
 
 - **A child need not share its parent's depth.** `WindowHandlers.create` refused a window whose depth
   differed from its parent's as a `BadMatch` - and the ARGB window every compositing toolkit creates is
@@ -460,6 +489,13 @@ before this and neither of which is obvious from the symptom:
   a half transparent foreground got an opaque one - the alpha a core drawing request can *only* express
   that way. A real client does create its context on the window it draws on, which is why the bug hid
   behind "the client asked for the wrong thing".
+
+**What it costs.** Every window now holds a window-sized `int[]` (allocated lazily, on the first draw,
+as E4's lazy screen allocation is), and a drawing request writes the store and copies the visible part
+to the screen rather than writing the screen once. The copy is a straight row copy for an ordinary
+window. Measured live with the two clients: EasyShell's window renders identically and its context
+menu survives the out-and-back gesture 6/6, termora's 6/6 - and the one behaviour that looked like a
+regression was measured on the *previous* build too (see the B5 entry in `docs/backlog.md`).
 
 ## The hot path in the blend
 
@@ -1436,18 +1472,14 @@ in the macOS menu bar, measured before any of this was written. That is one smal
 
 **The X half is `tray/TrayBridge`, and its shape is forced by two things about this server.**
 
-- **The pixels are read, not kept.** A docked icon is a window on the client's screen, and this server
-  has no per-window store (A9): what it drew is in the screen's framebuffer or nowhere. So the bridge
-  copies the window's rectangle out of the framebuffer every 200 ms and hands it to the menu bar, and
-  an icon that something covers reads as what covers it - which is what a user looking at the screen
-  would see too.
-  **And the icon comes out opaque**, which is the same fact seen from the other side: the screen's
-  framebuffer stores no alpha - `Framebuffer.opaque` forces every pixel opaque, deliberately, because
-  a backend that honours alpha would draw the holes `GXclear` and `GXinvert` leave - so a client's
-  transparent corners have already lost their transparency by the time the bridge reads them. The
-  item's own note said publishing a 32 bit `_NET_SYSTEM_TRAY_VISUAL` would fix the shape; it cannot,
-  and it would make things worse (the client would draw a transparent background and the menu bar
-  would show the screen's colour through it). The shape needs a store per window, which is B5.
+- **The pixels are read from the window's own store, and the icon keeps its shape.** An icon window is
+  created with the ARGB visual this bridge publishes, so it keeps its own pixels and they carry the
+  alpha the client drew: the bridge reads `XWindow.ownPixels` every 200 ms and hands that to the menu
+  bar, and its transparent corners stay transparent. A client that ignored the published visual falls
+  back to the old reading - the window's rectangle out of the screen's framebuffer, opaque, and
+  reading as what covers it. (This is the correction of an earlier note here, which said the shape
+  needed a per-window store "which is B5": it needed the *alpha* half of the store, and that landed
+  before the general one.)
 - **The selection is taken at startup.** An application asks whether a notification area exists while
   it is starting and never asks again, so a tray that appears when the first window does is a tray
   that application has already given up on.

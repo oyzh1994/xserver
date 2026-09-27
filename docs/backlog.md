@@ -63,6 +63,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A15~~ | ~~a filled polygon's scanline crossings are taken half a pixel low~~ **done 2026-09-25**: the `xlogo` difference is now 0 pixels | correctness | S |
 | ~~A9~~ | ~~`IncludeInferiors`, backing store, save-unders~~ **done 2026-09-25** (save-unders measured: the reference does not implement it either) | correctness | M-L |
 | ~~A13~~ | ~~`AllowEvents` freeze/thaw: a `Sync` grab stops the device, `AllowEvents` starts it again~~ **done 2026-09-26** (X's grab states, the held queue, the replay, and the pointer's two positions) | correctness | M |
+| A16 | a click outside a context menu leaves EasyShell spinning on `XIQueryPointer` - measured, identical on the build before B5's store | correctness | M |
 | ~~C1~~ | ~~screen auto-size (grow the screen with the window)~~ **done 2026-09-24** | host window | M |
 | ~~C2~~ | ~~raise/activate the host window when a client window appears~~ **done 2026-09-25** (the live A/B is inconclusive: the bed activates it either way) | host window | S-M |
 | ~~C4~~ | ~~bridge the host clipboard to the X selections~~ **done 2026-09-24** | host window | M |
@@ -84,8 +85,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
-| [~] B5 | DAMAGE **done**, and the per-window store is in **for windows with an alpha channel** - real translucency, and the tray icon's shape - 2026-09-26; the *general* store, Composite, Present and SYNC still open | extension | L |
-| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bleed into its parent's frame, so it waits on the *general* per-window store (B5's alpha half is in) | host window | L (B5's general half first) |
+| [~] B5 | DAMAGE **done**, and **every window keeps its own pixels** (2026-09-27) - the general store, RENDER included; Composite, Present and SYNC still open | extension | L |
+| C8 | one host window per client toplevel - **built, measured, reverted 2026-09-26**: a dialog's pixels bled into its parent's frame; **the general per-window store it waited on is now in** (B5, 2026-09-27), so it can be written again | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
@@ -1235,9 +1236,15 @@ worth keeping are no longer in the visible region. Three things throw the buffer
 way the saved pixels stop being what the window would show: the client drew (**4**), the window moved
 or was resized, and the attribute was turned off. `Screen` now advertises `backingStores = 1`.
 
+**Superseded on 2026-09-27 by B5's general store**: every window keeps its own pixels now, so the
+reveal needs no `Expose` for all of them and the capture/restore buffer (and `contentRegion` with it)
+is gone. What the item measured - a reference delivers no `Expose` and the same pixels - is what this
+server now does unconditionally, which is the behaviour this entry was written to reach.
+
 **The memory question the item raised is answered rather than deferred**: nothing is allocated for a
 window that does not ask. The item's warning - "256 clients each keeping a full window's pixels" -
-applies to a server that keeps them for everybody, and that is not what this is.
+applies to a server that keeps them for everybody, and that is not what this is. (B5 does keep them
+for everybody, which is why `ownPixels` is allocated lazily on the first draw - E4's rule.)
 
 **Measured 2026-09-25**, three ways:
 
@@ -1403,6 +1410,42 @@ measurement says not to.
 **Unchanged**: `AllowEvents` still validates its mode and does nothing else. Neither EasyShell nor
 termora depends on a freeze - A1's `GrabProbe` measured both grabbing with `Async` - so this is a
 fidelity gap rather than a failure a user meets.
+
+---
+
+### [ ] A16. A click into the content area after a context menu makes EasyShell spin on `XIQueryPointer`. **M** - measured 2026-09-27, open, and *not* a regression of B5
+
+**What is measured.** With EasyShell running against a `--single-window` server, this gesture
+
+```
+right-click a host-list entry   (opens the context menu, 157x378 at 55,127)
+leave the menu and re-enter it six times   (the menu survives 6/6 - §7's gate)
+left-click at (900,620), outside the menu, in the content area
+```
+
+closes the menu and then leaves the client **spinning**: it sends `XIQueryPointer` ~3700 times a
+second and nothing else, for as long as it is left alone. The request log around the click shows the
+sequence that starts it - `LeaveNotify` on the menu, `XI2 Enter` on the main window, `ChangeCursor`,
+`XI2 GrabDevice`, `GetProperty`, `ChangeProperty`, a `PropertyNotify`, then **`GrabServer`** - and
+after the `GrabServer` the `XIQueryPointer` flood and not one other request. No `UngrabServer`
+follows, so the client is stuck inside its own server-grab section, polling the pointer for something
+that never arrives.
+
+**It is not B5's doing.** The same gesture against a worktree at `17f4be9` (the commit before the
+general store) does exactly the same thing: the same `button 1 down at (900,620)`, the same
+`GrabServer`, and 21879 `XIQueryPointer` requests in five seconds. Two builds, one behaviour.
+
+**Why it is worth an item anyway.** The server is the other half of the conversation and the likely
+place the missing piece is: something the client asked for before or during that grab was answered in
+a way that left it waiting. `GrabServer`/`UngrabServer` are worth checking first - whether this server
+implements them at all, and whether the freeze they ask for is what a client can rely on - then the
+`ChangeCursor`/`PropertyNotify` pair just before the grab, since B4's record already has one instance
+of a *reply* in this area (`XIChangeCursor` had none) making EasyShell ask `XIQueryPointer` a million
+times in two minutes. The harness is the one above; it needs no Xlib, only `tools/kit.sh Drive`,
+`WinTree` and `Shot`.
+
+**Until it is fixed**: a scripted EasyShell gesture must not dismiss a menu by clicking into the
+content area - press `Escape`, or click another menu item's position, or kill the client afterwards.
 
 ---
 
@@ -1969,7 +2012,70 @@ mode is not "a client loses gestures", it is "a forwarded GTK application's menu
 
 ---
 
-### [~] B5. DAMAGE done; the per-window store is in for alpha windows (2026-09-26); Composite, Present and SYNC still open. **L**
+### [~] B5. DAMAGE done; **every window keeps its own pixels** (2026-09-27); Composite, Present and SYNC still open. **L**
+
+**The general store is in (2026-09-27).** Every window but the root now draws into a store of its
+own (`XWindow.ownPixels`), in its own coordinates and clipped to what it owns, and is composited onto
+the screen from it - the half this entry said C8 was waiting for. What that changed, beyond the
+sentence: a covered window goes on drawing and keeps what it drew; a revealed window is composited
+back with **no `Expose`**, so `backing_store` no longer decides anything; `GetImage` on a covered
+window answers with its own pixels rather than with the window on top of it; a move carries the pixels
+along (`visibilityChanged` distinguishes a move from a map, restack or resize, which still paint a
+background and expose); and `bitGravity` moves the pixels inside the store rather than on the screen
+(`applyBitGravityToStore`), with `ownPixels` keeping what was drawn across a resize so there is
+something to move - A12's eleven measured gravities are unchanged.
+
+**RENDER had to come with it, and that closes the gap this entry recorded on 2026-09-26.** A picture
+over a window used to point at the screen's framebuffer, so a toolkit drawing its ARGB window with
+RENDER (cairo's path) drew opaquely onto the screen and left the store empty. `CreatePicture` now
+binds a window picture to the window's own store in its own coordinates, `Picture` remembers the
+region each request writes (`takeWindowDrawn`), and `Compositor.finish` composites it when the request
+ends. Two consequences had to be decided rather than inherited:
+
+- **a picture's write clip and its read clip are different regions.** It may write anywhere the window
+  owns - a covered window can be drawn into - while a read is still stopped by whatever covers it, so
+  a source picture cannot sample a sibling's pixels;
+- **`IncludeInferiors` is answered from the children** (`XWindow.pixelFromInferiors`, topmost first),
+  because a child's pixels are in a store of their own and not in the parent's. The three
+  `IncludeInferiorsTest` assertions and both `PictureOriginTest` cases were rewritten for this: the
+  second is now *stronger* - a picture over a window can no longer address the screen at all, so the
+  stale-origin bug it was written for cannot come back for a window.
+
+**The store made the old backing-store buffer dead, and it is gone.** `XWindow`'s `captureBacking`/
+`restoreBacking`/`forgetBacking`/`buffer` copied a window's visible pixels out of the screen before
+something covered it; with every window's pixels its own there is nothing to copy back, and the only
+candidate left was the root - which *is* the screen - so the buffer, the third reveal path and the
+`forgetBacking` call every drawing request made are removed. `backing_store` is still recorded and
+reported (`GetWindowAttributes`), it just decides nothing.
+
+**Measured, `mvn test` 361/361** (`WindowStoreTest` is new: a covered window answers with its own
+pixels, and a moved window keeps them; `PictureWindowDrawnTest` pins the region the composite depends
+on). `ownPixels`'s per-pixel `Rectangle` union was replaced with bounds arithmetic, because that loop
+is every pixel a RENDER request writes.
+
+**Verified live on `.147`, both clients** (`--single-window`, XTEST-driven, and EasyShell again in the
+default per-client mode):
+- **EasyShell** renders (frame dump read: toolbar, sidebar, welcome page, icons and Chinese text all
+  correct), a right-click on a host entry opens its context menu, the menu survives the six
+  out-and-back passes **6/6** and renders every item, a click outside closes it, and typing `zz` into
+  its search box puts both characters in the box and filters the host list. In per-client mode the
+  macOS host window shows the same picture.
+- **termora** renders (tab bar, sidebar with 我的主机, the ASCII logo) and its context menu survives
+  **6/6**.
+
+**A behaviour that looked like a regression, and is not: EasyShell spins on `XIQueryPointer` after a
+click outside its context menu.** The measurement, because the isolation is worth having: the click at
+(900,620) makes the client `GrabDevice`, `ChangeCursor`, `GrabServer` and then ask `XIQueryPointer`
+~3700 times a second, sending nothing else, until it is killed. **The previous build does exactly the
+same thing with the same gesture** - checked with a worktree at `17f4be9` against the same client and
+the same six out-and-back passes, 21879 queries in five seconds, the same `button 1 down at (900,620)`
+-> `GrabServer` -> flood. So it is EasyShell's (or GDK's) behaviour on this server, open before this
+change and still open; it is **A16** now, with what to check first and the harness to reproduce it.
+
+**What is left of B5 is the other three**: Composite, Present and SYNC. The store makes them
+reachable in a way they were not - a window's pixels are now somewhere to hand a compositor - but none
+of them is implemented.
+
 
 **The per-window store, and how much of it is in (2026-09-26).** The plan called for "a per-window
 backing store, a damage region per window, Composite and Present and SYNC over it, and a final
@@ -1992,23 +2098,24 @@ draw translucently into:
   screen's root visual - otherwise the half-transparent foreground a core request expresses alpha with
   arrives opaque.
 
-**One gap in this slice, measured by looking rather than by a test**: a **RENDER picture over such a
-window** still points at the screen's framebuffer (`RenderExtension.createPicture`), with the window's
-absolute origin - so a client that draws its ARGB window's content with RENDER (a toolkit's own path)
-draws opaquely onto the screen and leaves the store empty. Core drawing requests, painting a
-background and `GetImage` all use the store; RENDER does not yet, and it needs the picture to take the
-window's own pixels and the draw to composite afterwards. The tray's icon is unaffected - a tray peer
-draws with core requests - which is why the tests above pass either way.
+**One gap in that slice was measured by looking rather than by a test**, and it is now closed: a
+**RENDER picture over such a window** used to point at the screen's framebuffer
+(`RenderExtension.createPicture`), with the window's absolute origin - so a client that drew its ARGB
+window's content with RENDER (a toolkit's own path) drew opaquely onto the screen and left the store
+empty. The 2026-09-27 change bound window pictures to the window's own store and composites what they
+write when the request ends; see the top of this entry.
 
-**What is left of the store is the general case**, and C8 is what needs it: every window keeping its
-pixels, not only the alpha ones, so that a frame per top level can show a window's own pixels rather
-than a rectangle of the shared screen. That is the larger half - it changes what drawing means for
-every window, and it is what the C8 entry says it waits on.
+**What was left of the store was the general case** - every window keeping its pixels, not only the
+alpha ones - and that is now in too (2026-09-27), which is what the C8 entry was waiting on. It is
+what changes "what drawing means for every window", as predicted here: it took the read/write clip
+split, `IncludeInferiors` from the children, gravity inside the store, and the RENDER composite.
 
-**Current of the rest.** ~~None of the four.~~ **DAMAGE is there now**; the other three are not. The model is
-"every request draws straight into one framebuffer and a revealed window is asked to redraw with an
-`Expose`" (README's "A revealed window is restored by asking it to draw"). A 32-bit ARGB visual is
-advertised, but with no compositor a translucent window simply draws its pixels opaquely.
+**Current of the rest.** DAMAGE and the store are there; **Composite, Present and SYNC are not.** The
+model is no longer "every request draws straight into one framebuffer and a revealed window is asked
+to redraw with an `Expose`" - a window's pixels are kept and composited - but nothing *asks* the server
+to composite a window tree for you: a translucent window is composited against the screen, not against
+other windows' stores, and there is no `Composite` request family, no `Present` and no `SYNC` fence to
+synchronise on.
 
 **DAMAGE, and the plan above was wrong about it being inseparable from Composite.** It is not the
 compositor's prerequisite: it is the answer to "tell me when a window's pixels changed" for clients
@@ -2528,7 +2635,15 @@ not" - and the thing to try is a real drag by hand, with a real client that take
 
 ---
 
-### [ ] C8. One host window per client toplevel. **L** - built and measured 2026-09-26; it needs B5 first
+### [ ] C8. One host window per client toplevel. **L** - built and measured 2026-09-26; **B5's general store landed 2026-09-27, so its blocker is gone**
+
+**The blocker is gone (2026-09-27).** This item was reverted because a frame shows a rectangle of the
+**screen** and a window's pixels were not its own - a dialog's content appeared in its parent's frame,
+measured live (the paragraph below). Every window now keeps its own pixels (B5), so a frame per top
+level has something honest to show: `XWindow.ownPixels` is the window's own content, including the
+parts another window covers. What C8 still has to do is read **that** instead of the screen rectangle
+it used to blit - the prototype's design and every trap it cost are below, and they are unchanged.
+
 
 **What it is.** A connection gets one host window showing the **union** of every top level it has
 mapped (`contentBounds`), and that rectangle is what the frame follows. An application that opens a
@@ -2567,12 +2682,13 @@ over by it. That is exactly what `docs/design-notes.md` predicted when it reject
 ("per-window native windows would either lose dialogs or cost a second rendering model"), and the
 measurement now says the prediction is right.
 
-**So C8 depends on B5, and part of that is now in (2026-09-26).** A window whose visual has an alpha
-channel already keeps its own pixels (B5's store, measured with `TranslucentWindowTest`) - so the
-machinery this item needs exists for alpha windows. What C8 still needs is the **general** case: every
-window keeping its pixels, which is the larger half of the store and changes what drawing means for
-every window. Until then the union frame is the correct choice: everything the user sees is what the X screen shows, and only the *frame's* size and position
-are wrong, rather than its pixels.
+**So C8 depended on B5, and that is now satisfied (2026-09-27).** The alpha store (2026-09-26) was the
+first half; the **general** store - every window keeping its pixels, `XWindow.ownPixels`, composited
+from it and read back from it - landed the next day, and it is what a frame per top level needs: the
+window's own content, including the parts another window covers, which is exactly what the union frame
+could not show. Until C8 is written, the union frame is still the correct choice: everything the user
+sees is what the X screen shows, and only the *frame's* size and position are wrong rather than its
+pixels.
 
 **Traps the prototype cost, each one a way to get it wrong quietly** - worth having before the code is
 written again:
@@ -3721,12 +3837,11 @@ measurement *before* it is proposed, not after.
   (`/tmp/menu-outin.sh` and friends) and the 6/6 result.
 - **The blend rounds; Xorg's fixed-point composition truncates.** A one-unit difference in a channel is
   expected and is not a bug to chase.
-- **No backing store for a window that does not ask for one**: such a window is restored by painting
-  the lower window's background and asking it to draw (`Expose`), and a client that ignores the expose
-  shows its background there. A window that sets `backing_store` to `WhenMapped`/`Always` is now kept
-  and gets its pixels back with no `Expose` (A9, done), and the attribute is advertised as
-  `WhenMapped` in the setup reply, which is what a reference server advertises. `save_under` stays
-  unadvertised and unimplemented deliberately - the reference does not implement it either, measured.
+- **Every window's pixels are kept, so the `backing_store` attribute decides nothing.** Since B5's
+  general store (2026-09-27) a revealed window is composited from its own pixels and no client is
+  asked to draw again, whatever the attribute says. The attribute is still advertised as `WhenMapped`
+  in the setup reply, which is what a reference server advertises. `save_under` stays unadvertised and
+  unimplemented deliberately - the reference does not implement it either, measured.
 - **The pointer cannot leave the host window's viewport** and is clamped to the screen: the sprite is
   hidden outside it, and a warp beyond it is clamped rather than moving the platform pointer.
 

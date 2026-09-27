@@ -118,20 +118,27 @@ is shown twice and the window under it looks taken over by it - see `docs/backlo
 screen's pixels are allocated when something first draws into it, so a connection that only asks
 questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
 
-**One framebuffer per screen, and windows draw straight into it.** A window's contents are not
-kept in its own buffer: drawing is clipped to the part of the window that is actually visible, and
-obscured content is not preserved. That is X's model, and it is what makes `Expose` events mean
-what clients expect. Coordinates are relative to the parent, so every draw request is translated by
-the window's absolute position on the way in.
+**One framebuffer per screen, and every window keeps pixels of its own.** A window draws into its own
+store, in its own coordinates and clipped to what it owns - the whole window, not only the part that
+shows - and what reaches the screen is that store composited over it, clipped to the part of the window
+that is visible. So a covered window goes on drawing and keeps what it drew, a revealed window gets its
+pixels back with no `Expose` (which is what `backing_store` used to buy), a client that reads a window
+back gets its contents rather than whatever is on top of it, and a *move* carries the pixels along.
+The root is the exception: it **is** the screen. An ordinary window's store is opaque like the screen
+and is composited with a straight copy; a window whose visual has an alpha channel keeps the alpha and
+is blended, which is what makes a translucent window translucent. Coordinates are relative to the
+parent, and every draw request is translated into the window's own coordinates on the way in.
 
 **Obscuring is tracked.** A window's visible region is its rectangle minus everything stacked above
 it - the siblings above it at every level of the tree, and its own children, which draw inside it -
-and drawing is clipped to that region, in the core rasteriser and through RENDER alike. So a window
-does not paint over the dialog on top of it, which is what makes a popup stay on screen instead of
-being wiped by the next repaint of the window underneath. When a window is unmapped, destroyed,
-moved or restacked, the area it stops covering is handed back: the windows underneath are painted
-with their own background and sent `Expose`, because nothing of theirs was kept anywhere.
-`VisibilityNotify` reports unobscured, partially obscured and fully obscured as that changes.
+and the composite back to the screen is clipped to that region, in the core rasteriser and through
+RENDER alike. So a window does not paint over the dialog on top of it, which is what makes a popup
+stay on screen instead of being wiped by the next repaint of the window underneath. When a window is
+unmapped, destroyed, moved or restacked, the area it stops covering is handed back: the windows
+underneath are composited from their own stores, so they are not asked to draw again. The area a
+window *gains* is still painted with its background and sent an `Expose`, because that part the client
+has never drawn. `VisibilityNotify` reports unobscured, partially obscured and fully obscured as that
+changes.
 
 **A client that stops reading is dropped, not waited for.** Every connection has a bounded queue of
 outgoing messages and a writer thread of its own, so the only thread that ever waits for a client is
@@ -264,7 +271,7 @@ specification, and each worked around rather than patched upstream:
   managers can never see which fields a client asked to change. That event is assembled as raw
   bytes instead.
 
-## The screen is opaque, and a window with alpha is not
+## The screen is opaque, even though the windows behind it are not
 
 One invariant is worth stating because breaking it produces a bug that hides from every
 server-side test: **the framebuffer only ever stores opaque pixels**. X has no alpha on the screen -
@@ -281,11 +288,12 @@ foreground is extremely common.
 
 **A window whose visual has an alpha channel is the exception, and it is the only one.** What such a
 client draws is meant to be composited over what is under it, so it cannot be written to an opaque
-screen at all: those windows draw into a store of their own (in their own coordinates, the whole
-window and not only the part that shows), and the part that shows is composited over the screen with
-the same blend every other composite here uses. A translucent fill is translucent, a covered window
-keeps its pixels and gets them back, and the window the screen holds is still an ordinary opaque
-picture - which is what the rest of this section is about.
+screen at all: those windows keep the alpha in their store (every window has one - see "One
+framebuffer per screen, and every window keeps pixels of its own" - but only this one's
+`Framebuffer` is told to keep it), and the part that shows is composited over the screen with the same
+blend every other composite here uses. A translucent fill is translucent, a covered window keeps its
+pixels and gets them back, and the window the screen holds is still an ordinary opaque picture - which
+is what the rest of this section is about.
 
 If a window is ever blank again, `-Dxserver.dumpFrame=<prefix>` writes the JavaFX image and the
 framebuffer behind it to PNG files once a second. Comparing the two says immediately whether the
@@ -405,20 +413,19 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   asks for a cursor by name gets `BadImplementation`, which is what `docs/backlog.md` A8 measured a
   reference doing too (its lookup fails silently). Still missing: `ShapeNotify` details beyond the
   extents.
-- **A picture over a window draws onto the screen, not onto a window that has pixels of its own.**
-  RENDER's pictures still point at the screen's framebuffer, so a client that draws an alpha window's
-  content with RENDER (rather than with core requests) gets it drawn opaquely - the store the alpha
-  windows keep (see "The screen is opaque, and a window with alpha is not") is filled by core requests,
-  by painting a background and by `GetImage`, and not by RENDER yet.
+- **A picture over a window draws into that window's own pixels.** RENDER's pictures address the
+  window's store in the window's own coordinates (see "Every window keeps its own pixels" in the
+  design notes), and what a request wrote is composited when it ends - so a toolkit that draws an ARGB
+  window with cairo gets translucency, not an opaque square on the screen. A picture may write
+  anywhere the window owns, showing or not, while a read is still stopped by whatever covers it.
 - **A picture over a window sees the window's own pixels, not its children's**, unless the client
   asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
-  *shows* - the children painted on top of it - which is what copying the screen through a parent
-  window needs. What is stacked above the window is excluded either way.
-- **A revealed window is restored by asking it to draw, unless it asked for a backing store.** With
-  the default `backing_store`, the area under a window that goes away is repainted with the lower
-  window's background and an `Expose`, and a client that ignores the expose shows its background
-  there. A window that sets `backing_store` to `WhenMapped` or `Always` has its pixels kept while it
-  is covered and gets them back with no `Expose` at all, which is what a reference server does too.
+  *shows* - a point a child covers is answered from that child's own store - which is what copying the
+  screen through a parent window needs. What is stacked above the window is excluded either way.
+- **Every window keeps its pixels, so a reveal asks nobody to draw.** `backing_store` is a hint the
+  server is free to satisfy always, and it does: a window's contents are kept while it is covered and
+  come back with no `Expose`, whatever the attribute says. The area a window *gains* (a map, a resize,
+  a restack) is painted with its background and exposed, because that part has never been drawn.
   `save_under` is **not** implemented - measured, and the reference does not implement it either.
 - **The VNC backend sends raw frames, and nothing else yet.** `--backend vnc` serves the whole
   screen (and so implies `--single-window`) to any VNC client as uncompressed damage rectangles, with
