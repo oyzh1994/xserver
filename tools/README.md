@@ -90,6 +90,12 @@ windows, looking like a server that does not clean up after a dead client.
 
 The tools, one line each (the backlog's §1 table says what each is *for*):
 
+- `GlxProbe` - the GLX questions a client asks, field by field and as bytes - B6's harness. It exists
+  because `glxinfo` says "no GLX" and stops: there is no other way to see what a client needs from a
+  server, or what a reference answers. It also carries the two layouts that are easy to get wrong
+  (the opcode numbering from 18 up, and `QueryServerString` being screen and name with no string), and
+  the measurement that reframed B6 - a software GL client sends **no GL commands at all**, it renders
+  itself and blits with `PutImage`.
 - `Drive` - XTEST driver: `M x y`, `P n`, `R n`, `K kc`, `KD/KU kc`, `W ms`.
 - `Keys` - types a string through XTEST (`Keys <host> <port> "hello"`, `--delay ms` for a slower
   typist): resolves each character against the keymap read with `GetKeyboardMapping`, presses it
@@ -333,6 +339,10 @@ is a run that agrees with the reference, and a run that reports a *sixth* one is
   (B3: the three questions a client actually asks are answered - `QueryVersion`, `IsActive`,
   `QueryScreens` - and the 1.1 extras were measured and left). Xvfb also reports several heads; this
   server has one screen per client connection.
+- **`GlxProbe`** - **GLX is not present here at all** and the reference has it (1.4, through Mesa), so
+  this is the one difference that is a whole missing feature rather than a choice about one: the entry
+  is B6, and the sweep will stop reporting it the day it lands. It is also how the reference's own
+  answers were read (144 visual configs of 40 ints, 304 fbconfigs of 44 token/value pairs).
 - **`ScreenSaverProbe`** - this server **implements DPMS** (B7) and the Xvfb built for this testbed
   does not, so our run has a `DPMS version 1.2 / capable = no / timeouts` section that its run has no
   line for. The one field that differs inside `QueryInfo` is `window`, which is `None` here and a
