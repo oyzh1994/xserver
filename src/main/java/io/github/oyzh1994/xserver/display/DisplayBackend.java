@@ -85,7 +85,7 @@ public interface DisplayBackend {
      * Opens the window and starts delivering input. Called once from the server's start method,
      * which must return before any input arrives.
      */
-    void start(Surface surface, int displayNumber, InputSink input);
+    void start(Screen screen, int displayNumber, InputSink input);
 
     /**
      * Copies the damaged region of the framebuffer to the screen, then draws the pointer sprite
@@ -95,7 +95,7 @@ public interface DisplayBackend {
      * than painted into the framebuffer so that a frame always shows the pointer at the position it
      * had when the frame was taken, and so that what the clients drew is never covered by it.
      */
-    void present(Surface surface, Rectangle damage, CursorSprite cursor);
+    void present(Screen screen, Rectangle damage, CursorSprite cursor);
 
     /**
      * Restricts the window to this rectangle of the screen, in framebuffer coordinates.

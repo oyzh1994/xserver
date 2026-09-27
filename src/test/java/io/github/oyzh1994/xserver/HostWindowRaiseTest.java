@@ -3,7 +3,6 @@ package io.github.oyzh1994.xserver;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
-import io.github.oyzh1994.xserver.display.Surface;
 import io.github.oyzh1994.xserver.test.RawXClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -157,7 +156,7 @@ class HostWindowRaiseTest {
         }
 
         @Override
-        public void start(Surface surface, int displayNumber, DisplayBackend.InputSink input) {
+        public void start(Screen screen, int displayNumber, DisplayBackend.InputSink input) {
             this.input = input;
         }
 
@@ -179,7 +178,7 @@ class HostWindowRaiseTest {
         }
 
         @Override
-        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
+        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
             calls.add("present");
         }
 

@@ -22,12 +22,12 @@ public final class HeadlessBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Surface surface, int displayNumber, InputSink input) {
+    public void start(Screen screen, int displayNumber, InputSink input) {
         // Nothing to open: there is no window and no input source.
     }
 
     @Override
-    public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
+    public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
         // Deliberately empty, and cheap enough to be called on every server tick. The pointer
         // sprite goes the same way: with no window there is nowhere to draw it.
     }

@@ -345,6 +345,6 @@ class RandRTest {
 
     /** The user dragging the host window's edge, which the display tick picks up and applies. */
     private void drag(int width, int height) {
-        server.hostWindow(server.screen()).windowResized(width, height);
+        server.inputFor(server.screen()).windowResized(width, height);
     }
 }

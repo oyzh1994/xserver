@@ -5,7 +5,6 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
-import io.github.oyzh1994.xserver.display.Surface;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Rectangle;
@@ -154,11 +153,11 @@ class XServerShutdownTest {
         }
 
         @Override
-        public void start(Surface surface, int displayNumber, InputSink input) {
+        public void start(Screen screen, int displayNumber, InputSink input) {
         }
 
         @Override
-        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
+        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
             frames.incrementAndGet();
         }
 

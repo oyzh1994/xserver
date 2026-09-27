@@ -180,7 +180,7 @@ class ScreenResizeTest {
      * on.
      */
     private void drag(int width, int height) {
-        server.xserver.hostWindow(server.xserver.screen()).windowResized(width, height);
+        server.xserver.inputFor(server.xserver.screen()).windowResized(width, height);
     }
 
     private static void eventually(String what, Check condition) {

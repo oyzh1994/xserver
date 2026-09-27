@@ -106,18 +106,19 @@ protocol descriptions. Decoding gives a typed object, so dispatch is a `switch` 
 rather than a table of byte offsets, and the wire format cannot drift from the server's idea of it.
 The exceptions are documented in `VariableLengthDecoders` (see below).
 
-**One screen per client connection, and one window per top level.** A connection is given a screen
-of its own - its own root window and framebuffer - so no client can draw over another's pixels, and
-its screen is shown by **one host window for each top level it has mapped**: the application's main
-window in one, a dialog it opens in another, each sized to the window it frames. So a dialog no
-longer grows and jumps its parent's window, and it does not appear in the parent's either - each
-frame is built from the windows' own pixels (B5), not from a rectangle of the screen. A popup is not
-framed: it belongs inside the window it appears over. **The first attempt at this was reverted** for
-exactly that pixel reason, and the item's history is in `docs/backlog.md` C8. A session with no
-window of its own - a client that has mapped nothing but popups - falls back to the union of what it
-has mapped, and `--single-window` restores the older shape of one shared screen with every client on
-it. A screen's pixels are allocated when something first draws into it, so a connection that only
-asks questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
+**One screen per client connection, and one window per application.** A connection is given a screen
+of its own - its own root window and framebuffer - so each forwarded application appears as **one**
+window, sized to what it draws, and no client can draw over another's pixels. The window follows the
+client's top level windows: it is the union of their rectangles, so an application that opens a dialog
+beside its parent grows its own window to cover both, and a small application does not arrive in a
+screen-sized window with black around it. **A host window per X top level - one per dialog, as
+XQuartz does - was built twice and is deliberately not what this is**: it was first reverted because a
+frame had no pixels of its own to show, and then, once B5's per-window store gave it some and it
+worked, rejected on the requirement - an application is one window on the desktop, whatever it opens
+inside itself. `docs/backlog.md`'s C8 has the two attempts and why it is closed.
+`--single-window` restores the older shape, one shared screen with every client on it. A
+screen's pixels are allocated when something first draws into it, so a connection that only asks
+questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
 
 **One framebuffer per screen, and every window keeps pixels of its own.** A window draws into its own
 store, in its own coordinates and clipped to what it owns - the whole window, not only the part that

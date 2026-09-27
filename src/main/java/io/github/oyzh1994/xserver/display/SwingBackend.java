@@ -72,16 +72,16 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Surface surface, int displayNumber, InputSink input) {
+    public void start(Screen screen, int displayNumber, InputSink input) {
         this.input = input;
-        Framebuffer framebuffer = surface.framebuffer();
+        Framebuffer framebuffer = screen.framebuffer();
         runOnEdtAndWait(() -> openWindow(framebuffer));
         log.info("swing window {}x{} for display :{}", framebuffer.width(), framebuffer.height(),
                 displayNumber);
     }
 
     @Override
-    public void present(Surface surface, Rectangle damage, CursorSprite sprite) {
+    public void present(Screen screen, Rectangle damage, CursorSprite sprite) {
         ScreenPanel target = panel;
         if (target == null || closed || damage == null) {
             return;

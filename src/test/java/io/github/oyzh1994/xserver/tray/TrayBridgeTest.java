@@ -5,7 +5,6 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
-import io.github.oyzh1994.xserver.display.Surface;
 import io.github.oyzh1994.xserver.test.RawXClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -278,12 +277,12 @@ class TrayBridgeTest {
         }
 
         @Override
-        public void start(Surface surface, int displayNumber, InputSink input) {
+        public void start(Screen screen, int displayNumber, InputSink input) {
             started = true;
         }
 
         @Override
-        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
+        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
             // Nothing to show: the tests read the framebuffer directly.
         }
 
@@ -306,11 +305,11 @@ class TrayBridgeTest {
         }
 
         @Override
-        public void start(Surface surface, int displayNumber, InputSink input) {
+        public void start(Screen screen, int displayNumber, InputSink input) {
         }
 
         @Override
-        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
+        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
         }
 
         @Override
