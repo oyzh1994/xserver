@@ -372,6 +372,12 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
     desynchronised at its first device event and stalled before drawing a pixel. With the fix,
     EasyShell renders through the proxy, complete, and every stream checks out against its own length
     fields.
+  **Its first real use (2026-09-27) is clean**: EasyShell's request profile against Xvfb and against
+  this server line up request for request, and the three differences are the *reference's* own
+  environment - `GetAtomName` for `X11VNC_TICKER` and the root properties x11vnc leaves on Xvfb,
+  `CreateColormap` for visuals Xvfb has and this server deliberately does not, and a `GetMotionEvents`
+  probe the client simply does not make here. That is what "no difference" looks like on a tool that
+  can now show one.
   A fifth argument adds a **raw dump**
   (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per message as
   `<conn> <direction> <hex>`, for when the *bytes* are what is being hunted - that is how
