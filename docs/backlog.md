@@ -79,7 +79,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [~] B1 | XKEYBOARD: read, set by a client that compiles its own map (`xkbcomp`), and the controls (repeat delay/rate, `RepeatKeys`); no compiler in the server, so no layout by name | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
 | [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
-| [~] E4 | per-client framebuffer memory: allocation is lazy; releasing while connected is declined with reasons | engineering | M |
+| ~~E4~~ | ~~per-client framebuffer memory~~ **done 2026-09-26**: allocation is lazy (verified live); freeing while a client is connected is declined, with its reasons in the entry | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
@@ -1975,6 +1975,14 @@ draw translucently into:
   screen's root visual - otherwise the half-transparent foreground a core request expresses alpha with
   arrives opaque.
 
+**One gap in this slice, measured by looking rather than by a test**: a **RENDER picture over such a
+window** still points at the screen's framebuffer (`RenderExtension.createPicture`), with the window's
+absolute origin - so a client that draws its ARGB window's content with RENDER (a toolkit's own path)
+draws opaquely onto the screen and leaves the store empty. Core drawing requests, painting a
+background and `GetImage` all use the store; RENDER does not yet, and it needs the picture to take the
+window's own pixels and the draw to composite afterwards. The tray's icon is unaffected - a tray peer
+draws with core requests - which is why the tests above pass either way.
+
 **What is left of the store is the general case**, and C8 is what needs it: every window keeping its
 pixels, not only the alpha ones, so that a frame per top level can show a window's own pixels rather
 than a rectangle of the shared screen. That is the larger half - it changes what drawing means for
@@ -3385,7 +3393,7 @@ to the headless backend happens, and what the server *says* about it is honest n
 
 ---
 
-### [~] E4. Per-client framebuffer memory. **M** - the allocation is lazy 2026-09-25; nothing is released while a client is connected
+### [x] E4. Per-client framebuffer memory. **M** - done 2026-09-26: allocation is lazy, and the other half is declined rather than pending
 **What it was.** In the default mode every connection gets a `Screen`, and every `Screen` allocated its
 `Framebuffer` at the handshake (`width * height * 4` bytes; 4.2 MB at 1300x800, 16.7 MB at
 `--scale 2`) - whether or not the connection ever drew anything. With 256 clients that is a gigabyte
@@ -3415,6 +3423,10 @@ caller at all.
 `mvn test` 257/257. The real clients are unaffected in the way that matters: EasyShell draws, so its
 screen is allocated as it always was, and the measurement above shows it (the run that launched it
 added a screen's worth).
+
+**Ticked 2026-09-26**, because both halves are settled: the lazy allocation is in and measured (below),
+and the second half is **declined with its reasons rather than left pending** - which is a decision, not
+an unfinished piece of work. The entry below is the record of both.
 
 **What is *not* done, and why.** The other half of the item's plan - *free* a client's framebuffer
 when its last window goes away - is deliberately not implemented. A framebuffer holds more than the
@@ -3576,6 +3588,30 @@ definition.
 ---
 
 ### [ ] E6. Keep the three documents in step. **S, ongoing**
+
+**Swept 2026-09-26**, after three sessions of work (XInput2, the C8 build-and-revert, the alpha store),
+and it found the drift it exists for - one entry that had been true and was not any more:
+
+- **Both documents said `CreateGlyphCursor` against a font other than the cursor font had no outlines
+  and fell back to a filled cell.** A8 recorded the opposite: the composition was implemented (the mask
+  glyph's ink is the silhouette, the source's ink is drawn inside it, the hotspot is the glyph's origin
+  at the font's ascent) and measured identical to a reference for fourteen characters. The fallback
+  only applies to a font the server has no table for at all. Both documents corrected; the README's
+  version was garbled besides, and now says what a cursor *does* have - and that a cursor **name** is
+  what is still refused, which is what A8 measured a reference doing too.
+- **The alpha store (B5's first slice) needed three places updated**, and got them as it landed: the
+  README's tray bullet (the icon is a shape now) and its "the screen is opaque" section (which now says
+  what an alpha window does instead), and the design notes gained the section for it.
+- **The C8 revert left two claims to fix**, both made when the item was believed shippable: the README's
+  "one window per screen" paragraph now says a host window per X top level was built, measured and is
+  not what this is, and the C8 entry says what it waits on.
+- **A gap this sweep found while checking the picture bullet**: RENDER's pictures still point at the
+  screen, so they do not see a window's own pixels for an alpha window. Recorded in B5's entry and in
+  the README rather than left as a silent half-truth.
+
+The rule the item states still stands and is what caught the first two: a document that lists something
+as missing when it is done is worse than one that does not mention it, because the next reader
+re-derives it - or, worse, "fixes" what is already there.
 
 **Swept 2026-09-25.** The three documents were read against the items that are done, which is what
 this item is for, and the sweep is worth recording because it found exactly the drift it warns about:

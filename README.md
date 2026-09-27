@@ -396,11 +396,20 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   on.
 - **SHAPE's bounding shape is honoured for drawing, obscuring and hit testing**: a shaped window is
   painted only inside its shape, its children are clipped by it, and the corners it does not cover are
-  given back to the screen underneath. What is still missing is `CreateGlyphCursor` against an
-  arbitrary glyph set is composed the way X composes one - the mask character's bitmap is the
-  silhouette, the source glyph's ink is drawn inside it, and the hotspot is the glyph's origin at the
-  font's ascent, all measured against a reference with `tools/GlyphCursorProbe` - and `ShapeNotify`
-  details beyond the extents.
+  given back to the screen underneath. **Cursor shapes are composed the way X composes them**: the
+  cursor font's own 74 bitmaps are embedded, and `CreateGlyphCursor` against *any* font the server
+  serves is drawn from that font's glyphs - the mask character's bitmap is the silhouette, the source
+  glyph's ink is drawn inside it in the foreground colour, and the hotspot is the glyph's origin at the
+  font's ascent - all measured against a reference with `tools/GlyphCursorProbe` and identical for
+  fourteen characters. What a cursor does *not* have here is a name looked up in a font: a client that
+  asks for a cursor by name gets `BadImplementation`, which is what `docs/backlog.md` A8 measured a
+  reference doing too (its lookup fails silently). Still missing: `ShapeNotify` details beyond the
+  extents.
+- **A picture over a window draws onto the screen, not onto a window that has pixels of its own.**
+  RENDER's pictures still point at the screen's framebuffer, so a client that draws an alpha window's
+  content with RENDER (rather than with core requests) gets it drawn opaquely - the store the alpha
+  windows keep (see "The screen is opaque, and a window with alpha is not") is filled by core requests,
+  by painting a background and by `GetImage`, and not by RENDER yet.
 - **A picture over a window sees the window's own pixels, not its children's**, unless the client
   asks otherwise: `SubwindowMode` is honoured, so `IncludeInferiors` gives a client what the window
   *shows* - the children painted on top of it - which is what copying the screen through a parent

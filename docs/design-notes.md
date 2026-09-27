@@ -1519,11 +1519,14 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   and `PerClientFlags` says so, detectable auto-repeat included.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
   character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
-- **`CreateGlyphCursor` against a font other than the cursor font has no outlines to draw** and falls
-  back to a filled cell. The cursor font's own 74 shapes are embedded (`resource/CursorFont.java`,
-  generated from `cursor.pcf` by `tools/gen-cursor-font.py`), which is what `XCreateFontCursor`
-  actually asks for - so `xterm`'s I-beam and every client's arrow are the real ones now; a client that
-  invents a glyph set still gets the approximation.
+- **A cursor is drawn from its glyphs, and the approximation is left for a font the server has no
+  glyphs for.** The cursor font's own 74 bitmaps are embedded (`resource/CursorFont.java`, generated
+  from `cursor.pcf` by `tools/gen-cursor-font.py`), which is what `XCreateFontCursor` asks for, and
+  `CreateGlyphCursor` against any font this server serves is composed the way X composes one - the
+  mask character's bitmap is the silhouette, the source glyph's ink is drawn inside it, the hotspot is
+  the glyph's origin at the font's ascent (measured against a reference with `tools/GlyphCursorProbe`,
+  identical for fourteen characters - `docs/backlog.md` A8). What still falls back to a filled cell is
+  a font the server has no table for at all.
 - **A screen grows but never shrinks** (C1). A drag past the edge of the screen makes it bigger, up to
   `--max-screen`, and the host window resizes the client's window with it; there is deliberately no
   gesture that says "and now the desktop is smaller", which is why `SetScreenConfig` and the rest of
