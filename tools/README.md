@@ -266,11 +266,31 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   probe never round-trips after the request it is waiting for.
 - `SyncProbe` - the harness for SYNC, the second of B5's three: the version handshake (asked twice,
   because whether the answer is the server's version or the client's is a rule the reply settles),
-  the system counters, a counter created, set, changed and read back, `GetPriority`/`SetPriority`, and
-  a fence walked through created-untriggered, triggered, reset and destroyed. **Its first run was
-  wrong in a way only a reference catches**: `CreateFence` carries the *drawable* first and the fence
-  second, which is the opposite of the order the generated class's getters list them in, and the
-  reference answers `BadDrawable` on the fence's own id when a probe believes the getters.
+  the system counters, a counter created, set, changed and read back, `GetPriority`/`SetPriority`, a
+  fence walked through created-untriggered, triggered, reset and destroyed, and - since F1 - the
+  alarm half: a trigger on a counter armed at an absolute threshold, the counter moved across it and
+  the `AlarmNotify` read, then moved again inside the threshold to check that nothing arrives. Three
+  more alarms answer the questions one crossing cannot: a negative transition, a transition whose
+  delta re-arms its own threshold, and a comparison, which fires once and then reports itself
+  inactive. It is also where the **refusals** are measured, because they are behaviour: a
+  transition whose delta would move its threshold the way its test cannot use is answered
+  `BadMatch` on its own id, and the raw error is read off the stream with `readRefusal` - an unread
+  error is read as the *next* reply and shifts every value after it, which is how a first version of
+  this probe reported a counter value of -4294967420. **Its first run was wrong in another way only
+  a reference catches**: `CreateFence` carries the *drawable* first and the fence second, which is
+  the opposite of the order the generated class's getters list them in, and the reference answers
+  `BadDrawable` on the fence's own id when a probe believes the getters.
+- `XgeProbe` - the Generic Event Extension, which is a version handshake and nothing else (F4): the
+  extension asked for by name, then `QueryVersion` sent twice - a client asking for 1.0 and one
+  asking for 0.0 - because whether the answer is the server's version or the client's is per
+  extension and measured each time. There is no generated protocol module for XGE, so the request is
+  four fields written by hand; the run is **identical** on both servers.
+- `ResProbe` - X-Resource as a client uses it (F3): the version asked three times, the client list,
+  the resource counts for a client that has just made one of each of a window, a pixmap, a GC, a
+  font and a cursor (the type atoms are **resolved to their names**, because the numbers are each
+  server's own), the pixmap bytes, the client-id masks, a named resource's size - and an id no client
+  owns, which both servers refuse `BadValue`. It is a deliberately **different** run on the two
+  servers; the differences and their reasons are in "What the sweep is expected to differ on".
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -429,9 +449,9 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-27: 15 of the 21 probes identical.** The seven that
+each server assigns for itself). **Full run 2026-09-28: 16 of the 23 probes identical.** The eight that
 differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
-is a run that agrees with the reference, and a run that reports an *eighth* one is a finding:
+is a run that agrees with the reference, and a run that reports a *ninth* one is a finding:
 
 - **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
   reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler
@@ -440,8 +460,26 @@ is a run that agrees with the reference, and a run that reports an *eighth* one 
   with entries a client cannot parse would be worse than answering none. Everything else in the
   extension agrees line for line: the version (`Initialize` answers **the server's** 3.1 to a client
   asking for 3.1 and to one asking for 3.0), a counter's create/set/change/query over the full 64
-  bits, `GetPriority`/`SetPriority`, and a fence walked through untriggered, triggered, reset and
-  destroyed.
+  bits, `GetPriority`/`SetPriority`, a fence walked through untriggered, triggered, reset and
+  destroyed, **and since F1 the whole alarm section** - the four trigger arrangements, the delta that
+  re-arms a threshold, the comparison that goes inactive after firing, and both `BadMatch` refusals,
+  each identical. (The counters and alarms are printed in decimal and the normaliser maps ids, as it
+  does an atom's; the *values* are what the tests are about and are not normalised.)
+- **`ResProbe`** - structurally different, and every part of it is one of four measured facts rather
+  than a formatting accident. (1) **The client list has a different length**: a reference lists seven
+  clients because `x11vnc`, driven by `tools/xvfb.sh`, holds six connections to it, and this server
+  lists its own resources plus the probe. (2) **`QueryClientIds` has no local-pid rows here.**
+  `LOCAL_CLIENT_P_I_D` is answered from the peer credentials of a *unix socket*, and this server's
+  transport is TCP, so no client's process id is knowable - a reference omits the same rows for a
+  client that reached it over TCP, which is the row this server is in for every client. The XID bit
+  is answered with an empty value list by both, which is the reference's own answer. (3) **A window
+  holds bytes here.** A reference reports zero for a window (no backing store) and this server keeps
+  every window's pixels (B5), so `QueryResourceBytes` says 1024 bytes for a 40x30 window - reporting
+  none would be the wrong answer to the question the extension exists to ask. (4) **A named type
+  matches.** `QueryResourceBytes` compares the `type` a client names against the resource's own type
+  atom, which is what the specification says; **a reference answers nothing for any non-zero type,
+  even the resource's own**, so a probe asking with the WINDOW atom gets one row here and none from
+  Xvfb. The last two are this repository's decisions and are recorded as such in the F3 entry.
 
 - **`ChangeCursorProbe`** - this server refuses `XFixesChangeCursorByName` with `BadImplementation`,
   where a reference **accepts every name and does nothing with it** (its cursor font has no glyph

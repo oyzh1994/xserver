@@ -102,7 +102,8 @@ io.github.oyzh1994.xserver
 ├── tray/         the notification area, shown in the host's menu bar
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
-                  XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS and GLX
+                  XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS, GLX, RENDER, Composite, SYNC,
+                  Present, X-Resource and the Generic Event Extension
 ```
 
 Three decisions shape everything else:

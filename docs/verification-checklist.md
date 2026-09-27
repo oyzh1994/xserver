@@ -15,11 +15,11 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **393 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 393 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **407 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 407 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
-| 0.5 | `tools/sweep.sh` | the probe sweep | **15 identical, and the 7 differences are exactly the documented ones** (§7's list in `tools/README.md`) - a *sixth* difference is a finding |
+| 0.5 | `tools/sweep.sh` | the probe sweep | **16 identical of 23, and the 8 differences are exactly the documented ones** (the list in `tools/README.md`) - a *ninth* difference is a finding |
 | 0.6 | stop everything: `pkill -f 'io.github.oyzh1994.xserver.Main'`, `tools/xvfb.sh stop`, kill the VM's clients | - | nothing left listening on 6010 or 6062-6099, no `Xvfb`/`x11vnc`/AppImage on the VM (a leftover makes the *next* run fail as if the code were broken) |
 
 `tools/kit.sh <Tool> <args>` is the launcher with the classpath filled in; run `mvn -o test-compile`
@@ -59,7 +59,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 2.9 | XInput2 events: key/button/motion, the 80-byte fixed part, the masks | `XiProbe select`, `XInputTest` | a device event is **120 bytes for a key, 136 for a two-axis motion** - a 68-byte event is not rejected by GDK, it corrupts the application |
 | 2.10 | the cursor a client sets, and `HideCursor`/`ShowCursor` | `ChangeCursorProbe`, `CursorProbe` | identical; `ChangeCursorByName` stays refused (measured: a reference does nothing for it either) |
 | 2.11 | typing into a real application, in the host's input method | `tools/host-type.c`, the VM's `ibus` | the character arrives; a composed character uses the synthetic keycode and a `MappingNotify` |
-| 2.12 | the two apps' own gestures | EasyShell, termora by hand | EasyShell's context menu survives the out-and-back; typing lands; termora the same |
+| 2.12 | the two apps' own gestures | EasyShell, termora by hand | EasyShell's context menu survives the out-and-back; typing lands; termora the same. **EasyShell is scriptable and was driven that way on 2026-09-28** (right-click a host row, leave and re-enter, capture: the menu is still there). **termora's is not, from a script**: its host tree had no rows to right-click on the run that day, so a scripted pass can only confirm it *renders* - a hand is what settles its menus, and the entry for the gesture says so everywhere it has been measured |
 
 ## 3. The extensions
 
@@ -72,6 +72,10 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 3.5 | GLX: handshake, configs, contexts, strings | `GlxProbe`, `glxinfo`, `glxgears` on the VM | `glxinfo` says `direct rendering: Yes`; the extension list is deliberately **empty**; an indirect context is refused |
 | 3.6 | XFixes: selections, cursor notifications, regions | `SelectionProbe`, `CursorProbe`, `XFixesNotifyTest` | identical |
 | 3.7 | the shape of a refusal | any probe | a request this server does not implement is refused with a *named* error, never accepted-and-dropped and never a decode crash |
+| 3.8 | SYNC alarms: a trigger on a counter, its four arrangements, its delta and its two refusals | `SyncProbe` | identical to the reference line for line (the alarm section is the part that changed in F1) |
+| 3.9 | Present's `NotifyMSC`, alongside its completion notifications | `PresentProbe` | identical: the completion carries kind 1 and the client's serial |
+| 3.10 | the Generic Event Extension: advertised, version handshake | `XgeProbe`, `xdpyinfo` | listed as `Generic Event Extension`, answers 1.0 to a client asking 1.0 or 0.0, twin probe identical |
+| 3.11 | X-Resource: the client list, counts by type, pixmap bytes, a named resource's size | `ResProbe`, `ResTest` | the four deliberate differences below, and everything else identical |
 
 ## 4. The host window - where this server is not a plain server
 
@@ -138,7 +142,7 @@ bandwidth on a slow link that suffers, not compatibility.
 | 6.1 | framebuffer memory is allocated lazily | `IdleScreenMemoryTest` | a connection that only asks questions allocates nothing |
 | 6.2 | a client that stops reading is not waited on | `E5`'s cases | the server stays responsive to everyone else |
 | 6.3 | the performance paths hold | `E3`'s cases | the opaque-source and A8-mask paths and the damage region are still there (the numbers are in the entry) |
-| 6.4 | the suite runs where there is no display | `ci.sh` with `-Djava.awt.headless=true` | 393 tests, 2 skips, success |
+| 6.4 | the suite runs where there is no display | `ci.sh` with `-Djava.awt.headless=true` | 407 tests, 2 skips, success |
 | 6.5 | the documents agree with the code | §7 and §8 below | nothing here contradicts the three documents - which is what E6 is |
 
 ---

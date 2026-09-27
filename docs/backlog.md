@@ -101,14 +101,15 @@ A prompt that starts a fresh session on this, verbatim:
 
 **§9 at the end of this file is a different kind of list**: capabilities this server does not have at
 all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. **Its seven candidates, when the owner wants to schedule new work:**
+candidates rather than as items. **Three of the seven were built on 2026-09-28 (F1, F3, F4); these are
+the four that remain, when the owner wants to schedule new work:**
 
 | id | candidate | size | why it is first (or last) |
 |----|-----------|------|---------------------------|
-| [ ] F1 | `PresentNotifyMSC` + the SYNC alarms - the holes inside extensions that already exist | S-M | a modern client could reach for either; both small |
+| ~~F1~~ | ~~`PresentNotifyMSC` + the SYNC alarms~~ **done 2026-09-28**: the alarms are in; `PresentNotifyMSC` was already answered, and the §9 claim that it was refused was stale | extension | S-M |
 | [ ] F2 | `RECORD` | M | `x11vnc -record` is a real client in this project's own orbit |
-| [ ] F3 | `X-Resource` | S | answers "who is using the memory", which E4 left open |
-| [ ] F4 | `Generic Event Extension` | S | makes XI2's events *findable*, the way a client checks |
+| ~~F3~~ | ~~`X-Resource`~~ **done 2026-09-28**: all six requests of 1.2, with two deliberate differences | extension | S |
+| ~~F4~~ | ~~`Generic Event Extension`~~ **done 2026-09-28**: advertised and answered, and it exposed a real `QueryExtension` defect that is now fixed | extension | S |
 | [ ] F5 | `DOUBLE-BUFFER` (Xdbe) | M | B5's store makes the back buffer nearly free |
 | [ ] F6 | `XVideo` | M-L | every client of it falls back today - the weakest case |
 | [ ] F7 | `SECURITY` | M | the answer to "run a client I do not trust" |
@@ -4670,28 +4671,30 @@ one by one:
   a cookie) and `SetAccessControl` (the same switch, read-only). `KillClient`, `SetCloseDownMode`,
   `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
   `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
-- **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way:
-  the reference advertises **23** and this server **17**, of which **16 are shared**. The difference is
-  seven the reference has and this server does not - the table below - and one this server has and that
-  reference build does not: **DPMS**, which is B7's work (the sweep documents it as a deliberate
-  difference).
+- **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way
+  (re-measured 2026-09-28, after F3 and F4 landed): the reference advertises **23** and this server
+  **19**, of which **18 are shared**. The difference is five the reference has and this server does
+  not - the table below - and one this server has and that reference build does not: **DPMS**, which
+  is B7's work (the sweep documents it as a deliberate difference). **Two of the seven rows below are
+  now done**: the Generic Event Extension and X-Resource are advertised and answered, so the list of
+  absent extensions is five, not seven.
 
 | extension | what it is | who asks | here |
 |-----------|-----------|----------|------|
 | `DOUBLE-BUFFER` (Xdbe) | a client draws into an off-screen back buffer and swaps | toolkits that refuse to flicker (older GTK/Qt paths, games); most fall back to normal drawing | **absent** |
-| `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | **absent** |
+| `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | ~~absent~~ **done 2026-09-28 (F4)** |
 | `MIT-SHM` | shared-memory images, so pixels do not travel over the socket | every toolkit probes it; all of them fall back | **absent, declined** - B8 has the reasons |
 | `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | **absent** |
 | `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | **absent** |
-| `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | **absent** |
+| `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | ~~absent~~ **done 2026-09-28 (F3)** |
 | `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | **absent** |
 
 And the holes *inside* extensions this server does have, from the same walk of the request surface:
 
 | hole | the requests | who would notice |
 |------|--------------|------------------|
-| SYNC **alarms** | `CreateAlarm`, `ChangeAlarm`, `DestroyAlarm`, `QueryAlarm` | a client that wants a server-side timer (frame pacing, idle timeouts) - refused today |
-| Present's **MSC** | `PresentNotifyMSC` | a client that paces itself against the display's refresh (a compositor, a video player) - refused today |
+| SYNC **alarms** | `CreateAlarm`, `ChangeAlarm`, `DestroyAlarm`, `QueryAlarm` | a client that wants a server-side timer (frame pacing, idle timeouts) - ~~refused today~~ **done 2026-09-28 (F1)**: the four requests, the `AlarmNotify` event, and the two refusals |
+| Present's **MSC** | `PresentNotifyMSC` | a client that paces itself against the display's refresh (a compositor, a video player) - ~~refused today~~ **this claim was stale**: B5's Present work had already answered it, and `PresentProbe` now pins it (kind 1, the client's serial, identical to the reference) |
 | Shape's **rectangles** | `ShapeGetRectangles` | a client reading a window's shape back rather than setting one |
 | XFixes' tail | `XFixesGetCursorImageAndName`, `XFixesChangeSaveSet` | rare; `GetCursorImage` (without the name) is here |
 | **XI1** beyond the device list | `SelectExtensionEvent`, `GetSelectedExtensionEvents`, `GetDeviceMotionEvents`, `ChangeDeviceControl`, `ListDeviceProperties`, XI1's `GrabDevice` | an XI1-era client; AWT uses XI1 only for the device list, which is done |
@@ -4703,20 +4706,59 @@ measured rather than assumed: a client that queries an absent extension gets "no
 a refusal, so the evidence is the **request profiles** - EasyShell's profile against the reference and
 against this server agrees request for request (the A/B method), and a sweep of thirty client tools
 against this server produced no refusals beyond the known two. None of them reached for Xdbe, Xv, RECORD
-or the rest. So these are capabilities a *different* client would use, and the seven candidates below
-are ordered by **what breaks without it** - the first is the one to do if only one is done. They are
-candidates for the owner to schedule, not items somebody has started; each becomes a full entry (with
-*Current*, *Traps* and *Verify*, like §2-§6) when it is picked up.
+or the rest. So these are capabilities a *different* client would use, and the candidates below are
+ordered by **what breaks without it** - the first is the one to do if only one is done. **F1, F3 and
+F4 were taken on 2026-09-28** and are full entries with a measurement behind them; the four that
+remain (F2, F5, F6, F7) are still candidates for the owner to schedule rather than items somebody has
+started.
 
-### F1. `PresentNotifyMSC` and the SYNC alarms. **S-M**
+### [x] F1. `PresentNotifyMSC` and the SYNC alarms. **S-M** - done 2026-09-28, and one half was already in
 
-The two holes inside extensions this server already has, and the ones a *modern* client could plausibly
-reach for: a compositor pacing itself against the display's refresh (`PresentNotifyMSC`), and a
-toolkit's own frame timer or idle timeout (`CreateAlarm`/`ChangeAlarm`/`DestroyAlarm`/`QueryAlarm`).
-Small: the reply layouts, plus an MSC counter this server increments per present - it has no vblank to
-report, so what it counts has to be defined deliberately and documented as such. **Verify**: `SyncProbe`
-and `PresentProbe` extended, identical to the reference where the reference has the feature; a client
-that asks for an alarm gets one that fires.
+**What it was.** The two holes inside extensions this server already has, and the ones a *modern*
+client could plausibly reach for: a compositor pacing itself against the display's refresh
+(`PresentNotifyMSC`), and a toolkit's own frame timer or idle timeout
+(`CreateAlarm`/`ChangeAlarm`/`DestroyAlarm`/`QueryAlarm`).
+
+**What was actually missing.** Only the alarms. `PresentNotifyMSC` had been answered since B5's
+Present work - the §9 table said "refused today" and that was **stale**, which `tools/PresentProbe`
+now shows: the request produces a completion notification with kind 1 and the client's own serial,
+identical on both servers. The alarms were refused, and that is the half that was built.
+
+**Current.** `SyncExtension` now keeps alarms as resources: `CreateAlarm`, `ChangeAlarm`,
+`DestroyAlarm` and `QueryAlarm`, and the **`AlarmNotify` event** - which is a real extension event at
+`firstEvent + 1`, not a generic one, which is why SYNC is now registered with two events instead of
+none. An alarm is a trigger on a counter, evaluated when that counter's value moves (a counter here
+only moves when a client sets or changes it, so that is the complete set of moments an alarm can
+fire). **The trigger rules are measured, not recalled** (`tools/SyncProbe`, whose alarm section walks
+each one and is identical to the reference line for line):
+
+- a **positive transition** fires when the value goes from at or below the threshold to above it, a
+  **negative transition** is the mirror, and both stay **active** after firing;
+- after firing, the threshold moves by the delta - **added, whatever the test is** (10 → 110 → 210 for
+  a positive transition with delta 100; 10 → -90 for a negative one with delta -100);
+- a **comparison** fires once and then goes **inactive**, and says so in its own state byte - moving
+  further the same way, or back across, produces nothing;
+- a transition whose delta would move its threshold the way its test cannot use - negative with a
+  positive delta, positive with a negative delta - is refused **`BadMatch` on the alarm's own id**.
+- A refused one-way request leaves an error on the stream that the next read would consume as a reply;
+  `SyncProbe.readRefusal` reads it, and the first version that did not reported a counter value of
+  -4294967420.
+
+**What is this server's reading rather than a measurement** (the specification leaves these loose and
+the probe does not cover them, so they are marked in the class): a `Relative` value type is the
+threshold relative to the counter's value when the alarm was armed, `ChangeAlarm` re-arms without
+firing, and an alarm created while its condition already holds waits for the next change.
+
+**Also fixed here, because the probes made it visible**: an id that is not the resource a SYNC request
+expects is now answered with **this extension's** error (`BadCounter`/`BadAlarm`/`BadFence` at the
+extension's error base) rather than the core `BadDrawable` the resource table's own lookup produced -
+which is what a reference answers.
+
+**Live on `.147` (2026-09-28)**, the whole round's regression, server on the Mac in the mode the clients use (`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders, typing lands** (its search box comes back with the two characters the driver typed), **its context menu opens and survives the out-and-back gesture**, and **termora renders** - and neither log has a refusal beyond the two known `window 0x0` probes every GTK/Swing client makes. `mvn test` **407/407**, and the headless run **407 with its 2 toolkit skips, BUILD SUCCESS**.
+
+**Verify****: `tools/SyncProbe` (the alarm section) against `Xvfb` and against this server - **identical
+line for line**, including both refusals and the inactive state of a comparison - plus `SyncTest`'s
+four new cases (fire, comparison-once, refusal, destroyed-alarm).
 
 ### F2. `RECORD`. **M**
 
@@ -4727,22 +4769,76 @@ recordings would become scriptable without `XProxy` sitting in the middle. Its s
 the same gesture - which is `XProxy`'s own comparison, done from inside the server instead of in front
 of it.
 
-### F3. `X-Resource`. **S**
+### [x] F3. `X-Resource`. **S** - done 2026-09-28
 
-Small, and it answers "who is using the memory" - the question E4's per-client framebuffer work left
-open, since that item made allocation lazy without a way to see it. Three requests:
-`QueryVersion`, `QueryClients`, `QueryClientResources`. **Verify**: `xrestop` (or a probe) reports the
-clients connected, with counts that move when a client allocates.
+**What it is.** Per-client resource accounting: "who is using the memory" - the question E4's
+per-client framebuffer work left open, since that item made allocation lazy without a way to see it.
 
-### F4. `Generic Event Extension`. **S**
+**Current.** All six requests of 1.2 are answered (`QueryVersion`, `QueryClients`,
+`QueryClientResources`, `QueryClientPixmapBytes`, `QueryClientIds`, `QueryResourceBytes`), from the
+server's own resource table - the counts are real, and they move when a client allocates. Measured
+against a reference with `tools/ResProbe`, four things are not guessable and three of them are now
+deliberate differences:
 
-A handshake and a version number, so a client that checks *properly* for generic-event support is told
-yes rather than falling back. XI2's events already work here, and this is what makes them *findable* to
-a client that looks for them the way the protocol intends. **S**, and worth doing whichever of the
-others is picked: it is a prerequisite-shaped gap rather than a feature. **Verify**: `xdpyinfo` lists
-it, and a client that queries it gets a version.
+- **`QueryVersion` answers the server's own 1.2** to a client asking for 1.2, 1.0 or 2.0 - the same
+  rule as Composite's and SYNC's, the opposite of Present's.
+- **`QueryClients` lists the server's own resources as a client with base zero**, before the
+  connected ones. This server's own resources are the ones with no owning connection - the root
+  window, the predefined fonts and colormaps, the bridges' windows - which is the same thing a
+  reference's client 0 holds.
+- **The resource types are atoms**, and the six core names (WINDOW, PIXMAP, GC, FONT, CURSOR,
+  COLORMAP) were read off a reference's reply. The extension types this server has (PICTURE, DAMAGE,
+  GLYPHSET, COUNTER, FENCE, REGION, GLX CONTEXT) are named by upper-casing its own type name - this
+  server's naming, and there is nothing to agree with, because Xorg's set is closed and different.
+  They are interned **lazily**, so a client that never asks about resources does not see the atom
+  table move.
+- **An id no client owns is refused `BadValue` carrying the id**, by every request that names one -
+  except `QueryClientIds`, where a spec naming an unknown client is **no rows, not an error**, and
+  the XID bit is answered with an **empty value list**. Both are a reference's own answers, measured;
+  the empty list is surprising enough to be worth stating in the code as well.
+
+**Deliberate differences from the reference** (both in `tools/README.md`'s sweep list): **a window
+holds bytes here** - 4 bytes a pixel for its store, where a reference reports zero because a window
+there has no backing store, and this server keeps every window's pixels (B5), so reporting none would
+be the wrong answer to the question the extension asks; and **a named `type` is matched against the
+resource's own type atom**, which is what the specification says, where a reference answers nothing
+for any non-zero type - even the resource's own - so `QueryResourceBytes` for a window with the WINDOW
+atom returns one row here and none from Xvfb. The local-pid bit is **not answered** and that is not a
+difference: a reference omits those rows for a client it reached over TCP, and this server's transport
+is TCP, so no client's process id is knowable.
+
+**Live on `.147` (2026-09-28)**, the whole round's regression, server on the Mac in the mode the clients use (`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders, typing lands** (its search box comes back with the two characters the driver typed), **its context menu opens and survives the out-and-back gesture**, and **termora renders** - and neither log has a refusal beyond the two known `window 0x0` probes every GTK/Swing client makes. `mvn test` **407/407**, and the headless run **407 with its 2 toolkit skips, BUILD SUCCESS**.
+
+**Verify****: `tools/ResProbe` against both (the four differences above, and nothing else), and
+`ResTest`'s seven cases.
+
+### [x] F4. `Generic Event Extension`. **S** - done 2026-09-28
+
+**What it is.** A handshake and a version number, so a client that checks *properly* for generic-event
+support is told yes rather than falling back. XI2's events already work here; this is what makes them
+*findable* the way the protocol intends.
+
+**Current.** `XgeExtension` answers `QueryVersion` **1.0** - the server's own version, measured: a
+reference answers 1.0 to a client asking for 1.0 and to one asking for 0.0. There is **no generated
+protocol module for XGE** in the x11 library, so the request decoder and the reply are written out by
+hand (eight bytes and thirty two; the offsets are stated in the class and pinned by `XgeTest`).
+
+**A real defect it exposed, now fixed.** `QueryExtension` reported the registry's next free code as an
+extension's `first_event`/`first_error` even when the extension defines **none**. A reference answers
+**0** for both on every requests-and-replies extension - measured for BIG-REQUESTS, XC-MISC,
+Composite, Present and XGE - and 64/0 for SHAPE, which defines one event and no errors. XGE is the
+first extension here with neither, so it is what made the old behaviour visible; `ExtensionRegistry`
+now reports 0 for a range it did not allocate. Nothing in the suite depended on the old numbers, and
+`XgeTest` pins the new ones.
+
+**Live on `.147` (2026-09-28)**, the whole round's regression, server on the Mac in the mode the clients use (`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders, typing lands** (its search box comes back with the two characters the driver typed), **its context menu opens and survives the out-and-back gesture**, and **termora renders** - and neither log has a refusal beyond the two known `window 0x0` probes every GTK/Swing client makes. `mvn test` **407/407**, and the headless run **407 with its 2 toolkit skips, BUILD SUCCESS**.
+
+**Verify****: `tools/XgeProbe` against both - **identical** - plus `xdpyinfo` listing
+`Generic Event Extension`, and `XgeTest`'s three cases.
 
 ### F5. `DOUBLE-BUFFER` (Xdbe). **M**
+
+**Still a candidate: nothing has been started on it.**
 
 A real feature - a back buffer, a swap, and a swap interval - whose clients all fall back to ordinary
 drawing today. B5's per-window store makes the back buffer nearly free (the pixels already exist), so
