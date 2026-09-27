@@ -3191,9 +3191,9 @@ and a real Finder drag onto it, on this server, ends with the target printing
 `a host drag is over the window with 1 file(s); accepted=true` → `the host dropped 1 file(s) at
 824,487` → `DropBridge: dropping 1 file(s) on 0x200002` → the target's `XdndStatus`, its
 `ConvertSelection`, and the `text/uri-list` the bridge served. **So the bridge's conversation is one
-a real toolkit accepts**, and the earlier "the application never answers" is a fact about the
-*two applications this bed has* (both were tried again this session and neither was reproducible
-with a scripted drag - see below) rather than about the protocol.
+a real toolkit accepts.** (The paragraph in this entry that says "the application never answers" was
+written before the drag could be driven at EasyShell at all; **the measurement further down supersedes
+it** - the application answers, and what it cannot do is open the file it is told about.)
 
 **What that session cost, in harness facts worth not re-deriving:**
 
