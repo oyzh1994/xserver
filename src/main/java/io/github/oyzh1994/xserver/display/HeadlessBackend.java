@@ -22,7 +22,7 @@ public final class HeadlessBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Screen screen, int displayNumber, InputSink input) {
+    public void start(Surface surface, int displayNumber, InputSink input) {
         // Nothing to open: there is no window and no input source.
     }
 

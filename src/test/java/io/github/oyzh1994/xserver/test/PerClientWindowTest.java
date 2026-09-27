@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.display.Surface;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Rectangle;
@@ -253,7 +254,7 @@ class PerClientWindowTest {
         final AtomicBoolean stopped = new AtomicBoolean();
         final AtomicBoolean idle = new AtomicBoolean();
         final AtomicInteger frames = new AtomicInteger();
-        volatile Screen screen;
+        volatile Surface screen;
         volatile Rectangle viewport = new Rectangle();
 
         @Override
@@ -262,8 +263,8 @@ class PerClientWindowTest {
         }
 
         @Override
-        public void start(Screen screen, int displayNumber, InputSink input) {
-            this.screen = screen;
+        public void start(Surface surface, int displayNumber, InputSink input) {
+            this.screen = surface;
         }
 
         @Override
@@ -272,7 +273,7 @@ class PerClientWindowTest {
         }
 
         @Override
-        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
             frames.incrementAndGet();
         }
 

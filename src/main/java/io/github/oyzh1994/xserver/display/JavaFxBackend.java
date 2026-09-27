@@ -164,14 +164,14 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Screen screen, int displayNumber, InputSink input) {
+    public void start(Surface surface, int displayNumber, InputSink input) {
         startupToolkit();
         this.input = input;
-        this.scale = screen.scale();
-        Framebuffer framebuffer = screen.framebuffer();
+        this.scale = surface.scale();
+        Framebuffer framebuffer = surface.framebuffer();
         this.framebuffer = framebuffer;
-        int width = screen.width();
-        int height = screen.height();
+        int width = surface.width();
+        int height = surface.height();
         // The framebuffer is row major with stride == width, so its array is already laid out the
         // way the pixel buffer wants it and can be wrapped rather than copied.
         IntBuffer pixels = IntBuffer.wrap(framebuffer.pixels());

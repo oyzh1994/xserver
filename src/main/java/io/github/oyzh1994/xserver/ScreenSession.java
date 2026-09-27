@@ -4,6 +4,8 @@ import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.display.Surface;
+import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XWindow;
@@ -11,15 +13,21 @@ import io.github.oyzh1994.xserver.resource.XWindow;
 import java.awt.Rectangle;
 
 /**
- * One X screen together with the host window that shows it: the master screen shared by every
- * client, or the private screen of a single connection.
+ * One host window and the X screen it shows - or, once a client has more than one top level, the
+ * window one of them is shown in (C8).
  *
  * <p>A client's own screen is what makes "one window per forwarded application" work. Its windows
  * live on that screen, so they cannot be drawn over by another client's, and its input goes to that
- * screen's own pointer and focus. The window is opened when the client first maps something, shows
- * the part of the screen the client's windows occupy, and goes away with the connection.
+ * screen's own pointer and focus. A client's screen is shown by **one host window per mapped top
+ * level**: each of these objects is one of them, and the ones that show a window present that
+ * window's own picture - its subtree composited from the windows' stores ({@code WindowSubtree}) -
+ * rather than a rectangle of the screen, which is what keeps a dialog out of its parent's frame.
+ *
+ * <p>There is at least one session per screen, and it is the one that opens with the connection and
+ * closes with it ({@link #primary()}). The rest are frames around the client's other top levels, and
+ * they are created and destroyed by the display tick as those windows are mapped and unmapped.
  */
-public final class ScreenSession {
+public final class ScreenSession implements DisplayBackend.InputSink, Surface {
 
     private final Screen screen;
     private final InputState input;
@@ -104,10 +112,175 @@ public final class ScreenSession {
     private java.awt.Point persistedWindowPosition;
     private long positionHeldSince;
 
+    /**
+     * Whether this is the session the connection opened with - the one that owns the screen and
+     * answers for it.
+     *
+     * <p>The per-screen work (the XFixes cursor notification) and the screen's own teardown belong
+     * to it alone: a client with three top levels has three of these objects over one screen, and
+     * three of them announcing the same cursor change would tell a subscriber the same thing twice.
+     */
+    private boolean primary;
+
+    /**
+     * The X window this host window shows, or null when it shows the whole screen (the master screen
+     * and single-window mode). Set from the display tick, which is what follows the client's top
+     * levels.
+     */
+    private volatile XWindow target;
+
+    /**
+     * The pixels shown when {@link #target} is set: that window's own picture, kept up to date from
+     * the windows' stores (C8). Null for a session that shows the screen.
+     */
+    private Framebuffer picture;
+
+    /**
+     * A size the user asked for by dragging <em>this</em> host window's edge, waiting for the tick.
+     *
+     * <p>Here rather than on the {@link InputState}, where it used to be: a screen now has one host
+     * window per top level, and a drag of one of them must resize that window and not every window
+     * the client has - which is what reading the request off the shared input state did.
+     */
+    private volatile java.awt.Dimension requestedSize;
+    /** Where the user last dragged this host window, reported by the backend. */
+    private volatile java.awt.Point hostWindowPosition;
+
     public ScreenSession(Screen screen, InputState input, ClientConnection client) {
         this.screen = screen;
         this.input = input;
         this.client = client;
+    }
+
+    public boolean primary() {
+        return primary;
+    }
+
+    public void setPrimary(boolean primary) {
+        this.primary = primary;
+    }
+
+    public XWindow target() {
+        return target;
+    }
+
+    public void setTarget(XWindow target) {
+        this.target = target;
+    }
+
+    /**
+     * The pixels this host window shows: the window's own picture when it shows one, and the screen
+     * otherwise. What {@code DisplayBackend.present} is handed.
+     */
+    public Surface surface() {
+        return this;
+    }
+
+    @Override
+    public Framebuffer framebuffer() {
+        Framebuffer frame = picture;
+        return frame != null ? frame : screen.framebuffer();
+    }
+
+    @Override
+    public int width() {
+        XWindow window = target;
+        return window != null ? window.width() : screen.width();
+    }
+
+    @Override
+    public int height() {
+        XWindow window = target;
+        return window != null ? window.height() : screen.height();
+    }
+
+    @Override
+    public int scale() {
+        return screen.scale();
+    }
+
+    /**
+     * The picture of the window this session shows, made to the window's current size.
+     *
+     * <p>Reallocated when the window changes size, and **not** kept across one: a frame is a view of
+     * the window, so a resize is a new picture rather than a stretched old one. The contents are
+     * drawn by {@code WindowSubtree} before the frame is presented.
+     */
+    public Framebuffer picture() {
+        XWindow window = target;
+        if (window == null) {
+            return null;
+        }
+        if (picture == null || picture.width() != window.width()
+                || picture.height() != window.height()) {
+            picture = new Framebuffer(Math.max(1, window.width()), Math.max(1, window.height()), 0);
+        }
+        return picture;
+    }
+
+    @Override
+    public void pointerMoved(int x, int y) {
+        input.pointerMoved(x, y);
+    }
+
+    @Override
+    public void buttonChanged(int button, boolean pressed, int x, int y) {
+        input.buttonChanged(button, pressed, x, y);
+    }
+
+    @Override
+    public void keyChanged(int keycode, boolean pressed, int x, int y) {
+        input.keyChanged(keycode, pressed, x, y);
+    }
+
+    @Override
+    public void keyTyped(char character) {
+        input.keyTyped(character);
+    }
+
+    @Override
+    public void hostDrop(java.util.List<String> paths, int x, int y) {
+        input.hostDrop(paths, x, y);
+    }
+
+    @Override
+    public void focusChanged(boolean focused) {
+        input.focusChanged(focused);
+    }
+
+    /**
+     * The user dragged this host window's edge. Recorded rather than applied: this arrives on the
+     * toolkit's thread, and resizing a client's window means taking the server lock and walking the
+     * window tree, which the tick is doing at the same time.
+     */
+    @Override
+    public void windowResized(int width, int height) {
+        if (width > 0 && height > 0) {
+            requestedSize = new java.awt.Dimension(width, height);
+        }
+    }
+
+    /** The size the user last dragged this window to, clearing it. Null when there is none. */
+    public java.awt.Dimension takeRequestedSize() {
+        java.awt.Dimension requested = requestedSize;
+        requestedSize = null;
+        return requested;
+    }
+
+    /**
+     * The user moved this host window. Called from the toolkit's thread, like
+     * {@link #windowResized}, so it only records where the window is: the display tick is what
+     * remembers it, because that is where the server's own bookkeeping happens and where a write to
+     * a file is not holding anybody up.
+     */
+    @Override
+    public void windowMoved(int x, int y) {
+        hostWindowPosition = new java.awt.Point(x, y);
+    }
+
+    /** Where this host window is now, or null when it has not been moved since the server started. */
+    public java.awt.Point hostWindowPosition() {
+        return hostWindowPosition;
     }
 
     public Screen screen() {

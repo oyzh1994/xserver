@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.display.Surface;
 import org.junit.jupiter.api.Test;
 
 import java.awt.Dimension;
@@ -186,13 +187,14 @@ class HostWindowTest {
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
             waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
-            assertEquals(800, backend.screen.height(), "the screen starts at --geometry's height");
+            assertEquals(800, backend.screenOf().height(),
+                    "the screen starts at --geometry's height");
 
             backend.input.windowResized(1250, 4000);
             waitForFrame(backend, new Rectangle(0, 20, 1250, 4000));
             // Twenty pixels more than the drag asked for: the window sits twenty pixels down the
             // screen, and those twenty are part of the screen the window is on.
-            assertEquals(4020, backend.screen.height(),
+            assertEquals(4020, backend.screenOf().height(),
                     "the screen grew to reach the far edge of what the drag asked for");
         } finally {
             server.stop();
@@ -292,14 +294,14 @@ class HostWindowTest {
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
             waitUntil(() -> new Rectangle(0, 0, 200, 100).equals(backend.viewport), "no window");
-            int wasWide = backend.screen.width();
+            int wasWide = backend.screenOf().width();
 
             // The screen grows with the window, so a drag past what the screen was is honoured
             // rather than capped - and the client is told the width it actually got.
             backend.input.windowResized(wasWide + 500, 100);
             waitForFrame(backend, new Rectangle(0, 0, wasWide + 500, 100));
 
-            assertEquals(wasWide + 500, backend.screen.width(),
+            assertEquals(wasWide + 500, backend.screenOf().width(),
                     "the screen grew by what the drag asked for");
             assertNotNull(configureOfWidth(client, wasWide + 500),
                     "the client's window should have been resized to what the drag asked for");
@@ -358,7 +360,7 @@ class HostWindowTest {
     /** A window that records what it is asked to show, and can be resized like a real one. */
     private static final class TestBackend implements DisplayBackend {
         final AtomicBoolean stopped = new AtomicBoolean();
-        volatile Screen screen;
+        volatile Surface screen;
         volatile InputSink input;
         volatile Rectangle viewport = new Rectangle();
         volatile String title;
@@ -373,9 +375,14 @@ class HostWindowTest {
         }
 
         @Override
-        public void start(Screen screen, int displayNumber, InputSink input) {
-            this.screen = screen;
+        public void start(Surface surface, int displayNumber, InputSink input) {
+            this.screen = surface;
             this.input = input;
+        }
+
+        /** The screen this window shows: a client in per-client mode has one of its own. */
+        io.github.oyzh1994.xserver.display.Screen screenOf() {
+            return ((io.github.oyzh1994.xserver.ScreenSession) screen).screen();
         }
 
         @Override
@@ -384,7 +391,7 @@ class HostWindowTest {
         }
 
         @Override
-        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
         }
 
         @Override

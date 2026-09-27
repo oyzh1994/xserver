@@ -154,7 +154,7 @@ final class RfbSession implements Runnable {
 
     private final VncBackend backend;
     private final RfbTransport transport;
-    private final Screen screen;
+    private final Surface screen;
     private final DisplayBackend.InputSink input;
     private final String name;
     /** The password a client must type, or null when the display is served to anyone who asks. */
@@ -229,7 +229,7 @@ final class RfbSession implements Runnable {
 
     private byte[] pixels = new byte[0];
 
-    RfbSession(VncBackend backend, RfbTransport transport, Screen screen,
+    RfbSession(VncBackend backend, RfbTransport transport, Surface screen,
                DisplayBackend.InputSink input, String name, String password) throws IOException {
         this.backend = backend;
         this.transport = transport;

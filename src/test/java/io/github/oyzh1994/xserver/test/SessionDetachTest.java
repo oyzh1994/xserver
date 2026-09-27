@@ -6,6 +6,7 @@ import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
+import io.github.oyzh1994.xserver.display.Surface;
 import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
@@ -244,7 +245,7 @@ class SessionDetachTest {
 
         final AtomicBoolean stopped = new AtomicBoolean();
         final List<Rectangle> damage = new CopyOnWriteArrayList<>();
-        volatile Screen screen;
+        volatile Surface screen;
         volatile InputSink input;
         volatile Rectangle viewport = new Rectangle();
         volatile boolean closed;
@@ -255,8 +256,8 @@ class SessionDetachTest {
         }
 
         @Override
-        public void start(Screen screen, int displayNumber, InputSink input) {
-            this.screen = screen;
+        public void start(Surface surface, int displayNumber, InputSink input) {
+            this.screen = surface;
             this.input = input;
         }
 
@@ -266,7 +267,7 @@ class SessionDetachTest {
         }
 
         @Override
-        public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+        public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
             this.damage.add(new Rectangle(damage));
         }
 

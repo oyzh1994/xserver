@@ -13,6 +13,8 @@ import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.display.VisualInfo;
+import io.github.oyzh1994.xserver.draw.Framebuffer;
+import io.github.oyzh1994.xserver.draw.WindowSubtree;
 import io.github.oyzh1994.xserver.event.EventDispatcher;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.event.RawEvent;
@@ -67,6 +69,8 @@ public final class XServer {
      * Every screen the server is showing, the master one included.
      */
     private final List<ScreenSession> sessions = new CopyOnWriteArrayList<>();
+    /** Each screen's damage for the frame being drawn, taken once per frame. */
+    private final Map<Screen, Rectangle> frameDamage = new HashMap<>();
     private final BitSet usedClientIndices = new BitSet(ClientConnection.MAX_CLIENTS);
     private final Map<String, Selection> selections = new HashMap<>();
     private final List<io.github.oyzh1994.xserver.handler.InputHandlers.PassiveGrab> passiveGrabs =
@@ -180,6 +184,7 @@ public final class XServer {
         this.input = new InputState(this, screen);
         screenInputs.put(screen, input);
         this.masterSession = new ScreenSession(screen, input, null);
+        this.masterSession.setPrimary(true);
         sessions.add(masterSession);
 
         registerExtensions();
@@ -575,6 +580,7 @@ public final class XServer {
         Screen privateScreen = createScreen(0);
         InputState privateInput = new InputState(this, privateScreen);
         ScreenSession session = new ScreenSession(privateScreen, privateInput, client);
+        session.setPrimary(true);
         screenInputs.put(privateScreen, privateInput);
         sessions.add(session);
         client.setSession(session);
@@ -589,6 +595,13 @@ public final class XServer {
             return;
         }
         session.markClosed();
+        // Every host window the client had over this screen goes with it (C8): the frames are
+        // driven by the session that owns the screen, and that session is this one.
+        for (ScreenSession other : sessions) {
+            if (other != session && other.screen() == session.screen()) {
+                other.markClosed();
+            }
+        }
         resources.free(session.screen().root().id());
         resources.free(session.screen().defaultColormap().id());
         resources.free(session.screen().rootCursor().id());
@@ -926,8 +939,9 @@ public final class XServer {
     private void eventLoop() {
         long frameMillis = Math.max(1, 1000 / Math.max(1, options.tickRate()));
         while (running) {
+            takeScreenDamage();
             for (ScreenSession session : sessions) {
-                tick(session);
+                tick(session, frameDamage.get(session.screen()));
             }
             if (!options.perClientWindows() && masterSession.closeDeadline() != 0
                     && System.currentTimeMillis() >= masterSession.closeDeadline()) {
@@ -946,6 +960,170 @@ public final class XServer {
     }
 
     /**
+     * Takes each screen's damage for this frame, once, before any of its host windows is shown.
+     *
+     * <p>A screen is shown by one host window per top level (C8), so the damage it accumulated
+     * belongs to all of them: taking it once per host window would give the first the whole of it and
+     * the rest none. Consumed rather than merely read, as it always was - the framebuffer's damage is
+     * what the backends latch on to.
+     */
+    private void takeScreenDamage() {
+        serverLock.lock();
+        try {
+            for (Screen screen : screens) {
+                frameDamage.put(screen, screen.framebuffer().takeDamage());
+            }
+        } finally {
+            serverLock.unlock();
+        }
+    }
+
+    /**
+     * Makes this screen's host windows match the client's top levels (C8).
+     *
+     * <p>A client's screen is shown by one host window per mapped top level: the session the
+     * connection opened with shows the **largest** of them - the same rule the host window's title
+     * has always come from, and one rule is better than two - and every other top level gets a
+     * session of its own. A window that stops being mapped takes its frame with it, which is what
+     * makes a dialog's frame go away with the dialog.
+     *
+     * <p>Only for a client's own screen. The master screen is shown by the one window of
+     * single-window mode - or by nothing at all in per-client mode - and its session goes on showing
+     * the whole screen.
+     */
+    private void syncFrames(ScreenSession session) {
+        if (!session.primary() || session.client() == null) {
+            return;
+        }
+        XWindow largest = identitySource(session.screen());
+        session.setTarget(largest);
+        for (XWindow window : mappedTopLevels(session.screen())) {
+            if (window != largest && frameFor(session, window) == null) {
+                ScreenSession frame = new ScreenSession(session.screen(), session.input(),
+                        session.client());
+                frame.setTarget(window);
+                // Named after the client, with a number: where a window was arranged belongs to the
+                // window, and two frames of one client that shared one remembered position would
+                // open on top of each other.
+                frame.setClientKey(session.clientKey() == null ? null
+                        : session.clientKey() + "#" + framesOf(session));
+                sessions.add(frame);
+                log.debug("display :{} is now framing 0x{} as well ({}x{})", options.displayNumber(),
+                        Integer.toHexString(window.id()), window.width(), window.height());
+            }
+        }
+        for (ScreenSession other : sessions) {
+            if (other == session || other.primary() || other.screen() != session.screen()) {
+                continue;
+            }
+            XWindow target = other.target();
+            if (target == null || !target.isMapped() || target.isInputOnly()
+                    || target.isOverrideRedirect()) {
+                other.markClosed();
+            }
+        }
+    }
+
+    /** How many host windows this client already has over this screen, the primary one included. */
+    private int framesOf(ScreenSession primary) {
+        int count = 0;
+        for (ScreenSession other : sessions) {
+            if (other != primary && !other.primary() && other.screen() == primary.screen()
+                    && other.client() == primary.client()) {
+                count++;
+            }
+        }
+        return count + 2;
+    }
+
+    /**
+     * The host window a screen opens with - the one that owns it, frames its largest top level, and
+     * answers for the screen.
+     *
+     * <p>What a caller that has a screen and wants the window showing it is after: the user's drag of
+     * a host window arrives at the window it was dragged, and with one window per top level (C8)
+     * that is the only thing that can tell a drag of one frame from a drag of another.
+     */
+    public ScreenSession hostWindow(Screen screen) {
+        for (ScreenSession session : sessions) {
+            if (session.primary() && session.screen() == screen) {
+                return session;
+            }
+        }
+        return null;
+    }
+
+    /** The host window already framing {@code window} on this screen, or null. */
+    private ScreenSession frameFor(ScreenSession primary, XWindow window) {
+        for (ScreenSession other : sessions) {
+            if (other != primary && other.screen() == primary.screen()
+                    && other.target() == window) {
+                return other;
+            }
+        }
+        return null;
+    }
+
+    /** The client's top levels on a screen: mapped, not input-only, not a popup. */
+    private static List<XWindow> mappedTopLevels(Screen screen) {
+        List<XWindow> top = new ArrayList<>();
+        for (XWindow child : screen.root().children()) {
+            if (child.isMapped() && !child.isInputOnly() && !child.isOverrideRedirect()) {
+                top.add(child);
+            }
+        }
+        return top;
+    }
+
+    /**
+     * The part of the screen a host window shows: the window it frames, or the whole screen when it
+     * frames none.
+     *
+     * <p>A frame is exactly its window, which is what makes the input mapping work unchanged - the
+     * backend turns a point in its window into a point on the screen by adding this rectangle's
+     * origin, and for a frame that origin is where the window is.
+     */
+    private static Rectangle wantedViewport(ScreenSession session) {
+        XWindow target = session.target();
+        if (target != null) {
+            return target.absoluteBoundsWithBorder().intersection(
+                    new Rectangle(0, 0, session.screen().width(), session.screen().height()));
+        }
+        return session.client() == null
+                ? new Rectangle(0, 0, session.screen().width(), session.screen().height())
+                : contentBounds(session.screen());
+    }
+
+    /**
+     * What this host window has to redraw, in the coordinates of the surface it shows.
+     *
+     * <p>For the screen - the master screen and single-window mode - that is the screen's own damage,
+     * as it always was. For a window it is the part of that damage which falls inside the window,
+     * moved into the window's own coordinates: the picture is of the window, so a point in it is a
+     * point in the window.
+     */
+    private Rectangle frameDamage(ScreenSession session, Rectangle screenDamage, boolean full) {
+        XWindow target = session.target();
+        if (target == null) {
+            return full ? new Rectangle(session.viewport()) : screenDamage;
+        }
+        Framebuffer picture = session.picture();
+        Rectangle whole = new Rectangle(0, 0, picture.width(), picture.height());
+        // A picture with nothing in it yet - the first frame of a new host window, or the first
+        // after the window was resized and the picture was made again - is drawn whole.
+        if (full || !picture.allocated()) {
+            return whole;
+        }
+        if (screenDamage == null) {
+            return null;
+        }
+        Rectangle part = screenDamage.intersection(target.absoluteBounds());
+        return part.isEmpty() ? null
+                : new Rectangle(part.x - target.absoluteX(), part.y - target.absoluteY(),
+                        part.width, part.height);
+    }
+
+    /**
      * One frame for one screen: opens its window when there is something to show, keeps the window
      * sized to what the client draws, and presents the damage.
      *
@@ -953,7 +1131,7 @@ public final class XServer {
      * it, because those calls wait on the toolkit's own thread - and holding the lock there is what
      * would freeze every other client.
      */
-    private void tick(ScreenSession session) {
+    private void tick(ScreenSession session, Rectangle screenDamage) {
         if (session.closed()) {
             closeSessionBackend(session);
             sessions.remove(session);
@@ -969,10 +1147,12 @@ public final class XServer {
             // A resize the user asked for goes first: it changes the windows the rectangle below is
             // the union of, so doing it after would put the window and the frame one tick apart.
             applyRequestedSize(session);
+            syncFrames(session);
             // A held key repeats from here rather than from the client: the tick is where the
             // server's own periodic work lives, and the lock is already held.
             inputFor(session.screen()).pollAutoRepeat(System.currentTimeMillis());
-            XWindow source = identitySource(session.screen());
+            XWindow source = session.target() != null ? session.target()
+                    : identitySource(session.screen());
             if (source != session.identitySource()) {
                 // The window the host window is named after, which is the largest one the client has
                 // mapped - so it arrives with the first window the client maps and follows along if
@@ -995,9 +1175,7 @@ public final class XServer {
             // The master screen shows all of itself; a client's screen shows the part of it that
             // client's windows occupy, which is what keeps a small application out of a full-screen
             // window.
-            wanted = session.client() == null
-                    ? new Rectangle(0, 0, session.screen().width(), session.screen().height())
-                    : contentBounds(session.screen());
+            wanted = wantedViewport(session);
             boolean nowIdle = session.client() == null ? clients.isEmpty() : wanted == null;
             if (nowIdle != session.idle()) {
                 session.setIdle(nowIdle);
@@ -1059,7 +1237,12 @@ public final class XServer {
             // pointer's own path: it is the display that knows which window the pointer is in, and
             // the answer is the same whoever asks.
             XCursor displayed = session.input().displayedCursor();
-            if (!session.cursorBaselineTaken()) {
+            if (!session.primary()) {
+                // A client with several top levels has several host windows over one screen, and the
+                // screen's cursor is one thing: the primary session is the one that tells
+                // subscribers about it.
+                displayed = session.notifiedCursor();
+            } else if (!session.cursorBaselineTaken()) {
                 // Nothing is announced until there is a previous value to have changed from.
                 session.setCursorBaselineTaken(true);
                 session.setNotifiedCursor(displayed);
@@ -1076,7 +1259,12 @@ public final class XServer {
                 drops.pump();
             }
             rememberWindowPosition(session);
-            damage = session.screen().framebuffer().takeDamage();
+            boolean full = viewportChanged || session.takeFullFrame();
+            damage = frameDamage(session, screenDamage, full);
+            if (damage != null && session.target() != null) {
+                // The window's own picture, from the stores (C8), before it is presented.
+                WindowSubtree.render(session.target(), session.picture(), List.of(damage));
+            }
         } finally {
             serverLock.unlock();
         }
@@ -1189,16 +1377,9 @@ public final class XServer {
             log.debug("display :{} host window brought to the front for a new client window",
                     options.displayNumber());
         }
-        if (session.takeFullFrame()) {
-            // A window has just attached to a screen that was drawing with nobody watching: the
-            // pixels are all still in the framebuffer, but the damage they were drawn with was
-            // consumed frame by frame while there was no window, so waiting for more of it would
-            // show the client's background until the client happened to draw again.
-            damage = new Rectangle(session.viewport());
-        }
         if (!session.idle() && damage != null) {
             session.setFramePresented(true);
-            window.present(session.screen(), damage, cursor);
+            window.present(session.surface(), damage, cursor);
         }
     }
 
@@ -1313,7 +1494,7 @@ public final class XServer {
      * stretched past the screen would have nothing to show in the extra area.
      */
     private void applyRequestedSize(ScreenSession session) {
-        java.awt.Dimension requested = session.input().takeRequestedSize();
+        java.awt.Dimension requested = session.takeRequestedSize();
         if (requested == null) {
             return;
         }
@@ -1324,10 +1505,15 @@ public final class XServer {
         growScreenToFit(screen, requested);
         boolean resized = false;
         boolean capped = false;
-        for (XWindow window : screen.root().children()) {
-            if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
-                continue;
-            }
+        // **The drag belongs to one window** (C8). A screen has one host window per top level now,
+        // so the size the user dragged *this* frame to is the size *its* window becomes - reading
+        // the request off the shared input state and applying it to every top level the client has
+        // is what the prototype did, and `ScreenResizeTest`'s "the screen did not grow" was the
+        // first sign of it.
+        List<XWindow> growing = session.target() != null
+                ? List.of(session.target())
+                : mappedTopLevels(screen);
+        for (XWindow window : growing) {
             // A dimension the drag did not change is left alone rather than set to the same number
             // arrived at differently: a window that hangs off the left of the screen and one that
             // starts inside it need different widths to show the same amount, and rewriting the one
@@ -1470,7 +1656,7 @@ public final class XServer {
         session.setClientKey(clientKey(session));
         java.awt.Point remembered = rememberedWindowPosition(session);
         window.setViewport(viewport);
-        window.start(session.screen(), options.displayNumber(), session.input());
+        window.start(session.surface(), options.displayNumber(), session);
         if (remembered != null) {
             // After start, because a backend has no window to move before it has one. The backend
             // clamps it: a position from a display that is no longer attached is not one this one
@@ -1578,7 +1764,7 @@ public final class XServer {
      * a file that is never read afterwards. The settle is the same trick the viewport uses.
      */
     private void rememberWindowPosition(ScreenSession session) {
-        java.awt.Point moved = session.input().hostWindowPosition();
+        java.awt.Point moved = session.hostWindowPosition();
         if (moved == null || session.clientKey() == null) {
             return;
         }

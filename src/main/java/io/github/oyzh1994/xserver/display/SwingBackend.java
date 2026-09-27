@@ -72,9 +72,9 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Screen screen, int displayNumber, InputSink input) {
+    public void start(Surface surface, int displayNumber, InputSink input) {
         this.input = input;
-        Framebuffer framebuffer = screen.framebuffer();
+        Framebuffer framebuffer = surface.framebuffer();
         runOnEdtAndWait(() -> openWindow(framebuffer));
         log.info("swing window {}x{} for display :{}", framebuffer.width(), framebuffer.height(),
                 displayNumber);

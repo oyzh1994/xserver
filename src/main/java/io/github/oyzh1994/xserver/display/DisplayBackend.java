@@ -85,7 +85,7 @@ public interface DisplayBackend {
      * Opens the window and starts delivering input. Called once from the server's start method,
      * which must return before any input arrives.
      */
-    void start(Screen screen, int displayNumber, InputSink input);
+    void start(Surface surface, int displayNumber, InputSink input);
 
     /**
      * Copies the damaged region of the framebuffer to the screen, then draws the pointer sprite

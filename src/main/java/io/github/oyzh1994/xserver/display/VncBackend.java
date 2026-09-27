@@ -52,7 +52,7 @@ public final class VncBackend implements DisplayBackend {
     private ServerSocket socket;
     /** The browser path, or null when the server was not asked for one. */
     private io.github.oyzh1994.xserver.net.WebSocketListener websocket;
-    private Screen screen;
+    private Surface screen;
     private InputSink input;
     private volatile int boundPort;
     /** The X display this serves, for the name a viewer shows in its title bar. */
@@ -94,8 +94,8 @@ public final class VncBackend implements DisplayBackend {
     }
 
     @Override
-    public void start(Screen screen, int displayNumber, InputSink input) {
-        this.screen = screen;
+    public void start(Surface surface, int displayNumber, InputSink input) {
+        this.screen = surface;
         this.input = input;
         this.displayNumber = displayNumber;
         try {
