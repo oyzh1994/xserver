@@ -15,8 +15,8 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **388 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 388 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **393 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 393 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **15 identical, and the 7 differences are exactly the documented ones** (§7's list in `tools/README.md`) - a *sixth* difference is a finding |
@@ -106,7 +106,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 6.1 | framebuffer memory is allocated lazily | `IdleScreenMemoryTest` | a connection that only asks questions allocates nothing |
 | 6.2 | a client that stops reading is not waited on | `E5`'s cases | the server stays responsive to everyone else |
 | 6.3 | the performance paths hold | `E3`'s cases | the opaque-source and A8-mask paths and the damage region are still there (the numbers are in the entry) |
-| 6.4 | the suite runs where there is no display | `ci.sh` with `-Djava.awt.headless=true` | 388 tests, 2 skips, success |
+| 6.4 | the suite runs where there is no display | `ci.sh` with `-Djava.awt.headless=true` | 393 tests, 2 skips, success |
 | 6.5 | the documents agree with the code | §7 and §8 below | nothing here contradicts the three documents - which is what E6 is |
 
 ---
