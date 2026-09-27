@@ -12,21 +12,20 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * Backing store: a window that asks for one is not asked to draw again what it never lost.
+ * Backing store: no window is asked to draw again what it never lost.
  *
- * <p>Without it, this server restored a revealed window the only way it could - paint the lower
- * window's background and send it an {@code Expose} - and that is still what a window with the
- * default {@code backing_store} gets. A window that asks for {@code WhenMapped} or {@code Always}
- * has its pixels saved before something covers it, and gets them back with no {@code Expose} at all,
- * which is what a reference server was measured doing: with the attribute set, uncovering the window
- * delivers **no** event and the pixels are the ones that were there; with it unset, one
- * {@code Expose} arrives. The pixels come back either way - the difference is whether the client is
- * told to draw them.
+ * <p>Before B5's general store this was the difference the {@code backing_store} attribute bought: a
+ * window that asked for {@code WhenMapped} or {@code Always} had its pixels saved before something
+ * covered it and got them back with no {@code Expose}, while one with the default attribute was
+ * painted with its background and told to draw. Now <b>every</b> window keeps its own pixels, so no
+ * window is asked to draw again on a reveal - which is what a reference server with backing store
+ * always does, and what makes a frame per top level possible (C8).
  *
- * <p>The third test is the half that makes the first one safe: a window that <em>draws</em> while it
- * is covered is asked to draw again after all. Its drawing was clipped to what showed, so the saved
- * pixels are no longer what it would have drawn - and putting them back would show a client its own
- * stale picture with no way to correct it.
+ * <p>The third test is the half that used to make the attribute safe: a window that <em>draws</em>
+ * while it is covered. Its drawing used to be clipped to what showed, so the saved pixels stopped
+ * being its picture and it had to be asked to draw again. Now the drawing goes into its own store
+ * whether it shows or not, so what it drew while covered is what appears when it is uncovered - and
+ * there is still nothing to expose.
  */
 class BackingStoreTest {
 
@@ -34,8 +33,6 @@ class BackingStoreTest {
     private static final int DISPLAY = 81;
 
     private static final int EXPOSURE_MASK = 1 << 15;
-
-    private static final int EXPOSE = 12;
 
     /** What a window is created with: X's own 24 bit colour, which this server reads as opaque. */
     private static final int WHITE_RGB = 0xFFFFFF;
@@ -84,20 +81,20 @@ class BackingStoreTest {
     }
 
     @Test
-    void aWindowWithNoBackingStoreIsAskedToDrawAgain() throws Exception {
+    void aWindowWithNoBackingStoreKeepsItsPixelsToo() throws Exception {
         int lower = lowerWindow(0);
         quiet();
         coverAndUncover(lower);
 
-        byte[] event = client.readEvent();
-        assertNotNull(event, "a window with no backing store has to be told to draw");
-        assertEquals(EXPOSE, event[0] & 0xFF, "and told with the event that means it");
+        assertNull(client.readEvent(),
+                "every window keeps its own pixels now, so the attribute no longer decides whether"
+                        + " the client is asked to draw again");
         assertEquals(WHITE, client.pixelAt(lower, 50, 50),
-                "the area came back either way - the difference is who draws it");
+                "and its pixels are the ones that were under the window that covered it");
     }
 
     @Test
-    void aWindowThatDrewWhileItWasCoveredIsAskedToDrawAgain() throws Exception {
+    void aWindowThatDrewWhileItWasCoveredKeepsWhatItDrew() throws Exception {
         int lower = lowerWindow(WHEN_MAPPED);
         int gc = client.allocateId();
         client.createGC(gc, client.root(), BLACK_RGB);
@@ -106,11 +103,11 @@ class BackingStoreTest {
 
         int upper = coverAndUncover(lower, gc);
 
-        byte[] event = client.readEvent();
-        assertNotNull(event, "a window that drew since it was saved has to be told to draw again:"
-                + " its drawing was clipped to what showed, so the saved pixels are not its picture"
-                + " any more");
-        assertEquals(EXPOSE, event[0] & 0xFF, "and told with the event that means it");
+        assertNull(client.readEvent(),
+                "it drew into its own store rather than into what showed, so nothing was lost and"
+                        + " there is nothing to expose");
+        assertEquals(BLACK, client.pixelAt(lower, 50, 50),
+                "what it drew while it was covered is what it shows once it is uncovered");
         assertNotNull(upper, "the covering window existed");
     }
 
@@ -160,8 +157,8 @@ class BackingStoreTest {
         assertEquals(BLACK, client.pixelAt(upper, 50, 50), "the covering window shows");
 
         if (gc >= 0) {
-            // The window draws while it is covered: clipped to the part that shows, which is the
-            // whole reason the saved pixels stop being its picture.
+            // The window draws while it is covered: into its own store, the whole of it, whether or
+            // not it shows (B5).
             client.fillRectangle(lower, gc, 0, 0, 200, 200);
             client.flush();
             quiet();

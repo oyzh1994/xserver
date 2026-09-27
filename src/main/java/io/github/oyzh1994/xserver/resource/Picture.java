@@ -129,6 +129,28 @@ public final class Picture extends XResource {
      */
     private List<Rectangle> windowClip;
 
+    /**
+     * The parts of a window's own store a request may write, in the window's own coordinates -
+     * everything the window owns, showing or not, because a covered window goes on drawing into its
+     * store (B5). Separate from {@link #windowClip}, which is what a <em>read</em> may reach: what a
+     * window shows is a smaller thing than what it owns once something covers it.
+     */
+    private List<Rectangle> windowOwn;
+
+    /**
+     * What this picture has written since the last composite, in the window's own coordinates.
+     * RENDER draws into a window's own store, and the store has to reach the screen when the request
+     * ends - {@code Compositor.finish} is that moment and this is the region it composites (B5).
+     *
+     * <p>Kept as bounds rather than as a {@code Rectangle} updated per pixel: this runs for every
+     * pixel a RENDER request writes, and an allocation there is felt on a full-window fill.
+     */
+    private boolean windowDrew;
+    private int windowDrawnX0;
+    private int windowDrawnY0;
+    private int windowDrawnX1;
+    private int windowDrawnY1;
+
     public Picture(int id, ClientConnection owner, XResource drawable, PictFormat format,
                    Screen screen, PixelStore store, int originX, int originY, XWindow window) {
         super(id, RESOURCE_CLASS, owner);
@@ -397,6 +419,14 @@ public final class Picture extends XResource {
      */
     private int rawPixel(int x, int y) {
         if (hasContent(x, y)) {
+            if (window != null && window.keepsOwnPixels() && subwindowMode == INCLUDE_INFERIORS) {
+                // The window's own store holds its own pixels and not its children's, so a point a
+                // child covers is answered by that child - which is what the window shows there.
+                int fromChild = window.pixelFromInferiors(x - drawableX, y - drawableY);
+                if (fromChild != XWindow.NO_CHILD_PIXEL) {
+                    return fromChild;
+                }
+            }
             return stored(x, y);
         }
         int width = width();
@@ -453,12 +483,27 @@ public final class Picture extends XResource {
     public void refreshClip() {
         if (window == null) {
             windowClip = null;
+            windowOwn = null;
             return;
         }
         // RENDER's rail reaches a window through a picture, so this is where its drawings invalidate
         // a backing store - the core rail does the same in DrawHandlers.afterDrawing. See
         // XWindow.forgetBacking for why a drawing throws the saved pixels away.
         window.forgetBacking();
+        if (window.keepsOwnPixels()) {
+            // The picture addresses the window's own store in the window's own coordinates, so there
+            // is no translation to make. Writes reach everything the window owns - a covered window
+            // goes on drawing into its store (B5) - while reads reach only what it shows: what is
+            // stacked above it is not its to hand out, and with IncludeInferiors its children are
+            // part of what it shows (the pixel is taken from the child that covers it, see rawPixel).
+            drawableX = 0;
+            drawableY = 0;
+            windowOwn = window.ownRegion();
+            windowClip = subwindowMode == INCLUDE_INFERIORS ? window.shownRegion()
+                    : window.ownShownRegion();
+            return;
+        }
+        windowOwn = null;
         drawableX = window.absoluteX();
         drawableY = window.absoluteY();
         // A picture over a window reads that window's own pixels and stops where a child begins.
@@ -527,9 +572,30 @@ public final class Picture extends XResource {
     // Writing
     // ------------------------------------------------------------------
 
-    /** Whether a pixel can be written: inside the drawable, visible, and inside the clip. */
+    /**
+     * Whether a pixel can be written: inside the drawable, inside what the window owns, and inside
+     * the clip.
+     *
+     * <p>Not {@link #hasContent}: a window's own store is written whether or not the pixel shows -
+     * that is what keeping its pixels means - so the answer here is the window's whole rectangle,
+     * while a read is still stopped by whatever covers it.
+     */
     public boolean isWritable(int x, int y) {
-        return hasContent(x, y) && withinClip(x, y);
+        if (x < 0 || y < 0 || x >= width() || y >= height()) {
+            return false;
+        }
+        if (window == null) {
+            return withinClip(x, y);
+        }
+        if (windowOwn == null) {
+            refreshClip();
+        }
+        if (windowOwn == null) {
+            // The root, which is the screen and keeps no store: what is drawn on it is still stopped
+            // by whatever covers it, exactly as every read is.
+            return hasContent(x, y) && withinClip(x, y);
+        }
+        return ShapeState.containsPoint(windowOwn, x, y) && withinClip(x, y);
     }
 
     /** Writes a non-premultiplied ARGB pixel, ignoring the write when the clip forbids it. */
@@ -538,6 +604,35 @@ public final class Picture extends XResource {
             return;
         }
         store.setPixel(drawableX + x, drawableY + y, argb);
+        if (window != null && window.keepsOwnPixels()) {
+            // Remember that the window's store changed at this pixel, so the composite that puts it
+            // on the screen knows which part of it to copy.
+            if (windowDrew) {
+                windowDrawnX0 = Math.min(windowDrawnX0, x);
+                windowDrawnY0 = Math.min(windowDrawnY0, y);
+                windowDrawnX1 = Math.max(windowDrawnX1, x + 1);
+                windowDrawnY1 = Math.max(windowDrawnY1, y + 1);
+            } else {
+                windowDrew = true;
+                windowDrawnX0 = x;
+                windowDrawnY0 = y;
+                windowDrawnX1 = x + 1;
+                windowDrawnY1 = y + 1;
+            }
+        }
+    }
+
+    /**
+     * Returns the region this picture wrote into its window since the last call and forgets it, or
+     * null when it wrote nothing. {@code Compositor.finish} composites it onto the screen.
+     */
+    public Rectangle takeWindowDrawn() {
+        if (!windowDrew) {
+            return null;
+        }
+        windowDrew = false;
+        return new Rectangle(windowDrawnX0, windowDrawnY0, windowDrawnX1 - windowDrawnX0,
+                windowDrawnY1 - windowDrawnY0);
     }
 
     @Override

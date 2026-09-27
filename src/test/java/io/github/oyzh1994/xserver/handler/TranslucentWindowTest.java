@@ -24,12 +24,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ARGB visual and drew something translucent got it painted opaquely: the visual was advertised and
  * meant nothing.
  *
- * <p>What is pinned here is the fix and its bounds. A window with an alpha visual draws into a store
+ * <p>What is pinned here is the fix and its extent. A window with an alpha visual draws into a store
  * of its own - in its own coordinates, the whole of it rather than only the part that shows - and what
  * reaches the screen is that store composited over what is under it, through the same blend every
- * other composite in this server uses. Everything else is untouched: a window with an ordinary visual
- * still draws straight into the screen, and the tests below say so rather than leaving it to the
- * suite.
+ * other composite in this server uses.
+ *
+ * <p>The store is now <b>every</b> window's, not only an alpha window's (B5's general half): an
+ * ordinary window keeps its pixels too, and is composited from them with a straight copy rather than a
+ * blend, because its store is opaque like the screen. The tests below cover both, and the ordinary
+ * window's case is the one C8 needs - a frame per top level can only show a window's own pixels if
+ * there are some.
  */
 class TranslucentWindowTest {
 
@@ -41,6 +45,14 @@ class TranslucentWindowTest {
     private static final int RED = 0xFFFF0000;
     private static final int BLUE = 0xFF0000FF;
     private static final int GREEN = 0xFF00FF00;
+
+    /**
+     * The same blue as a <em>visual</em> pixel rather than as ARGB, which is what {@code
+     * CreateWindow}'s background attribute carries: a 24 bit visual has no alpha, so its pixels are
+     * {@code 0xRRGGBB}. Passing the ARGB form here would read as a negative int and the client
+     * helper would send no background at all - which is how this test first measured a grey window.
+     */
+    private static final int BLUE_RGB = 0x0000FF;
 
     private static XServer server;
 
@@ -135,7 +147,7 @@ class TranslucentWindowTest {
     }
 
     @Test
-    void anOrdinaryWindowIsNotKeptAndDrawsStraightIntoTheScreen() throws IOException {
+    void anOrdinaryWindowKeepsItsPixelsToo() throws IOException {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = client.allocateId();
             client.createWindow(window, client.root(), 600, 0, 50, 50);
@@ -145,13 +157,34 @@ class TranslucentWindowTest {
             sync(client, window);
             waitForColor(610, 10, GREEN, "an ordinary window is painted as it always was");
 
-            // The guard that this change is confined: the window has no store, so its pixels are the
-            // screen's - which is what every path outside this test still assumes.
+            // The store every window now has (B5's general half). Its pixels are its own, so a frame
+            // per top level can show them (C8) - but the store is opaque, like the screen, because an
+            // ordinary visual has no alpha to keep and the raster operations can produce any 32 bit
+            // value.
             io.github.oyzh1994.xserver.resource.XWindow resource =
                     (io.github.oyzh1994.xserver.resource.XWindow) server.resources()
                             .get(window);
-            assertFalse(resource.keepsOwnPixels(),
-                    "an ordinary visual has no alpha, so there is nothing to composite and no store");
+            assertTrue(resource.keepsOwnPixels(), "every window but the root keeps its pixels");
+            assertFalse(resource.ownPixels().keepsAlpha(),
+                    "an ordinary visual has no alpha, so the store is opaque like the screen");
+
+            // And what it draws while something covers it is still there when it is uncovered.
+            int cover = client.allocateId();
+            client.createWindow(cover, client.root(), 600, 0, 50, 50, BLUE_RGB);
+            client.mapWindow(cover);
+            sync(client, cover);
+            assertEquals(BLUE, client.pixelAt(cover, 10, 10),
+                    "the covering window's own store holds the background it was created with");
+            waitForColor(610, 10, BLUE, "the covering window is over it");
+
+            int red3 = client.createGC(client.allocateId(), window, RED);
+            client.fillRectangle(window, red3, 0, 0, 50, 50);
+            sync(client, window);
+
+            client.destroyWindow(cover);
+            sync(client, window);
+            waitForColor(610, 10, RED,
+                    "what it drew while it was covered is in its store and shows when it is exposed");
         }
     }
 

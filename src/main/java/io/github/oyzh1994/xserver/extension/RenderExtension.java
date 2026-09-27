@@ -648,13 +648,20 @@ public final class RenderExtension implements Extension {
         XWindow window = null;
         Screen screen;
         if (drawable instanceof XWindow target) {
-            // A window draws into the screen, so its picture has to carry the translation from
-            // window coordinates to screen coordinates. Without it every picture lands wherever
-            // its parent-relative coordinates happen to point, which is only right for the root.
+            // A window's own pixels live in a store of its own (B5), so the picture addresses that
+            // store in the window's own coordinates and the drawing is composited back onto the
+            // screen when the request ends (Compositor.finish). The root is the exception: it is the
+            // screen, so its picture still carries the translation to screen coordinates.
             screen = target.screen();
-            store = screen.framebuffer();
-            originX = target.absoluteX();
-            originY = target.absoluteY();
+            if (target.keepsOwnPixels()) {
+                store = target.ownPixels();
+                originX = 0;
+                originY = 0;
+            } else {
+                store = screen.framebuffer();
+                originX = target.absoluteX();
+                originY = target.absoluteY();
+            }
             window = target;
         } else {
             XPixmap pixmap = (XPixmap) drawable;

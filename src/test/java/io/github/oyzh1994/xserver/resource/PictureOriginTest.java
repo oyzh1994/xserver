@@ -9,20 +9,22 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Where a picture on a window puts its pixels once the window has moved.
+ * Where a picture on a window puts its pixels: the window's own coordinates, wherever it is.
  *
- * <p>A picture carries the translation from its own coordinates to the pixel store, and for a window
- * that translation is the window's position in the framebuffer. Reading it once, when the picture is
- * created, is wrong for every window that is placed after it is created - which is how AWT opens a
- * dialog: it creates the window at the origin of the screen and only then configures it where it
- * belongs. The stale position is used for the clip as well as the address, and since the two then
- * disagree with the window's real rectangle the writes are not merely misplaced, they are refused:
- * the picture is asked to draw a dialog and the dialog keeps the background it was cleared to, with
- * not one pixel of its contents.
+ * <p>It used to be the framebuffer's coordinates, the window's position added, read once when the
+ * picture was created. That is wrong for every window placed after its picture exists - which is how
+ * AWT opens a dialog: it creates the window at the origin of the screen and only then configures it
+ * where it belongs. The stale position was used for the clip as well as the address, and since the two
+ * then disagreed with the window's real rectangle the writes were not merely misplaced, they were
+ * refused: the picture was asked to draw a dialog and the dialog kept the background it was cleared
+ * to, with not one pixel of its contents. Measured against termora: the 消息 box of its keymap
+ * settings is 305x130, created at (0,0) and configured to (497,335); the composite of its contents
+ * reported 0 of 39650 pixels written until the origin was re-read per request.
  *
- * <p>Measured against termora: the 消息 box of its keymap settings is 305x130, created at (0,0) and
- * configured to (497,335); the composite of its contents reported 0 of 39650 pixels written until the
- * origin was re-read per request.
+ * <p>Since a window keeps its own pixels (B5), there is no translation left to go stale: a picture
+ * over a window addresses that window's store in the window's own coordinates, and the composite that
+ * ends the request puts them on the screen where the window now is. The root is the only drawable
+ * whose picture still carries a screen translation, and the root never moves.
  */
 class PictureOriginTest {
 
@@ -41,20 +43,22 @@ class PictureOriginTest {
         return window;
     }
 
-    /** A picture over a window, as {@code CreatePicture} builds one. */
+    /**
+     * A picture over a window, as {@code CreatePicture} builds one: on the window's own store, in the
+     * window's own coordinates (B5).
+     */
     private static Picture picture(Screen screen, XWindow window) {
         return new Picture(9, null, window,
-                PictFormat.direct(1, screen.rootVisual(), 0), screen, screen.framebuffer(),
-                window.absoluteX(), window.absoluteY(), window);
+                PictFormat.direct(1, screen.rootVisual(), 0), screen, window.ownPixels(),
+                0, 0, window);
     }
 
     @Test
-    void aPictureFollowsAWindowThatMovesAfterItWasCreated() {
+    void aPictureIsAddressedInTheWindowsOwnCoordinates() {
         Screen screen = screen();
         XWindow root = window(screen, null, 1, 0, 0, ROOT, ROOT);
         XWindow dialog = window(screen, root, 2, 0, 0, 305, 130);
         Picture contents = picture(screen, dialog);
-        int whereItWas = screen.framebuffer().pixel(0, 0);
 
         // The window is placed where the client actually wants it, after its picture exists.
         dialog.setPosition(497, 335);
@@ -63,25 +67,27 @@ class PictureOriginTest {
         contents.writePixel(0, 0, 0xFF112233);
         contents.writePixel(304, 129, 0xFF445566);
 
-        assertEquals(0xFF112233, screen.framebuffer().pixel(497, 335),
-                "the picture draws where the window is now, not where it was created");
-        assertEquals(0xFF445566, screen.framebuffer().pixel(497 + 304, 335 + 129));
-        assertEquals(whereItWas, screen.framebuffer().pixel(0, 0),
-                "nothing is left behind at the old place");
+        assertEquals(0xFF112233, contents.pixelAt(0, 0),
+                "the window's own pixel at its own origin, wherever the window was placed");
+        assertEquals(0xFF445566, contents.pixelAt(304, 129), "and at its far corner");
     }
 
     @Test
-    void aPictureReadsTheWindowWhereItIsNow() {
+    void aPictureOverAWindowNeverAddressesTheScreen() {
         Screen screen = screen();
         XWindow root = window(screen, null, 1, 0, 0, ROOT, ROOT);
         XWindow dialog = window(screen, root, 2, 0, 0, 305, 130);
         Picture contents = picture(screen, dialog);
         dialog.setPosition(497, 335);
         contents.refreshClip();
-        screen.framebuffer().setPixel(497 + 3, 335 + 4, 0xFF010203);
 
-        // A source picture on a window samples the same translation the writes use; leaving it at
-        // the creation-time position reads whatever happens to be there instead.
-        assertEquals(0xFF010203, contents.pixelAt(3, 4));
+        contents.writePixel(0, 0, 0xFF112233);
+
+        // The screen holds its own background, untouched: writing a window's pixels does not reach
+        // it - the composite that ends the request is what puts them there (Compositor.finish).
+        assertEquals(Screen.DEFAULT_BACKGROUND_ARGB, screen.framebuffer().pixel(497, 335),
+                "writing a window's pixels does not touch the screen");
+        assertEquals(Screen.DEFAULT_BACKGROUND_ARGB, screen.framebuffer().pixel(0, 0),
+                "and nothing is left at the place the window was created at either");
     }
 }

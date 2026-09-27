@@ -291,37 +291,48 @@ public final class XWindow extends XResource {
     /**
      * Whether this window's pixels live in a store of their own rather than only on the screen.
      *
-     * <p>True for a window whose visual has an alpha channel: what such a client draws is meant to be
-     * composited over what is under it, and the screen's framebuffer has no alpha to composite with
-     * ({@code Framebuffer.opaque} forces every pixel there opaque, deliberately). Everything the
-     * client draws goes into {@link #ownPixels()} and is composited from it - clipped to what shows,
-     * exactly as before - so a translucent window is translucent and a covered one keeps its pixels.
+     * <p>True for every window but the root: what a client draws goes into {@link #ownPixels()} and
+     * is composited from it onto the screen, clipped to what shows. That is what makes a window's
+     * pixels its own - a covered window goes on drawing and keeps what it drew, a revealed one gets
+     * them back without an {@code Expose}, and a client that reads a window back gets the window's
+     * contents rather than whatever happens to be on the screen at its rectangle (B5).
+     *
+     * <p>An alpha visual is the other reason, and the one it was built for first: the screen's
+     * framebuffer has no alpha ({@code Framebuffer} forces every pixel there opaque, deliberately),
+     * so a translucent window can only be composited from a store that keeps it.
+     *
+     * <p>The root is the exception - it <em>is</em> the screen - and so is an input-only window,
+     * which has no pixels at all.
      */
     public boolean keepsOwnPixels() {
-        return visual != null && visual.hasAlpha() && !isInputOnly();
+        return visual != null && !isInputOnly() && !isRoot();
     }
 
     /**
-     * The window's own pixels: {@code width x height} of ARGB, filled with the window's background
-     * when it is first made, in window coordinates.
+     * The window's own pixels: {@code width x height}, filled with the window's background when it
+     * is first made, in window coordinates.
      *
-     * <p>Thrown away when the window is resized - the store is the window's contents and this server
-     * does not scale them - and kept across a move, because a move does not change them.
+     * <p>Kept with the alpha channel only when the visual has one; an ordinary window's store is
+     * opaque like the screen, because {@code GXclear} and {@code GXinvert} can produce any 32 bit
+     * value and a store that honoured the alpha in them would show holes.
+     *
+     * <p>A resize reallocates it but <em>keeps what was drawn</em>, aligned to the top left: a
+     * window's bit gravity moves those pixels afterwards ({@code WindowHandlers.applyBitGravity}),
+     * and it can only move what is still there. Forgetting them here would throw the contents away
+     * on the way into the gravity, which is the bug the default gravity was fixed for.
      */
     public Framebuffer ownPixels() {
-        if (ownPixels == null || ownPixels.width() != width() || ownPixels.height() != height()) {
+        if (ownPixels == null) {
             ownPixels = new Framebuffer(Math.max(1, width()), Math.max(1, height()),
-                    backgroundPixel, true);
+                    backgroundPixel, visual != null && visual.hasAlpha());
+        } else if (ownPixels.width() != width() || ownPixels.height() != height()) {
+            Framebuffer resized = new Framebuffer(Math.max(1, width()), Math.max(1, height()),
+                    backgroundPixel, visual != null && visual.hasAlpha());
+            resized.copyFrom(ownPixels, 0, 0, 0, 0, Math.min(width(), ownPixels.width()),
+                    Math.min(height(), ownPixels.height()));
+            ownPixels = resized;
         }
         return ownPixels;
-    }
-
-    /**
-     * Forgets the store, so the next ask makes a new one. Called where the window's contents are
-     * known to be gone rather than merely hidden - a resize.
-     */
-    public void forgetOwnPixels() {
-        ownPixels = null;
     }
 
     /**
@@ -717,6 +728,92 @@ public final class XWindow extends XResource {
      */
     public List<Rectangle> contentRegion() {
         return visibleRegion(clipRect(), false, true);
+    }
+
+    /**
+     * The pixels this window owns, in <em>window</em> coordinates - the region its own store covers.
+     *
+     * <p>Its rectangle, with its own and its ancestors' bounding shapes taken out, and with neither
+     * its children nor whatever is stacked above it subtracted: this is the window's own drawing
+     * surface, and a child is painted into a surface of its own rather than into a hole here. What
+     * is <em>shown</em> of it, on the other hand, is {@link #visibleRegion()}, and that is what the
+     * composite back onto the screen is clipped to.
+     */
+    public List<Rectangle> ownRegion() {
+        return toLocal(visibleRegion(clipRect(), true, true));
+    }
+
+    /**
+     * What this window <em>shows</em> of its own pixels, children excluded and whatever is stacked
+     * above it excluded, in window coordinates - the region a picture reads with the default
+     * {@code ClipByChildren}, and the region a revealed window is told to repaint.
+     */
+    public List<Rectangle> ownShownRegion() {
+        return toLocal(visibleRegion(clipRect(), false, false));
+    }
+
+    /**
+     * What this window shows with its children counted as part of it, in window coordinates - what a
+     * picture reads with {@code IncludeInferiors}. What is stacked above the window is still
+     * excluded: those pixels are not its own to hand out, children or not.
+     */
+    public List<Rectangle> shownRegion() {
+        return toLocal(visibleRegion(clipRect(), true, false));
+    }
+
+    /** Moves a region of screen rectangles into this window's own coordinates. */
+    private List<Rectangle> toLocal(List<Rectangle> screen) {
+        if (screen.isEmpty()) {
+            return screen;
+        }
+        int originX = absoluteX();
+        int originY = absoluteY();
+        List<Rectangle> local = new ArrayList<>(screen.size());
+        for (Rectangle part : screen) {
+            local.add(new Rectangle(part.x - originX, part.y - originY, part.width, part.height));
+        }
+        return local;
+    }
+
+    /** Returned by {@link #pixelFromInferiors} when no child covers the point. */
+    public static final int NO_CHILD_PIXEL = Integer.MIN_VALUE;
+
+    /**
+     * The pixel the topmost child of this window puts at a point given in this window's
+     * coordinates, or {@link #NO_CHILD_PIXEL} when no child covers it.
+     *
+     * <p>This is what {@code IncludeInferiors} reads: a window's own store holds its own pixels and
+     * not its children's - a child draws into a store of its own - so the child that covers a point
+     * has to be found and asked, topmost first, exactly as the screen would have shown it.
+     */
+    public int pixelFromInferiors(int x, int y) {
+        for (int i = children.size() - 1; i >= 0; i--) {
+            XWindow child = children.get(i);
+            if (!child.isMapped() || child.isInputOnly()) {
+                continue;
+            }
+            int childX = x - child.x();
+            int childY = y - child.y();
+            if (childX < 0 || childY < 0 || childX >= child.width() || childY >= child.height()) {
+                continue;
+            }
+            if (child.boundingShape() != null
+                    && !ShapeState.containsPoint(child.boundingShape(), childX, childY)) {
+                continue;
+            }
+            int deeper = child.pixelFromInferiors(childX, childY);
+            if (deeper != NO_CHILD_PIXEL) {
+                return deeper;
+            }
+            if (child.keepsOwnPixels()) {
+                // The store answers its background where the child has not drawn, which is what the
+                // child shows there.
+                return child.ownPixels().pixel(childX, childY);
+            }
+            return screen().framebuffer().pixel(child.absoluteX() + childX,
+                    child.absoluteY() + childY);
+        }
+        return NO_CHILD_PIXEL;
     }
 
     /**

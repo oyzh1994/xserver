@@ -41,10 +41,15 @@ class IncludeInferiorsTest {
         return window;
     }
 
+    /**
+     * A picture over a window, as {@code CreatePicture} builds one: on the window's own store, in the
+     * window's own coordinates (B5). The store is where the window's own pixels live, which is what
+     * makes {@code IncludeInferiors} a question about the children rather than about the screen.
+     */
     private static Picture picture(Screen screen, XWindow window) {
         return new Picture(9, null, window,
-                PictFormat.direct(1, screen.rootVisual(), 0), screen, screen.framebuffer(),
-                window.absoluteX(), window.absoluteY(), window);
+                PictFormat.direct(1, screen.rootVisual(), 0), screen, window.ownPixels(),
+                0, 0, window);
     }
 
     private Screen screen;

@@ -87,7 +87,12 @@ public final class DrawHandlers {
         }
         Rectangle area = new Rectangle(window.absoluteX() + r.getX(),
                 window.absoluteY() + r.getY(), width, height);
-        if (window.isBackgroundPixmap()) {
+        if (window.keepsOwnPixels()) {
+            // A window with pixels of its own clears into its store - the whole area, not only the
+            // part of it that shows - and is composited from there (B5). The pixel and the tiled
+            // case are the same call: the window painter knows both and the tiling origin.
+            server.windows().paintBackground(window, area);
+        } else if (window.isBackgroundPixmap()) {
             // A tiled background is painted by the window painter, which knows the tiling origin.
             server.windows().paintBackground(window, area);
         } else {
@@ -559,7 +564,7 @@ public final class DrawHandlers {
      * when it is uncovered again.
      */
     private static List<Rectangle> ownPixelRegion(XWindow window, XGC gc) {
-        List<Rectangle> region = List.of(new Rectangle(0, 0, window.width(), window.height()));
+        List<Rectangle> region = window.ownRegion();
         if (gc.isClipByRectangles()) {
             List<Rectangle> clip = new ArrayList<>();
             for (XGC.Rectangle2 r : gc.clipRectangles()) {

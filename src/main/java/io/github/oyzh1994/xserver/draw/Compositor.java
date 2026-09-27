@@ -952,8 +952,20 @@ public final class Compositor {
      * display backends latch on to before the next repaint.
      */
     private void finish(Picture dst) {
-        if (dst.window() != null && server != null) {
-            server.markScreenDirty(dst.window());
+        if (dst.window() == null || server == null) {
+            return;
+        }
+        io.github.oyzh1994.xserver.resource.XWindow window = dst.window();
+        if (window.keepsOwnPixels()) {
+            // RENDER drew into the window's own store, so what it wrote has to reach the screen from
+            // there (B5). Only the region actually written is composited and marked: a window that
+            // shows nothing composites nothing, and a small draw does not repaint a screen.
+            java.awt.Rectangle drawn = dst.takeWindowDrawn();
+            if (drawn != null) {
+                server.compositeOwnPixels(window, drawn);
+            }
+        } else {
+            server.markScreenDirty(window);
         }
     }
 

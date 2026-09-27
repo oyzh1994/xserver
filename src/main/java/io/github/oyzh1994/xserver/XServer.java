@@ -1911,13 +1911,23 @@ public final class XServer {
                 local.height);
         List<Rectangle> visible = io.github.oyzh1994.xserver.resource.ShapeState.intersect(
                 List.of(onScreen), window.visibleRegion());
+        boolean blend = source.keepsAlpha();
         for (Rectangle part : visible) {
-            for (int y = part.y; y < part.y + part.height; y++) {
-                for (int x = part.x; x < part.x + part.width; x++) {
-                    int src = source.pixel(x - originX, y - originY);
-                    target.setPixel(x, y, io.github.oyzh1994.xserver.draw.Compositor
-                            .compositeOver(src, target.pixel(x, y)));
+            if (blend) {
+                for (int y = part.y; y < part.y + part.height; y++) {
+                    for (int x = part.x; x < part.x + part.width; x++) {
+                        int src = source.pixel(x - originX, y - originY);
+                        target.setPixel(x, y, io.github.oyzh1994.xserver.draw.Compositor
+                                .compositeOver(src, target.pixel(x, y)));
+                    }
                 }
+            } else {
+                // An ordinary window's store is opaque, so there is nothing to blend: its pixels are
+                // the screen's pixels wherever it shows, and a straight copy is both the same answer
+                // and the only affordable one - every drawing request in the default mode now ends
+                // here (B5's general store).
+                target.copyFrom(source, part.x - originX, part.y - originY, part.x, part.y,
+                        part.width, part.height);
             }
             markScreenDirty(screen, part);
             // The pixels changed, so a client that asked to be told about changes hears it - the same

@@ -791,6 +791,13 @@ public final class WindowHandlers {
         if (deltaWidth == 0 && deltaHeight == 0) {
             return;
         }
+        if (window.keepsOwnPixels()) {
+            // The window's pixels are in a store of its own now, so the gravity moves them *there*
+            // and the screen is composited from the result. Moving screen pixels instead would move
+            // the copy on the screen and leave the store behind it stale (B5).
+            applyBitGravityToStore(window, oldWidth, oldHeight, deltaWidth, deltaHeight);
+            return;
+        }
         // Everything here is in *screen* coordinates: the visible region, `absoluteBounds`, and both
         // of the helpers this calls (`paintBackground`'s clip and `deliverExpose`'s rectangle) are
         // screen rectangles. Passing one that is window relative paints nothing at all when the
@@ -844,6 +851,74 @@ public final class WindowHandlers {
         }
         if (log.isDebugEnabled()) {
             log.debug("bit gravity {} on 0x{}: the contents moved by {},{}",
+                    gravity, Integer.toHexString(window.id()), shiftX, shiftY);
+        }
+    }
+
+    /**
+     * {@link #applyBitGravity} for a window whose pixels are in a store of its own: the same table,
+     * moved inside the store instead of on the screen.
+     *
+     * <p>The store was already reallocated at the new size when it was asked for, with the old
+     * contents kept at the top left ({@code XWindow.ownPixels}), so "the old contents" here are the
+     * {@code oldWidth x oldHeight} rectangle at the origin and the rest is the background the new
+     * area was made with. The regions are the window's own coordinates; what the client is told
+     * (an {@code Expose} for what the contents left behind) still goes out with screen rectangles,
+     * which is what {@code paintBackground} and {@code deliverExpose} take.
+     */
+    private void applyBitGravityToStore(XWindow window, int oldWidth, int oldHeight,
+                                        int deltaWidth, int deltaHeight) {
+        Framebuffer pixels = window.ownPixels();
+        int gravity = window.bitGravity();
+        Rectangle oldBounds = new Rectangle(0, 0, oldWidth, oldHeight);
+        Rectangle newBounds = new Rectangle(0, 0, window.width(), window.height());
+        if (gravity == FORGET_GRAVITY) {
+            paintBackground(window, window.absoluteBounds());
+            deliverExpose(window, window.absoluteBounds());
+            log.debug("bit gravity Forget on 0x{}: the contents are thrown away",
+                    Integer.toHexString(window.id()));
+            return;
+        }
+        if (gravity < NORTH_WEST_GRAVITY || gravity > SOUTH_EAST_GRAVITY) {
+            // Static, and anything unknown: nothing moves, but the store's contents still have to
+            // reach the screen, because the window has just changed size and the part it gained was
+            // painted into the store underneath them.
+            server.compositeOwnPixels(window, newBounds);
+            return;
+        }
+        int row = (gravity - NORTH_WEST_GRAVITY) / 3;
+        int column = (gravity - NORTH_WEST_GRAVITY) % 3;
+        int shiftX = shift(deltaWidth, column);
+        int shiftY = shift(deltaHeight, row);
+        if (shiftX == 0 && shiftY == 0) {
+            server.compositeOwnPixels(window, newBounds);
+            return;
+        }
+        List<Rectangle> moved = new ArrayList<>();
+        Rectangle source = oldBounds.intersection(newBounds);
+        if (!source.isEmpty()) {
+            Rectangle destination = new Rectangle(source.x + shiftX, source.y + shiftY,
+                    source.width, source.height).intersection(newBounds);
+            if (!destination.isEmpty()) {
+                pixels.copyFrom(pixels, destination.x - shiftX, destination.y - shiftY,
+                        destination.x, destination.y, destination.width, destination.height);
+                moved.add(destination);
+            }
+        }
+        // What the content left behind is painted with the background, and the client is told to
+        // draw it - the same answer the screen path gives, in the window's own coordinates turned
+        // back into screen ones for the two helpers that speak them.
+        int originX = window.absoluteX();
+        int originY = window.absoluteY();
+        for (Rectangle left : ShapeState.subtract(List.of(newBounds), moved)) {
+            Rectangle onScreen = new Rectangle(left.x + originX, left.y + originY, left.width,
+                    left.height);
+            paintBackground(window, onScreen);
+            deliverExpose(window, onScreen);
+        }
+        server.compositeOwnPixels(window, newBounds);
+        if (log.isDebugEnabled()) {
+            log.debug("bit gravity {} on 0x{}: the contents moved by {},{} in its own store",
                     gravity, Integer.toHexString(window.id()), shiftX, shiftY);
         }
     }
@@ -1352,7 +1427,16 @@ public final class WindowHandlers {
         // before the paint below: the pixels worth keeping are the ones about to be painted over.
         captureUnder(moved ? after : ShapeState.subtract(after, before), window);
         for (Rectangle gained : moved ? after : ShapeState.subtract(after, before)) {
-            paintBackground(window, gained);
+            if (window.keepsOwnPixels() && moved) {
+                // A move carries the window's own pixels along with it - only the screen copy is
+                // left behind - so the area shows the store, not a fresh background. Painting a
+                // background here would wipe the window's contents on every move (B5). Everything
+                // else that gains area (a map, a resize, a restack) is painted with the background:
+                // it is an area the window has to be told to draw anyway.
+                compositeArea(window, gained);
+            } else {
+                paintBackground(window, gained);
+            }
             deliverExpose(window, gained);
         }
         if (window.isViewable()) {
@@ -1409,9 +1493,28 @@ public final class WindowHandlers {
         }
         captureUnder(gained, window);
         for (Rectangle area : gained) {
+            // The area a shape gives back was never part of the window - its own region stops at the
+            // shape, so nothing was ever drawn there - so it is painted with the background and the
+            // client is asked to draw it, exactly as a resize's new area is.
             paintBackground(window, area);
             deliverExpose(window, area);
         }
+    }
+
+    /**
+     * Puts the part of a window's own store that falls in a screen rectangle onto the screen.
+     *
+     * <p>{@code XServer.compositeOwnPixels} works in the window's coordinates and clips to what
+     * shows; every caller here has a screen rectangle, and some of it may be outside the window
+     * entirely (a move's new area reaches beyond the window it came from), so it is trimmed first.
+     */
+    private void compositeArea(XWindow window, Rectangle onScreen) {
+        Rectangle area = onScreen.intersection(window.absoluteBounds());
+        if (area.isEmpty()) {
+            return;
+        }
+        server.compositeOwnPixels(window, new Rectangle(area.x - window.absoluteX(),
+                area.y - window.absoluteY(), area.width, area.height));
     }
 
     /**
