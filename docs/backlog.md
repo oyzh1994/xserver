@@ -2525,12 +2525,16 @@ the window being active**: a JavaFX caret blinks, and a control's hover is anima
 window is focused. Nothing in this session's changes is implicated by any of it, and the two builds
 behave alike in every state that could be controlled from a script.
 
-**What is measured, and it is why `--glx` is opt-in.** Advertising GLX changes what a toolkit does
+**What is measured, and it was why `--glx` was opt-in - until the default was put back the same day
+(2026-09-27), A17 being closed by measurement: the caret blinks either way and the hover asks for no
+repaint at all, so what is left is one abandoned context in a toolkit that takes the GL path and
+leaves it. GLX is on by default now and `--no-glx` is the switch; the paragraph below is the
+measurement that made it opt-in for a day, kept because it is what "a toolkit changes its own
+drawing" means.** Advertising GLX changes what a toolkit does
 with its own drawing: with it on, EasyShell (JavaFX, GTK/Glass) probes GLX and the frames it then
 sends are different - which is the mechanism behind the user's report, whether or not the exact
 gesture can be reproduced. A client that wants OpenGL needs GLX; one that does not may be hurt by it,
-so the server no longer advertises it unless `--glx` asks, and the default is exactly the pre-GLX
-behaviour.
+so the server advertised it only when `--glx` asked, from 2026-09-27 until later the same day.
 
 **The mechanism is now measured, and it is in B6's entry**: with GLX advertised, JavaFX's Prism gets
 *further* into its ES2 attempt - `GLX extension is not supported` and it stops, against initialising
@@ -2580,8 +2584,12 @@ with numbers, plus the one measurement it was missing - what the client *asks fo
   **6/6**. In the default per-client mode EasyShell's host window is on screen carrying the client's
   own title (`EasyShell主页`, 1300x828).
 
-**Nothing in this server is changed by this item**, and the mitigation stands as it was: GLX is
-advertised only when `--glx` asks for it. The recipe above is kept for a report that arrives with a
+**Nothing in this server is changed by this item** - the report was a toolkit's own animation state,
+not a frame this server dropped - and **the mitigation it was answered with has since been
+withdrawn**: GLX was advertised only when `--glx` asked for it, from the day this closed until later
+the same day, when the default went back to on (`--no-glx` is the switch) on the grounds this item
+established: nothing measured says a client that does not want GLX is hurt by it, and a client that
+does cannot render here without it. The recipe above is kept for a report that arrives with a
 *gesture*, which is the one thing none of these measurements has - a script cannot make the hand's
 kind of motion, and that remains the honest hole in the answer.
 

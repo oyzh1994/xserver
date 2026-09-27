@@ -463,8 +463,9 @@ is a run that agrees with the reference, and a run that reports an *eighth* one 
   server has one screen per client connection.
 - **`GlxProbe`** - GLX is **present on both and deliberately a subset here** (B6, done 2026-09-27).
   What differs is the advertisement and the range: this server answers vendor `xserver` where the
-  reference answers `SGI`, an **empty** extension list where the reference lists 23 (which is the
-  honest part - no ES2, no shaders, and a client that wants them falls back), and four visual configs
+  reference answers `SGI`, an **empty** extension list where the reference lists 24 (which is the
+  honest part - no ES2, no shaders, and a client that wants them falls back; counted off the sweep of
+  2026-09-27, the day GLX became the shipped default), and four visual configs
   to the reference's 144 and 304 fbconfigs, because it has four true-colour visuals. The request
   surface, the layouts and the *contexts* agree: `CreateContext(direct)` created and `IsDirect` 1 on
   both, `CreateContext(indirect)` refused here and created there - the one place the two disagree on

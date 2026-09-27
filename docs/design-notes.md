@@ -585,15 +585,19 @@ the pointer crosses an open context menu the client issues **no drawing request 
 drawn once, and after that the screen is byte-identical across twelve pointer positions. A toolkit
 that does not repaint on hover has not failed to reach the screen; it has not drawn. The mechanism the
 report points at is still the one thing that *is* measured: with GLX present the client takes a
-different path, and the frames it sends differ. A client that wants OpenGL needs the extension and one
-that does not may be hurt by it, so the default is off and the switch is the user's.
+different path, and the frames it sends differ - but the path it takes is one it abandons (below), so
+the report is a toolkit's own state and not a frame this server failed to deliver. **That is why the
+default was put back to on (2026-09-27, the same day it was made opt-in)**: a client that wants
+OpenGL needs the extension and nothing measured says a client that does not is hurt by it, so the
+switch the user gets is `--no-glx`, which is what comparing two builds wants.
 
 **Why, in the toolkit's own words** (`-Dprism.verbose=true`, 2026-09-27). Without GLX: *"ES2 Prism:
 Error - GLX extension is not supported"* and it falls straight to the software pipeline. With it:
 JavaFX initialises its X11 GL factory, **creates a context**, queries the GL, and only then reports
 *"System GPU doesn't meet the es2 pipe requirement"* and falls back - **to the same software pipeline**.
-So the extension buys JavaFX nothing and costs it a half-taken GL path, which is why the user's
-animations (a caret, a hover) were the thing that noticed. **It is not a speedup anywhere here**: a GL
+So the extension buys JavaFX nothing and costs it a half-taken GL path - one abandoned context at
+startup, and the same software pipeline either way. (That cost is real and small, which is why
+`--no-glx` exists; it is not what the original report was about, and A17 closed that report.) **It is not a speedup anywhere here**: a GL
 client without a GPU renders in software and ships every frame as `PutImage` (769 MB in 5.6 s
 measured), where the reference shares the buffer instead - `glxgears` runs at ~190 FPS here against
 2832 against Xvfb. Speed would need a GPU on the client with DRI3/Present, or a real GL in the server

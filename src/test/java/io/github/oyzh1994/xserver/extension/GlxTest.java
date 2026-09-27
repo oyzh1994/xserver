@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -44,12 +45,27 @@ class GlxTest {
 
     @BeforeAll
     static void startServer() throws IOException {
-        // **`--glx` is required, and that is the point of the flag**: the extension is advertised
-        // only when the user asks for it, because a client that finds it changes what it does with
-        // its own drawing (see ServerOptions.glx - a caret stops blinking under JavaFX).
+        // **No flag: GLX is advertised by default**, and that is what this class exercises. It was
+        // opt-in for a day on a report of lost animations under JavaFX; A17 closed that report (the
+        // caret blinks either way and the hover asks for no repaint at all), so what is left is a
+        // toolkit taking a GL path it then abandons - against a GL client that cannot render here
+        // without it. `ServerOptions.glx` has the measurement; `--no-glx` turns it off.
         server = new XServer(ServerOptions.parse(new String[]{"--display", ":" + DISPLAY,
-                "--geometry", "600x400", "--backend", "headless", "--no-unix", "--glx"}));
+                "--geometry", "600x400", "--backend", "headless", "--no-unix"}));
         server.start();
+    }
+
+    /**
+     * The switch: GLX is on by default and {@code --no-glx} is what turns it off, which is the pair a
+     * comparison of two builds wants (and the shape the flag had backwards until A17 was closed).
+     */
+    @Test
+    void glxIsOnUnlessTheFlagTurnsItOff() {
+        assertTrue(ServerOptions.parse(new String[]{}).glx(), "on by default");
+        assertTrue(ServerOptions.parse(new String[]{"--glx"}).glx(), "and saying so changes nothing");
+        assertFalse(ServerOptions.parse(new String[]{"--no-glx"}).glx(), "off when asked");
+        assertFalse(ServerOptions.parse(new String[]{"--glx", "--no-glx"}).glx(),
+                "the last one wins, as every option here does");
     }
 
     @AfterAll
@@ -60,15 +76,18 @@ class GlxTest {
     }
 
     @Test
-    void itIsNotAdvertisedUnlessItIsAskedFor() throws IOException {
+    void itIsAdvertisedUnlessTheFlagTurnsItOff() throws IOException {
+        // The other way round from how this started, and the test is here because that is the
+        // decision: GLX is on by default, and `--no-glx` is what a comparison of two builds uses.
+        // The report that had it opt-in - lost animations under JavaFX - was closed by A17 (the
+        // caret blinks either way, and the hover asks for no repaint at all).
         XServer quiet = new XServer(ServerOptions.parse(new String[]{"--display", ":"
-                + (DISPLAY + 30), "--geometry", "600x400", "--backend", "headless", "--no-unix"}));
+                + (DISPLAY + 30), "--geometry", "600x400", "--backend", "headless", "--no-unix",
+                "--no-glx"}));
         quiet.start();
         try (RawXClient client = RawXClient.connect(DISPLAY + 30)) {
             assertEquals(0, client.queryExtension("GLX"),
-                    "GLX changes what a toolkit does with its own drawing, so it is the user's to"
-                            + " turn on - a server that advertises it by default hurts every client"
-                            + " that does not want it");
+                    "OFF when the flag says so - which is what makes the flag worth having");
         } finally {
             quiet.stop();
         }

@@ -41,7 +41,7 @@ Options:
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
 | `--no-tray` | do not serve the notification area (the tray a client's icon docks in) |
-| `--glx` | advertise GLX, so a software OpenGL client (`glxgears`, a browser) can render; **off by default**, see below |
+| `--glx` / `--no-glx` | GLX is advertised (so a software OpenGL client - `glxgears`, a browser, anything with a GL surface - can render); `--no-glx` turns it off, which is what comparing two builds wants |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--drop-mount H=C` | where the host's path prefix `H` is on the client's filesystem, for a file dragged onto a forwarded application (see below) |
 | `--scale N\|auto` | screen pixels per logical pixel: `auto` is the host's own scale, 2 on a Retina panel (default 1) |
@@ -122,16 +122,17 @@ inside itself. `docs/backlog.md`'s C8 has the two attempts and why it is closed.
 screen's pixels are allocated when something first draws into it, so a connection that only asks
 questions - `xdpyinfo`, `xdotool`, anything that connects to look - costs nothing until it draws.
 
-**OpenGL works with `--glx`, and the server has no renderer of its own.** It is **off by default**,
-because advertising it changes what a toolkit does with its own drawing: on the build that advertised
-it unconditionally, EasyShell (JavaFX) was reported to stop updating the things it animates - a menu
-item with no hover colour, a caret that does not blink - while clicks and typing still worked. With it
-on the frames the client sends are measurably different. Re-measured 2026-09-27: the caret **does**
-blink on both builds (ten captures 0.2 s apart, the box's own rectangle alternating between exactly
-two states), and the hover paints nothing because the client issues **no drawing request at all**
-while the pointer crosses the menu - so the report is a toolkit's animation state, not a frame this
-server dropped. A client that wants OpenGL needs it and one
-that does not may be hurt by it, so it is the user's switch. With it on, it advertises GLX - 1.4, the
+**OpenGL works with GLX, which is on by default, and the server has no renderer of its own.** It was
+opt-in for a day, on a report that EasyShell (JavaFX) lost the things it animates with GLX advertised
+- a menu item with no hover colour, a caret that did not blink. **That report was closed by
+measurement (A17)**: the caret **does** blink on both builds (ten captures 0.2 s apart, the box's own
+rectangle alternating between exactly two states), and the hover paints nothing because the client
+issues **no drawing request at all** while the pointer crosses the menu - a toolkit's animation state,
+not a frame this server dropped. What is left is that a toolkit which finds GLX takes a GL path it
+then abandons - JavaFX creates a context, finds no GPU that meets its requirement and falls back to the
+same software pipeline - so it costs such a client one context and buys it nothing, while it is the
+only way a GL client renders here at all. `--no-glx` is the comparison switch.
+With it on, it advertises GLX - 1.4, the
 version,
 the two config lists, contexts - and grants a **direct** context, which is the whole trick: a software
 GL client (Mesa on a machine with no GPU) renders in its own process and pushes each finished frame as

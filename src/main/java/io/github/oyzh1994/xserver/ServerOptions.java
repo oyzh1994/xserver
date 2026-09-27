@@ -60,16 +60,26 @@ public final class ServerOptions {
     /** True when every client shares one window instead of getting one of its own. */
     private boolean singleWindow;
     /**
-     * Whether GLX is advertised. **Off by default, and that is a measurement rather than caution.**
+     * Whether GLX is advertised, which it is **by default** - a client that wants OpenGL needs it, and
+     * there is nothing measured that it costs one that does not. That is the other way round from how
+     * this started, and the reversal is itself a measurement:
      *
-     * <p>Advertising it changes what a toolkit does with its own rendering. EasyShell renders through
-     * JavaFX, and with GLX present JavaFX takes a path on which its *animations* stop advancing: a
-     * menu item no longer highlights under the pointer and a text caret stops blinking, while clicks
-     * and typing still work - because the input never went through the thing that stopped. A client
-     * that wants OpenGL (a browser, `glxgears`, a game) needs it, and one that does not is hurt by it,
-     * so it is the user's to turn on.
+     * <p>It was opt-in for a day on a report that a forwarded JavaFX application lost its animations
+     * with GLX advertised - a menu item with no hover colour and a caret that stopped blinking. A17
+     * chased that to the end and **closed it**: the caret blinks on both builds, and the hover issues
+     * *no drawing request at all* - with or without GLX, the client chooses not to repaint, so the
+     * server had nothing to fail at. What is left of the difference is that a toolkit which finds GLX
+     * initialises a GL path: JavaFX creates a context, finds no GPU that meets its requirement and
+     * falls back to the same software pipeline it would have used anyway (measured with
+     * {@code prism.verbose}), so GLX buys a JavaFX client nothing and costs it one context - while it
+     * is the *only* way a real GL client can render here at all.
+     *
+     * <p>**Compatibility, not speed**: this server has no renderer, so a GL client renders in software
+     * and blits its frames as ordinary {@code PutImage} requests (B6 measured it - 769 MB in 5.6 s
+     * from {@code glxgears}, against 2832 FPS on a reference with a GPU behind it). {@code --no-glx}
+     * turns the extension off, which is what comparing two builds wants.
      */
-    private boolean glx;
+    private boolean glx = true;
     /**
      * How large a screen may be grown to. The setup reply's width and height are sixteen bit
      * fields, so a screen beyond 65535 could not be described to a client at all; the default is a
@@ -204,6 +214,7 @@ public final class ServerOptions {
                 case "--no-clipboard" -> options.clipboard = false;
                 case "--no-tray" -> options.tray = false;
                 case "--glx" -> options.glx = true;
+                case "--no-glx" -> options.glx = false;
                 case "--scale" -> options.scale = parseScale(next(args, ++i));
                 case "-screen" -> {
                     // consumes "-screen 0 WxHxD" but we only ever expose a single screen
@@ -283,6 +294,9 @@ public final class ServerOptions {
                   --no-unix             do not listen on /tmp/.X11-unix/XN
                   --local               only listen on loopback
                   --log-requests        log every request
+                  --glx / --no-glx      advertise GLX, which it does by default: a GL client needs
+                                        it, and a toolkit that does not use it only pays one
+                                        abandoned context (--no-glx is the comparison switch)
                   --tick-rate N         screen refresh rate (default 60)
                   --close-grace-ms N    time clients get to close themselves once the window is
                                         closed, before the server disconnects them (default 2000)
@@ -448,7 +462,7 @@ public final class ServerOptions {
         return !singleWindow;
     }
 
-    /** Whether GLX is advertised; off unless {@code --glx} asked for it. See the field. */
+    /** Whether GLX is advertised; on unless {@code --no-glx} turned it off. See the field. */
     public boolean glx() {
         return glx;
     }
