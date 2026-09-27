@@ -65,6 +65,29 @@ public final class XWindow extends XResource {
     private boolean redirected;
     private int redirectUpdate;
     private boolean subwindowsRedirected;
+    /**
+     * Set on a window the server itself presents - Composite's overlay, and nothing else.
+     *
+     * <p>A compositor redirects the root's whole subtree, which includes the very window it draws
+     * its result on. On a reference that is harmless: the display driver shows the overlay by a path
+     * of its own. Here the overlay's *only* path to the screen is being composited, so redirecting
+     * it leaves the compositor's result nowhere to go - measured, and it is a blank screen with
+     * `picom` running happily.
+     */
+    private boolean redirectExempt;
+
+    /**
+     * Set on the server's own presentation surface - Composite's overlay, and nothing else.
+     *
+     * <p>It has **no background at all**: it is not painted, and until a compositor draws into it it
+     * contributes nothing to the screen. That is what a reference does by creating the overlay with
+     * {@code background = None}, and the difference is visible: this server approximates {@code None}
+     * by painting the desktop colour (a deviation that is harmless for an ordinary window, which
+     * draws over it), so a screen-sized overlay painted its grey over the whole screen the moment it
+     * was mapped - measured, {@code tools/CompositeProbe} reading the screen back while a window was
+     * redirected, where the reference still shows the window's own pixels.
+     */
+    private boolean transparentUntilDrawn;
 
     /**
      * The two gravities, whose default is X's own: {@code NorthWest} (1) for both. It matters that
@@ -340,6 +363,9 @@ public final class XWindow extends XResource {
      * held the old one ({@code tools/CompositeProbe}).
      */
     public boolean isRedirected() {
+        if (redirectExempt) {
+            return false;
+        }
         if (redirected) {
             return true;
         }
@@ -373,6 +399,25 @@ public final class XWindow extends XResource {
 
     public void setSubwindowsRedirected(boolean subwindowsRedirected) {
         this.subwindowsRedirected = subwindowsRedirected;
+    }
+
+    /** Whether this is a surface the server presents itself, which redirection does not touch. */
+    public void setRedirectExempt(boolean redirectExempt) {
+        this.redirectExempt = redirectExempt;
+    }
+
+    /** See {@link #transparentUntilDrawn}: the server's own surface, painted by nobody but a client. */
+    public void setTransparentUntilDrawn(boolean transparentUntilDrawn) {
+        this.transparentUntilDrawn = transparentUntilDrawn;
+    }
+
+    public boolean isTransparentUntilDrawn() {
+        return transparentUntilDrawn;
+    }
+
+    /** The window's store, or null when nothing has ever been drawn into it. */
+    public Framebuffer ownPixelsIfAllocated() {
+        return ownPixels;
     }
 
     public int bitGravity() {

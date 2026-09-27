@@ -244,14 +244,19 @@ public final class CompositeExtension implements Extension {
      */
     private XWindow overlay(XServer server, Screen screen) {
         if (overlay == null || overlay.isDestroyed()) {
-            VisualInfo visual = screen.visuals().stream().filter(VisualInfo::hasAlpha).findFirst()
-                    .orElse(screen.rootVisual());
+            // The root's own visual and depth, which is what a reference answers with (measured:
+            // depth 24 on a depth 24 screen). A depth 32 overlay is the trap - picom asks RENDER for
+            // a picture with the *root's* format and a format that does not match the drawable's
+            // depth is BadMatch, which is where it crashed (`tools/CompositeProbe` prints the depth).
+            VisualInfo visual = screen.rootVisual();
             overlay = new XWindow(server.nextServerResourceId(), null, screen, screen.root(),
-                    visual.hasAlpha() ? 32 : screen.rootDepth(), XWindow.INPUT_OUTPUT, visual, 0, 0,
+                    screen.rootDepth(), XWindow.INPUT_OUTPUT, visual, 0, 0,
                     screen.width(), screen.height(), 0);
-            if (visual.hasAlpha()) {
-                overlay.setBackgroundArgb(0);
-            }
+            // The compositor will redirect the root's whole subtree, this window included, and on a
+            // reference that costs nothing - the display driver shows the overlay by a path of its
+            // own. Here being composited *is* the overlay's only path to the screen, so it is exempt.
+            overlay.setRedirectExempt(true);
+            overlay.setTransparentUntilDrawn(true);
             server.resources().add(overlay);
             // The stacking order is the parent's children list, bottom first, so a raise is a move to
             // the end. A compositor's result belongs above everything it composited.

@@ -100,6 +100,17 @@ public final class CompositeProbe {
                 // formatting fault in the tool rather than in the probe.
                 System.out.println("    overlay geometry: width=" + geometry[2] + " height="
                         + geometry[3] + " x=" + geometry[0] + " y=" + geometry[1]);
+                // The overlay's *depth* is the field a compositor's RENDER setup turns on: it asks
+                // for a picture with the root's format, and a format that does not match the
+                // drawable's depth is BadMatch. Read with a raw GetGeometry because the geometry
+                // helper above returns only the four position fields.
+                byte[] getGeometry = new byte[8];
+                getGeometry[0] = 14;                        // GetGeometry
+                RawXClient.writeShortAt(getGeometry, 2, 2);
+                RawXClient.writeIntAt(getGeometry, 4, overlayWindow);
+                client.sendRequest(getGeometry);
+                byte[] geometryReply = client.readReply();
+                System.out.println("    overlay depth=" + (geometryReply[1] & 0xFF));
             }
 
             int region = client.allocateId();

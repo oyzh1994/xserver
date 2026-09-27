@@ -1930,6 +1930,11 @@ public final class XServer {
             io.github.oyzh1994.xserver.extension.DamageExtension.drew(this, window, local);
             return;
         }
+        if (window.isTransparentUntilDrawn() && window.ownPixelsIfAllocated() == null) {
+            // Nothing has been drawn there yet, so there is nothing to put on the screen - and
+            // putting the store's initial content there is what the overlay must not do.
+            return;
+        }
         Screen screen = window.screen();
         io.github.oyzh1994.xserver.draw.Framebuffer target = screen.framebuffer();
         io.github.oyzh1994.xserver.draw.Framebuffer source = window.ownPixels();

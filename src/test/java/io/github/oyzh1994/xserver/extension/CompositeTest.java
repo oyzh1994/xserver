@@ -21,6 +21,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * measured, a redirected window repainted is new in its pixmap and old on the screen
  * ({@code tools/CompositeProbe}) - and a compositor that saw both would draw the window twice.
  *
+ * <p>The overlay itself carries two more, and both were found by running a real compositor against
+ * this server (`picom`, which B5's own **Verify** names). It has to be **as deep as the root**, or
+ * `picom`'s RENDER picture on it is `BadMatch` and it segfaults a long way from the cause; and it has
+ * to **go on reaching the screen while the subtree is redirected**, because a compositor redirects
+ * the whole tree including the window it draws its result on, and here being composited is the
+ * overlay's only path to the screen. Both tests fail with the respective piece removed.
+ *
  * <p>Each request is built by hand rather than through a {@code RawXClient} helper, which is the
  * shape the probes use too: the layouts come from the generated protocol classes and are the ones the
  * probe confirmed against a reference.
@@ -32,7 +39,9 @@ class CompositeTest {
 
     private static final int QUERY_VERSION = 0;
     private static final int REDIRECT_WINDOW = 1;
+    private static final int REDIRECT_SUBWINDOWS = 2;
     private static final int UNREDIRECT_WINDOW = 3;
+    private static final int UNREDIRECT_SUBWINDOWS = 4;
     private static final int NAME_WINDOW_PIXMAP = 6;
     private static final int GET_OVERLAY_WINDOW = 7;
     private static final int AUTOMATIC = 0;
@@ -116,6 +125,114 @@ class CompositeTest {
             assertEquals(server.screen().height(), geometry[3], "and as tall");
             assertEquals(0, geometry[0], "at its origin");
             assertEquals(0, geometry[1], "on both axes");
+        }
+    }
+
+
+    /**
+     * The overlay is as deep as the root, and that is what a compositor's RENDER setup needs.
+     *
+     * <p>Measured, and it is the bug that made `picom` **crash**: it asks RENDER for a picture with
+     * the root's format and creates it on the overlay, and a format that does not match the
+     * drawable's depth is `BadMatch`. `picom` does not check the result, keeps the null picture and
+     * segfaults - so the symptom is a crash a long way from the cause. A depth 32 overlay (chosen
+     * once, so that a screen-sized window would not hide what was behind it) is exactly that
+     * mismatch; the reference answers depth 24 on a depth 24 screen.
+     */
+    @Test
+    void theOverlayIsAsDeepAsTheRoot() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int overlay = overlayOf(client);
+            assertTrue(overlay != 0, "a compositor needs somewhere to draw its result");
+            byte[] request = new byte[8];
+            request[0] = 14;                            // GetGeometry, whose reply carries the depth
+            RawXClient.writeShortAt(request, 2, 2);
+            RawXClient.writeIntAt(request, 4, overlay);
+            client.sendRequest(request);
+            byte[] reply = client.readReply();
+            assertEquals(server.screen().rootDepth(), reply[1] & 0xFF,
+                    "the overlay's depth is the root's, which is what a reference answers and what "
+                            + "a RENDER picture with the root's format needs");
+        }
+    }
+
+    /**
+     * The overlay goes on being composited to the screen even when its parent's subtree is
+     * redirected - which is what a compositor does, and to the whole tree.
+     *
+     * <p>Measured, and it is the bug that made the screen go **blank** with `picom` running happily:
+     * the compositor redirects the root's subwindows, the overlay included, and on a reference that
+     * costs nothing because the display driver shows the overlay by a path of its own. Here being
+     * composited *is* the overlay's path to the screen, so redirection has to leave it alone.
+     */
+    @Test
+    void theOverlayKeepsReachingTheScreenWhileItsSubtreeIsRedirected() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = opcode(client);
+            int overlay = overlayOf(client);
+            redirect(client, opcode, REDIRECT_SUBWINDOWS, client.root());
+
+            int gc = client.createGC(client.allocateId(), client.root(), GREEN);
+            client.fillRectangle(overlay, gc, 0, 0, 100, 80);
+            client.geometry(overlay);
+
+            waitForScreenColor(50, 40, 0xFF000000 | GREEN,
+                    "the compositor's own surface reaches the screen even though the subtree it is "
+                            + "the result of is redirected");
+
+            redirect(client, opcode, UNREDIRECT_SUBWINDOWS, client.root());
+            client.geometry(overlay);
+        }
+    }
+
+    /** The overlay's id, from {@code GetOverlayWindow}. */
+    private static int overlayOf(RawXClient client) throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode(client);
+        request[1] = (byte) GET_OVERLAY_WINDOW;
+        RawXClient.writeShortAt(request, 2, 2);
+        RawXClient.writeIntAt(request, 4, client.root());
+        client.sendRequest(request);
+        return RawXClient.readInt(client.readReply(), 8);
+    }
+
+
+    /**
+     * Creating the overlay does not paint anything: what was on the screen stays there.
+     *
+     * <p>Measured, and it is the third thing `picom` found. A reference creates its overlay with
+     * {@code background = None}, so a mapped overlay contributes nothing until the compositor draws
+     * there; this server approximates {@code None} by painting the desktop colour, which is harmless
+     * for an ordinary window and wrong for a screen-sized one - the whole screen went grey the moment
+     * the overlay was created, and `tools/CompositeProbe` read it back as a difference from the
+     * reference. The fix is that the server's own surface is not painted and contributes nothing
+     * until something draws into it.
+     */
+    @Test
+    void creatingTheOverlayLeavesTheScreenAlone() throws Exception {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 400, 400, 120, 100);
+            client.mapWindow(window);
+            int green = client.createGC(client.allocateId(), client.root(), GREEN);
+            client.fillRectangle(window, green, 0, 0, 120, 100);
+            client.geometry(window);
+            waitForScreenColor(450, 450, 0xFF000000 | GREEN, "the window is on the screen");
+
+            int overlay = overlayOf(client);
+            assertTrue(overlay != 0, "a compositor needs somewhere to draw its result");
+            client.geometry(overlay);
+            client.mapWindow(overlay);
+            client.geometry(overlay);
+
+            // **The mechanism, and it is the assertion that bites**: mapping the server's own
+            // surface allocates no store for it. Without that it is painted with its background -
+            // the desktop colour - and, covering the whole screen, composited over everything.
+            assertEquals(null, ((io.github.oyzh1994.xserver.resource.XWindow)
+                            server.resources().get(overlay)).ownPixelsIfAllocated(),
+                    "the server's own surface has no pixels until a compositor draws there");
+            assertEquals(0xFF000000 | GREEN, screenPixel(450, 450),
+                    "so the overlay, which covers the whole screen, has painted nothing over it");
         }
     }
 

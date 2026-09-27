@@ -1233,6 +1233,12 @@ public final class WindowHandlers {
         if (window.isInputOnly()) {
             return;
         }
+        if (window.isTransparentUntilDrawn()) {
+            // The server's own surface has no background: a reference creates it with
+            // `background = None`, so nothing is painted and nothing is composited until a
+            // compositor draws there. Painting the desktop colour would cover the screen.
+            return;
+        }
         if (window.keepsOwnPixels()) {
             // A window with pixels of its own is painted into them - the whole window, not only the
             // part that shows - and composited from there (B5). The clip the caller passes is in
