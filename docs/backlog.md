@@ -69,7 +69,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| [~] C5 | host ↔ X drag and drop (XDND): both directions built, **both still fail against the real applications** - a real GDK *target* accepts the drag in, which narrows where to look | host window | M |
+| [~] C5 | host ↔ X drag and drop (XDND): **the drag in works and is owner-verified** with `--drop-mount` over a filesystem the client can see; **the drag out is parked** with the reverted trigger | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
@@ -78,7 +78,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~B4~~ | ~~XInput2~~ **done 2026-09-26**: the protocol's spine, the events, the device grabs, and XInput 1's device list (which AWT segfaults without) - see the entry for what that cost | extension | L |
 | ~~B1~~ | ~~XKEYBOARD: read, set, and a layout **by name**~~ **done 2026-09-27**: `setxkbmap -layout <name>` works (its reply has to carry the keymap), `GetNames` is answered, and all seven layouts are byte-identical to the reference's | extension | M-L |
 | ~~B7~~ | ~~DPMS and the XScreenSaver extension~~ **done 2026-09-25** | extension | S |
-| [~] E2 | continuous integration: the suite runs headless and `ci.sh` is the one command; the pipeline is not wired to a host yet | engineering | S |
+| [~] E2 | continuous integration: the suite runs headless, `ci.sh` is the one command, and it was measured from an empty repository; **the pipeline will be GitHub Actions** once the GitHub mirror exists (Gitee is a code host only) - parked until then | engineering | S |
 | ~~E4~~ | ~~per-client framebuffer memory~~ **done 2026-09-26**: allocation is lazy (verified live); freeing while a client is connected is declined, with its reasons in the entry | engineering | M |
 | ~~E5~~ | ~~backpressure to a client that has stopped reading~~ **done 2026-09-25** | engineering | M |
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
@@ -91,6 +91,8 @@ A prompt that starts a fresh session on this, verbatim:
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
+| [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
+| [ ] E6 | keep the three documents in step - **ongoing**: the discipline rather than a task, and what the sweep after every change is | engineering | S |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
 
 ---

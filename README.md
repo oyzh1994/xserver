@@ -561,24 +561,19 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   client's window; a drag past what the screen currently shows makes the screen bigger first, so a
   forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag
   stops, and the screen never shrinks again for the session.
-- **Drag and drop is bridged both ways and neither direction is finished.** A file dragged from the
-  desktop is offered to the application under the pointer as an XDND drag, and a drag that starts
-  inside an application is turned into the host's own drag - but **both stop short with a real
-  toolkit**: the inbound one is accepted by a real GDK *drop target* (the file arrives) and by
-  EasyShell's own protocol handling (measured: it answers `XdndStatus` and asks for the data), and the
-  application still does nothing with it - because what it is handed is a **host path**, and XDND is
-  URI-based: a target *opens* the file, it does not download it. Across machines that path does not
-  exist, which is the whole of "nothing happens" (and why the same application running natively shows
-  its release marker). A filesystem the client can see - a shared folder, an sshfs mount - makes the
-  drop work, and `--drop-mount /Users/me/Shared=/mnt/hgfs/Shared` tells the bridge where that
-  directory is on the client's side, so the URI it hands over is one the application can open:
-  **verified against a real forwarded application on 2026-09-27** - a file dragged from the shared
-  directory arrives and the application uses it (the drag has to start *inside* that directory);
-  what it is *not* is a file transfer - XDND names a path, and a target opens it,
-  and the outbound one's trigger was reverted because it took over drags the application meant to keep
-  inside itself (which froze one client). `docs/backlog.md` C5 has the measurements and the corrected
-  design. An application from before drag and drop - `xterm`, `xclock` - has no way to receive one and
-  always will not.
+- **A file dragged from the desktop reaches a forwarded application, and only if the application can
+  open what it is handed.** The drag is bridged as XDND, the application answers it (`XdndStatus`, then
+  a `ConvertSelection` for the data - measured), and what it is handed is a **host path**: XDND is
+  URI-based, so a target *opens* the file and nothing downloads it. Across machines that path is
+  nowhere, which is the whole of "nothing happens" - and it is why the same application running
+  natively shows its release marker. **Give the client a filesystem that can see the host's directory
+  and it works**: with a shared folder (or an sshfs mount) and
+  `--drop-mount /Users/me/Shared=/mnt/hgfs/Shared`, a file dragged from *inside that directory*
+  arrives and the application uses it - verified against a real forwarded application on 2026-09-27.
+  Dragging *out* of an application is the half that is not finished: its trigger was reverted, because
+  it took over drags the application meant to keep inside itself and froze one client.
+  `docs/backlog.md` C5 has both measurements. An application from before drag and drop - `xterm`,
+  `xclock` - has no way to receive one and always will not.
 - **Text the host's input method composes reaches a forwarded application as a key press**, which is
   the only thing an X client can be sent: the server claims a keycode for the character and tells the
   clients the mapping changed. What is *not* bridged is the input method's own window - the candidate
