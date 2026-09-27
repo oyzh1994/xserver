@@ -98,6 +98,12 @@ public final class XiProbe {
                         i++;
                     }
                 }
+                case "listprops" -> {
+                    mode = "listprops";
+                    if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
+                        deviceId = Integer.parseInt(args[++i]);
+                    }
+                }
                 case "getprop" -> {
                     propertyName = args[++i];
                     if (i + 1 < args.length && args[i + 1].matches("\\d+")) {
@@ -135,6 +141,10 @@ public final class XiProbe {
                 getProperty(wire, opcode, deviceId, propertyName, dump);
                 return;
             }
+            if (mode.equals("listprops")) {
+                listProperties(wire, opcode, deviceId, dump);
+                return;
+            }
             // A window of the client's own, because the root is refused (see getClientPointer).
             int window = createWindow(wire);
             getClientPointer(wire, opcode, window, dump);
@@ -157,6 +167,31 @@ public final class XiProbe {
      * reads them positionally.
      */
     private static int PROPERTY_UNITS = 7;
+
+    /**
+     * {@code XIListProperties}: which properties a device has, which is the request that tells a
+     * client whether the property family is worth using at all ({@code xinput list-props} sends this
+     * first). A device with none is the case this server can answer, and a reference's reply for a
+     * device *with* properties is what fixes the layout: a bare header with the count at 8 and the
+     * atoms after it.
+     */
+    private static void listProperties(Wire wire, int opcode, int device, boolean dump)
+            throws Exception {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = 56;                            // XIListProperties
+        Wire.writeShort(request, 2, 2);
+        Wire.writeShort(request, 4, device);
+        wire.send(request);
+        byte[] reply = replyTo(wire, "XIListProperties");
+        int count = Wire.readShort(reply, 8);
+        System.out.println("XIListProperties device=" + device + " -> " + count
+                + " propert(ies), reply " + reply.length + " bytes");
+        for (int i = 0; i < count && 32 + i * 4 + 4 <= reply.length; i++) {
+            System.out.println("   property " + Wire.readInt(reply, 32 + i * 4));
+        }
+        hex("XIListProperties", reply);
+    }
 
     private static void getProperty(Wire wire, int opcode, int device, String name, boolean dump)
             throws Exception {

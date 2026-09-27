@@ -48,6 +48,7 @@ class XInputTest {
     private static final int XI_QUERY_VERSION = 47;
     private static final int XI_QUERY_DEVICE = 48;
     private static final int XI_QUERY_POINTER = 40;
+    private static final int XI_LIST_PROPERTIES = 56;
     private static final int XI_GET_PROPERTY = 59;
 
     /**
@@ -305,6 +306,36 @@ class XInputTest {
             assertEquals(0, RawXClient.readInt(reply, 12), "bytes_after");
             assertEquals(0, RawXClient.readInt(reply, 16), "num_items");
             assertEquals(0, reply[20] & 0xFF, "format");
+        }
+    }
+
+    /**
+     * The list of a device's properties is answered "none" rather than refused - the same shape of
+     * bug as the property read, and the request {@code xinput list-props} sends first.
+     *
+     * <p>The reply is a bare header: the count is a CARD16 at 8, this server has no properties so
+     * there is no tail, and byte 1 carries the request's minor opcode - read off a reference's reply
+     * for a device that <em>has</em> properties ({@code XiProbe listprops 2}), since the empty answer
+     * is that reply with the count at zero. Measured: {@code xinput list-props 2} prints the device
+     * and no properties against a reference, and was a {@code BadRequest} here.
+     */
+    @Test
+    void theDevicePropertyListIsAnsweredEmptyRatherThanRefused() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            byte[] request = new byte[8];
+            request[0] = (byte) opcode;
+            request[1] = XI_LIST_PROPERTIES;
+            RawXClient.writeShortAt(request, 2, 2);
+            RawXClient.writeShortAt(request, 4, 2);              // the pointer device
+            client.sendRequest(request);
+
+            byte[] reply = client.readReply();                   // refuses by throwing
+            assertEquals(1, reply[0] & 0xFF, "a reply, not an error");
+            assertEquals(XI_LIST_PROPERTIES, reply[1] & 0xFF, "the minor opcode, where a reference"
+                    + " puts it");
+            assertEquals(0, RawXClient.readShort(reply, 8), "num_properties");
+            assertEquals(0, RawXClient.readInt(reply, 4), "length: no atoms follow");
         }
     }
 

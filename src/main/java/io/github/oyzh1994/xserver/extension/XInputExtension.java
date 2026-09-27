@@ -45,10 +45,11 @@ import java.util.List;
  * same reason: they carry lists whose shape no class here reproduces.
  *
  * <p><b>What is not here</b>, deliberately: touch, tablets, barriers and the raw event family, which
- * a client asks for by name and this server has no device behind; the property requests other than
- * {@code XIGetProperty} (which a forwarded client does ask for, and which is answered "absent" -
- * see {@link #getProperty}), because there are no device properties here to list, change or delete;
- * and the hierarchy's changing requests, which would let a client add a device this server cannot
+ * a client asks for by name and this server has no device behind; the property requests that
+ * <em>change</em> something ({@code XIChangeProperty}, {@code XIDeleteProperty}), because there are
+ * no device properties here to change - the two that <em>read</em> them are answered "none"
+ * ({@link #listProperties} and {@link #getProperty}, both of which a forwarded client sends); and
+ * the hierarchy's changing requests, which would let a client add a device this server cannot
  * invent. Each of them is refused rather than accepted and ignored - a refusal a client can see is
  * worth more than silence it cannot - except where a client asks for something it will wait on.
  */
@@ -80,6 +81,7 @@ public final class XInputExtension implements Extension {
     private static final int XI_GRAB_DEVICE = 51;
     private static final int XI_UNGRAB_DEVICE = 52;
     private static final int XI_ALLOW_EVENTS = 53;
+    private static final int XI_LIST_PROPERTIES = 56;
     private static final int XI_GET_PROPERTY = 59;
     private static final int XI_GET_SELECTED_EVENTS = 60;
 
@@ -150,6 +152,7 @@ public final class XInputExtension implements Extension {
             case XI_QUERY_VERSION -> VersionQuery.read(in);
             case XI_QUERY_DEVICE -> DeviceQuery.read(in);
             case XI_GET_CLIENT_POINTER -> ClientPointerQuery.read(in);
+            case XI_LIST_PROPERTIES -> ListPropertiesRequest.read(in);
             case XI_GET_PROPERTY -> GetPropertyRequest.read(in);
             case XI_GET_SELECTED_EVENTS -> SelectedEventsQuery.read(in);
             case XI_QUERY_POINTER -> XIQueryPointerRequest.read(in);
@@ -182,6 +185,7 @@ public final class XInputExtension implements Extension {
             case SelectEvents select -> selectEvents(client, select);
             case SelectedEventsQuery query -> getSelectedEvents(client, query);
             case GetPropertyRequest property -> getProperty(client, property);
+            case ListPropertiesRequest list -> listProperties(client, list);
             case XIQueryPointerRequest query -> queryPointer(client, query);
             case XIWarpPointerRequest warp -> warpPointer(client, warp);
             case GrabDevice grab -> grabDevice(server, client, grab);
@@ -630,6 +634,31 @@ public final class XInputExtension implements Extension {
     }
 
     /**
+     * {@code XIListProperties}: which properties a device has, and the answer is "none" - the request
+     * {@code xinput list-props} sends first, and the one that decides whether the property family is
+     * worth using at all.
+     *
+     * <p><b>It used to be refused as an unknown minor</b> - a {@code BadRequest}, which is the same
+     * shape as {@link #getProperty}'s and was found the same way ({@code xinput list-props 2} against
+     * this server refuses where it lists two properties against a reference). The reply is a bare
+     * header: the count is a CARD16 at 8, the atoms follow the header, and byte 1 carries the request's
+     * minor opcode - all three read off a reference's own reply for a device that <em>has</em>
+     * properties ({@code XiProbe listprops 2}), because the empty answer this server gives is the same
+     * reply with the count at zero.
+     */
+    private void listProperties(ClientConnection client, ListPropertiesRequest request) {
+        checkRealDevice(request.device());
+        byte[] reply = new byte[32];
+        reply[0] = 1;
+        reply[1] = (byte) XI_LIST_PROPERTIES;   // measured: a reference puts the minor opcode here
+        putCard16(reply, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        // num_properties at 8 stays zero, and there is no tail: this server's devices have none.
+        send(client, reply);
+        log.debug("{} listed device properties on device {}: this server has no device properties",
+                client, request.device());
+    }
+
+    /**
      * {@code XIGetProperty}: a device property read, and <b>this server has no device properties</b> -
      * so every one of them is absent, and that is what is answered.
      *
@@ -657,7 +686,7 @@ public final class XInputExtension implements Extension {
      * part of it.
      */
     private void getProperty(ClientConnection client, GetPropertyRequest request) {
-        checkDevice(request.device());
+        checkRealDevice(request.device());
         if (request.property() == 0 || server.atoms().name(request.property()) == null) {
             throw ProtocolException.badAtom(request.property());
         }
@@ -1070,6 +1099,22 @@ public final class XInputExtension implements Extension {
                 && deviceId != XInputMasks.POINTER_DEVICE && deviceId != XInputMasks.KEYBOARD_DEVICE) {
             throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
                     "bad device " + deviceId);
+        }
+    }
+
+    /**
+     * The same, for the requests that are about <em>one</em> device's own properties.
+     *
+     * <p>{@code XIAllDevices} and {@code XIAllMasterDevices} are selectors, not devices, and a
+     * property belongs to a device - so a reference refuses them here, which was measured with
+     * {@code XiProbe}: {@code XIListProperties} and {@code XIGetProperty} both answer an error for
+     * device 0. Being lenient about it was this server's own invention, and it read as a device that
+     * has no properties rather than as the bad request it is.
+     */
+    private void checkRealDevice(int deviceId) {
+        if (deviceId != XInputMasks.POINTER_DEVICE && deviceId != XInputMasks.KEYBOARD_DEVICE) {
+            throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
+                    "bad device " + deviceId + " for a device property request");
         }
     }
 
@@ -1502,6 +1547,38 @@ public final class XInputExtension implements Extension {
     }
 
     /** {@code XIQueryPointer}: the window the question is about. */
+    /**
+     * {@code XIListProperties}: which device the client wants the properties of - two units, and the
+     * reply is where the work is.
+     */
+    private record ListPropertiesRequest(int device) implements XRequest {
+
+        static ListPropertiesRequest read(X11Input in) throws IOException {
+            in.readCard8();                     // the minor opcode, already known
+            in.readCard16();                    // length
+            return new ListPropertiesRequest(in.readCard16());
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xinput";
+        }
+    }
+
     private record XIQueryPointerRequest(int window) implements XRequest {
         static XIQueryPointerRequest read(X11Input in) throws IOException {
             in.readCard8();
