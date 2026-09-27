@@ -4152,9 +4152,28 @@ a runner's local repository starts empty. It also deliberately does not configur
 repository's remote is Gitee, and a workflow YAML written blind for a host nobody has tried is worse
 than no file. The two facts a pipeline needs are in the script's own comments.
 
+**Measured again 2026-09-27, and this is the half that a runner does that this machine had not: a
+build with an *empty* local repository.** `ci.sh` deliberately does not pass `-o`, because a runner
+starts with nothing, and that claim had never been tested - every run here used the author's `~/.m2`.
+With `MVN_OPTS="-Dmaven.repo.local=/tmp/fresh-m2 -Djava.awt.headless=true"` (a directory that did not
+exist), the script resolves everything from Maven Central and finishes:
+
+```
+[WARNING] Tests run: 387, Failures: 0, Errors: 0, Skipped: 2
+[INFO] BUILD SUCCESS
+surefire report: .../target/surefire-reports/
+```
+
+The two skips are exactly `JavaFxBackendTest`'s toolkit tests, which is what the guard is for. A
+second thing falls out of it, and it is worth knowing: that run resolved the **published** protocol
+artifacts - not this machine's locally-patched one - and passed, which is E1's compatibility claim
+measured from the other side.
+
 **Left open.** The green run on a pull request (and the deliberately broken commit failing it) cannot
 be produced here - there is no CI service in this checkout - so the item stays open until the script
-is wired to one and seen to run.
+is wired to one and seen to run. That is the repository host's: **Gitee takes its own pipeline
+format**, and a workflow file written blind for a service nobody has tried would be worse than none
+(the script's own comments say what a pipeline needs: a JDK that satisfies the pom and Maven).
 
 **Found on the way, and now its own item and done: a server with no display serves into the void.**
 With `-Djava.awt.headless=true` and the default backend, a client that maps a window made the tick
