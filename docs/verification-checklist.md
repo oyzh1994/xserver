@@ -113,6 +113,10 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 
 ## 7. What is deliberately different (do not report these)
 
+(**Capabilities this server simply does not have** - extensions a client could ask for and the holes
+inside the ones it does have - are a separate, measured list: `docs/backlog.md` §9. A pass should not
+report those as bugs either, but for the other reason: nobody has built them yet.)
+
 Each of these was measured against a reference and decided; `docs/design-notes.md`'s "Deliberately
 not done" and `docs/backlog.md`'s §7 have the measurement.
 
