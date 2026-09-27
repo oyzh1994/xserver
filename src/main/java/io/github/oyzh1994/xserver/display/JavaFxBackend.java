@@ -190,7 +190,7 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+    public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
         if (closed || damage == null) {
             return;
         }

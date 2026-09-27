@@ -165,7 +165,7 @@ public final class VncBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage, CursorSprite cursor) {
+    public void present(Surface surface, Rectangle damage, CursorSprite cursor) {
         if (damage == null || sessions.isEmpty()) {
             return;
         }

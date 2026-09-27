@@ -81,7 +81,7 @@ public final class SwingBackend implements DisplayBackend {
     }
 
     @Override
-    public void present(Screen screen, Rectangle damage, CursorSprite sprite) {
+    public void present(Surface surface, Rectangle damage, CursorSprite sprite) {
         ScreenPanel target = panel;
         if (target == null || closed || damage == null) {
             return;

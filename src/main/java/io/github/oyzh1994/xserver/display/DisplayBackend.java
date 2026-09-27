@@ -95,7 +95,7 @@ public interface DisplayBackend {
      * than painted into the framebuffer so that a frame always shows the pointer at the position it
      * had when the frame was taken, and so that what the clients drew is never covered by it.
      */
-    void present(Screen screen, Rectangle damage, CursorSprite cursor);
+    void present(Surface surface, Rectangle damage, CursorSprite cursor);
 
     /**
      * Restricts the window to this rectangle of the screen, in framebuffer coordinates.

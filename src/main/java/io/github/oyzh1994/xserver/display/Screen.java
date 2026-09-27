@@ -20,7 +20,7 @@ import java.util.Map;
  * <p>Only a single screen is exposed, which is what essentially every client expects; the type
  * exists so multi-screen support is a matter of adding entries rather than a rewrite.
  */
-public final class Screen {
+public final class Screen implements Surface {
 
     /** Size of the root window's border, always zero by convention. */
     public static final int ROOT_BORDER = 0;
