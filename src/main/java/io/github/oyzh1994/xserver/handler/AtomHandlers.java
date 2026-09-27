@@ -564,6 +564,14 @@ public final class AtomHandlers {
             bridge.selectionAnswered(
                     readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
         }
+        io.github.oyzh1994.xserver.drop.DropBridge dragging = server.dropBridge();
+        if (dragging != null && eventCode == SELECTION_NOTIFY
+                && dragging.ownsWindow(destination.id())) {
+            // The same, for the other direction: a client answering the bridge's request for the
+            // files a drag inside a forwarded application is offering (C5).
+            dragging.selectionAnswered(
+                    readCard32(bytes, SELECTION_NOTIFY_PROPERTY, senderBigEndian));
+        }
         io.github.oyzh1994.xserver.tray.TrayBridge tray = server.tray();
         if (tray != null && eventCode == CLIENT_MESSAGE && tray.ownsWindow(destination.id())) {
             // A notification-area client asking to be displayed: SYSTEM_TRAY_REQUEST_DOCK, sent as a

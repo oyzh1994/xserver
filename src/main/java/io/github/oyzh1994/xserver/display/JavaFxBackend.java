@@ -630,6 +630,30 @@ public final class JavaFxBackend implements DisplayBackend {
             event.setDropCompleted(taken);
             event.consume();
         });
+        // The other direction: a drag that started inside a forwarded application. The server has
+        // been watching the drag selection and asking the client what it offers since the moment the
+        // drag began (DropBridge), so by the time the user has dragged far enough for the toolkit to
+        // call this, the files are usually in hand - and this is the only moment a platform drag can
+        // begin, because the gesture that started it is already in progress.
+        scene.setOnDragDetected(event -> {
+            if (!input.draggingOut()) {
+                return;                              // the application under the pointer is not dragging
+            }
+            java.util.List<java.io.File> files = new java.util.ArrayList<>();
+            for (String path : input.dragOutFiles()) {
+                files.add(new java.io.File(path));
+            }
+            if (files.isEmpty()) {
+                return;
+            }
+            javafx.scene.input.Dragboard board = scene.startDragAndDrop(
+                    javafx.scene.input.TransferMode.COPY);
+            javafx.scene.input.ClipboardContent content = new javafx.scene.input.ClipboardContent();
+            content.putFiles(files);
+            board.setContent(content);
+            log.info("a drag of {} file(s) left a forwarded application", files.size());
+            event.consume();
+        });
         scene.setOnKeyPressed(event -> keyChanged(event.getCode(), true));
         scene.setOnKeyReleased(event -> keyChanged(event.getCode(), false));
         // The character the input method or the dead key produced, which is not the key that was

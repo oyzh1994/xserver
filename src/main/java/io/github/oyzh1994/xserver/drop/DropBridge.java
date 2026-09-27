@@ -72,9 +72,21 @@ public final class DropBridge {
     private final int finishedAtom;
     private final int actionCopyAtom;
 
+    /** The property a dragging client is asked to leave its file list in. */
+    private static final String DRAG_OUT_PROPERTY = "XSERVER_DRAG_OUT";
+
     // Guarded by the server lock.
     /** What the host handed over, as URIs, while a drag is in flight. */
     private List<String> uris = List.of();
+
+    // Guarded by the server lock.
+    /** The client window a forwarded application is dragging *from*, or 0 - see selectionOwnerChanged. */
+    private int draggingOwner;
+    /** What that drag offered, as URIs, once the client has answered. */
+    private List<String> dragOutUris = List.of();
+    /** True between asking the dragging client for its files and its answer arriving. */
+    private boolean awaitingDragOut;
+    private final int dragOutPropertyAtom;
     /** The window being dragged onto, or 0. */
     private int target;
     private long droppedAt;
@@ -94,6 +106,7 @@ public final class DropBridge {
         dropAtom = server.atoms().intern("XdndDrop");
         finishedAtom = server.atoms().intern("XdndFinished");
         actionCopyAtom = server.atoms().intern("XdndActionCopy");
+        dragOutPropertyAtom = server.atoms().intern(DRAG_OUT_PROPERTY);
     }
 
     /**
@@ -231,6 +244,130 @@ public final class DropBridge {
     }
 
     // ------------------------------------------------------------------
+    // Out of a forwarded application, which is the other direction
+    // ------------------------------------------------------------------
+
+    /**
+     * A client took or gave up the drag selection, and that is how this server knows a drag is
+     * happening *inside* a forwarded application.
+     *
+     * <p>X's own drag and drop has no "I am about to drag" message: a client that decides to drag
+     * takes the {@code XdndSelection} and starts talking to whatever is under the pointer. So the
+     * selection's owner <em>is</em> the signal, and it is the one thing a server can see before the
+     * application has committed to a target - which is exactly what the host's side needs, because a
+     * platform drag has to be started from the mouse gesture that is already in progress.
+     *
+     * <p>The bridge's own window owns the same selection during a host-to-X drag; that is the other
+     * direction and is not a client's drag, so it is filtered out here.
+     */
+    public void selectionOwnerChanged(String name, int owner) {
+        if (!XDND_SELECTION.equals(name) || ownsWindow(owner)) {
+            return;
+        }
+        draggingOwner = owner;
+        dragOutUris = List.of();
+        awaitingDragOut = false;
+        if (log.isDebugEnabled()) {
+            log.debug("a forwarded application is dragging from 0x{}", Integer.toHexString(owner));
+        }
+        // **Asked the moment the drag is seen, not when the platform wants the answer.** The host's
+        // drag has to be started from the mouse gesture that is already in progress, and JavaFX's
+        // dragboard holds real files rather than a promise, so the files have to be in hand by then.
+        // A client answers in the time it takes the user to move a few pixels, which is the whole
+        // budget: what is not answered by the time the drag reaches the window does not set off.
+        askDraggingClient();
+    }
+
+    /** Whether a forwarded application is offering a drag right now. */
+    public boolean isDraggingOut() {
+        return draggingOwner != 0;
+    }
+
+    /** Whether the drag is one of the bridge's own - the host's, going the other way. */
+    public boolean isHostDragInFlight() {
+        return target != 0 || !uris.isEmpty();
+    }
+
+    /**
+     * Asks the dragging client what it is offering, as a {@code SelectionRequest} for
+     * {@code text/uri-list}.
+     *
+     * <p>Sent as an event rather than as a protocol request because the bridge is a *requestor* here
+     * and the client is the owner - the same shape as the host clipboard's fetch, and the answer
+     * arrives through {@link #selectionAnswered}.
+     */
+    public void askDraggingClient() {
+        if (draggingOwner == 0) {
+            return;
+        }
+        XResource resource = server.resources().get(draggingOwner);
+        if (!(resource instanceof XWindow source) || source.owner() == null) {
+            clearDragOut();
+            return;
+        }
+        // Whatever a previous ask left behind: the answer is read from this property, so it has to
+        // be empty first or a refusal would look like data.
+        window.properties().remove(dragOutPropertyAtom);
+        ClientConnection owner = source.owner();
+        server.events().send(owner, com.github.moaxcp.x11.protocol.xproto.SelectionRequestEvent
+                .builder()
+                .firstEventOffset((byte) 0)
+                .sentEvent(false)
+                .sequenceNumber(owner.sequenceNumber())
+                .time(0)
+                .owner(draggingOwner)
+                .requestor(window.id())
+                .selection(selectionAtom)
+                .target(uriListAtom)
+                .property(dragOutPropertyAtom)
+                .build());
+        awaitingDragOut = true;
+    }
+
+    /**
+     * The dragging client answered the bridge's request: the property it named holds the file list,
+     * or {@code None} when it refused this target.
+     */
+    public void selectionAnswered(int property) {
+        if (!awaitingDragOut) {
+            return;
+        }
+        awaitingDragOut = false;
+        if (property != dragOutPropertyAtom) {
+            log.debug("the dragging client offered no text/uri-list");
+            dragOutUris = List.of();
+            return;
+        }
+        XProperty value = window.properties().get(dragOutPropertyAtom);
+        if (value == null) {
+            dragOutUris = List.of();
+            return;
+        }
+        dragOutUris = parseUriList(value.data());
+        if (log.isDebugEnabled()) {
+            log.debug("the dragging client offers {} file(s)", dragOutUris.size());
+        }
+    }
+
+    /** What the drag offers, as paths on the host - what a platform drag's promise resolves to. */
+    public List<String> dragOutPaths() {
+        List<String> paths = new ArrayList<>(dragOutUris.size());
+        for (String uri : dragOutUris) {
+            String path = toPath(uri);
+            if (path != null) {
+                paths.add(path);
+            }
+        }
+        return paths;
+    }
+
+    private void clearDragOut() {
+        draggingOwner = 0;
+        dragOutUris = List.of();
+        awaitingDragOut = false;
+    }
+
+    // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
 
@@ -301,6 +438,46 @@ public final class DropBridge {
                 .target(target)
                 .property(property)
                 .build());
+    }
+
+    /**
+     * A {@code text/uri-list} as URIs: one per line, {@code #} starts a comment, and CRLF is the
+     * separator every file manager writes.
+     */
+    private static List<String> parseUriList(byte[] value) {
+        List<String> uris = new ArrayList<>();
+        for (String line : new String(value, StandardCharsets.UTF_8).split("\r?\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.isEmpty() && !trimmed.startsWith("#")) {
+                uris.add(trimmed);
+            }
+        }
+        return uris;
+    }
+
+    /** The path a {@code file:} URI names, or null for a URI that is not a local file. */
+    private static String toPath(String uri) {
+        if (!uri.startsWith("file://")) {
+            return null;
+        }
+        String path = uri.substring("file://".length());
+        if (path.isEmpty()) {
+            return null;
+        }
+        // A URI names a host between the scheme and the path; an empty one, or this machine's own
+        // name, is a local file and anything else is not ours to hand over.
+        if (!path.startsWith("/")) {
+            int slash = path.indexOf('/');
+            if (slash < 0) {
+                return null;
+            }
+            String host = path.substring(0, slash);
+            if (!host.equalsIgnoreCase("localhost")) {
+                return null;
+            }
+            path = path.substring(slash);
+        }
+        return path.replace("%20", " ");
     }
 
     /** The dropped paths as URIs, which is what a target understands. */

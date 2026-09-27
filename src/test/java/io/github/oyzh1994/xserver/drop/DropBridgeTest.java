@@ -32,6 +32,7 @@ class DropBridgeTest {
     private static final int DISPLAY = 68;
 
     private static final int CLIENT_MESSAGE = 33;
+    private static final int SELECTION_REQUEST = 30;
     private static final int SELECTION_NOTIFY = 31;
 
     /** {@code _NET_WM_STATE}'s sibling: what XDND calls "I take drops". */
@@ -143,6 +144,69 @@ class DropBridgeTest {
             } finally {
                 target.readTimeoutMillis(5000);
             }
+        }
+    }
+
+
+    /**
+     * The other direction: a drag that starts inside a forwarded application, and the server finding
+     * out what it is offering.
+     *
+     * <p>X gives no "I am dragging" message, so the signal is the one thing a server can see before
+     * the application has committed to a target: **the client takes the {@code XdndSelection}**. The
+     * bridge watches it, and can then ask the owner for {@code text/uri-list} the same way a target
+     * does - as a {@code SelectionRequest} event, because here the bridge is the requestor and the
+     * client is the owner. This test plays the source, which is the half the platform cannot
+     * produce in-process.
+     */
+    @Test
+    void aClientThatTakesTheDragSelectionIsDraggingOutAndCanBeAskedForItsFiles()
+            throws IOException {
+        try (RawXClient source = RawXClient.connect(DISPLAY)) {
+            int window = source.allocateId();
+            source.createWindow(window, source.root(), 0, 0, 200, 100);
+            source.mapWindow(window);
+            source.flush();
+
+            DropBridge bridge = server.dropBridge();
+            assertEquals(false, bridge.isDraggingOut(),
+                    "nothing is being dragged before a client says so");
+
+            // What a client does when the user drags something out of it.
+            source.setSelectionOwner(window, source.internAtom(XDND_SELECTION), 0);
+            source.flush();
+            source.geometry(window);                    // a round trip, so the server has run it
+            assertEquals(true, bridge.isDraggingOut(),
+                    "the drag selection having an owner is how a drag inside an application is seen");
+
+            bridge.askDraggingClient();
+
+            // The bridge asks as an event, and the owner answers the way any selection owner does.
+            byte[] request = source.readEvent(SELECTION_REQUEST);
+            assertNotNull(request, "the bridge has to ask the dragging client what it offers");
+            int requestor = RawXClient.readInt(request, 12);
+            assertEquals(bridge.windowId(), requestor, "the answer goes back to the bridge's own window");
+            // The property the data goes in is the one the *request* names - a client does not get to
+            // choose it, and a test that invented its own name would be testing itself.
+            int property = RawXClient.readInt(request, 24);
+            assertEquals(source.internAtom(URI_LIST), RawXClient.readInt(request, 20),
+                    "and what is asked for is text/uri-list, which is what a file drag carries");
+
+            source.setStringProperty(bridge.windowId(), property, source.internAtom(URI_LIST),
+                    "file:///root/notes.txt\r\nfile:///root/photo.png\r\n");
+            source.sendSelectionNotify(bridge.windowId(), 0, bridge.windowId(),
+                    source.internAtom(XDND_SELECTION), source.internAtom(URI_LIST), property);
+            source.flush();
+            source.geometry(window);
+
+            assertEquals(List.of("/root/notes.txt", "/root/photo.png"), bridge.dragOutPaths(),
+                    "one URI per line is what text/uri-list is, and the paths come back in order");
+
+            // A client that gives the selection up is no longer dragging.
+            source.setSelectionOwner(0, source.internAtom(XDND_SELECTION), 0);
+            source.flush();
+            source.geometry(window);
+            assertEquals(false, bridge.isDraggingOut(), "and letting it go ends the drag");
         }
     }
 

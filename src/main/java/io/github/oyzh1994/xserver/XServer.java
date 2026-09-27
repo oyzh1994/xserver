@@ -754,6 +754,11 @@ public final class XServer {
                 // that it is the one that takes over when it is left free.
                 clipboard.selectionOwnerChanged(name, owner);
             }
+            if (drops != null && subtype == XFixesExtension.SELECTION_SET_OWNER) {
+                // And the drag bridge watches the *drag* selection, because a client taking it is
+                // the only sign X gives that a drag has started inside a forwarded application (C5).
+                drops.selectionOwnerChanged(name, owner);
+            }
         }
     }
 
