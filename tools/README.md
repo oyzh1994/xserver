@@ -15,7 +15,7 @@ these is meant to carry out, so keep them working.
 | the reference display | `tools/xvfb.sh` | `start`/`stop`/`status` for the VM's `Xvfb :98` plus `x11vnc`: the other side of every comparison, and the three flags it needs are easy to get wrong (below) |
 | one-command comparison | `tools/compare.sh` | the six steps a rendering comparison takes - both beds, the same gesture on each, the same capture tool, the `Xwd` diff and the `Blocks` grid - as one command |
 | the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
-| the XDND pair | `tools/xdnd-source.py`, `tools/xdnd-target.py` | **a real GTK3 drag source and a real GTK3 drop target**, for the C5 work: run them as **two processes** (a drag inside one GTK process never uses XDND at all - GDK shortcuts it) and drive the gesture with XTEST. This is the "real toolkit on the other end" that dropped a Finder file into a real target on this server, and it prints every step, so a conversation that stops halfway is visible as the step that never arrived. Needs PyGObject + GTK3, which the VM has |
+| the XDND pair | `tools/xdnd-source.py`, `tools/xdnd-target.py` | **a real GTK3 drag source and a real GTK3 drop target**, for the C5 work: run them as **two processes** (a drag inside one GTK process never uses XDND at all - GDK shortcuts it) and drive the gesture with XTEST. This is the "real toolkit on the other end" the C5 entry asked for: a Finder file dropped into a real GTK target on this server arrives - while the applications this bed has still ignore it (see C5), which is the difference to chase with this pair. It prints every step, so a conversation that stops halfway is visible as the step that never arrived. Needs PyGObject + GTK3, which the VM has |
 | the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window. **Both ends on the same point make it a click**, which is how D1's live check closes a window the way a user does (the close button is at the top left of the title bar, about 14,13 in from the bounds the first tool prints) |
 
 Run a tool with the test classpath - `tools/kit.sh` is that line with the classpath filled in, which
@@ -361,7 +361,13 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   never found" is that bug, and it is why the tool now reads four bytes, takes the length from them,
   and treats an extended length as "the length field is zero" rather than "the opcode is 139". It
   cannot proxy the VM-to-reference direction (the client hangs for that reason, whatever it is), so
-  for a reference capture compile it **on the VM** - `java` is there. A fifth
+  for a reference capture compile it **on the VM** - `java` is there. **And it is still not
+  transparent for a heavy client** (measured 2026-09-27): EasyShell now *starts* through it, maps its
+  windows and then stalls before its first drawing request, with the reference logging 23
+  `BadRequest`s and the S2C framing going wrong - so the "same client, two servers, compare the
+  request sets" measurement this fix was for is **still not usable**, and the remaining fault is
+  somewhere in the framing of a large or extended-form message. `tools/tap.py` is byte-transparent
+  and logs chunks instead; that is the fallback, and a reader has to frame it themselves. A fifth
   argument adds a **raw dump** (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per
   message as `<direction> <hex>`, for when the *bytes* are what is being hunted - that is how
   `setxkbmap`'s own `GetKbdByName` request was read (and it is the same job `strace -e writev` does on

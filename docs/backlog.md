@@ -69,7 +69,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| [~] C5 | host ↔ X drag and drop (XDND): **drag in works with a real GTK target** (measured end to end 2026-09-27); drag out still needs the corrected trigger and a hand | host window | M |
+| [~] C5 | host ↔ X drag and drop (XDND): both directions built, **both still fail against the real applications** - a real GDK *target* accepts the drag in, which narrows where to look | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
@@ -2114,6 +2114,23 @@ belongs to a device - a reference answers an **error** for both requests with de
 (`checkDevice`, which is right for the queries) and answered "absent"; it now refuses them, like the
 list does.
 
+**And the two `bad window 0x0` refusals in every log are the client's, not this server's - measured
+2026-09-27.** They were recorded here as "JavaFX's two asks about window `0x0`", which reads like
+something to chase; a GTK client through a proxy against a *reference* makes the same two requests
+(`GetWindowAttributes(0)` and `GetGeometry(0)`, decoded off the raw stream), so Xvfb answers
+`BadWindow`/`BadDrawable` to them as well and GDK ignores both. Every log line of this shape can be
+read past.
+
+**A client sweep, for the record (2026-09-27).** Thirty real tools against a fresh server -
+`xdpyinfo`, `xwininfo`, `xwd`, `xev`, `xset` (including `r rate`), `xmodmap -pke`/`-pm`, `xrandr`
+(and `--prop`/`--listmonitors`), `xinput list`/`list-props`/`set-prop`, `xdotool` (geometry, search,
+key, click), `glxinfo`, `xkbcomp`, `setxkbmap -print`/`-layout de`, `xprop -root`, `xlsatoms`,
+`xlsclients`, `xclock`, `xeyes`, `xcalc`, `xterm`, `xmessage` - plus a GTK3 target and `nautilus`:
+**no X error from any of them**, and the only refusals in the log are the window-`0x0` pair above and
+three `BadAtom`s for atoms that do not exist. `xinput set-prop` fails client-side, because the
+property it wants is one this server does not have - which is the honest answer, and the reason
+`XIListProperties` had to be answered rather than refused.
+
 **What is still not here**, deliberately and visibly refused rather than accepted: touch, tablets,
 barriers and the raw event family (a client asks for them by name and this server has no device behind
 them), the rest of the device property family (`XIListProperties` and the change/delete requests), and
@@ -3053,7 +3070,7 @@ made one, is declined).
 
 ---
 
-### [~] C5. Host ↔ X drag and drop (XDND). **M** - **the drag-IN half is verified against a real GTK target (2026-09-27); the drag-out trigger is still the reverted one**, and the applications' own answer to either is not settled
+### [~] C5. Host ↔ X drag and drop (XDND). **M** - **neither direction works with a real application yet** (the owner's hands, 2026-09-27); a real *GDK* target does receive the drag, which is where the next attempt should start
 
 **What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
@@ -3112,7 +3129,17 @@ two clients this bed has, after the owner tried them by hand:**
 the bridge itself had asked to answer. Both directions need a real toolkit on the other end before
 either is called done.
 
-**Measured again 2026-09-27 with the real toolkit the entry asked for, and the drag-IN half works.**
+**Correction, the same day, from the owner's own hands: it does *not* work in EasyShell.** Dragging a
+file from Finder onto a forwarded EasyShell still does nothing, while the *macOS* build of the same
+application shows its `松开鼠标以释放文件` marker - so whatever the bridge gets wrong is something the
+GTK target above tolerates and EasyShell does not. The paragraph below is kept because the measurement
+is real (a real GDK target does receive the URI), but **the item is not done in either direction** and
+the claim "drag-in verified" was too strong: a target that accepts is not the same as the application
+that has to.** What to try next, with `tools/xdnd-*.py` as the instrument: run the GTK *target* and
+EasyShell side by side on this server and compare what each is sent, step by step, for the same
+Finder drag - the difference between "GDK accepts" and "EasyShell ignores" is the answer.
+
+**Measured 2026-09-27 with a real toolkit on the other end: a real GDK *target* receives the files.**
 `tools/xdnd-target.py` (new) is a **GTK3 drop target** - the same GDK a forwarded application uses -
 and a real Finder drag onto it, on this server, ends with the target printing
 `DATA ['file:///private/tmp/xdnddir/dropped.txt']`. The whole path is in this server's own log:
