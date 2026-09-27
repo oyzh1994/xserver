@@ -3182,6 +3182,10 @@ forwarded EasyShell arrives and the application uses it. **First configuration i
 has been seen to work with a real application**, and it fits everything measured below: the protocol
 path was already right, and the missing piece was a path the client could open.
 
+**The owner has parked the item here (2026-09-27)**: drag-in works and is verified, and the drag-out
+half - the corrected trigger, which needs a hand to accept - is deliberately left where it is rather
+than carried on with. Nothing about the item blocks anything else.
+
 **What it costs is the configuration** - the owner's words: it works, but setting it up is a nuisance.
 The alternative that removes that step was offered and **declined**: a server-side "push"
 (`--drop-push user@host:/dir`) that copies the dropped file to the client machine's directory and hands

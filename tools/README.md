@@ -58,9 +58,9 @@ clang -o /tmp/winlist tools/host-windows.c -framework ApplicationServices
 clang -o /tmp/drag    tools/host-drag.c    -framework ApplicationServices
 /tmp/winlist                       # owner | title | x,y WxH, one window per line
 /tmp/drag 650 209 950 329          # a left-button drag, as a hand makes it
-# (both ends on one point is a click; and a *drop* needs the pause tools/host-drag-source.java
-#  describes - this one releases the button too soon after the last move for the platform to
-#  deliver it, which is fine for moving a window and not for dropping a file on one)
+# (both ends on one point is a click; and a *drop* needs a pause before the button goes up -
+#  this one releases it too soon after the last move for the platform to deliver the drop,
+#  which is fine for moving a window and not for dropping a file on one)
 clang -o /tmp/type tools/host-type.c -framework ApplicationServices
 /tmp/type "你好"                    # types text, each character as a Unicode key event
 /tmp/keypid <pid> "你好"            # the same, posted straight to a process instead of the front window
