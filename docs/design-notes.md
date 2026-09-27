@@ -504,6 +504,41 @@ window. Measured live with the two clients: EasyShell's window renders identical
 menu survives the out-and-back gesture 6/6, termora's 6/6 - and the one behaviour that looked like a
 regression was measured on the *previous* build too (see the B5 entry in `docs/backlog.md`).
 
+## A compositor is the store, seen from the other side
+
+Composite, Present and SYNC are the extensions a compositing window manager is built on, and the
+store above is why they were cheap: a window's pixels are already somewhere to hand a compositor, and
+redirection turned out not to be a second drawing path but **the stopping of one**. Every request ends
+in `DrawHandlers.afterDrawing`, which asks `XServer.compositeOwnPixels` to put what was drawn on the
+screen; a redirected window is simply one that method declines to composite, and the drawing itself
+does not change at all. That is the whole of `RedirectWindow`. `NameWindowPixmap` then hands over
+`XPixmap.view` - a pixmap that *is* the window's store rather than a copy of it, resolving the store
+on every access because a resize replaces the array - so a compositor reads live pixels and never
+reads the screen.
+
+**The trap is that this server is right by default in every test that does not redirect anything.**
+With every window composited from a store, forgetting the guard changes nothing that any test could
+see; the reference is what says otherwise, and it says it plainly: repaint a redirected window there
+and its pixmap holds the new colour while the screen holds the old one.
+
+**The overlay window is the one part that could not be inherited.** A reference answers
+`GetOverlayWindow` with a screen-sized window of its own and the compositor draws its result there.
+Here a screen-sized window *above every other* is a problem twice over: every window in this server
+paints a background, so an opaque overlay would hide everything behind it, and the obscuring
+machinery subtracts every mapped window above a window from that window's visible region - so the
+moment the overlay was mapped, every window below it would have had an empty visible region and would
+never be sent an `Expose` again. The overlay takes the depth 32 visual with a fully transparent
+background, and one rule went with it: **a translucent window does not take anything away from
+`XWindow.visibleRegion`**. The rule is right on its own - a window that shows what is behind it is not
+in the way - and it is what makes an overlay possible here at all.
+
+**Present is the same path from the client's end**: it copies the pixmap into the window's own pixels
+and composites from there, so a frame presented to a redirected window lands in the pixmap the
+compositor reads, and there is no second drawing path to keep in step. **SYNC waits on nothing, and
+says so**: this server finishes every request before it reads the next, so a fence is already in its
+final state when `AwaitFence` is read, and a `Wait` that returns immediately is the truth rather than
+a stub.
+
 ## GLX, and why a server without a GPU can run OpenGL
 
 OpenGL looked like the one thing this server could never do: direct rendering needs a driver talking
@@ -1664,9 +1699,16 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   toolkit actually does. The reporting differences that *were* real are listed in `backlog.md` A5,
   which is now closed: the probe's default sequence prints the same lines against both servers, and
   the rules behind it are in "The focus is the client's to be told about" above.
-- The X11 protocol classes come from a fork of `moaxcp/x11-protocol`; its generator ignores the
-  `number` on an `eventcopy`, which is why `ClientOutput.EVENT_NUMBERS` rewrites five event type
-  bytes. The real fix belongs in the generator.
+- The X11 protocol classes come from a fork of `moaxcp/x11-protocol`, and three of its faults are
+  patched in `ClientOutput` rather than worked around at each caller, because every reply and event
+  already passes through there: the generator ignores the `number` on an `eventcopy`, which is why
+  `ClientOutput.EVENT_NUMBERS` rewrites five event type bytes; a reply's length field is computed from
+  the wrong base and short replies are emitted unpadded; and **a generic event's length field is never
+  written at all**. The last one is the one that hides: Present's completion notification arrived as
+  thirty two bytes where a reference sends forty, with the same kind, mode and serial inside, so every
+  field a reader looked at was right - and the eight bytes of `ust`/`msc` it had not been told about
+  stayed in the stream, so the *next* request was read from the wrong offset and the client hung. The
+  real fix for all three belongs in the generator.
 
 ## Testing notes
 

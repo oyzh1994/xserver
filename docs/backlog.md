@@ -84,7 +84,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~E3~~ | ~~performance: the opaque-source copy path (1.85x), the A8-mask path (2.80x) and the damage region~~ **done 2026-09-25** | engineering | M-L |
 | ~~E7~~ | ~~a server that shows nothing must not say it opened a window~~ **done 2026-09-26** (E2's orphan) | engineering | S |
 | ~~D3~~ | ~~core-font fidelity~~ **done 2026-09-26** (the standard X fonts are the real ones, captured off the reference; a font file on a font path is still not read) | large | M-L |
-| [~] B5 | DAMAGE **done**, and **every window keeps its own pixels** (2026-09-27) - the general store, RENDER included; Composite, Present and SYNC still open | extension | L |
+| ~~B5~~ | ~~DAMAGE, **every window keeps its own pixels**, and **Composite, Present and SYNC**~~ **done 2026-09-27** - the general store, RENDER included, and the three a compositor needs | extension | L |
 | ~~C8~~ | ~~one host window per client toplevel~~ **declined 2026-09-27**: built twice (the second time on B5's store, and it worked), then rejected - the requirement is **one host window per application** | host window | L |
 | E1 | the `eventcopy` generator fix in the protocol fork | engineering | S (in the fork) |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
@@ -2042,7 +2042,69 @@ mode is not "a client loses gestures", it is "a forwarded GTK application's menu
 
 ---
 
-### [~] B5. DAMAGE done; **every window keeps its own pixels** (2026-09-27); Composite, Present and SYNC still open. **L**
+### [x] B5. DAMAGE, **every window keeps its own pixels**, and **Composite, Present and SYNC** - done 2026-09-27. **L**
+
+**The last three are in (2026-09-27), and the store is what made them cheap.** DAMAGE and the
+per-window store were the first two halves; Composite, Present and SYNC finish the item, each
+measured against a reference before it was written (`tools/CompositeProbe`, `SyncProbe`,
+`PresentProbe`) and each with a test that fails without it.
+
+- **Composite.** `RedirectWindow`/`RedirectSubwindows` mark a window (or a subtree, walked through the
+  ancestors rather than copied into a flag, so a reparent or an unredirect cannot leave a stale
+  answer); `compositeOwnPixels` - the single place every screen composite goes through - skips a
+  redirected window, so its drawing stays in its store and stops reaching the screen. That one rule is
+  the whole of the redirection semantics, and it is a rule this server gets *wrong by default*: with
+  every window composited from a store, an un-guarded version is correct in every test that never
+  redirects anything, which was all of them. `NameWindowPixmap` hands over a **live view** of the
+  store (`XPixmap.view`, resolving it per access because a resize replaces the array), and the
+  reference says drawing *into* that pixmap lands, so the view is read-write.
+  **The overlay window is real and translucent**, which is what this server's model needs: every
+  window here paints a background and every mapped window above subtracts from the visible region
+  below it, so a screen-sized opaque overlay would hide every window and leave them all with no
+  `Expose` for ever. It takes the depth 32 visual and a transparent background, and that needed one
+  rule to go with it - **a translucent window does not take anything away from
+  `XWindow.visibleRegion`** - which is right on its own, because a window that shows what is behind it
+  is not in the way.
+- **SYNC.** Counters (create/set/change/query over the full signed 64 bits) and fences
+  (create/trigger/reset/destroy/query, walked through their four states). `AwaitFence` and `Await`
+  return without waiting, and that is not a stub: this server finishes every request before it reads
+  the next, so a fence is already in its final state when the wait is read.
+- **Present.** `PresentPixmap` copies the pixmap into the window's own pixels and composites from
+  there - so a redirected window's frame lands in the pixmap a compositor reads, with no second
+  drawing path - and `CompleteNotify` reports it to whoever subscribed.
+
+**Four rules came out of measuring, and three of them are not what the obvious implementation does:**
+
+1. **The version rule is per-extension and they disagree.** Composite and SYNC answer **the server's**
+   own version (0.4 to a 0.4 client *and* to a 0.2 one; SYNC 3.1 to a 3.1 and a 3.0 client), while
+   Present **echoes the client's** (1.0 to 1.0). Carrying either rule across would have been wrong.
+2. **`CreateFence` carries the drawable before the fence**, which is the opposite of the order the
+   generated class's getters list them - and the reference answers `BadDrawable` on the fence's own id
+   when a probe believes the getters.
+3. **`PresentPixmap`'s `valid` and `update` are region ids, not flags** (None is the whole of each);
+   a first probe passed `update=1` and was answered `BadPresent` with the value 0x1.
+4. **A generic event's length field was never written by this server.** The completion arrived as
+   thirty two bytes where the reference sends forty, *with the same kind, mode and serial inside* - so
+   every field read correctly and the client then hung on the next request, because the eight bytes of
+   `ust`/`msc` it had not been told about stayed in the stream. Fixed in `ClientOutput`, beside
+   `correctEventType` and for the same reason.
+
+**And one measurement was wrong first, which is worth keeping.** Read naively - the window's pixels
+*before* the completion notification - the reference looks as though it never copies the pixmap into
+the window, and the entry above was written saying so with the difference recorded as deliberate. Its
+present is asynchronous, so that order samples a race; read the other way the two agree exactly. The
+probe now reads the event first, and `PresentProbe` and `CompositeProbe` are both **identical to the
+reference line for line** in the sweep.
+
+**What is deliberately different, and it is one line.** `SyncProbe` is the sweep's seventh deliberate
+difference: `ListSystemCounters` answers **no** system counters here where the reference keeps eight
+elapsed-time counters for its own scheduler. This server has no scheduler to report on, and the
+reference's entries are variable length with a name stride a first probe mis-read (one counter's name
+came out of the next one's fields) - answering a count with entries a client cannot parse would be
+worse than answering none.
+
+`mvn test` **369/369**; the sweep is **15 of 21 identical** with the seven documented differences.
+
 
 **The general store is in (2026-09-27).** Every window but the root now draws into a store of its
 own (`XWindow.ownPixels`), in its own coordinates and clipped to what it owns, and is composited onto
@@ -2114,9 +2176,10 @@ client's either: against Xvfb its CPU does not move. It is a bug of this server'
 `XIQueryPointer`'s `child` field, and it is **A16, fixed the same day** - see that entry for the tap
 that found it and the two-query walk a reference answers.
 
-**What is left of B5 is the other three**: Composite, Present and SYNC. The store makes them
-reachable in a way they were not - a window's pixels are now somewhere to hand a compositor - but none
-of them is implemented.
+**What was left of B5 was the other three**: Composite, Present and SYNC - **all three done
+2026-09-27**, see the top of this entry. The store made them reachable in a way they were not: a
+window's pixels are somewhere to hand a compositor, and redirection turned out to be the *stopping* of
+a composite this server already did rather than a second drawing path.
 
 
 **The per-window store, and how much of it is in (2026-09-26).** The plan called for "a per-window
@@ -2152,7 +2215,8 @@ alpha ones - and that is now in too (2026-09-27). It is
 what changes "what drawing means for every window", as predicted here: it took the read/write clip
 split, `IncludeInferiors` from the children, gravity inside the store, and the RENDER composite.
 
-**Current of the rest.** DAMAGE and the store are there; **Composite, Present and SYNC are not.** The
+**Current of the rest (2026-09-27: no longer current - all three are in, see the top).** DAMAGE and
+the store were there; **Composite, Present and SYNC** were not. The
 model is no longer "every request draws straight into one framebuffer and a revealed window is asked
 to redraw with an `Expose`" - a window's pixels are kept and composited - but nothing *asks* the server
 to composite a window tree for you: a translucent window is composited against the screen, not against
@@ -3973,6 +4037,15 @@ file rather than in the other two, which is the shape worth recording:
   `RandrProbe`, `XineramaProbe`, `ScreenSaverProbe`). No sixth-but-one difference, which is what a
   finding would have looked like. `FocusProbe` and `MenuProbe` are among the identical, which is the
   gate §7 sets for the input area and is what let A17 be answered without a code change.
+
+**Swept again later the same day**, when B5's three extensions landed and the documents had to
+follow them: the README's limitation bullet said Composite, Present and SYNC were not there and that
+XInput2 was "measured and not started" - which had been false since B4 and was two items stale in one
+paragraph, the exact drift this item exists for. The design notes gained the section for the store's
+other side, the README gained the third generated-class fault in `ClientOutput`, and `tools/README.md`
+went from "13 of 18" to "15 of 21" with three new probes described and one new deliberate difference
+(`SyncProbe`'s system counters). The rule the item states has now caught something in each direction:
+a document that omits what is done, and a document that lists it as missing.
 
 **Swept 2026-09-26**, after three sessions of work (XInput2, the C8 build-and-revert, the alpha store),
 and it found the drift it exists for - one entry that had been true and was not any more:

@@ -169,10 +169,13 @@ that client's own - and a queue that fills up means the client has stopped readi
 is what gets it disconnected. Before this, messages were written to the socket on the thread that held
 the server lock, so one hung client froze every other client's screen.
 
-**Replies are serialised to memory before they reach the socket.** The generated writer for a reply
-computes its length field from the wrong base, and short replies are emitted without their trailing
-padding; both would desynchronise a real client. `ClientOutput` rewrites the length from the bytes
-actually produced and pads what needs padding, in one place.
+**Replies and events are serialised to memory before they reach the socket.** Three faults of the
+generated protocol classes are corrected there rather than at every caller, because every message
+passes through it: a reply's length field is computed from the wrong base, short replies are emitted
+without their trailing padding, and a **generic event's length field is never written at all** - so a
+client reading Present's completion notification, which is forty bytes where an ordinary event is
+thirty two, was told it was thirty two and read the next message from the wrong offset. `ClientOutput`
+rewrites the lengths from the bytes actually produced and pads what needs padding, in one place.
 
 ## What is implemented
 
@@ -384,17 +387,22 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   lists the devices, and JavaFX's GTK backend and Swing's AWT both work through it rather than around
   it. Not there, and refused rather than ignored: touch, tablets, barriers, the raw event family and
   the device properties - this server has no device behind them.
-- **DAMAGE is there, and Composite, Present and SYNC are not.** A client that wants to hear
-  what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that reads
-  pixels rather than drawing them - creates a damage object and is told, at X's own levels: every
-  change as it happens, or once per `Subtract` at the bounding levels. What a notify carries is a
-  bounding box, and the rectangles are available through `Subtract`'s repair region. `xeyes` prints a
-  warning about the missing `XInputExtension` and falls back, and a compositing window manager has
-  nothing to build on. **XInput2 has been measured and not started** (`docs/backlog.md`, B4): a
-  forwarded GTK application grabs through `XIGrabDevice` the moment the extension exists - JavaFX's
-  GTK backend calls `gdk_device_grab`, and GDK resolves it there - so an advertisement without the
-  device-grab family would cost the application its menus rather than its gestures. It is one piece of
-  work or none.
+- **DAMAGE, and the three a compositor needs: Composite, Present and SYNC.** A client that wants to
+  hear what changed in a window - a screencast, a magnifier, a remote-desktop encoder, anything that
+  reads pixels rather than drawing them - creates a damage object and is told, at X's own levels:
+  every change as it happens, or once per `Subtract` at the bounding levels. What a notify carries is
+  a bounding box, and the rectangles are available through `Subtract`'s repair region.
+  A compositing window manager is what the other three are for, and **the store is what made them
+  cheap**: `Composite` redirects a window - its drawing goes on going into pixels of its own and
+  simply stops reaching the screen, which is the one rule that had to be added - and
+  `NameWindowPixmap` hands the compositor a live view of those pixels, so it never reads the screen.
+  `Present` is the same path from the other end: a client that has rendered a frame itself hands it
+  over as one `PresentPixmap` and is told when it arrived. `SYNC` gives the counters and the fences a
+  toolkit waits on to know that a frame has been *seen*. Each was measured against a reference before
+  it was written (`tools/CompositeProbe`, `SyncProbe`, `PresentProbe`), and two of the three traps
+  those runs found were in this server's own reading of the protocol rather than in the code:
+  `CreateFence` carries its drawable *before* its fence, and a generic event's length field is the
+  only thing that tells a client it is longer than thirty two bytes.
   **RandR is there**, in the shape this server has: one CRTC, one output and one mode covering the
   whole screen, a real physical size (so a client can compute a DPI), and a `ScreenChangeNotify` to
   the clients that asked for one when the screen grows - which is what C1's screen growth had no way
