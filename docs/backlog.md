@@ -2121,21 +2121,30 @@ whole test suite:
    (`XWindow.transparentUntilDrawn`, and the composite skips a store that does not exist), and
    `CompositeTest.creatingTheOverlayLeavesTheScreenAlone` fails when the fix is taken out.
 
-**And two things it found that are *not* fixed, recorded so the next session starts from here:**
+**And the two it left open were one bug, found the same day.** They were recorded here as "frames
+are intermittently black" and "`--opacity-rule` has no effect"; they are the same fault on the path
+both go through, and it is now fixed:
 
-- **`picom`'s frames are intermittently black.** With a single window it composites the picture
-  correctly in some runs and leaves the screen black in others - three samples with the fix in place
-  gave two good and one black, and the same mixture before it, so it is **not** the overlay work that
-  decides it. What is known: the window's own content reaches `picom`'s back buffer through a
-  `Composite` with a **1x1 depth-8 alpha mask sampled at (1,1)** - outside the mask - so the answer
-  depends entirely on the repeat mode `picom` set on that picture, and a mask that reads transparent
-  leaves the back buffer cleared to black. That is the first place to look: log the repeat
-  `ChangePicture` sets on the mask picture, and check whether a 1x1 source is sampled the way the
-  reference samples it. **This is the same path as the second item below** and one diagnosis probably
-  explains both.
-- **`--opacity-rule` has no effect**: a window the rule matches is composited opaque here and
-  translucent against the reference (`/tmp` captures, same client, same flags). The mask is the
-  mechanism in both cases.
+- **A RENDER write into a depth 8 drawable stored the whole ARGB value where the drawable's store
+  holds a byte.** `Picture.writePixel` wrote `0x80000000` into a 1x1 A8 mask; the read side
+  (`Picture.stored`, and `ImageCodec` on the way in) decodes such a store *through the format*, whose
+  mask looks at the low byte - so the mask read back as **zero coverage everywhere**, every masked
+  composite wrote **nothing**, and the screen was black with `picom` running happily. The same fault
+  made `--opacity-rule` a no-op. **This was found by adding the pixel counts to the composite's debug
+  line** (`-> wrote 0 pixels, 23711 blocked`, where the blocked ones were a clip and the rest were
+  the empty mask) - the request was *accepted* either way, so nothing else would have said so.
+  `AlphaMaskTest.writingAColourIntoAnA8PictureStoresItsCoverage` fails without the fix, and with it
+  the masked composite writes its pixels and `picom`'s opacity works visibly.
+- **Two log lines came out of it and are kept**, because both were what found this and neither costs
+  anything: `SetPicture repeat=…` (a 1x1 source is tiled or empty depending on it, and `picom` sets
+  the repeat on its alpha pictures exactly one call before using them) and the per-composite pixel
+  count.
+
+**Still different, and it is the documented root colour rather than a bug.** With `picom` running,
+the desktop it paints is the root window's content, so ours is `#E8E8E8` where a reference's is
+black - one of the two by-design rendering differences `tools/README.md` lists. Comparing the two
+alpha captures pixel by pixel is therefore not meaningful without accounting for it; the comparison
+that *is* meaningful is that both show the window's content at half opacity over the window behind it.
 
 **What is deliberately different, and it is one line.** `SyncProbe` is the sweep's seventh deliberate
 difference: `ListSystemCounters` answers **no** system counters here where the reference keeps eight

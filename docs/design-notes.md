@@ -430,8 +430,19 @@ round trip.
 
 The core protocol's `PutImage` was the only path that converted, and `packed` on the read side was the
 only one that converted back; everything else already treated a depth 8 store as raw. The log line
-that found it is `DrawHandlers`' `PutImage landed: ... values=`, which prints the distinct bytes a
+that found it is `DrawHandlers' `PutImage landed: ... values=`, which prints the distinct bytes a
 small image put down: three values where a mask should have had a gradient is what named the cause.
+
+**The write side of RENDER did not, and that is the second half of the same convention** - found a
+day later with a real compositor rather than a toolkit. `Picture.writePixel` stored the whole ARGB
+value, so a `FillRectangles` into an A8 picture put the coverage in the top byte where the format's
+mask never looks, and the mask read back as **zero coverage everywhere**: every composite through it
+wrote nothing and `picom`'s frames were blank. The convention has to hold in both directions or the
+read side's care buys nothing - a picture is only a picture if what is written into it is what is read
+out of it. `Picture.storedForm` is the write half, and
+`AlphaMaskTest.writingAColourIntoAnA8PictureStoresItsCoverage` pins the round trip. Both halves were
+invisible until something wrote *into* a depth 8 picture rather than only reading one, which is why
+the toolkit that rasterised its own masks never noticed.
 
 ## Every window keeps its own pixels
 
