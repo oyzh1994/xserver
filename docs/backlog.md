@@ -69,7 +69,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C6~~ | ~~HiDPI automation (`--scale` without hand-editing the client's flags)~~ **done 2026-09-24** | host window | S |
 | ~~C7~~ | ~~remember the host window's position per client~~ **done 2026-09-24** | host window | S |
 | ~~C3~~ | ~~fullscreen / maximize / urgency from the client~~ **done 2026-09-24** | host window | S-M |
-| ~~C5~~ | ~~host → X drag and drop (XDND)~~ **done 2026-09-27**: both directions, the drag out through the `XdndSelection` | host window | M |
+| [~] C5 | host ↔ X drag and drop (XDND): both directions built, **both fail against a real application** - the entry has the measurements | host window | M |
 | ~~C9~~ | ~~tray icons (`_NET_SYSTEM_TRAY`) in the macOS menu bar~~ **done 2026-09-26** (the server is the tray host; AWT's `SystemTray` needs no JNI) | host window | M |
 | ~~C10~~ | ~~input methods: the host's composing, and the client-side XIM (three font-path bugs stood in the way)~~ **done 2026-09-26** | host window | M |
 | ~~C11~~ | ~~a server that cannot open a window~~ **done 2026-09-25**: the hang, the silence and the end of the fallback chain | host window | S |
@@ -2905,7 +2905,7 @@ made one, is declined).
 
 ---
 
-### [x] C5. Host ↔ X drag and drop (XDND). **M** - both halves done: the host's drag into an application (2026-09-24) and an application's drag out to the host (2026-09-27)
+### [~] C5. Host ↔ X drag and drop (XDND). **M** - **neither direction works with a real application yet**, and both were built
 
 **What it was.** Nothing: dragging a file from Finder onto a forwarded window did nothing.
 
@@ -2932,54 +2932,44 @@ it carries; a target that answers `XdndStatus` is dropped on and can ask for the
 `file:///…` one per line out of the property; a window that does not publish `XdndAware` is left
 alone. Disabling the `XdndEnter` send fails two of them.
 
-**Dragging *out* of a forwarded application is done too (2026-09-27), and the reason it was left
-open was wrong.** The entry said a JavaFX window cannot start a platform drag - it can, from a
-drag-detected handler - and that the payload had to be a lazily-filled pasteboard promise. Neither is
-what the working design needs, because **X does say when a drag has started**: a client that decides
-to drag takes the `XdndSelection`, and that is the one signal a server can see. So:
+**Both directions were built, and both fail against a real application. Measured 2026-09-27, on the
+two clients this bed has, after the owner tried them by hand:**
 
-- **`DropBridge` watches the drag selection.** `XServer.setSelectionOwner` tells it, exactly as it
-  tells the clipboard bridge, and a client taking it is a drag in progress. The bridge's own window
-  owns the same selection during a host-to-X drag, which is filtered out.
-- **It asks the client what it offers, the moment it sees the drag** - a `SelectionRequest` for
-  `text/uri-list`, sent as an event because here the bridge is the requestor and the client the owner
-  (the same shape as the host clipboard's fetch). The answer arrives through `AtomHandlers.sendEvent`
-  like the clipboard's does, and the property it names holds one URI per line.
-- **Asked on sight, not when the platform wants it**, and that is the whole timing argument: the
-  host's drag has to be started from the gesture already in progress, JavaFX's dragboard holds real
-  files rather than a promise, and a client answers in the time it takes the user to move a few
-  pixels. What has not answered by then does not set a drag off.
-- **`InputSink.draggingOut()`/`dragOutFiles()`** are what a backend asks from its drag-detected
-  handler, and `JavaFxBackend` starts a real drag with the files when they say so.
+- **A drag that starts inside an application froze termora and did nothing in EasyShell.** That is the
+  drag *out* half, and the cause is a design fault of the first version rather than a bug in it: the
+  host window started a platform drag whenever **any** client owned `XdndSelection`, and a client
+  dragging something *inside itself* takes the same selection. So the platform took the drag over and
+  the application's own drop never arrived - termora waited for a session that had been hijacked and
+  hung, EasyShell's internal move never happened. **The trigger was reverted the same day**; the X side
+  (`DropBridge.selectionOwnerChanged`/`askDraggingClient`/`dragOutPaths`) is in and tested, because it
+  is the enabling piece, but nothing calls it yet.
+- **The corrected design, and it is the one thing the first version got wrong**: a platform drag must
+  be started only when the gesture **leaves the host window** with the button still down - the only
+  moment that tells "drag out to the desktop" from "drag inside the application". macOS keeps
+  delivering dragged events to the view that got the press, so the session can be started from the
+  event that crosses the edge. That is what the next attempt should build, and it is a small change to
+  the handler that was reverted.
+- **A drag from the host's desktop into an application reaches the window and stops there.** Driven
+  from outside (`hostDrop` straight into the server, so no Finder gesture is needed), the app's window
+  publishes `XdndAware` version 5, the bridge finds it and sends `XdndEnter`/`XdndPosition`/`XdndDrop`
+  - and then **the application never answers**: no `XdndStatus`, and no `ConvertSelection` for the
+  data, so nothing is uploaded. Its own UI reacts (EasyShell renames its window to
+  "===松开鼠标以释放文件"), so the messages arrive and are understood as a drag. What a real toolkit
+  wants that this does not provide is **not yet known** - the next step is a *real* XDND source to
+  compare against, because `DropBridgeTest`'s target is this kit's own client and agrees with the
+  bridge by construction.
 
-**Verified end to end, with a script, which the entry said could not be done.** `tools/DragOutProbe`
-stands in for the application - it takes the drag selection and answers with a file list, which is the
-half a platform cannot produce in process - and then:
+**The lesson for the second half is the same as B5's Verify's: a synthetic client is not a client.**
+`DropBridgeTest`'s three tests passed throughout, and the probe that "verified" the drag out was one
+the bridge itself had asked to answer. Both directions need a real toolkit on the other end before
+either is called done.
 
-```
-$ tools/kit.sh DragOutProbe 127.0.0.1 6061 /tmp/one.txt /tmp/two.txt      # the forwarded app drags
-  dragging out: window=0x200001 offering file:///tmp/one.txt file:///tmp/two.txt
-  answered a request for the file list
-$ /tmp/drag 400 300 900 400                                              # a hand's gesture, posted
-$ ls /tmp/dragout-target
-  one.txt  two.txt
-```
+**The earlier reasoning, kept because it is what the code is built on:**
 
-with the server's own log naming each step: `a forwarded application is dragging from 0x200001`,
-`the dragging client offers 2 file(s)`, and `a drag of 2 file(s) left a forwarded application`. **The
-drop landed in a Finder window opened on a scratch directory and Finder copied both files into it,
-with their contents intact** - so the whole path is measured, not just the server's half of it.
-
-**What is still not verified by that: a real application offering a real drag.** The probe decides to
-drag; whether EasyShell or termora do - and what they put in the drag - is up to them, and neither has
-been driven into a drag by hand. That is a five-minute check for somebody at the machine, and it is
-the honest remainder rather than the item.
-
-**And the earlier note about a hand being needed was about the *other* direction.** "Finder's drag
-carries a file promise and a posted event carries no files" is true of dragging *from* the desktop
-*into* an application, which is the half that was already done; it was never true of dragging out,
-where the payload comes from the X client and the posted events only have to move the mouse. The two
-were conflated here for three days.
+**X does say when a drag has started, and the entry's two reasons for not doing this were wrong.** A
+client that decides to drag takes the `XdndSelection` - the one signal a server can see - and a
+JavaFX window *can* start a platform drag (from a drag-detected handler), so neither "no signal" nor
+"no drag source" was true. What was wrong was the trigger's *condition*.
 
 ---
 

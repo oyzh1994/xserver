@@ -536,14 +536,14 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   client's window; a drag past what the screen currently shows makes the screen bigger first, so a
   forwarded application can be given a window larger than `--geometry`. Past `--max-screen` the drag
   stops, and the screen never shrinks again for the session.
-- **Drag and drop works both ways.** A file dragged from the desktop onto a forwarded application is
-  offered to it as an XDND drag, which a toolkit application (GTK, Qt, Swing) accepts; an application
-  from before drag and drop - `xterm`, `xclock` - has no way to receive one and always will not.
-  And a drag that starts *inside* a forwarded application becomes the host's own drag: X gives no "I
-  am about to drag" message, so the server watches the `XdndSelection` - a client that takes it is
-  dragging - asks it what it offers, and starts a platform drag with those files when the user's
-  gesture reaches the host window. What the application puts in the drag is the application's
-  business; the server carries it out.
+- **Drag and drop is bridged both ways and neither direction is finished.** A file dragged from the
+  desktop is offered to the application under the pointer as an XDND drag, and a drag that starts
+  inside an application is turned into the host's own drag - but **both stop short with a real
+  toolkit**: the inbound one has the application react to the drag and then never ask for the data,
+  and the outbound one's trigger was reverted because it took over drags the application meant to keep
+  inside itself (which froze one client). `docs/backlog.md` C5 has the measurements and the corrected
+  design. An application from before drag and drop - `xterm`, `xclock` - has no way to receive one and
+  always will not.
 - **Text the host's input method composes reaches a forwarded application as a key press**, which is
   the only thing an X client can be sent: the server claims a keycode for the character and tells the
   clients the mapping changed. What is *not* bridged is the input method's own window - the candidate

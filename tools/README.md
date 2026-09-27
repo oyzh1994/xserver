@@ -230,7 +230,10 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   offers a drag is up to the application, so the host's side cannot be driven from the two on this
   bed - and `DragOutProbe <host> <port> path...` plus `/tmp/drag x1 y1 x2 y2` (post a hand's gesture
   inside the host window) exercises the whole path: the server sees the drag, asks, and starts a
-  platform drag carrying the files. **Its own first version never saw the request**, because it
+  platform drag carrying the files - **except that the trigger for that was reverted the same day**,
+  because a client dragging inside itself takes the same selection and the platform took over drags
+  the application meant to keep (docs/backlog.md C5). What remains is the X half, and the probe is
+  what would confirm a corrected trigger. **Its own first version never saw the request**, because it
   synchronised with `geometry()` after taking the selection and a reply read skips events - the
   server asks while *processing* the `SetSelectionOwner`, so the request is already on the wire. A
   probe never round-trips after the request it is waiting for.

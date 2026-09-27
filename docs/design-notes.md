@@ -1374,28 +1374,34 @@ an attempt:
 - AWT reports it as `keyTyped`, which is the same event as an ordinary character and needs no second
   hook.
 
-## A drag out of a forwarded application
+## A drag out of a forwarded application, and the trigger that was wrong
 
-The other direction looks harder than it is, and the reason is that **X does say when a drag has
-started** - just not in a message. A client that decides to drag takes the `XdndSelection` and starts
-talking to whatever is under the pointer, so the selection's owner *is* the announcement, and it is
-the one thing a server can see before the application has committed to a target. `DropBridge` watches
-it, asks the owner for `text/uri-list` the moment it appears, and the answer is in hand by the time
-the user's gesture has travelled far enough for the host window's toolkit to raise a drag-detected.
+The entry said this needed a native drag source and a lazily-filled promise. It needs neither: **X
+says when a drag has started** - a client that decides to drag takes the `XdndSelection` - and a
+JavaFX window can start a platform drag from a drag-detected handler. `DropBridge` watches that
+selection, asks the owner for `text/uri-list`, and answers a backend's question about what is on
+offer. That much is in and tested.
 
-That ordering is the whole design, and it is why nothing has to be lazy. The host's drag has to be
-started from the gesture already in progress - the pointer is about to leave the host window, and
-after that there is nothing left to start it from - and a toolkit's drag source wants its files at
-that moment rather than a promise, because a `Dragboard` holds real files. Asking on sight is what
-makes both true at once: the client answers in the time the user takes to move a few pixels, and a
-client that has not answered by then simply does not set a drag off.
+**What was wrong was when to start the platform drag, and the mistake is worth more than the
+feature.** The first version started one whenever a client owned the selection - and a client
+dragging something **inside itself** takes the same selection, because X's drag and drop is client to
+client and an internal drag is just a drag whose target is another window of the same application.
+So the host took over a drag the application meant to keep: termora waited for a drop that the
+platform had hijacked and froze, EasyShell's internal move never happened. It was reverted the same
+day.
 
-Two smaller things follow from where the pieces live. The ask is a `SelectionRequest` **event** and
-not a request, because the bridge is the requestor and the client is the owner - the same inversion
-the host clipboard's fetch runs on - and the answer comes back through the same `sendEvent` routing
-the clipboard uses. And the bridge's own window owns the same selection during a host-to-X drag, so
-that case is filtered out rather than mistaken for an application dragging: the two directions share
-one selection name and nothing else.
+The condition that tells the two apart is the **pointer leaving the host window with the button still
+down** - the only observable difference between "the user is dragging something out to the desktop"
+and "the user is dragging something across the application". macOS keeps delivering dragged events to
+the view that received the press, wherever the pointer goes, so a session started from the event that
+crosses the edge is the shape the next attempt wants. Until then the X half is inert by design, which
+is why it can stay in the tree.
+
+The same session measured the *other* direction and found it stopping short in a way no test had
+caught: the application's window publishes `XdndAware`, the bridge's messages arrive and its own UI
+reacts, and then it never asks for the data. `DropBridgeTest`'s target is this kit's own client, so
+the bridge agrees with it by construction - **a synthetic client is not a client**, and both
+directions need a real toolkit before either is called done.
 
 ## A drag from the host's desktop
 
