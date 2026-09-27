@@ -3171,16 +3171,21 @@ with a scripted drag - see below) rather than about the protocol.
   sends nothing. `XProxy` does the framing for you, which is why its own two framing bugs mattered so
   much (next paragraph).
 
-**And the tool that made those captures possible was broken, in a way that hid itself.** `XProxy`
-assumed every request has an eight byte head; `BIG-REQUESTS`' `Enable` is **four**, and xcb sends it
-on every connection, so the proxy desynchronised one message in and the client hung with nothing
-logged on either side - which is the long-standing "EasyShell hangs through `XProxy`, the reason was
-never found" in `tools/README.md`. Fixed, and two more with it: the extended length is triggered by a
-**zero length field**, not by opcode 139 (whose ordinary `Enable` form is three units), and a server's
-messages always have the full eight byte header, so only a four byte *request* is short. With those,
-`XProxy` walks a GTK client's whole stream. It still cannot be used for this measurement from the Mac
-(the VM-to-Mac direction is what failed before), so it was compiled **on the VM** - `java` is there
-(`/tmp/kit`), and `tools/tap.py` is the fallback when it is not.
+**And the tool that made those captures possible was broken in three ways, all of them hidden.**
+`XProxy` assumed every request has an eight byte head - `BIG-REQUESTS`' `Enable` is **four**, and xcb
+sends it on every connection; an extended length is triggered by a **zero length field**, not by
+opcode 139; and **a generic event is not a plain event** - it carries its own length, and forwarding
+its first thirty two bytes leaves the rest of it in the stream. The last one is what the kit's notes
+had given up on as "EasyShell hangs through `XProxy`, the reason was never found": GDK's input path is
+XI2, so the client desynchronised at its **first device event** and stalled before drawing a pixel.
+All three are fixed, and the check is now end to end: EasyShell renders through the proxy on Xvfb -
+the whole interface, in a capture - with every stream consistent against its own length fields, and
+this is the first time the "same client, two servers, compare the request sets" measurement this
+class exists for is actually available. (Each line now carries its **connection id** as well: a client
+opens several connections, they interleave in one file, and a reader that assumes one stream sees a
+misframe that is not there - an afternoon lost to exactly that before the ids were added.) It still
+cannot proxy the VM-to-reference direction from the Mac, so it is compiled **on the VM** - `java` is
+there (`/tmp/kit`) - and `tools/tap.py` is the fallback when it is not.
 
 **What is still open in C5, precisely.** The drag-in *code* has now been exercised by a real toolkit
 and works; **the drag-out trigger has not been touched since it was reverted**, and it is the half

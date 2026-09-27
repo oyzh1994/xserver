@@ -35,6 +35,17 @@ public final class XProxy {
     static OutputStream log;
     static OutputStream raw;
     static final AtomicLong started = new AtomicLong();
+    /**
+     * Which connection a line belongs to.
+     *
+     * <p><b>Every line carries it, and that is not cosmetic.</b> A client may open several X
+     * connections, and the two logs are written from all of them at once: without an id, messages
+     * from different streams interleave and any reader that assumes one stream - a framer checking a
+     * message against its own length field, say - reports a desync that is not there. Measured
+     * 2026-09-27 the hard way: a "S2C misframe" that turned out to be the *other* connection's setup
+     * reply arriving in the middle of the first one's stream.
+     */
+    static final AtomicLong connections = new AtomicLong();
 
     public static void main(String[] args) throws Exception {
         int listenPort = Integer.parseInt(args[0]);
@@ -52,15 +63,16 @@ public final class XProxy {
                 Socket client = server.accept();
                 Socket target = new Socket(targetHost, targetPort);
                 System.out.println("client connected");
-                Thread toServer = new Thread(() -> pump(client, target, true));
-                Thread toClient = new Thread(() -> pump(target, client, false));
+                String id = "c" + connections.incrementAndGet();
+                Thread toServer = new Thread(() -> pump(client, target, true, id));
+                Thread toClient = new Thread(() -> pump(target, client, false, id));
                 toServer.start();
                 toClient.start();
             }
         }
     }
 
-    static void pump(Socket from, Socket to, boolean clientToServer) {
+    static void pump(Socket from, Socket to, boolean clientToServer, String id) {
         try (InputStream in = from.getInputStream(); OutputStream out = to.getOutputStream()) {
             boolean first = true;
             while (true) {
@@ -87,7 +99,7 @@ public final class XProxy {
                     byte[] whole = new byte[setup.length + extra];
                     System.arraycopy(setup, 0, whole, 0, setup.length);
                     System.arraycopy(body, 0, whole, setup.length, extra);
-                    dump(whole, clientToServer);
+                    dump(whole, clientToServer, id);
                     out.write(whole);
                     out.flush();
                     continue;
@@ -144,14 +156,23 @@ public final class XProxy {
                             return;
                         }
                         System.arraycopy(rest, 0, whole, 8, body);
-                        dump(whole, clientToServer);
+                        dump(whole, clientToServer, id);
                         out.write(whole);
                         out.flush();
                         continue;
                     }
                     extra = Math.max(0, whole4 - 8);
-                } else if ((header[0] & 0x7F) == 1) {
-                    // A reply is thirty two bytes plus whatever its length field counts.
+                } else if ((header[0] & 0x7F) == 1 || (header[0] & 0x7F) == 35) {
+                    // A reply, and a **generic event**, are thirty two bytes plus whatever their
+                    // length field counts. Leaving the generic event out is the bug that hid for
+                    // months: a plain event is thirty two bytes, XI2's are not, and GDK's whole
+                    // input path is XI2 - so a proxy that forwarded the first thirty two bytes of
+                    // each one left the rest in the stream and the client desynchronised. That is
+                    // what "EasyShell hangs through `XProxy`, the reason was never found" was
+                    // (2026-09-27): it hung at the first device event, and this server sends one
+                    // whenever a forwarded toolkit watches input. Measured with the connection id
+                    // this class now labels its lines with: `type 35 length field 11 framed to 32`
+                    // on the one connection that carries the client's real work.
                     int length = (header[4] & 0xFF) | ((header[5] & 0xFF) << 8)
                             | ((header[6] & 0xFF) << 16) | ((header[7] & 0xFF) << 24);
                     extra = 24 + Math.max(0, length * 4);
@@ -165,8 +186,8 @@ public final class XProxy {
                 byte[] whole = new byte[header.length + extra];
                 System.arraycopy(header, 0, whole, 0, header.length);
                 System.arraycopy(body, 0, whole, header.length, extra);
-                describe(whole, clientToServer);
-                dump(whole, clientToServer);
+                describe(whole, clientToServer, id);
+                dump(whole, clientToServer, id);
                 out.write(whole);
                 out.flush();
             }
@@ -176,7 +197,7 @@ public final class XProxy {
     }
 
     /** Every message, whole, when the bytes are what is being hunted - a reply's shape, say. */
-    static synchronized void dump(byte[] message, boolean clientToServer) {
+    static synchronized void dump(byte[] message, boolean clientToServer, String id) {
         if (raw == null) {
             return;
         }
@@ -185,7 +206,7 @@ public final class XProxy {
             hex.append(String.format("%02x", b & 0xFF));
         }
         try {
-            raw.write((clientToServer ? "C>S " : "S>C ").getBytes());
+            raw.write((id + " " + (clientToServer ? "C>S " : "S>C ")).getBytes());
             raw.write(hex.toString().getBytes());
             raw.write('\n');
             raw.flush();
@@ -205,10 +226,10 @@ public final class XProxy {
         }
     }
 
-    static synchronized void describe(byte[] message, boolean clientToServer) {
+    static synchronized void describe(byte[] message, boolean clientToServer, String id) {
         StringBuilder line = new StringBuilder();
-        line.append(String.format("%6d %s ", System.currentTimeMillis() - started.get(),
-                clientToServer ? "C>S" : "S>C"));
+        line.append(String.format("%6d %s %s ", System.currentTimeMillis() - started.get(),
+                id, clientToServer ? "C>S" : "S>C"));
         int type = message[0] & 0xFF;
         if (clientToServer) {
             line.append(String.format("req %-3d %-24s", type, name(type)));

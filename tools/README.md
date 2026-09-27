@@ -354,24 +354,30 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   the root, and then a read of the window's own `_NET_WM_STATE` to see what came back. The actions are
   a comma separated list because they share one window - `fullscreen on,off` is the request and its
   withdrawal on one connection.
-- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server. **Fixed
-  2026-09-27: it assumed every request has an eight byte head, and `BIG-REQUESTS`' `Enable` is four**
-  (xcb sends it on every connection), so it desynchronised one message in and hung the client with
-  nothing logged on either side - the long-standing "EasyShell hangs through `XProxy`, the reason was
-  never found" is that bug, and it is why the tool now reads four bytes, takes the length from them,
-  and treats an extended length as "the length field is zero" rather than "the opcode is 139". It
-  cannot proxy the VM-to-reference direction (the client hangs for that reason, whatever it is), so
-  for a reference capture compile it **on the VM** - `java` is there. **And it is still not
-  transparent for a heavy client** (measured 2026-09-27): EasyShell now *starts* through it, maps its
-  windows and then stalls before its first drawing request, with the reference logging 23
-  `BadRequest`s and the S2C framing going wrong - so the "same client, two servers, compare the
-  request sets" measurement this fix was for is **still not usable**, and the remaining fault is
-  somewhere in the framing of a large or extended-form message. `tools/tap.py` is byte-transparent
-  and logs chunks instead; that is the fallback, and a reader has to frame it themselves. A fifth
-  argument adds a **raw dump** (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per
-  message as `<direction> <hex>`, for when the *bytes* are what is being hunted - that is how
-  `setxkbmap`'s own `GetKbdByName` request was read (and it is the same job `strace -e writev` does on
-  the VM, which needs no proxy at all and is what B1 ended up using).
+- `XProxy` - a byte-level X11 proxy that logs a client's stream against a *real* server, one line
+  per message, with a **connection id** on every line (`c1 C>S req 98 QueryExtension`) - a client may
+  open several connections and the two logs are written from all of them at once, so without the id a
+  reader that assumes one stream reports a desync that is not there (that cost an afternoon on
+  2026-09-27, chasing a "misframe" that was the other connection's setup reply).
+  **Three framing bugs made it useless for exactly the clients it was written for, and they are all
+  fixed now (2026-09-27):**
+  * it assumed every request has an eight byte head - `BIG-REQUESTS`' `Enable` is **four**, and xcb
+    sends it on every connection, so the proxy desynchronised one message in and the client hung
+    with nothing logged on either side;
+  * an extended length is triggered by a **zero length field**, not by opcode 139 (whose ordinary
+    `Enable` form is three units);
+  * and **a generic event (type 35) is not a plain event**: it carries its own length, and forwarding
+    its first thirty two bytes leaves the rest in the stream. That is what "EasyShell hangs through
+    `XProxy`, the reason was never found" was - GDK's whole input path is XI2, so the client
+    desynchronised at its first device event and stalled before drawing a pixel. With the fix,
+    EasyShell renders through the proxy, complete, and every stream checks out against its own length
+    fields.
+  A fifth argument adds a **raw dump**
+  (`XProxy <listenPort> <host> <port> <logFile> <rawFile>`), one line per message as
+  `<conn> <direction> <hex>`, for when the *bytes* are what is being hunted - that is how
+  `setxkbmap`'s own `GetKbdByName` request was read. It still cannot proxy the VM-to-reference
+  direction from this machine (compile it **on the VM** - `java` is there), and `tools/tap.py` is the
+  byte-transparent fallback, at the price of logging chunks a reader has to frame themselves.
 - `tap.py` - the same idea, but **byte-transparent and it does not parse anything**, which is what
   makes it usable where `XProxy` is not (a client that objects to the parsing hangs - EasyShell does,
   after its first `QueryExtension`). `python3 tools/tap.py 6099 6098 /tmp/tap.log` listens on the
