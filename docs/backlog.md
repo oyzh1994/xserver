@@ -18,6 +18,10 @@ Sizes: **S** ≤ half a day, **M** 1-2 days, **L** a week or more, **XL** a proj
 
 ## How this is meant to be worked
 
+**Checking the whole server rather than one item?** `docs/verification-checklist.md` is that tour:
+every area, what to drive it with, and what "pass" means - plus the list of things that are
+deliberately different and the traps that make a run lie. This file is the history behind it.
+
 This file is a **hand-off to a new session, on a new branch**. Nothing here is in progress; each item
 is waiting for somebody with a clean context to pick it up. The loop, per item:
 

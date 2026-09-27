@@ -605,6 +605,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
 mvn test
 ```
 
+A whole-server verification pass - every area, the tool to drive it with, and what "pass" means,
+including the differences that are deliberate and the traps that make a run lie - is
+[docs/verification-checklist.md](docs/verification-checklist.md).
+
 - `RasterizerTest` — the raster ops, line and arc geometry, dashes, fills and clipping, checked
   pixel for pixel against Xorg.
 - `VariableLengthDecodersTest` — round trips every request the custom decoders handle, by encoding
