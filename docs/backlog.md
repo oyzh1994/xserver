@@ -1683,6 +1683,16 @@ remainder and it is **not** what it looks like:
   not, and never did - measured, **no request at all follows** the reply, and the same error is printed
   for the honest `loaded = 0` answer this server used to give.
 
+**And a live run found one more thing, which is small and has no oracle (2026-09-27): `GetNames` is
+refused.** The log names it - `GetNames rejected the request (error 17): not implemented: XKEYBOARD
+request GetNames` - and a refusal is exactly what this server's own documents say is worse than an
+empty answer, because Xlib's default handler ends the process (that is what killed `setxkbmap` here
+before `GetKbdByName` was answered). `GetNames` is not in the list of requests this extension accepts
+and drops, so it falls through to the error. The fix is small and the *reply's shape* is the work:
+**a reference refuses the request too** - Xvfb answers `BadAccess` to a hand-built `GetNames` at the
+length that gets past `BadLength`, which is two units for `deviceSpec` and a CARD32 `which` - so there
+is nothing to copy and the next step is the protocol's own reply layout rather than a guess.
+
 **What is still not here.** *Setting a layout by name in a way `setxkbmap` accepts* - it is answered,
 and the layout is installed, but the client then compiles the keymap itself and uploads it, and the
 upload is what this server does not take far enough (see the top of this entry). The compatibility map, `GetNames` and the indicator names are absent (the four `Set...`

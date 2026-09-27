@@ -1731,7 +1731,10 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   locking the machine's own keyboard for every other client. The per-client flags are all unsupported
   and `PerClientFlags` says so, detectable auto-repeat included.
 - **`GetKeyboardMapping` follows what the display backends translate**, and letters are looked up by
-  character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order.
+  character (`Keymap.keycodeForLetter`), because US keycodes are not in alphabet order. What that
+  means for a *client* changed with B1: the reply is read from `Keymap`, so a layout chosen by name
+  (or uploaded with `SetMap`) is what a client resolves its keycodes through - the backends translate
+  the host's keys *into* keycodes, and the layout says what those keycodes mean.
 - **A cursor is drawn from its glyphs, and the approximation is left for a font the server has no
   glyphs for.** The cursor font's own 74 bitmaps are embedded (`resource/CursorFont.java`, generated
   from `cursor.pcf` by `tools/gen-cursor-font.py`), which is what `XCreateFontCursor` asks for, and
