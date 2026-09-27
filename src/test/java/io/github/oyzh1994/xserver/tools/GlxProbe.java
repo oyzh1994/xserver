@@ -102,7 +102,9 @@ public final class GlxProbe {
         Wire.writeInt(request, 8, name);
         wire.send(request);
         byte[] reply = replyTo(wire);
-        System.out.println("QueryServerString(" + name + ") -> \"" + stringOf(reply) + "\"");
+        System.out.println("QueryServerString(" + name + ") -> \"" + stringOf(reply) + "\""
+                + ", reply " + reply.length + " bytes");
+        hex("QueryServerString", reply);
     }
 
     /** {@code GLXQueryExtensionsString}: the same list, asked without naming one. */

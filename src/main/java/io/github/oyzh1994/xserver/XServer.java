@@ -309,6 +309,9 @@ public final class XServer {
         // device version instead.
         this.xinputExtension = extensions.register(
                 new io.github.oyzh1994.xserver.extension.XInputExtension(), 0, 1);
+        // GLX answers the handshake a software OpenGL client needs, and nothing that would need a
+        // renderer: a client granted a direct context renders itself and blits (B6).
+        extensions.register(new io.github.oyzh1994.xserver.extension.GlxExtension(), 0, 0);
         // RENDER defines no events and five errors: BadPictFormat, BadPicture, BadPictOp,
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();
