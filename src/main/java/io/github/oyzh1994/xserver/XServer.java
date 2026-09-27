@@ -320,6 +320,10 @@ public final class XServer {
         // BadGlyphSet and BadGlyph, in the order the plugin reads them back.
         var render = new io.github.oyzh1994.xserver.extension.RenderExtension();
         extensions.register(render, render.eventCount(), render.errorCount());
+        // Composite defines no events and no errors: it is requests and replies, and the redirect it
+        // sets is what stops a window being composited onto the screen (B5's third part). Registered
+        // after RENDER because what a compositor draws with is RENDER.
+        extensions.register(new io.github.oyzh1994.xserver.extension.CompositeExtension(), 0, 0);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }
@@ -1909,6 +1913,15 @@ public final class XServer {
      * @param local the region the request wrote, in the window's own coordinates
      */
     public void compositeOwnPixels(XWindow window, Rectangle local) {
+        if (window.isRedirected()) {
+            // A redirected window is somebody else's to place (Composite): what it drew stays in its
+            // store, which is what `NameWindowPixmap` hands out, and the screen is left alone. The
+            // region is reported as damage all the same, and in the window's own coordinates rather
+            // than clipped to what shows - a compositor watching a redirected window wants to hear
+            // about the pixels it cannot see, because those are the ones it is about to draw.
+            io.github.oyzh1994.xserver.extension.DamageExtension.drew(this, window, local);
+            return;
+        }
         Screen screen = window.screen();
         io.github.oyzh1994.xserver.draw.Framebuffer target = screen.framebuffer();
         io.github.oyzh1994.xserver.draw.Framebuffer source = window.ownPixels();

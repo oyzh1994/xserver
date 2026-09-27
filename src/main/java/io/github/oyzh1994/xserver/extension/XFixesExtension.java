@@ -51,6 +51,7 @@ import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XCursor;
 import io.github.oyzh1994.xserver.resource.XGC;
 import io.github.oyzh1994.xserver.resource.XPixmap;
+import io.github.oyzh1994.xserver.resource.RegionResource;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.eclipse.collections.api.list.ImmutableList;
@@ -119,7 +120,6 @@ public final class XFixesExtension implements Extension {
     private static final int MINOR_VERSION = 0;
 
     /** Resource class of an XFIXES region, shared by every region this extension creates. */
-    private static final int REGION_CLASS = XResource.newExtensionClass();
 
     private final XfixesPlugin plugin = new XfixesPlugin();
 
@@ -862,7 +862,7 @@ public final class XFixesExtension implements Extension {
 
     private RegionResource requireRegion(XServer server, ClientConnection client, int id) {
         try {
-            return (RegionResource) server.resources().require(client, id, REGION_CLASS, false);
+            return (RegionResource) server.resources().require(client, id, RegionResource.CLASS, false);
         } catch (ProtocolException e) {
             // A region id belonging to another client stays an id choice error; anything else
             // about a region is the extension's own BadRegion.
@@ -887,7 +887,7 @@ public final class XFixesExtension implements Extension {
      * repair region is one of these, and neither extension can name it without this.
      */
     static int regionClass() {
-        return REGION_CLASS;
+        return RegionResource.CLASS;
     }
 
     /** A cursor resource, which is a core resource rather than an extension one. */
@@ -907,33 +907,6 @@ public final class XFixesExtension implements Extension {
             shape = ShapeExtension.of(server);
         }
         return shape;
-    }
-
-    /**
-     * A region is a client visible resource: the id is the client's own, and the region is what
-     * {@code FetchRegion} reads back and {@code SetWindowShapeRegion} turns into a shape.
-     */
-    static final class RegionResource extends XResource {
-
-        private List<Rectangle> rectangles;
-
-        RegionResource(int id, ClientConnection owner, List<Rectangle> rectangles) {
-            super(id, REGION_CLASS, owner);
-            this.rectangles = List.copyOf(rectangles);
-        }
-
-        List<Rectangle> rectangles() {
-            return rectangles;
-        }
-
-        void setRectangles(List<Rectangle> rectangles) {
-            this.rectangles = List.copyOf(rectangles);
-        }
-
-        @Override
-        public String typeName() {
-            return "region";
-        }
     }
 
     // ------------------------------------------------------------------

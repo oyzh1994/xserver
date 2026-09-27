@@ -15,6 +15,7 @@ import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.resource.ShapeState;
 import io.github.oyzh1994.xserver.resource.XPixmap;
+import io.github.oyzh1994.xserver.resource.RegionResource;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.slf4j.Logger;
@@ -238,7 +239,7 @@ public final class DamageExtension implements Extension {
     private void subtract(XServer server, ClientConnection client, Subtract request) {
         Watcher watcher = requireWatcher(server, client, request.getDamage());
         if (request.getParts() != 0) {
-            XFixesExtension.RegionResource parts = region(server, client, request.getParts());
+            RegionResource parts = region(server, client, request.getParts());
             List<Rectangle> shared = ShapeState.intersect(List.copyOf(watcher.damaged),
                     parts.rectangles());
             watcher.damaged.clear();
@@ -386,10 +387,10 @@ public final class DamageExtension implements Extension {
     }
 
     /** A region of the client's, which is the XFIXES extension's resource. */
-    private static XFixesExtension.RegionResource region(XServer server, ClientConnection client,
+    private static RegionResource region(XServer server, ClientConnection client,
                                                          int id) {
-        XResource resource = server.resources().require(client, id, XFixesExtension.regionClass(),
+        XResource resource = server.resources().require(client, id, RegionResource.CLASS,
                 false);
-        return (XFixesExtension.RegionResource) resource;
+        return (RegionResource) resource;
     }
 }

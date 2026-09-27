@@ -61,6 +61,11 @@ public final class XWindow extends XResource {
     /** This window's own pixels, for a window whose visual has an alpha channel - see keepsOwnPixels. */
     private Framebuffer ownPixels;
 
+    /** Composite's redirection: the window keeps drawing, but somebody else composites it. */
+    private boolean redirected;
+    private int redirectUpdate;
+    private boolean subwindowsRedirected;
+
     /**
      * The two gravities, whose default is X's own: {@code NorthWest} (1) for both. It matters that
      * the default is measured rather than assumed - {@code bitGravity} was stored as 0, which is
@@ -281,6 +286,17 @@ public final class XWindow extends XResource {
     }
 
     /**
+     * Whether this window's pixels carry transparency - a window that shows what is behind it
+     * wherever it has not drawn.
+     *
+     * <p>Used where "is this window in the way" is asked, because a translucent window is not: see
+     * {@code subtractWindow}.
+     */
+    public boolean isTranslucent() {
+        return keepsOwnPixels() && visual.hasAlpha();
+    }
+
+    /**
      * The window's own pixels: {@code width x height}, filled with the window's background when it
      * is first made, in window coordinates.
      *
@@ -305,6 +321,58 @@ public final class XWindow extends XResource {
             ownPixels = resized;
         }
         return ownPixels;
+    }
+
+    /**
+     * Whether a compositor has redirected this window, so that what it draws no longer reaches the
+     * screen (Composite).
+     *
+     * <p>The store is what makes this cheap here: a window already draws into pixels of its own and
+     * is composited from them, so "redirected" is exactly "composited by somebody else" - the
+     * drawing path is untouched and only the compositing stops
+     * ({@code XServer.compositeOwnPixels}). What the window drew stays readable through
+     * {@code NameWindowPixmap}, in the coordinate space a compositor expects.
+     *
+     * <p>Measured against a reference before it was written, because the alternative reading - that
+     * a redirected window keeps drawing to the screen as well - is what this server does by default
+     * and would have looked correct in every test that never redirected anything: with a window
+     * redirected and then repainted, the window's pixmap held the new colour and the screen still
+     * held the old one ({@code tools/CompositeProbe}).
+     */
+    public boolean isRedirected() {
+        if (redirected) {
+            return true;
+        }
+        // An ancestor redirected its subwindows, which is what a compositor does to the root: the
+        // whole tree is its to place. Walked rather than inherited into a flag on every descendant,
+        // because the tree is a few deep and a flag would have to be undone correctly when the
+        // ancestor unredirects, or when a window is reparented - the two cases a cached answer gets
+        // wrong, and both are silent.
+        for (XWindow ancestor = parent; ancestor != null; ancestor = ancestor.parent) {
+            if (ancestor.subwindowsRedirected) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Composite's {@code Redirect} value: 0 Automatic, 1 Manual. */
+    public int redirectUpdate() {
+        return redirectUpdate;
+    }
+
+    public void setRedirected(boolean redirected, int update) {
+        this.redirected = redirected;
+        this.redirectUpdate = update;
+    }
+
+    /** Whether this window's own request redirects everything below it as well. */
+    public boolean isSubwindowsRedirected() {
+        return subwindowsRedirected;
+    }
+
+    public void setSubwindowsRedirected(boolean subwindowsRedirected) {
+        this.subwindowsRedirected = subwindowsRedirected;
     }
 
     public int bitGravity() {
@@ -743,6 +811,17 @@ public final class XWindow extends XResource {
 
     private static List<Rectangle> subtractWindow(List<Rectangle> region, XWindow above) {
         if (!above.isMapped() || above.isInputOnly()) {
+            return region;
+        }
+        if (above.isTranslucent()) {
+            // A window whose pixels carry transparency does not hide what is behind it, so it takes
+            // nothing away: what it has not drawn shows the screen underneath, and a window under it
+            // that stopped painting there would leave a hole wherever the transparency is.
+            //
+            // It is also what makes Composite's overlay possible at all (B5): the overlay is a
+            // screen-sized window above everything, and if it counted as an obscurer every window
+            // below it would report no visible region at all - so no client would be sent an Expose
+            // again. The store is what makes the point measurable rather than theoretical.
             return region;
         }
         // Only the child's own rectangle: a child is clipped by its parent, so its whole subtree is

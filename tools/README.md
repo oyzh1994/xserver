@@ -200,6 +200,16 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `root_x`). Its own XTEST driver cost two rounds the same way: `FakeInput` is **thirty six bytes**
   with a length of 9 - not the sixteen its fixed fields suggest - and its `type` field is a **core**
   event type number (4 press, 5 release, 6 motion), not a numbering of XTEST's own.
+- `CompositeProbe` - the harness for the last of B5's three: it asks the version, asks for the overlay
+  window, makes a region from a window's border clip, redirects the window, names the pixmap that
+  holds its contents, reads a pixel out of it, repaints the window **while it is redirected** and
+  reads both the pixmap and the screen, covers it, draws into the named pixmap, and puts everything
+  back. That repaint is the measurement the extension turns on and the one this server gets wrong by
+  default: here the screen follows the window, on a reference it keeps what was there, so the guard
+  in `XServer.compositeOwnPixels` is what the probe pins. Two smaller readings came out of it: the
+  version answered is the **server's** (a client asking for 0.4 and one asking for 0.2 are both told
+  0.4), and a client **may draw into** a named window pixmap - the fill lands - where the
+  specification leaves it undefined, which is why the view is read-write.
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -317,9 +327,9 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-27: 13 of the 18 probes identical.** The five that
+each server assigns for itself). **Full run 2026-09-27: 14 of the 19 probes identical.** The six that
 differ are all deliberate, and each is measured rather than assumed - a run that reports one of these
-is a run that agrees with the reference, and a run that reports a *sixth* one is a finding:
+is a run that agrees with the reference, and a run that reports a *seventh* one is a finding:
 
 - **`ChangeCursorProbe`** - this server refuses `XFixesChangeCursorByName` with `BadImplementation`,
   where a reference **accepts every name and does nothing with it** (its cursor font has no glyph
