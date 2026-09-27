@@ -1175,39 +1175,6 @@ public final class InputState implements DisplayBackend.InputSink {
         }
     }
 
-    /**
-     * Whether a forwarded application has a drag in flight, which is the moment the platform's own
-     * drag can be started. Called from the toolkit's thread, like {@link #hostDrop}.
-     */
-    @Override
-    public boolean draggingOut() {
-        io.github.oyzh1994.xserver.drop.DropBridge bridge = server.dropBridge();
-        if (bridge == null) {
-            return false;
-        }
-        server.lockServer();
-        try {
-            return bridge.isDraggingOut() && !bridge.dragOutPaths().isEmpty();
-        } finally {
-            server.unlockServer();
-        }
-    }
-
-    /** What that drag offers, as the paths a platform drag carries. */
-    @Override
-    public java.util.List<String> dragOutFiles() {
-        io.github.oyzh1994.xserver.drop.DropBridge bridge = server.dropBridge();
-        if (bridge == null) {
-            return java.util.List.of();
-        }
-        server.lockServer();
-        try {
-            return bridge.dragOutPaths();
-        } finally {
-            server.unlockServer();
-        }
-    }
-
     public void keyChanged(int keycode, boolean pressed, int x, int y) {
         if (keycode < (Keymap.MIN_KEYCODE & 0xFF) || keycode > (Keymap.MAX_KEYCODE & 0xFF)) {
             return;

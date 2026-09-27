@@ -52,31 +52,6 @@ public interface DisplayBackend {
         default void hostDrop(java.util.List<String> paths, int x, int y) {
         }
 
-        /**
-         * Whether a forwarded application is dragging something <em>out</em>, which is when the
-         * platform's own drag should be started - see {@code DropBridge}.
-         *
-         * <p>X gives no "I am about to drag" message, so the server watches the drag selection: a
-         * client that has taken {@code XdndSelection} is dragging, and it has been asked what it
-         * offers. This answers that, and {@link #dragOutFiles} answers what came back.
-         *
-         * <p>The window is the only moment a platform drag can begin - the gesture that started
-         * inside the application is still in progress, and the pointer is about to leave the host
-         * window - so a toolkit asks this from its drag-detected handler and starts a drag if it
-         * says yes.
-         */
-        default boolean draggingOut() {
-            return false;
-        }
-
-        /**
-         * What that drag is offering, as paths the host understands. Empty when the application is
-         * not dragging, or has not answered yet.
-         */
-        default java.util.List<String> dragOutFiles() {
-            return java.util.List.of();
-        }
-
         /** The window gained or lost focus; the server tracks this for the input focus. */
         void focusChanged(boolean focused);
 

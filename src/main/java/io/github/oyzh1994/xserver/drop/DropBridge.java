@@ -270,12 +270,11 @@ public final class DropBridge {
         if (log.isDebugEnabled()) {
             log.debug("a forwarded application is dragging from 0x{}", Integer.toHexString(owner));
         }
-        // **Asked the moment the drag is seen, not when the platform wants the answer.** The host's
-        // drag has to be started from the mouse gesture that is already in progress, and JavaFX's
-        // dragboard holds real files rather than a promise, so the files have to be in hand by then.
-        // A client answers in the time it takes the user to move a few pixels, which is the whole
-        // budget: what is not answered by the time the drag reaches the window does not set off.
-        askDraggingClient();
+        // **Not asked here.** The ask is a round trip to a client that is in the middle of setting up
+        // its own drag, and an application dragging something *inside itself* takes the same
+        // selection - so asking on sight put a request in front of every internal drag for the sake
+        // of a drag that may never leave the screen. Whoever wants the files asks for them (see the
+        // C5 entry: the trigger that did this was reverted the same day).
     }
 
     /** Whether a forwarded application is offering a drag right now. */
