@@ -434,8 +434,10 @@ missing, and only worth re-creating if something asks for it:
   `Xwd diff`, `Blocks`, `Colors` and `Rect` cover what they did.
 
 `XProxy` is a **reconstruction** (its header says so): the framing and the message descriptions are
-the original's, the opcode/event name table is shorter, and it does not log reply *bodies* - extending
-it to do that is step one of backlog item A4.
+the original's, the opcode/event name table is shorter, and it does not log reply *bodies*. That used
+to be described as "step one of backlog item A4", which is no longer where it would help: A4 (the
+`xdotool` segfault) turned out to be B1 and is fixed, and what actually reads a stream now is
+`tools/tap.py`, which is byte-transparent and so cannot get in a client's way.
 
 ## Rules that go with the tools
 
