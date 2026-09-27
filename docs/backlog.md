@@ -48,10 +48,6 @@ A prompt that starts a fresh session on this, verbatim:
 
 ## 0. All items at a glance
 
-**§9 at the end of this file is a different kind of list**: capabilities this server does not have at
-all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. Nothing here points at them yet.
-
 | id | item | area | size |
 |----|------|------|------|
 | ~~E0~~ | ~~finish the verification kit~~ **done 2026-09-25** | engineering | S |
@@ -102,6 +98,23 @@ candidates rather than as items. Nothing here points at them yet.
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
 | [ ] E6 | keep the three documents in step - **ongoing**: the discipline rather than a task, and what the sweep after every change is | engineering | S |
 | -- | MIT-SHM | **do not do** | see [B8](#b8-mit-shm--deliberately-not-worth-doing) |
+
+**§9 at the end of this file is a different kind of list**: capabilities this server does not have at
+all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
+candidates rather than as items. **Its seven candidates, when the owner wants to schedule new work:**
+
+| id | candidate | size | why it is first (or last) |
+|----|-----------|------|---------------------------|
+| [ ] F1 | `PresentNotifyMSC` + the SYNC alarms - the holes inside extensions that already exist | S-M | a modern client could reach for either; both small |
+| [ ] F2 | `RECORD` | M | `x11vnc -record` is a real client in this project's own orbit |
+| [ ] F3 | `X-Resource` | S | answers "who is using the memory", which E4 left open |
+| [ ] F4 | `Generic Event Extension` | S | makes XI2's events *findable*, the way a client checks |
+| [ ] F5 | `DOUBLE-BUFFER` (Xdbe) | M | B5's store makes the back buffer nearly free |
+| [ ] F6 | `XVideo` | M-L | every client of it falls back today - the weakest case |
+| [ ] F7 | `SECURITY` | M | the answer to "run a client I do not trust" |
+
+Each becomes a full entry (*Current*, *Traps*, *Verify*) when it is picked up; §9 has the measured
+inventory behind them and the list of things that are deliberately *not* candidates.
 
 ---
 
@@ -4690,27 +4703,67 @@ measured rather than assumed: a client that queries an absent extension gets "no
 a refusal, so the evidence is the **request profiles** - EasyShell's profile against the reference and
 against this server agrees request for request (the A/B method), and a sweep of thirty client tools
 against this server produced no refusals beyond the known two. None of them reached for Xdbe, Xv, RECORD
-or the rest. So these are capabilities a *different* client would use, and each one is worth sizing by
-**what breaks without it**, in the order that argument is strongest:
+or the rest. So these are capabilities a *different* client would use, and the seven candidates below
+are ordered by **what breaks without it** - the first is the one to do if only one is done. They are
+candidates for the owner to schedule, not items somebody has started; each becomes a full entry (with
+*Current*, *Traps* and *Verify*, like §2-§6) when it is picked up.
 
-- **F1. `PresentNotifyMSC` and the SYNC alarms** - the two that a *modern* client could plausibly reach
-  for (a compositor pacing itself, a toolkit's frame timer), both small: the reply layouts, plus an MSC
-  counter this server increments per present. **S-M.**
-- **F2. `RECORD`** - the one with a real client in this project's own orbit (`x11vnc -record`, and the
-  kit's own recordings would become scriptable without XProxy). Its surface is
-  `CreateContext`/`RegisterClients`/`EnableContext` and then a stream of event data. **M.**
-- **F3. `X-Resource`** - small, and it makes "who is using the memory" answerable, which E4's per-client
-  framebuffer work left as a question. **S.**
-- **F4. `Generic Event Extension`** - a handshake and a version, so a client that checks for generic
-  events is told yes rather than falling back. **S.** (Worth doing whichever of the others is: it is
-  what makes XI2's own events *findable* by a client that looks for them properly.)
-- **F5. `DOUBLE-BUFFER`** - a real feature (back buffer, swap, swap interval) whose clients all fall
-  back today, and B5's store makes the back buffer nearly free. **M.**
-- **F6. `XVideo`** - a port/adapter model with no hardware behind it here; a player's fallback is the
-  path it takes now, so the value is *only* for a client that refuses to fall back. **M-L, and the
-  weakest case of the six.**
-- **F7. `SECURITY`** - untrusted connections. **M**, and it interacts with `--auth` (A7): it is a real
-  answer to "how do I run a client I do not trust", which today is "you do not".
+### F1. `PresentNotifyMSC` and the SYNC alarms. **S-M**
+
+The two holes inside extensions this server already has, and the ones a *modern* client could plausibly
+reach for: a compositor pacing itself against the display's refresh (`PresentNotifyMSC`), and a
+toolkit's own frame timer or idle timeout (`CreateAlarm`/`ChangeAlarm`/`DestroyAlarm`/`QueryAlarm`).
+Small: the reply layouts, plus an MSC counter this server increments per present - it has no vblank to
+report, so what it counts has to be defined deliberately and documented as such. **Verify**: `SyncProbe`
+and `PresentProbe` extended, identical to the reference where the reference has the feature; a client
+that asks for an alarm gets one that fires.
+
+### F2. `RECORD`. **M**
+
+The one with a real client in this project's own orbit: `x11vnc -record` uses it, and the kit's own
+recordings would become scriptable without `XProxy` sitting in the middle. Its surface is
+`CreateContext`, `RegisterClients`, `EnableContext` and then a stream of event data in the reply's
+`data` field. **Verify**: a context registered on this server and on Xvfb produces the same events for
+the same gesture - which is `XProxy`'s own comparison, done from inside the server instead of in front
+of it.
+
+### F3. `X-Resource`. **S**
+
+Small, and it answers "who is using the memory" - the question E4's per-client framebuffer work left
+open, since that item made allocation lazy without a way to see it. Three requests:
+`QueryVersion`, `QueryClients`, `QueryClientResources`. **Verify**: `xrestop` (or a probe) reports the
+clients connected, with counts that move when a client allocates.
+
+### F4. `Generic Event Extension`. **S**
+
+A handshake and a version number, so a client that checks *properly* for generic-event support is told
+yes rather than falling back. XI2's events already work here, and this is what makes them *findable* to
+a client that looks for them the way the protocol intends. **S**, and worth doing whichever of the
+others is picked: it is a prerequisite-shaped gap rather than a feature. **Verify**: `xdpyinfo` lists
+it, and a client that queries it gets a version.
+
+### F5. `DOUBLE-BUFFER` (Xdbe). **M**
+
+A real feature - a back buffer, a swap, and a swap interval - whose clients all fall back to ordinary
+drawing today. B5's per-window store makes the back buffer nearly free (the pixels already exist), so
+what is left is the buffer allocation, the swap's copy and the events. **Verify**: a client that
+double-buffers (or a probe) swaps and sees the front buffer change atomically, with no tearing
+observable in the frame the server presents.
+
+### F6. `XVideo`. **M-L, and the weakest case of the seven**
+
+A port/adapter model for video: a player hands frames over to be scaled by the server. There is no
+video hardware behind the host window, so what would be built is a software scaler with a
+`PutImage`-equivalent behind it - and every player that asks for it (`mplayer -vo xv`, `vlc --vout
+xcb`) already falls back to that path today. It is listed because it is in the reference's list, not
+because anything breaks without it.
+
+### F7. `SECURITY` (XSecurity). **M**
+
+Untrusted connections: a client can be given a restricted connection it cannot read the keyboard or
+other clients' windows through. It interacts with `--auth` (A7) and it is a real answer to "how do I run
+a client I do not trust", which today is "you do not". **Verify**: a client marked untrusted is refused
+the requests the extension says it must be, and can still draw its own window.
 
 **Not intended, and the reason, so that a later session does not size them as gaps**: `DRI3`/`DRI2`
 and `XFree86-VidMode.DGA` (there is no GPU behind the host window, and B6 measured that a GL client
