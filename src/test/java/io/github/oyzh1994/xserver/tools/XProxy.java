@@ -118,8 +118,7 @@ public final class XProxy {
                     System.out.println((clientToServer ? "C>S" : "S>C") + " end of stream");
                     return;
                 }
-                int units = (head[2] & 0xFF) | ((head[3] & 0xFF) << 8);
-                int whole4 = units * 4;
+                int whole4 = clientToServer ? requestLength(head) : 0;
                 byte[] header;
                 // The four byte case is a *request* only: everything a server sends is a reply, an
                 // error or an event, and all three have the full header.
@@ -146,11 +145,8 @@ public final class XProxy {
                         + minor);
                 int extra = 0;
                 if (clientToServer) {
-                    if (units == 0) {
-                        // BigRequests' extended form, and **a zero length field is what triggers it** -
-                        // not the opcode. The opcode alone is the wrong test: 139 is also the ordinary
-                        // `Enable` request, whose length field is three, and reading its body as an
-                        // extended length asks for gigabytes and hangs the pump.
+                    if (whole4 == 0) {
+                        // BigRequests' extended form - see requestLength for what triggers it.
                         byte[] extended = readFully(in, 4);
                         if (extended == null) {
                             return;
@@ -170,22 +166,8 @@ public final class XProxy {
                         continue;
                     }
                     extra = Math.max(0, whole4 - 8);
-                } else if ((header[0] & 0x7F) == 1 || (header[0] & 0x7F) == 35) {
-                    // A reply, and a **generic event**, are thirty two bytes plus whatever their
-                    // length field counts. Leaving the generic event out is the bug that hid for
-                    // months: a plain event is thirty two bytes, XI2's are not, and GDK's whole
-                    // input path is XI2 - so a proxy that forwarded the first thirty two bytes of
-                    // each one left the rest in the stream and the client desynchronised. That is
-                    // what "EasyShell hangs through `XProxy`, the reason was never found" was
-                    // (2026-09-27): it hung at the first device event, and this server sends one
-                    // whenever a forwarded toolkit watches input. Measured with the connection id
-                    // this class now labels its lines with: `type 35 length field 11 framed to 32`
-                    // on the one connection that carries the client's real work.
-                    int length = (header[4] & 0xFF) | ((header[5] & 0xFF) << 8)
-                            | ((header[6] & 0xFF) << 16) | ((header[7] & 0xFF) << 24);
-                    extra = 24 + Math.max(0, length * 4);
                 } else {
-                    extra = 24;
+                    extra = serverMessageLength(header) - 8;
                 }
                 byte[] body = extra == 0 ? new byte[0] : readFully(in, extra);
                 if (body == null) {
@@ -411,6 +393,36 @@ public final class XProxy {
     static int card32(byte[] data, int offset) {
         return (data[offset] & 0xFF) | ((data[offset + 1] & 0xFF) << 8)
                 | ((data[offset + 2] & 0xFF) << 16) | ((data[offset + 3] & 0xFF) << 24);
+    }
+
+    /**
+     * How many bytes a *request* occupies, from its first four, or **0 when the answer is four bytes
+     * further on** - the BIG-REQUESTS form, whose length is the first word of the body.
+     *
+     * <p>Three silent bugs lived here, and each is one of these lines: a request is **not always
+     * eight bytes** (a length field of one unit is exactly the four bytes already read - that is
+     * `BIG-REQUESTS`' `Enable`, which libxcb sends on every connection, and assuming eight
+     * desynchronised the whole stream and hung the client), and a length field of **zero means read
+     * on**, not "empty".
+     */
+    static int requestLength(byte[] head) {
+        int units = (head[2] & 0xFF) | ((head[3] & 0xFF) << 8);
+        return units == 0 ? 0 : units * 4;
+    }
+
+    /**
+     * How many bytes a *server's* message occupies, from its first eight.
+     *
+     * <p>A reply carries a length, and so does a **generic event** (type 35) - everything else is a
+     * fixed thirty two bytes. Leaving the generic event out is the bug that hid longest: XI2's events
+     * are generic events, GDK's input path is XI2, and a proxy that forwarded the first thirty two
+     * bytes of each left the rest in the stream, so the client desynchronised at its first device
+     * event and stalled before drawing - recorded for months as "EasyShell hangs through `XProxy`,
+     * the reason was never found".
+     */
+    static int serverMessageLength(byte[] head) {
+        int type = head[0] & 0x7F;
+        return type == 1 || type == 35 ? 32 + card32(head, 4) * 4 : 32;
     }
 
     static byte[] readFully(InputStream in, int count) throws Exception {
