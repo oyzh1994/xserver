@@ -645,7 +645,7 @@ public final class XInputExtension implements Extension {
     private void queryPointer(ClientConnection client, XIQueryPointerRequest query) {
         XWindow window = checkWindow(query.window());
         io.github.oyzh1994.xserver.input.InputState input = server.inputFor(window.screen());
-        XWindow child = input.pointerWindow();
+        XWindow child = childOf(window, input.pointerWindow());
         int screenX = input.pointerX();
         int screenY = input.pointerY();
         int eventX = screenX - window.absoluteX();
@@ -673,6 +673,32 @@ public final class XInputExtension implements Extension {
         reply[38] = (byte) (mods & 0x02);           // locked
         reply[39] = (byte) mods;                    // effective
         send(client, reply);
+    }
+
+    /**
+     * The window the reply's {@code child} field must name: the **queried window's own child** that
+     * contains the pointer, or null when the pointer is in the queried window itself or not in it at
+     * all.
+     *
+     * <p>Not "the window the pointer is in", which is what this answered and is a different
+     * question. A client walks the tree with this - ask about a window, ask again about the child
+     * the answer names, and so on until the answer is None - and that walk never ends when the reply
+     * to "what is under the pointer in W" is W itself: it asks about W again, and again.
+     *
+     * <p>Measured (A16) against Xvfb and this server, with the pointer inside EasyShell's toplevel:
+     * **Xvfb answers child = the toplevel** for the query about the root, then **child = None** for
+     * the query about the toplevel, and the client stops after those two. This server answered
+     * `input.pointerWindow()` for both - the deepest window, which for the second query is the
+     * toplevel itself - and the client asked about it ~3700 times a second for ever.
+     */
+    private static XWindow childOf(XWindow window, XWindow pointerWindow) {
+        for (XWindow candidate = pointerWindow; candidate != null && candidate != window;
+                candidate = candidate.parent()) {
+            if (candidate.parent() == window) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     /** {@code XIWarpPointer}: the same as the core request, with the device named. */

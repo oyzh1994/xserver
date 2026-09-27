@@ -285,6 +285,43 @@ class XInputTest {
     }
 
     /**
+     * The reply's {@code child} is the queried window's **own child**, and None when the pointer is
+     * in the queried window itself.
+     *
+     * <p>A client walks the tree with this - ask about a window, ask again about the child the
+     * answer names, until the answer is None - so an answer of "the deepest window the pointer is
+     * in" ends the walk nowhere: the query about that window names itself, and the client asks about
+     * it for ever. Measured live (A16): GDK does exactly that walk after a click, and EasyShell
+     * against this server asked {@code XIQueryPointer} ~3700 times a second, while against Xvfb it
+     * asks twice - child = the toplevel for the root query, then None for the query about it.
+     */
+    @Test
+    void theChildIsTheQueriedWindowsOwnChildAndNotTheDeepestWindow() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int parent = client.allocateId();
+            client.createWindow(parent, client.root(), 100, 100, 200, 200);
+            client.mapWindow(parent);
+            int child = client.allocateId();
+            client.createWindow(child, parent, 10, 10, 100, 100);
+            client.mapWindow(child);
+            // The pointer inside the child, so it is inside both windows - which is the case the
+            // walk depends on. The warp is relative to the child, and the round trip that follows
+            // is what makes the server's state readable by the next query.
+            client.warpPointer(child, 50, 50);
+            client.geometry(parent);
+
+            byte[] aboutParent = request(client, opcode, XI_QUERY_POINTER, parent, 2 << 16);
+            assertEquals(child, RawXClient.readInt(aboutParent, 12),
+                    "the queried window's own child, which is what a client descends to");
+            byte[] aboutChild = request(client, opcode, XI_QUERY_POINTER, child, 2 << 16);
+            assertEquals(0, RawXClient.readInt(aboutChild, 12),
+                    "and None when the pointer is in that window itself: answering the child again"
+                            + " is a walk with no bottom");
+        }
+    }
+
+    /**
      * Sends an XInput2 request whose body is whole words, and reads the reply.
      *
      * <p>Hand written rather than taken from the generated classes: this extension has none - the
