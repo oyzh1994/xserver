@@ -1106,7 +1106,17 @@ public final class XInputExtension implements Extension {
                 .child(child)
                 .rootPosition(rootX, rootY)
                 .windowPosition(eventX, eventY)
-                .modifiers(state);
+                .modifiers(state)
+                // The buttons the pointer is holding, which is what a client reads a drag from. Zero
+                // for every event here until 2026-09-29, and the visible cost was a window that could
+                // not be dragged by its title bar: the motions arrived with nothing held.
+                .buttons(state);
+        if (shape == Xi2Event.Shape.MOTION) {
+            // A motion also carries where the pointer is as the two axis values, not only as the
+            // FP1616 positions above - a reference sends both, and a client that reads
+            // `valuators_len` and then finds no values reads the next message's bytes.
+            built.axes(rootX, rootY);
+        }
         if (shape == Xi2Event.Shape.CROSSING) {
             // A crossing carries its mode and detail as two bytes where a device event's detail is a
             // word, and the two flags a client reads off it: same-screen, and whether this window is

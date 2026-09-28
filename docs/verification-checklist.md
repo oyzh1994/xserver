@@ -361,3 +361,30 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    core event (0, `Ancestor`) where the reference's XI2 event said 3 (`Nonlinear`), measured in one
    case only. The capture recipe is the one above: `tools/tap.py` in front of *both* servers with the
    same client gesture, and the sizes read off the two logs.
+
+3. **The XI2 button mask was always empty, so a window could not be dragged by its title bar** (found
+   2026-09-29, reported as "the settings page, any other window, even the main page - pressing the
+   left button and dragging no longer moves it; `main` was fine"). The two builds differ in one way
+   that decides it: `main` has no XInput2, so the application reads **core** motion events there and
+   its window follows the drag; this branch advertises XInput2, so GDK reads the **XI2** motion, and
+   takes the drag state from that event's *button mask* - which this server left zero for every device
+   event. A motion with nothing held is a move, not a drag, so the window never followed: the same
+   scripted drag that moves it 60 pixels on `main` moved it 20 (the first step only) here, and on the
+   fixed build moves it 60 again. Measured with `tools/tap.py` on both servers, the reference's mask
+   for a drag is `02 00 00 00` in the first word - **bit n is button n**, Xorg's own numbering, not
+   `1 << (n-1)` - and it is the state *before* the event: a press arrives with the mask clear and its
+   release with the button still set, the same convention the core `state` field follows.
+   `Xi2Event.Builder.buttons` writes it (from the core event's `state`, so the two rails cannot
+   disagree) and `XInputTest.aCrossingAndAFocusEventHaveTheShapesAReferenceSends` pins the bytes.
+
+   **What is *not* fixed, and is the next thing here**: a reference's **motion is 136 bytes** - the
+   same fixed part as a key, and then the two axes as `FP3232` values behind the valuator mask - where
+   this server sends 120 with an empty valuator mask. That shorter form is valid XI2 (the mask says no
+   axis is present) and works, but it is a difference from a reference. Sending the reference's shape
+   was written, measured byte for byte against Xvfb's drag, **and crashes GDK** the moment the first
+   motion arrives (`SIGSEGV` at a nought pointer plus `0x90` inside `gdk_display_get_event`, three
+   times, with the axes at the right offset - `Xi2Event.Shape.MOTION` is the layout, pinned by the
+   test, and no caller uses it yet). The two bugs found on the way *were* ours and are fixed: the
+   values must follow the whole mask array, not one word, and a motion has to be in the same branch as
+   a key when the two length fields at 48/50 are written. What crashes a client that is handed the
+   reference's own shape is not known.

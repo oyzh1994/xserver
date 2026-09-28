@@ -95,8 +95,27 @@ public final class Xi2Event implements XEvent {
      * with {@code buttons_len} at 50.
      */
     public enum Shape {
-        /** A key, a button or a motion: eighty bytes of fixed part, both masks. */
-        DEVICE(120, 80, BUTTON_WORDS, VALUATOR_WORDS),
+        /** A key or a button: eighty bytes of fixed part, both masks, and no axis values. */
+        DEVICE(120, 80, BUTTON_WORDS, VALUATOR_WORDS, 0),
+        /**
+         * A motion: the same fixed part, and <b>the two axes as values</b> behind the valuator mask.
+         *
+         * <p>Sixteen bytes longer than a key, which is the measurement that pinned it: a reference's
+         * motion with two axes is 136 bytes and its key 120, and the difference is one FP3232 per axis
+         * set in the valuator mask. Sending a motion without them leaves {@code valuators_len} saying
+         * two words of mask that a client then reads axis values from - the next message's bytes, in
+         * a client that believes it.
+         *
+         * <p><b>Nothing sends this shape yet, and the reason is measured (2026-09-29).</b> A motion
+         * carrying the reference's own axes crashes GDK: {@code SIGSEGV} at a nought pointer plus
+         * {@code 0x90} inside its event translation, on the first motion after a title-bar press,
+         * reproducibly - where the same server's shorter motion (the device shape, with an empty
+         * valuator mask, which is a valid "no axis is in this event") is fine. The layout here is the
+         * reference's, byte for byte off a tap of Xvfb's drag, so what GDK objects to is not yet
+         * known: whoever takes it on should start from a *core* motion gesture on the same server -
+         * those work - and bisect between the two shapes.
+         */
+        MOTION(136, 80, BUTTON_WORDS, VALUATOR_WORDS, 2),
         /**
          * Enter and leave: seventy-two bytes, and one word of button mask.
          *
@@ -104,7 +123,7 @@ public final class Xi2Event implements XEvent {
          * <em>pointer's</em> button count - and it carries {@code sourceid}, {@code mode} and
          * {@code detail} in the eight bytes a device event spends on its source id and padding.
          */
-        CROSSING(76, 72, 1, 0),
+        CROSSING(76, 72, 1, 0, 0),
         /**
          * Focus in and focus out: seventy-two bytes, and eight words of button mask.
          *
@@ -112,18 +131,20 @@ public final class Xi2Event implements XEvent {
          * sends {@code buttons_len = 8} on a keyboard focus event. A client sizes its mask from that
          * field, so matching it exactly is what keeps the two events the same length on the wire.
          */
-        FOCUS(104, 72, BUTTON_WORDS, 0);
+        FOCUS(104, 72, BUTTON_WORDS, 0, 0);
 
         final int size;
         final int fixed;
         final int buttonWords;
         final int valuatorWords;
+        final int axisValues;
 
-        Shape(int size, int fixed, int buttonWords, int valuatorWords) {
+        Shape(int size, int fixed, int buttonWords, int valuatorWords, int axisValues) {
             this.size = size;
             this.fixed = fixed;
             this.buttonWords = buttonWords;
             this.valuatorWords = valuatorWords;
+            this.axisValues = axisValues;
         }
     }
 
@@ -262,10 +283,15 @@ public final class Xi2Event implements XEvent {
             bytes[1] = (byte) extensionOpcode;
             card16(2, sequenceNumber);
             card32(4, shape.size / 4 - 8);              // length is the size in units, less eight
-            if (shape == Shape.DEVICE) {
-                // The two lengths a client sizes its arrays from, and the eight bytes of button mask
-                // they ask for. All zero here, which is what a reference sends for a key; a client
-                // told zero reads an empty mask rather than nothing at all.
+            if (shape.fixed == FIXED) {
+                // The two shapes that are device events - a key, a button, a motion - size their
+                // arrays here: eight words of button mask and two of valuator mask, so that a client
+                // told nought reads an empty mask rather than nothing at all. **Both of them**: a
+                // motion left out of this branch is written with a crossing's fields at 48/50, which
+                // is `buttons_len = 0, valuators_len = 8` - and a client that believes the second
+                // reads thirty two bytes of mask that are not there, walks the next message, and dies
+                // (measured: GDK, SIGSEGV at a nought pointer plus 0x90, the moment a window's title
+                // bar was dragged).
                 card16(48, BUTTON_WORDS);
                 card16(50, VALUATOR_WORDS);
             } else {
@@ -402,7 +428,7 @@ public final class Xi2Event implements XEvent {
         public Builder modifiers(int state) {
             int mods = state & 0xFF;
             int locked = mods & LOCK_MASK;
-            if (shape == Shape.DEVICE) {
+            if (shape == Shape.DEVICE || shape == Shape.MOTION) {
                 bytes[60] = (byte) (mods & ~locked);        // base
                 bytes[62] = (byte) locked;                  // locked
                 bytes[63] = (byte) mods;                    // effective
@@ -412,16 +438,57 @@ public final class Xi2Event implements XEvent {
             card32(56, 0);                                  // latched
             card32(60, locked);                             // locked
             card32(64, mods);                               // effective
-            int buttons = (state >> 8) & 0x1F;              // Button1Mask..Button5Mask, as one word
+            return this;
+        }
+
+        /**
+         * The buttons the pointer is holding, which is the field a drag is decided by.
+         *
+         * <p><b>Bit n is button n</b> - Xorg's own button bitmap numbering, measured: a reference's
+         * motion with button 1 down carries {@code 02} in the mask's first word, not {@code 01}, and
+         * bit 0 is never set. And the mask is the state <em>before</em> the event's own effect, the
+         * same convention the core events' {@code state} follows and measured the same way: a press
+         * arrives with the mask clear and its release with the button still set.
+         *
+         * <p>This server left the whole mask zero for every device event, which no client notices
+         * until it matters: a toolkit reads the drag state from it, so a window whose title bar was
+         * being dragged never moved - the pointer was reported as moving with nothing held.
+         */
+        public Builder buttons(int state) {
+            int buttons = ((state >> 8) & 0x1F) << 1;   // Button1Mask..Button5Mask, one-based
             if (buttons != 0) {
                 card32(shape.fixed, buttons);
             }
             return this;
         }
 
+        /**
+         * A motion's two axes, which a reference sends behind the valuator mask as {@code FP3232}.
+         *
+         * <p>The mask says which axes are in the event - bits 0 and 1 for X and Y - and each one set
+         * is one eight byte fixed-point value: the whole part in the first word and nought after it,
+         * measured off a reference's motion during a drag. <b>The values follow the whole mask
+         * array</b> - {@code valuators_len} words of it, not one - which is the mistake that crashed
+         * GDK the first time this was written: the values four bytes early are read as one value of
+         * garbage and one of nought.
+         */
+        public Builder axes(int x, int y) {
+            if (shape != Shape.MOTION) {
+                return this;
+            }
+            int mask = shape.fixed + shape.buttonWords * 4;
+            int values = mask + shape.valuatorWords * 4;
+            card32(mask, 0x03);                         // valuators 0 and 1 are in this event
+            card32(values, x);                          // FP3232: the whole part, and a zero fraction
+            card32(values + 4, 0);
+            card32(values + 8, y);
+            card32(values + 12, 0);
+            return this;
+        }
+
         /** A device event's flags word; a crossing or focus event has no such field. */
         public Builder flags(int flags) {
-            if (shape == Shape.DEVICE) {
+            if (shape == Shape.DEVICE || shape == Shape.MOTION) {
                 card32(56, flags);
             }
             return this;

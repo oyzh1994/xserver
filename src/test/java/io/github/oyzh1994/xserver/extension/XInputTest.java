@@ -313,6 +313,37 @@ class XInputTest {
         assertEquals(0, wire[49] & 0xFF, "focus, which a reference leaves clear on a focus event");
         assertEquals(8, RawXClient.readShort(wire, 50), "buttons_len: eight words, where a crossing "
                 + "sends one");
+
+        // A motion is a device event like a key, and the two things beyond that shape are the ones a
+        // client reads a drag from: the buttons held, and the two axes as values behind their mask.
+        // Written without either - or, as this was once, with a crossing's fields at 48/50 - a client
+        // that believes `valuators_len` reads thirty two bytes of mask that are not there and walks
+        // into the next message: GDK died of it the first time a title bar was dragged.
+        Xi2Event motion = Xi2Event.builder(false, (short) 7, 130, Xi2Event.Shape.MOTION)
+                .evtype(6)
+                .device(2)
+                .source(2)
+                .time(1000)
+                .detail(0)
+                .root(0x1ff)
+                .event(0x200001)
+                .child(0)
+                .rootPosition(620, 66)
+                .windowPosition(610, 33)
+                .modifiers(0x100)
+                .buttons(0x100)
+                .axes(620, 66)
+                .build();
+        wire = motion.wire();
+        assertEquals(136, wire.length, "eighty bytes of fixed part, both masks, and two axis values");
+        assertEquals(26, RawXClient.readInt(wire, 4), "length is the size in words, less eight");
+        assertEquals(8, RawXClient.readShort(wire, 48), "buttons_len, which a motion has as well");
+        assertEquals(2, RawXClient.readShort(wire, 50), "valuators_len");
+        assertEquals(0x02, RawXClient.readInt(wire, 80), "button 1 held, numbered from one as a "
+                + "reference numbers it");
+        assertEquals(0x03, RawXClient.readInt(wire, 112), "the valuator mask: X and Y are in this one");
+        assertEquals(620, RawXClient.readInt(wire, 120), "the X axis, as FP3232");
+        assertEquals(66, RawXClient.readInt(wire, 128), "and Y, behind it");
     }
 
     @Test
