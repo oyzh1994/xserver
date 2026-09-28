@@ -95,6 +95,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
+| [ ] A19 | EasyShell's process dies when it copies (复制连接, or a text selection copied from a menu) - **reported, not reproduced**; the bed's own crash logs are Xlib's fatal I/O path, i.e. the server closed the connection | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
 | [ ] E6 | keep the three documents in step - **ongoing**: the discipline rather than a task, and what the sweep after every change is | engineering | S |
@@ -2662,6 +2663,57 @@ copy-into-a-store-window path was untested. `RawXClient.copyArea` and
 test really pins, and the mutation that shows it bites). It is a small thing, but it is the part of
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
+
+### [ ] A19. EasyShell's process dies when it copies - reported, not reproduced yet. **M** - open, 2026-09-29
+
+**The report.** "Pick any connection and click 复制连接, or type something into the input box and
+select it and right-click to copy - EasyShell's process on the VM crashes." Reproduced by the user, not
+by any scripted attempt since (see below), and the crash is the whole of the report: the window goes.
+
+**What the bed's own history says the failure looks like, which is the useful half.** The VM keeps
+`/root/hs_err_pid*.log`, and the crashes it has from *before* this session are all one kind, in both
+applications (EasyShell's Java 27 and termora's Java 25):
+
+```
+siginfo: si_signo: 7 (SIGBUS), si_code: 2 (BUS_ADRERR)
+C  [libc.so.6]
+C  [libX11.so.6]  _XDefaultIOError
+C  [libX11.so.6]  _XIOError                  <- the display connection died
+C  [libX11.so.6]  _XEventsQueued
+C  [libX11.so.6]  XEventsQueued
+J  sun.awt.X11.XlibWrapper.XEventsQueued     <- the toolkit's event loop reading
+```
+
+That is **not** a protocol misreading of the kind the XI2 shapes were (those are SIGSEGVs inside
+`gdk_display_get_event` at a nought pointer plus `0x90`, and that one is fixed); it is Xlib's fatal I/O
+path, i.e. **the server closed the connection**. So the copy is either a request the server answers by
+dropping the client, or a server-side exception on that connection's thread - and this server *names*
+both cases in its log, so the log from a crash is worth more than any theory:
+
+- `client <peer> disconnected after N requests: failed handling <Request>` (a `RuntimeException`) or
+  `... hit <Error> during <Request>` (an `Error`) - `ClientConnection.run`'s two catch blocks;
+- `the client is not reading: N messages are already queued for it` - `ClientOutput`'s backpressure
+  bound (1024 messages), which closes a client that has stopped draining its socket;
+- `XFIXES`/`SECURITY` revokes and `KillClient`, which close a connection by design.
+
+**What was tried, all of it on both the old and the new builds, with the app on the VM and the server
+here** (`--single-window`, `--log-requests`): the connection row's 右键 → 复制信息 menu item; the search
+box's own 右键 → 复制, with the text selected by Ctrl+A and by a *drag* across it; Ctrl+C and Ctrl+V;
+the host clipboard set with `pbcopy` and empty; the reference in place of this server (through
+`tools/tap.py`, so both sides' streams are readable). The copy's conversation is healthy every time -
+`SetSelectionOwner` from the app, the bridge's `SelectionRequest`, the app's answer, and the host
+clipboard holding the copied text a moment later - and nothing on either side dies. **The failure needs
+something this reproduction does not have**, and the two candidates worth the next session are (a) the
+clipboard round trip as a *loop*: the bridge writes the app's text to the host clipboard, the host
+normalises it (line endings, an encoding), the poll reads it back as a *foreign* change, takes the X
+selection, GTK re-takes it because it still believes it owns the clipboard, and the two trade it back
+and forth - which would fill the app's socket and end at the backpressure bound above; and (b) a
+clipboard payload that does not fit one property (the bridge's INCR branch), which no test here has
+ever driven.
+
+**The next session's first step is not a theory, it is a capture**: ask the user to reproduce it with
+the server's log kept, then read the disconnect line - it names the request or the bound that ended the
+connection, and the `hs_err_pid*.log` the app leaves says which side died first.
 
 ### [ ] A18. A click on termora's 密钥管理器 button throws in AWT on this server and opens the dialog on the reference. **M** - open, found 2026-09-29
 
