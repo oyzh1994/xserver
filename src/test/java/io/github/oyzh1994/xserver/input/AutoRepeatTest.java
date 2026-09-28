@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -192,5 +193,43 @@ class AutoRepeatTest {
         byte[] event = client.readEvent();
         assertNotNull(event, message + ": nothing arrived");
         assertEquals(type, event[0] & 0xFF, message);
+    }
+
+    /**
+     * The per-key repeat map follows the layout, and a client's own bitmap wins over it.
+     *
+     * <p>Both halves were wrong before they were measured. The map was a copy taken when the
+     * <em>server</em> started, so a client that loaded a layout by name left it describing the
+     * keyboard of whichever layout ran first - {@code xset q}'s "auto repeating keys" block then
+     * differed from a reference's by exactly the keys the two layouts disagree about (2026-09-28).
+     * The rule itself is "every key except the modifiers of the keymap in force", which is what a
+     * reference's own bitmap holds; a client that sets the bitmap still takes over from it, which is
+     * what a reference does too.
+     */
+    @Test
+    void theRepeatMapFollowsTheLayout() throws Exception {
+        InputState input = server.input();
+        try {
+            Keymap.useBuiltinLayout();
+            assertTrue(input.autoRepeatsOn(92), "KP_Enter repeats in the built-in keymap");
+            assertFalse(input.autoRepeatsOn(78), "Scroll_Lock is its Mod5, so it does not");
+
+            assertTrue(Keymap.useLayout("de"), "the captured German layout");
+            assertFalse(input.autoRepeatsOn(92), "AltGr is a modifier once the evdev rows are in force");
+            assertTrue(input.autoRepeatsOn(78), "and Scroll_Lock is an ordinary key again");
+        } finally {
+            Keymap.useBuiltinLayout();
+        }
+
+        // A fresh state, so this does not leak into the tests that hold keys: the client's own
+        // bitmap is what a reference lets it set, and the keys it does not name keep following the
+        // keymap.
+        InputState own = new InputState(server, server.screen());
+        byte[] onlyA = new byte[32];
+        onlyA[KEY_A >> 3] = (byte) (1 << (KEY_A & 7));
+        own.setAutoRepeatBitmap(onlyA);
+        assertTrue(own.autoRepeatsOn(KEY_A), "the key the client named repeats");
+        assertFalse(own.autoRepeatsOn(24), "and one it did not, does not");
+        assertFalse(own.autoRepeatsOn(KEY_SHIFT), "not even a modifier it left out");
     }
 }

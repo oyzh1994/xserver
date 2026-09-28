@@ -80,13 +80,18 @@ public final class RandrProbe {
 
             for (int output : outputIds) {
                 byte[] info = request(wire, opcode, GET_OUTPUT_INFO, 3, output, 0);
-                // The counts after the fixed part, in the order the protocol puts them:
-                // numPreferred, numCrtcs, numModes, numClones, nameLen.
+                // The counts after the fixed part, in the order the protocol puts them: numCrtcs,
+                // numModes, numClones, **numPreferred**, nameLen - which is not the order the
+                // generated reply class writes them in, and that is what this probe found out the
+                // hard way: its labels used to be shifted by one field, so a reference's
+                // `numCrtcs = 1` was printed as "1 preferred" and read as evidence that the output
+                // carries no modes. Measured against Xvfb's own bytes, 2026-09-28.
                 System.out.printf("  GetOutputInfo(0x%x): status %d, crtc 0x%x, %dx%dmm, connection %d,"
-                                + " %d preferred, %d crtc(s), %d mode(s), %d clone(s)%n",
+                                + " %d crtc(s), %d mode(s), %d clone(s), %d preferred, nameLen %d%n",
                         output, info[1] & 0xFF, Wire.readInt(info, 12), Wire.readInt(info, 16),
                         Wire.readInt(info, 20), info[24] & 0xFF, Wire.readShort(info, 26),
-                        Wire.readShort(info, 28), Wire.readShort(info, 30), Wire.readShort(info, 32));
+                        Wire.readShort(info, 28), Wire.readShort(info, 30), Wire.readShort(info, 32),
+                        Wire.readShort(info, 34));
             }
             // GetMonitors: window, get-active, then two words of pad - a three unit request whose
             // reply carries the monitor array.

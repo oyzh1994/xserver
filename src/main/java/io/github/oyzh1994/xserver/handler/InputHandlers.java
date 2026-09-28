@@ -80,13 +80,16 @@ public final class InputHandlers {
     /** Pointer button remapping; index 0 is button 1. */
     private byte[] pointerMapping = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
     /** A modifier row holds two keycodes: the left and right variant of the modifier. */
-    private static final int KEYCODES_PER_MODIFIER = 2;
+    // Four, which is what a reference reports and what X's own headers assume: a client allocates its
+    // own copy of the map from this number, and a server that answers two cannot describe the evdev
+    // mapping at all (it has four keys in Mod1 and four in Mod4). Measured with `xmodmap -pm`, which
+    // prints it as "up to N keys per modifier".
+    private static final int KEYCODES_PER_MODIFIER = 4;
 
     /** A modifier mapping is always eight rows: Shift, Lock, Control, Mod1 to Mod5. */
     private static final int MODIFIER_ROWS = 8;
 
     /** Modifier keycodes, eight rows of {@link #KEYCODES_PER_MODIFIER} keycodes. */
-    private byte[] modifierMapping = defaultModifierMapping();
 
     public InputHandlers(XServer server) {
         this.server = server;
@@ -462,6 +465,10 @@ public final class InputHandlers {
      * byte has to be the row length.
      */
     public void getModifierMapping(ClientConnection client, GetModifierMapping r) {
+        // Built here rather than cached: a client can load a layout by name at any time, and the
+        // modifier rows travel with the keymap (Keymap.useLayout) - a cached copy answered the map
+        // of whichever layout was in force when the server started.
+        byte[] modifierMapping = defaultModifierMapping();
         byte[] bytes = new byte[32 + modifierMapping.length];
         bytes[0] = 1;                                   // reply
         bytes[1] = (byte) (modifierMapping.length / MODIFIER_ROWS);

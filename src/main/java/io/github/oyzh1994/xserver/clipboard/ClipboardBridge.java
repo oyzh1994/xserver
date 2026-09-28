@@ -124,6 +124,12 @@ public final class ClipboardBridge {
         window = new XWindow(server.nextServerResourceId(), null, server.screen(),
                 server.screen().root(), server.screen().root().depth(), XWindow.INPUT_ONLY,
                 server.screen().root().visual(), 0, 0, 1, 1, 0);
+        // Registered here rather than in start(), because the window is a child of the root from the
+        // moment it is made and **every window in the tree has to be a resource a client can look
+        // up**: one that is not is a BadWindow for whoever walks the tree. A bridge that never starts
+        // (--no-clipboard, --no-tray) used to leave its window behind unregistered, and xwininfo's
+        // own walk then printed "X Error: 3: Bad Window" - measured 2026-09-28 with a real client.
+        server.resources().add(window);
         clipboardAtom = server.atoms().intern(CLIPBOARD);
         // Where a source client puts the data it hands over. Named after this server so a client
         // that lists properties on the window it was asked about sees something recognisable.
@@ -172,7 +178,6 @@ public final class ClipboardBridge {
     }
 
     public void start() {
-        server.resources().add(window);
         running = true;
         worker = new Thread(this::poll, "xserver-clipboard");
         worker.setDaemon(true);

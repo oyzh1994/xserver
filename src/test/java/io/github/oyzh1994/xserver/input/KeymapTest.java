@@ -2,8 +2,11 @@ package io.github.oyzh1994.xserver.input;
 
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The keyboard mapping is the only thing a client has to resolve a key event with.
@@ -59,6 +62,41 @@ public class KeymapTest {
             int keycode = Keymap.keycodeForLetter(letter);
             assertFalse(used[keycode], "keycode " + keycode + " carries two letters");
             used[keycode] = true;
+        }
+    }
+
+    /**
+     * The modifier rows follow the keymap in force, because a modifier map names keycodes and a
+     * keycode only means something next to the keymap it was read from.
+     *
+     * <p>Measured against a real client (2026-09-28, {@code xmodmap -pm} on both servers): this
+     * server's rows were a hand-written American arrangement whose Mod3 was empty and whose Mod5 held
+     * Scroll_Lock - so <b>AltGr was in no row at all</b>, and a client that binds {@code Mod5} for a
+     * key never matched. A captured layout is a reference's own table, so it brings that reference's
+     * rows: an evdev arrangement, where the key above the right Shift is AltGr and the four extra
+     * keys above 200 are modifiers too.
+     */
+    @Test
+    void theModifierRowsFollowTheKeymapInForce() {
+        try {
+            Keymap.useBuiltinLayout();
+            assertArrayEquals(new int[] {78}, Keymap.modifierRow(7),
+                    "the built-in map's Mod5 is Scroll_Lock");
+            assertArrayEquals(new int[] {}, Keymap.modifierRow(5), "and its Mod3 is empty");
+            assertEquals(0, Keymap.modifierMaskForKeycode(92),
+                    "keycode 92 is KP_Enter in that keymap, not a modifier");
+            assertNotEquals(0, Keymap.modifierMaskForKeycode(64), "Alt is Mod1 either way");
+
+            assertTrue(Keymap.useLayout("de"), "the captured German layout");
+            assertArrayEquals(new int[] {92}, Keymap.modifierRow(7), "an evdev Mod5 is AltGr");
+            assertArrayEquals(new int[] {203}, Keymap.modifierRow(5),
+                    "and Mod3 is the ISO level-5 shift");
+            assertNotEquals(0, Keymap.modifierMaskForKeycode(92),
+                    "so a client's Mod5 binding matches the key above the right Shift");
+            assertNotEquals(0, Keymap.modifierMaskForKeycode(204),
+                    "and the extra evdev Alt is a modifier");
+        } finally {
+            Keymap.useBuiltinLayout();
         }
     }
 }

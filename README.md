@@ -299,6 +299,21 @@ specification, and each worked around rather than patched upstream:
   counted as half a character.
 - **`GetModifierMapping` replies with the wrong `keycodes-per-modifier`**, writing the total keycode
   count rather than the per-row count. xterm segfaults reading such a reply.
+- **A CARD8 comes back from `readCard8` as a signed byte.** Widened to an `int` it is negative above
+  127, so a request whose *length or count field* is a CARD8 breaks at exactly half its range: the
+  generated `ImageText8` reader hands the string's length to a list constructor and throws, and this
+  server then answered `BadRequest` where a reference answers the request. **Measured 2026-09-28 with
+  a real client**: xterm, redrawing after a window resize, sent a 130 character run and died with
+  `X Error: BadRequest ... X_ImageText8`, taking its host window with it. `ImageText8` and
+  `ImageText16` are decoded in `VariableLengthDecoders` (the mask is the whole fix), and
+  `DrawTextTest` pins the boundary.
+- **`GetOutputInfo`'s reply writes `numPreferred` in the wrong place.** The protocol's fixed part is
+  `numCrtcs, numModes, numClones, numPreferred, nameLen`; the generated writer emits
+  `crtcs, modes, numPreferred, clones, name`, so every count from `numClones` on is shifted by two
+  bytes. A client reading the counts its own way is told the output has **no modes** - measured with
+  `xrandr`, which warned *"Output screen is not disconnected but has no modes"* and printed the
+  CRTC's mode without its `*current` marker. The reply is written out by hand in `RandRExtension`,
+  byte for byte the way a reference's is.
 - **`XReply.getLength()`** computes the reply length from the total size instead of the size after
   the header, so every reply's length field is wrong.
 - **Replies shorter than 32 bytes** are written without their padding, which a client reads as part

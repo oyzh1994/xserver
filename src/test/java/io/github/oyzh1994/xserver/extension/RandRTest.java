@@ -42,6 +42,8 @@ class RandRTest {
     private static final int SELECT_INPUT = 4;
     private static final int GET_SCREEN_SIZE_RANGE = 6;
     private static final int GET_SCREEN_RESOURCES = 8;
+    /** {@code GetPanning}: RandR 1.3, minor 28 - measured, and the request xrandr dies on. */
+    private static final int GET_PANNING = 28;
     private static final int GET_OUTPUT_INFO = 9;
     private static final int GET_CRTC_INFO = 20;
     private static final int GET_CRTC_GAMMA_SIZE = 22;
@@ -118,13 +120,34 @@ class RandRTest {
     }
 
     /** The CRTC and output ids the server hands out, which a client passes back to it. */
+    /**
+     * Panning is <em>answered</em>, and with zeros.
+     *
+     * <p>Both halves are measured. An error for this request is where {@code xrandr} dies in its own
+     * library rather than reporting the display as un-pannable; and naming the whole screen as the
+     * panning area - which is what this answered until 2026-09-28 - makes every {@code xrandr
+     * --verbose} print `Panning: 1300x800+0+0` and `Tracking: ...` lines that a reference's output
+     * does not have. A reference answers zeros.
+     */
+    @Test
+    void panningIsAnsweredWithNothingToPan() throws IOException {
+        int crtc = ids()[0];
+        byte[] reply = request(GET_PANNING, 2, crtc);
+        assertEquals(0, reply[1] & 0xFF, "the CRTC this server named is answered about");
+        for (int at = 12; at <= 34; at += 2) {
+            assertEquals(0, RawXClient.readShort(reply, at),
+                    "no panning, no track area and no border (field at offset " + at + ")");
+        }
+    }
+
     private int[] ids() throws IOException {
         byte[] reply = request(GET_SCREEN_RESOURCES, 2, client.root());
         assertEquals(1, RawXClient.readShort(reply, 16), "one CRTC");
         assertEquals(1, RawXClient.readShort(reply, 18), "one output");
         assertEquals(1, RawXClient.readShort(reply, 20), "one mode");
-        // The lists start at 32: the CRTC ids first, then the output ids.
-        return new int[] {RawXClient.readInt(reply, 32), RawXClient.readInt(reply, 36)};
+        // The lists start at 32: the CRTC ids first, then the output ids, then the modes.
+        return new int[] {RawXClient.readInt(reply, 32), RawXClient.readInt(reply, 36),
+                RawXClient.readInt(reply, 40)};
     }
 
     /** The extension is there, and the version it answers is the one the client asked about. */
@@ -165,7 +188,18 @@ class RandRTest {
         assertEquals(server.screen().heightMillimeters(), RawXClient.readInt(info, 20),
                 "the physical height, by the same rule");
         assertEquals(0, info[24] & 0xFF, "the output is connected");
-        assertEquals(1, RawXClient.readShort(info, 30), "and it offers the one mode");
+        // The counts, at the offsets the protocol puts them at: **numCrtcs, numModes, numClones,
+        // numPreferred, nameLen** - in that order, which is the order a reference's own bytes have
+        // and *not* the order the generated reply class writes them in (it puts numPreferred before
+        // numClones, which shifts every count after it and told a client the output had no modes at
+        // all: xrandr warned "has no modes" and printed the mode without its `*current` marker).
+        assertEquals(1, RawXClient.readShort(info, 26), "the output is on one CRTC");
+        assertEquals(1, RawXClient.readShort(info, 28), "and it offers the one mode the CRTC shows");
+        assertEquals(0, RawXClient.readShort(info, 30), "no clones");
+        assertEquals(0, RawXClient.readShort(info, 32), "no preferred mode, as a reference answers");
+        assertEquals("screen".length(), RawXClient.readShort(info, 34), "and its name is its name");
+        assertEquals(crtc, RawXClient.readInt(info, 36), "the crtc array holds that CRTC");
+        assertEquals(ids[2], RawXClient.readInt(info, 40), "the mode array holds that mode");
 
         // The CRTC: the whole screen, with that mode.
         info = request(GET_CRTC_INFO, 3, crtc, 0);

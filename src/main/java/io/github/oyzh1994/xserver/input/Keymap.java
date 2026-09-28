@@ -27,6 +27,23 @@ public final class Keymap {
     /** Modifier rows in the order clients receive them: Shift, Lock, Control, Mod1..Mod5. */
     public static final int MODIFIER_COUNT = 8;
 
+    /**
+     * The modifier rows of the keymap a captured layout brings, which is a reference server's own
+     * mapping ({@code xmodmap -pm} against Xvfb, measured 2026-09-28): an <b>evdev</b> arrangement,
+     * where 92 is AltGr rather than KP_Enter, Mod3 is the ISO_Level5_Shift key, and the extra keys
+     * above 200 (alternate Alt, Meta, Super and Hyper) are modifiers too.
+     *
+     * <p>It is a second table rather than the only one because a modifier map names keycodes, and a
+     * keycode only means something next to the keymap it was read from: the built-in two-level US
+     * layout has no keysym at 203-207 and puts KP_Enter at 92, so the reference's rows would name
+     * modifiers that table cannot produce. A client sees the pair that goes together - and a Mod5
+     * grab matches AltGr, which is the binding a client actually makes.
+     */
+    private static final int[][] REFERENCE_MODIFIERS = new int[MODIFIER_COUNT][];
+
+    /** Which of the two tables is in force: the built-in keymap's, or a captured layout's. */
+    private static volatile int[][] modifiers;
+
     private static final int[][] KEYSYMS = new int[MAX_KEYCODE + 1][];
 
     /** Widened by {@link #useLayout}; see {@link #width()}. */
@@ -134,6 +151,10 @@ public final class Keymap {
         KEYSYMS[89] = pair(Keysyms.KP_NEXT, Keysyms.KP_3);
         KEYSYMS[90] = pair(Keysyms.KP_INSERT, Keysyms.KP_0);
 
+        // The rows that go with *this* keymap, which is a two-level US layout in the older X
+        // arrangement - keycode 92 is KP_Enter here and Scroll_Lock is 78. A modifier map is only
+        // meaningful next to the keymap it names keycodes in, which is why the reference's own rows
+        // are a second table (REFERENCE_MODIFIERS) used when a captured layout is loaded.
         MODIFIERS[0] = new int[] {50, 62};      // Shift
         MODIFIERS[1] = new int[] {66};          // Lock
         MODIFIERS[2] = new int[] {37, 105};     // Control
@@ -141,7 +162,17 @@ public final class Keymap {
         MODIFIERS[4] = new int[] {77};          // Mod2 (Num Lock)
         MODIFIERS[5] = new int[] {};            // Mod3
         MODIFIERS[6] = new int[] {133, 134};    // Mod4 (Super)
-        MODIFIERS[7] = new int[] {78, 203};     // Mod5 (Scroll Lock, Mode switch)
+        MODIFIERS[7] = new int[] {78};          // Mod5 (Scroll Lock)
+
+        REFERENCE_MODIFIERS[0] = new int[] {50, 62};              // Shift_L, Shift_R
+        REFERENCE_MODIFIERS[1] = new int[] {66};                  // Caps_Lock
+        REFERENCE_MODIFIERS[2] = new int[] {37, 105};             // Control_L, Control_R
+        REFERENCE_MODIFIERS[3] = new int[] {64, 108, 204, 205};   // Alt_L, Alt_R, Alt_L, Meta_L
+        REFERENCE_MODIFIERS[4] = new int[] {77};                  // Num_Lock
+        REFERENCE_MODIFIERS[5] = new int[] {203};                 // ISO_Level5_Shift
+        REFERENCE_MODIFIERS[6] = new int[] {133, 134, 206, 207};  // Super_L, Super_R, Super_L, Hyper_L
+        REFERENCE_MODIFIERS[7] = new int[] {92};                  // ISO_Level3_Shift (AltGr)
+        modifiers = MODIFIERS;
     }
 
     private Keymap() {
@@ -316,6 +347,9 @@ public final class Keymap {
             ASSIGNED.put(Layouts.FIRST_KEYCODE + row, table[row].clone());
         }
         width = table.length == 0 ? KEYSYMS_PER_KEYCODE : table[0].length;
+        // The modifier rows travel with the keymap, because they name its keycodes: the captured
+        // tables are a reference's, so the rows a reference reports are the ones that match them.
+        modifiers = REFERENCE_MODIFIERS;
         return true;
     }
 
@@ -328,11 +362,12 @@ public final class Keymap {
     public static synchronized void useBuiltinLayout() {
         ASSIGNED.clear();
         width = KEYSYMS_PER_KEYCODE;
+        modifiers = MODIFIERS;
     }
 
     /** Keycodes assigned to each modifier row, as reported by {@code GetModifierMapping}. */
     public static int[] modifierRow(int index) {
-        return MODIFIERS[index].clone();
+        return modifiers[index].clone();
     }
 
     public static int modifierCount() {
@@ -342,8 +377,8 @@ public final class Keymap {
     /** Which modifier bit a keycode sets on press, or 0 when it is not a modifier. */
     public static int modifierMaskForKeycode(int keycode) {
         int mask = 0;
-        for (int row = 0; row < MODIFIERS.length; row++) {
-            for (int candidate : MODIFIERS[row]) {
+        for (int row = 0; row < modifiers.length; row++) {
+            for (int candidate : modifiers[row]) {
                 if (candidate == keycode) {
                     mask |= 1 << row;
                     break;

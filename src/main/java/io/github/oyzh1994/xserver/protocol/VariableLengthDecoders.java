@@ -6,6 +6,8 @@ import com.github.moaxcp.x11.protocol.xproto.Arc;
 import com.github.moaxcp.x11.protocol.xproto.Char2b;
 import com.github.moaxcp.x11.protocol.xproto.Coloritem;
 import com.github.moaxcp.x11.protocol.xproto.FillPoly;
+import com.github.moaxcp.x11.protocol.xproto.ImageText16;
+import com.github.moaxcp.x11.protocol.xproto.ImageText8;
 import com.github.moaxcp.x11.protocol.xproto.FreeColors;
 import com.github.moaxcp.x11.protocol.xproto.PolyText16;
 import com.github.moaxcp.x11.protocol.xproto.PolyText8;
@@ -81,6 +83,8 @@ public final class VariableLengthDecoders {
     private static final int POLY_FILL_RECTANGLE = 70;
     private static final int POLY_FILL_ARC = 71;
     private static final int PUT_IMAGE = 72;
+    private static final int IMAGE_TEXT8 = 76;
+    private static final int IMAGE_TEXT16 = 77;
     private static final int POLY_TEXT8 = 74;
     private static final int POLY_TEXT16 = 75;
     private static final int FREE_COLORS = 88;
@@ -95,7 +99,8 @@ public final class VariableLengthDecoders {
         return switch (opcode) {
             case QUERY_TEXT_EXTENTS, SET_CLIP_RECTANGLES, POLY_POINT, POLY_LINE, POLY_SEGMENT,
                  POLY_RECTANGLE, POLY_ARC, FILL_POLY, POLY_FILL_RECTANGLE, POLY_FILL_ARC, PUT_IMAGE,
-                 POLY_TEXT8, POLY_TEXT16, FREE_COLORS, STORE_COLORS, QUERY_COLORS -> true;
+                 POLY_TEXT8, POLY_TEXT16, IMAGE_TEXT8, IMAGE_TEXT16, FREE_COLORS, STORE_COLORS,
+                 QUERY_COLORS -> true;
             default -> false;
         };
     }
@@ -118,6 +123,8 @@ public final class VariableLengthDecoders {
             case STORE_COLORS -> readStoreColors(in, requestBytes);
             case QUERY_TEXT_EXTENTS -> readQueryTextExtents(in, requestBytes);
             case PUT_IMAGE -> readPutImage(in, requestBytes);
+            case IMAGE_TEXT8 -> readImageText8(in, requestBytes);
+            case IMAGE_TEXT16 -> readImageText16(in, requestBytes);
             case POLY_TEXT8 -> readPolyText8(in, requestBytes);
             case POLY_TEXT16 -> readPolyText16(in, requestBytes);
             case FREE_COLORS -> readFreeColors(in, requestBytes);
@@ -155,6 +162,61 @@ public final class VariableLengthDecoders {
                 .leftPad(leftPad)
                 .depth(depth)
                 .data(ByteLists.immutable.of(data))
+                .build();
+    }
+
+    /**
+     * {@code ImageText8}: one string, whose length is a <b>CARD8</b>.
+     *
+     * <p>The generated reader takes that length with {@code readByte()} - a <em>signed</em> byte - and
+     * hands it to a list constructor, so a string of 128 characters or more arrives as a negative
+     * length and the request is refused with {@code BadRequest}. (The library's {@code readCard8} does
+     * the same thing, which is why the fix below is the mask and not a different reader.) Measured
+     * against Xvfb (2026-09-28):
+     * it accepts every length to 254, this server refused 128 and up - and the client that found it
+     * was xterm, which redrew after a window resize with a 130 character run and quit with
+     * {@code X Error: BadRequest ... X_ImageText8}, leaving its host window gone.
+     *
+     * <p>Read as a {@code CARD8} here. The string is at a fixed offset, so nothing else about the
+     * request has to be guessed.
+     */
+    private static ImageText8 readImageText8(X11Input in, int requestBytes) throws IOException {
+        // `readCard8` hands back a **byte**, so it sign-extends: a length of 130 arrives as -126 and
+        // the mask is the whole fix. (The generated reader has the same fault one step earlier - it
+        // passes the signed value straight to a list constructor, which throws.)
+        int length = in.readCard8() & 0xFF;
+        in.readCard16();
+        int drawable = in.readCard32();
+        int gc = in.readCard32();
+        short x = in.readInt16();
+        short y = in.readInt16();
+        return ImageText8.builder()
+                .drawable(drawable)
+                .gc(gc)
+                .x(x)
+                .y(y)
+                .string(ByteLists.immutable.of(readBytes(in, length)))
+                .build();
+    }
+
+    /** {@code ImageText16}: the same, with two bytes per character (the count is the CARD8). */
+    private static ImageText16 readImageText16(X11Input in, int requestBytes) throws IOException {
+        int length = in.readCard8() & 0xFF;
+        in.readCard16();
+        int drawable = in.readCard32();
+        int gc = in.readCard32();
+        short x = in.readInt16();
+        short y = in.readInt16();
+        Char2b[] string = new Char2b[length];
+        for (int i = 0; i < length; i++) {
+            string[i] = Char2b.builder().byte1(in.readByte()).byte2(in.readByte()).build();
+        }
+        return ImageText16.builder()
+                .drawable(drawable)
+                .gc(gc)
+                .x(x)
+                .y(y)
+                .string(Lists.immutable.of(string))
                 .build();
     }
 

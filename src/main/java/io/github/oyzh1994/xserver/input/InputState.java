@@ -122,14 +122,37 @@ public final class InputState implements DisplayBackend.InputSink {
      * changes it with {@code ChangeKeyboardControl}'s {@code AutoRepeatMode} or with XKB's
      * {@code SetControls}, whose {@code perKeyRepeat} is the same bitmap.
      *
-     * <p><b>The modifiers repeat for nobody by default, and the bitmap is where that lives</b>, not a
-     * rule applied at press time: measured against Xvfb, whose own {@code auto_repeats} list is
-     * exactly the keys the modifier map names - {@code Shift_L}/{@code Shift_R}, both Controls, both
-     * Alts, both Supers, Caps Lock, Num Lock. A client that puts a modifier back in the bitmap gets it
-     * to repeat, which is what a reference server does too; the default is what a stock keymap's
-     * compatibility section asks for.
+     * Whether a keycode auto-repeats: every key except the modifiers of the keymap in force, unless
+     * a client has put its own bitmap in.
+     *
+     * <p><b>The modifiers repeat for nobody by default, and the modifier map is where that lives</b>,
+     * not a rule applied at press time: measured against Xvfb, whose own {@code auto_repeats} list is
+     * exactly the keys its modifier map names. A client that puts one back gets it to repeat, which
+     * is what a reference does too.
+     *
+     * <p>Asked of the keymap rather than copied out of it at startup, because **the modifier rows
+     * travel with the layout** ({@code Keymap.useLayout}) and a client can load one at any time: the
+     * copy this used to be answered the map of whichever layout was in force when the *server*
+     * started, so a {@code setxkbmap -layout de} left the repeat map describing the American
+     * keyboard. Measured with {@code xset q}, whose "auto repeating keys" block then differs from a
+     * reference's by exactly the keys the two layouts disagree about.
      */
-    private final boolean[] autoRepeats = new boolean[256];
+    public boolean autoRepeatsOn(int keycode) {
+        boolean[] custom = perKeyCustom;
+        if (custom != null && keycode >= 0 && keycode <= Keymap.MAX_KEYCODE) {
+            return custom[keycode];
+        }
+        return keycode >= (Keymap.MIN_KEYCODE & 0xFF) && keycode <= Keymap.MAX_KEYCODE
+                && Keymap.modifierMaskForKeycode(keycode) == 0;
+    }
+
+    /**
+     * The client's own per-key repeat map, or null while the keymap in force decides - see
+     * {@link #autoRepeatsOn}. XKB's {@code SetControls} carries the whole bitmap and a per-key
+     * {@code SetAutoRepeat} is the same idea one key at a time; either takes over from the layout,
+     * and the keys the client did not name keep following it.
+     */
+    private volatile boolean[] perKeyCustom;
 
     /**
      * Whether the keyboard repeats at all - XKB's {@code XkbRepeatKeysMask}, the one control bit this
@@ -297,12 +320,7 @@ public final class InputState implements DisplayBackend.InputSink {
         this.server = server;
         this.screen = screen;
         this.inputFocus = screen.root();
-        // Every key repeats except the modifiers, which is what a stock server's per-key repeat
-        // bitmap holds - see the field. A keycode outside the keyboard's own range repeats for
-        // nobody either, so the bitmap a client reads back has no bits set below 8.
-        for (int keycode = Keymap.MIN_KEYCODE & 0xFF; keycode <= Keymap.MAX_KEYCODE; keycode++) {
-            autoRepeats[keycode] = Keymap.modifierMaskForKeycode(keycode) == 0;
-        }
+
     }
 
     /** The screen whose pointer, focus and grabs this is. */
@@ -1206,6 +1224,13 @@ public final class InputState implements DisplayBackend.InputSink {
         } else {
             movePointer(event.x(), event.y(), false);
         }
+        // **The state an event carries is the state before this key's own effect.** Measured
+        // against Xvfb (2026-09-28): a Control press arrives with state 0x00 and its release with
+        // 0x04, while a plain key pressed *while* Control is held carries 0x04 - so a modifier key's
+        // own press does not include itself and its release still does. Taking the state after the
+        // update gave the mirror image of that (0x04 and then 0x00), which a client that tracks
+        // modifiers from the state field alone reads one event early.
+        int stateBefore = pointerState();
         updateModifiers(keycode, pressed);
         if (pressed && keyboardGrab == null) {
             // A passive key grab fires for the focus window's chain, and it *consumes* the press:
@@ -1217,7 +1242,7 @@ public final class InputState implements DisplayBackend.InputSink {
                 activatePassiveGrab(passive, keycode, modifierState(), event);
             }
         }
-        deliverKey(keycode, pressed);
+        deliverKey(keycode, pressed, stateBefore);
         if (!pressed && passiveGrabDetail == keycode) {
             endPassiveGrab();
         }
@@ -1326,7 +1351,7 @@ public final class InputState implements DisplayBackend.InputSink {
      * would be a run of presses no toolkit expects.
      */
     private void armRepeat(int keycode) {
-        if (!repeatKeysEnabled || !autoRepeats[keycode]) {
+        if (!repeatKeysEnabled || !autoRepeatsOn(keycode)) {
             return;
         }
         repeatDue.put(keycode, System.currentTimeMillis() + repeatDelayMillis);
@@ -1363,13 +1388,12 @@ public final class InputState implements DisplayBackend.InputSink {
 
     /** Whether a keycode repeats when it is held, and the keyboard is repeating at all. */
     public boolean autoRepeats(int keycode) {
-        return repeatKeysEnabled && keycode >= 0 && keycode < autoRepeats.length
-                && autoRepeats[keycode];
+        return repeatKeysEnabled && autoRepeatsOn(keycode);
     }
 
     /** Whether the per-key bitmap says this keycode repeats, whatever the keyboard's control is. */
     public boolean autoRepeatBit(int keycode) {
-        return keycode >= 0 && keycode < autoRepeats.length && autoRepeats[keycode];
+        return autoRepeatsOn(keycode);
     }
 
     /** Whether the keyboard repeats at all: XKB's {@code RepeatKeys} control. */
@@ -1424,8 +1448,8 @@ public final class InputState implements DisplayBackend.InputSink {
      */
     public byte[] autoRepeatBitmap() {
         byte[] bits = new byte[32];
-        for (int keycode = 0; keycode < autoRepeats.length; keycode++) {
-            if (autoRepeats[keycode]) {
+        for (int keycode = 0; keycode <= Keymap.MAX_KEYCODE; keycode++) {
+            if (autoRepeatsOn(keycode)) {
                 bits[keycode >> 3] |= (byte) (1 << (keycode & 7));
             }
         }
@@ -1438,11 +1462,13 @@ public final class InputState implements DisplayBackend.InputSink {
      * finishing its run.
      */
     public void setAutoRepeatBitmap(byte[] bits) {
-        for (int keycode = 0; keycode < autoRepeats.length; keycode++) {
+        boolean[] custom = new boolean[Keymap.MAX_KEYCODE + 1];
+        for (int keycode = 0; keycode <= Keymap.MAX_KEYCODE; keycode++) {
             int index = keycode >> 3;
-            autoRepeats[keycode] = index < bits.length && (bits[index] & (1 << (keycode & 7))) != 0;
+            custom[keycode] = index < bits.length && (bits[index] & (1 << (keycode & 7))) != 0;
         }
-        repeatDue.keySet().removeIf(keycode -> !autoRepeats[keycode]);
+        perKeyCustom = custom;
+        repeatDue.keySet().removeIf(keycode -> !autoRepeatsOn(keycode));
     }
 
     /**
@@ -1462,10 +1488,19 @@ public final class InputState implements DisplayBackend.InputSink {
             setRepeatKeysEnabled(on);
             return;
         }
-        if (keycode >= autoRepeats.length) {
+        if (keycode > Keymap.MAX_KEYCODE) {
             return;
         }
-        autoRepeats[keycode] = on;
+        // A single key, on top of whatever the keymap in force says for the others: the client's own
+        // map is materialised first, so the keys it did not name keep following the layout.
+        if (perKeyCustom == null) {
+            boolean[] custom = new boolean[Keymap.MAX_KEYCODE + 1];
+            for (int kc = 0; kc <= Keymap.MAX_KEYCODE; kc++) {
+                custom[kc] = autoRepeatsOn(kc);
+            }
+            perKeyCustom = custom;
+        }
+        perKeyCustom[keycode] = on;
         if (!on) {
             repeatDue.remove(keycode);
         }
@@ -2048,12 +2083,12 @@ public final class InputState implements DisplayBackend.InputSink {
         return false;
     }
 
-    private void deliverKey(int keycode, boolean pressed) {
+    private void deliverKey(int keycode, boolean pressed, int state) {
         int eventMask = pressed ? EventMasks.KEY_PRESS : EventMasks.KEY_RELEASE;
         EventFactory factory = (client, w, child, x, y) -> {
             int childId = child == null ? 0 : child.id();
             int time = server.events().time();
-            short state = (short) pointerState();
+            short eventState = (short) state;
             if (pressed) {
                 return KeyPressEvent.builder()
                         .firstEventOffset((byte) 0)
@@ -2068,7 +2103,7 @@ public final class InputState implements DisplayBackend.InputSink {
                         .rootY((short) reportedY())
                         .eventX((short) x)
                         .eventY((short) y)
-                        .state(state)
+                        .state(eventState)
                         .sameScreen(true)
                         .build();
             }
@@ -2085,7 +2120,7 @@ public final class InputState implements DisplayBackend.InputSink {
                     .rootY((short) reportedY())
                     .eventX((short) x)
                     .eventY((short) y)
-                    .state(state)
+                    .state(eventState)
                     .sameScreen(true)
                     .build();
         };

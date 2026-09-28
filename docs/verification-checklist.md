@@ -15,11 +15,13 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **436 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 436 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **445 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 445 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
+| 0.7 | **before comparing two servers, put both in the same state** | the probes, and the reason below | a run compared against a reference that still carries the *previous* run's state reports differences that are not differences - `setxkbmap`'s layout, `xset r rate`, the parked pointer. Restart both, or set both to the same thing, before believing a diff |
+
 | 0.6 | stop everything: `pkill -f 'io.github.oyzh1994.xserver.Main'`, `tools/xvfb.sh stop`, kill the VM's clients | - | nothing left listening on 6010 or 6062-6099, no `Xvfb`/`x11vnc`/AppImage on the VM (a leftover makes the *next* run fail as if the code were broken) |
 
 `tools/kit.sh <Tool> <args>` is the launcher with the classpath filled in; run `mvn -o test-compile`
@@ -211,3 +213,59 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
 10. **`mvn test`'s incremental compile does not recompile a test when only a main class's signature
     changed** - it shows up as `NoSuchMethodError` in a test that looks untouched, so a signature
     change wants `mvn clean test` once.
+
+11. **`x11vnc` disables the reference's screen saver**, and `tools/xvfb.sh start` runs it beside Xvfb: the
+    reference then answers `GetScreenSaver` with `timeout 0 / prefer blanking no` where a bare Xvfb -
+    and this server - answer the X defaults (`600 / yes`). Measured 2026-09-28 by starting a second
+    Xvfb with no VNC on it: its `xset q` matches this server's exactly. Not a difference to chase.
+12. **A modifier key's own event carries the state *before* it** - a Control press arrives with `state
+    0x00` and its release with `0x04` - while a plain key pressed under it carries the modifier. This
+    server had that the other way round until 2026-09-28 (found with `xev` on both servers), and
+    `Ctrl`/`Shift` reaching the *following* key was always right, so a client that reads only the
+    state field was the one that saw it.
+13. **Every client's log has a few `0x0` refusals of its own** - `GetProperty`, `GetWindowAttributes`
+    and `GetGeometry` on window/drawable `0x0` - as a toolkit starts and asks about things it has not
+    made yet. A reference refuses them too; they are not findings.
+
+## What the 2026-09-28 verification round found
+
+The checklist was walked end to end - the suites, the sweep twice, the real clients on the VM
+(`xdpyinfo`, `xrandr`, `xset`, `xmodmap`, `setxkbmap`, `xinput`, `glxinfo`, `xterm`, `xev`, `xdotool`),
+the host window with a real JavaFX frame, and both applications - and it turned up six defects, every
+one of them invisible to the suite and to the probes as they were. They are listed here because each
+one is the kind of thing a *client* trips over, and because the tests that now pin them are what makes
+the next round cheaper:
+
+1. **Windows of the server's own were in the tree but not in the resource table.** The clipboard, tray
+   and host-drag bridges each made a window in their constructor and registered it in `start()`, so a
+   bridge that never started - a headless server, `--no-clipboard`, `--no-tray` - left children of the
+   root that the server could not resolve: `xwininfo -root -tree` printed `X Error: 3: Bad Window` for
+   each and could not finish its walk. `WindowTreeTest` makes both bridges without starting them and
+   walks the tree over the wire.
+2. **The modifier map said two keycodes per modifier where X says four**, and its rows were a
+   hand-written American arrangement whose Mod3 was empty and whose Mod5 held Scroll_Lock - so
+   **AltGr was in no row at all**, and a client binding Mod5 could never match it. A captured layout
+   now brings a reference's own rows (an evdev arrangement: Mod3 the level-5 shift, Mod5 AltGr, and
+   the four extra keys above 200 as modifiers), and `KeymapTest` pins both tables.
+3. **The per-key repeat bitmap was a copy taken when the server started**, so a client that loaded a
+   layout by name left it describing the keyboard of whichever layout ran first - `xset q`'s block then
+   differed from a reference's by exactly the keys the layouts disagree about. It is derived from the
+   keymap in force now, a client's own bitmap still wins, and `AutoRepeatTest` covers both.
+4. **`GetOutputInfo`'s generated reply writer puts `numPreferred` before `numClones`**, where the
+   protocol has it after, so every count from `numClones` on was shifted two bytes: `xrandr` warned
+   *"Output screen is not disconnected but has no modes"* and printed the CRTC's mode without its
+   `*current` marker. The reply is written out by hand, and `RandrProbe`'s own field labels - shifted
+   by one, and the source of a wrong comment in the extension - are fixed with it.
+5. **`GetPanning` answered the whole screen as the panning area**, which every `xrandr --verbose`
+   printed as `Panning:`/`Tracking:`/`Border:` lines a reference's output does not have. Zeros, which
+   is what a reference answers.
+6. **`ImageText8` and `ImageText16` were refused for a string of 128 characters or more**, because the
+   library reads their CARD8 length as a *signed* byte. **xterm died on it**: redrawing after a host
+   window resize it sent a 130 character run, got `X Error: BadRequest ... X_ImageText8`, and quit -
+   taking its host window with it. Both requests are hand-decoded now, and `DrawTextTest` pins the
+   boundary.
+
+Two differences were *not* defects, and are recorded as traps above so the next round does not chase
+them: the reference's screen saver settings belong to `x11vnc`, and `Ctrl`/`Shift` do reach the
+following key on this server (measured with `xev` on both) whatever a first look at an application
+suggests.

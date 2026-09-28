@@ -446,28 +446,29 @@ public final class RandRExtension implements Extension {
     }
 
     /**
-     * Panning: the mode is the screen, and there is nothing to pan around.
+     * Panning: nothing to pan around, and <b>zero</b> is how a server says so.
      *
-     * <p>The reply says so with the whole screen as both the visible area and the track area, and no
-     * borders - which is what a client reads as "this output is showing exactly what it is". A client
-     * that gets an error here instead dies in its own library rather than reporting the display as
-     * un-pannable (measured with {@code xrandr}: an error for this request is where it segfaults).
+     * <p>The reply is answered rather than refused, because a client that gets an error here dies in
+     * its own library rather than reporting the display as un-pannable (measured with {@code xrandr}:
+     * an error for this request is where it segfaults). What the values are matters too: this used to
+     * report the whole screen as both the visible area and the track area, which reads as "there is a
+     * panning area as large as the screen" - and every {@code xrandr --verbose} then printed
+     * `Panning: 1300x800+0+0` and `Tracking: ...` lines that a reference's output does not have. A
+     * reference answers zeros here, measured 2026-09-28.
      */
     private void getPanning(ClientConnection client, Screen screen, GetPanning r) {
-        short width = (short) screen.width();
-        short height = (short) screen.height();
         client.sendReply(GetPanningReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .status((byte) (r.getCrtc() == crtcId ? 0 : 1))
                 .timestamp(server.events().time())
                 .left((short) 0)
                 .top((short) 0)
-                .width(width)
-                .height(height)
+                .width((short) 0)
+                .height((short) 0)
                 .trackLeft((short) 0)
                 .trackTop((short) 0)
-                .trackWidth(width)
-                .trackHeight(height)
+                .trackWidth((short) 0)
+                .trackHeight((short) 0)
                 .borderLeft((short) 0)
                 .borderTop((short) 0)
                 .borderRight((short) 0)
@@ -475,39 +476,78 @@ public final class RandRExtension implements Extension {
                 .build());
     }
 
-    /** The output: connected, on the one CRTC, offering the one mode, with a real physical size. */
+    /**
+     * The output: connected, on the one CRTC, offering the one mode, with a real physical size.
+     *
+     * <p><b>Written out by hand rather than built from the generated reply</b>, because that class's
+     * writer puts {@code numPreferred} before {@code numClones} where the protocol has it after: a
+     * reply from it has every count from {@code numClones} on shifted by two bytes, and a client
+     * reading the counts its own way is told the output has **no modes** - measured with {@code
+     * xrandr}, which then warns "Output screen is not disconnected but has no modes" and prints the
+     * CRTC's mode without the `*current` marker. The layout below is the reference's own, byte for
+     * byte: counts at 26/28/30, {@code numPreferred} at 32, {@code nameLen} at 34, the arrays at 36
+     * and the name after them.
+     */
     private void getOutputInfo(ClientConnection client, Screen screen, GetOutputInfo r) {
         int status = r.getOutput() == outputId ? 0 : 1;
-        if (log.isDebugEnabled()) {
-            // The ids a client refers to are the ones this server handed out, and a client that asks
-            // about one of them has to be answered as if it existed: a wrong status here is a client
-            // that gives up on the output's detail without saying why.
-            log.debug("RANDR GetOutputInfo for 0x{}: the output is 0x{}, status {}", 
-                    Integer.toHexString(r.getOutput()), Integer.toHexString(outputId), status);
-        }
         byte[] name = OUTPUT_NAME.getBytes(StandardCharsets.ISO_8859_1);
-        client.sendReply(GetOutputInfoReply.builder()
-                .sequenceNumber(client.sequenceNumber())
-                .status((byte) status)
-                .timestamp(server.events().time())
-                .crtc(status == 0 ? crtcId : 0)
-                // The same millimetres the core setup reply reports: a client computing a DPI reads
-                // both, and two answers that disagree are worse than no answer.
-                .mmWidth((int) screen.widthMillimeters())
-                .mmHeight((int) screen.heightMillimeters())
-                .connection(CONNECTED)
-                .subpixelOrder((byte) SUBPIXEL_UNKNOWN)
-                .numPreferred((short) 1)
-                .crtcs(IntLists.immutable.of(crtcId))
-                // The output carries no modes of its own, which is what a reference server reports for
-                // its single output (measured: `RandrProbe` reads "1 crtc(s), 0 mode(s)" there and read
-                // "1 mode(s)" here). The mode is on the CRTC, which is where a client that wants one
-                // looks - `GetCrtcInfo` answers it - and the output's list is the *optional* list of
-                // modes it could be set to, which for an output the host window owns is nothing.
-                .modes(IntLists.immutable.empty())
-                .clones(IntLists.immutable.empty())
-                .name(ByteLists.immutable.of(name))
-                .build());
+        int size = 36 + 8 + ((name.length + 3) & ~3);    // crtc + mode, then the name, padded
+        byte[] reply = new byte[size];
+        boolean big = client.isBigEndian();
+        reply[0] = 1;                                    // a reply
+        reply[1] = (byte) status;
+        putCard16(reply, 2, client.sequenceNumber() & 0xFFFF, big);
+        putCard32(reply, 4, (size - 32) / 4, big);
+        putCard32(reply, 8, server.events().time(), big);
+        putCard32(reply, 12, status == 0 ? crtcId : 0, big);
+        // The same millimetres the core setup reply reports: a client computing a DPI reads both, and
+        // two answers that disagree are worse than no answer.
+        putCard32(reply, 16, (int) screen.widthMillimeters(), big);
+        putCard32(reply, 20, (int) screen.heightMillimeters(), big);
+        reply[24] = CONNECTED;
+        reply[25] = 0;                                   // subpixel order: unknown, as a reference
+        putCard16(reply, 26, 1, big);                    // numCrtcs
+        putCard16(reply, 28, status == 0 ? 1 : 0, big);  // numModes
+        putCard16(reply, 30, 0, big);                    // numClones
+        putCard16(reply, 32, 0, big);                    // numPreferred, which a reference answers 0
+        putCard16(reply, 34, name.length, big);
+        putCard32(reply, 36, crtcId, big);
+        if (status == 0) {
+            putCard32(reply, 40, modeId, big);
+        }
+        System.arraycopy(name, 0, reply, 44, name.length);
+        try {
+            client.output().writeRaw(reply);
+        } catch (java.io.IOException gone) {
+            // The client stopped reading: its own connection is being torn down, which is not this
+            // request's business.
+            client.close();
+        }
+    }
+
+    /** One CARD16 in the client's byte order, for the reply above. */
+    private static void putCard16(byte[] bytes, int offset, int value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 8);
+            bytes[offset + 1] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+        }
+    }
+
+    private static void putCard32(byte[] bytes, int offset, int value, boolean bigEndian) {
+        if (bigEndian) {
+            bytes[offset] = (byte) (value >> 24);
+            bytes[offset + 1] = (byte) (value >> 16);
+            bytes[offset + 2] = (byte) (value >> 8);
+            bytes[offset + 3] = (byte) value;
+        } else {
+            bytes[offset] = (byte) value;
+            bytes[offset + 1] = (byte) (value >> 8);
+            bytes[offset + 2] = (byte) (value >> 16);
+            bytes[offset + 3] = (byte) (value >> 24);
+        }
     }
 
     /** The screen's descriptor, whose sizes and rates are the one this server has. */

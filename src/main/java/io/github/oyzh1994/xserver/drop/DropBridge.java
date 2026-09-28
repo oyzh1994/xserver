@@ -102,6 +102,12 @@ public final class DropBridge {
         window = new XWindow(server.nextServerResourceId(), null, server.screen(),
                 server.screen().root(), server.screen().root().depth(), XWindow.INPUT_ONLY,
                 server.screen().root().visual(), 0, 0, 1, 1, 0);
+        // Registered here rather than in start(), because the window is a child of the root from the
+        // moment it is made and **every window in the tree has to be a resource a client can look
+        // up**: one that is not is a BadWindow for whoever walks the tree. A bridge that never starts
+        // (--no-clipboard, --no-tray) used to leave its window behind unregistered, and xwininfo's
+        // own walk then printed "X Error: 3: Bad Window" - measured 2026-09-28 with a real client.
+        server.resources().add(window);
         selectionAtom = server.atoms().intern(XDND_SELECTION);
         uriListAtom = server.atoms().intern(URI_LIST);
         textAtom = server.atoms().intern("text/plain");
@@ -121,7 +127,6 @@ public final class DropBridge {
      * interface - the drag the user sees is the platform's own.
      */
     public void start() {
-        server.resources().add(window);
         // The bridge is a source, not a target: nothing drops onto its own window, so it does not
         // publish XdndAware for itself.
         log.info("host drags into forwarded applications are bridged to XDND");
