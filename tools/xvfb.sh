@@ -27,6 +27,9 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ACTION="${1:-start}"
 GEOMETRY="${2:-1300x800x24}"
 VM_HOST="${XSERVER_VM_HOST:-192.168.22.147}"
+# The cookie the access-controlled reference on :97 is started with; fixed so the probes and the
+# documentation can name it (see `secure` below).
+SECURE_COOKIE="${SECURE_COOKIE:-deadbeefcafebabe0123456789abcdef}"
 
 case "$ACTION" in
     start)
@@ -42,8 +45,28 @@ case "$ACTION" in
             > /root/x11vnc98.log 2>&1 < /dev/null & sleep 2; true" >/dev/null
         "$HERE/tools/xvfb.sh" status
         ;;
+    secure)
+        # A *second* reference with access control **on**, which is what the SECURITY extension needs:
+        # the display above runs with `-ac`, and a server that asks for no credentials has no reason
+        # to trust anybody differently - a token handed out by SECURITY is accepted and the
+        # connection is trusted, so nothing untrusted can be measured there at all (F7). The cookie
+        # is fixed so a probe can be pointed at this display without reading it back:
+        #
+        #   tools/xvfb.sh secure
+        #   tools/kit.sh SecurityProbe 192.168.22.147 6097 MIT-MAGIC-COOKIE-1 deadbeefcafebabe0123456789abcdef
+        # The display lock has to go with the server: Xvfb refuses to start on a display whose lock
+        # file is still there ("already active"), which is exactly what a killed one leaves behind.
+        "$HERE/tools/vm.sh" 'pkill -f "Xvfb :9[7]" ; rm -f /tmp/.X97-lock /tmp/x97.auth; true' \
+            >/dev/null 2>&1 || true
+        sleep 1
+        "$HERE/tools/vm.sh" "xauth -f /tmp/x97.auth add :97 MIT-MAGIC-COOKIE-1 $SECURE_COOKIE" >/dev/null
+        "$HERE/tools/vm.sh" "setsid nohup Xvfb :97 -screen 0 $GEOMETRY -listen tcp -auth /tmp/x97.auth \
+            > /root/xvfb97.log 2>&1 < /dev/null & sleep 3; true" >/dev/null
+        "$HERE/tools/vm.sh" 'pgrep -a "[X]vfb :97" || echo "Xvfb :97 is not running"'
+        echo "reference :97 with access control; cookie: $SECURE_COOKIE"
+        ;;
     stop)
-        "$HERE/tools/vm.sh" 'pkill -f "Xvfb :9[8]"; pkill -f "[x]11vnc -display :98"; true' \
+        "$HERE/tools/vm.sh" 'pkill -f "Xvfb :9[8]"; pkill -f "[x]11vnc -display :98"; pkill -f "Xvfb :9[7]"; true' \
             >/dev/null 2>&1 || true
         echo "stopped"
         ;;

@@ -80,8 +80,23 @@ public final class ConnectionSetup {
     }
 
     private boolean authenticate(ClientConnection client, String authName, byte[] authData) {
+        // A token this server minted is checked first, and **before the question of whether access
+        // control is on at all**: its credentials are right by construction and the trust level it
+        // was created with is what the connection gets. Measured: a reference running with `-ac` -
+        // which asks nobody for anything - still treats a connection that offers such a token as
+        // untrusted, because `-ac` is "never refuse a client for a missing cookie", not "ignore the
+        // credentials a client does offer" (F7).
+        io.github.oyzh1994.xserver.extension.SecurityExtension.Authorization authorization =
+                server.security() == null ? null
+                        : server.security().authorizationFor(authName, authData);
+        if (authorization != null) {
+            client.authenticatedBy(authorization.id(), authorization.trusted());
+            log.info("client {} authenticated as authorization {} (trusted={})", client.peer(),
+                    authorization.id(), authorization.trusted());
+            return true;
+        }
         if (!server.options().authRequired()) {
-            // An -ac server: nothing is asked for, and anything offered is ignored.
+            // An -ac server: no cookie is asked for, and anything else offered is ignored.
             return true;
         }
         if (authName.isEmpty()) {

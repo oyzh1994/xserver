@@ -214,6 +214,10 @@ public final class DrawHandlers {
 
     public void getImage(ClientConnection client, GetImage r) {
         XResource drawable = server.resources().requireDrawable(client, r.getDrawable());
+        // Pixels are the thing an untrusted connection may not read out of somebody else's drawable
+        // (F7): a reference refuses this BadAccess and answers everything else about the drawable.
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireOwned(client, drawable,
+                "GetImage");
         int format = Byte.toUnsignedInt(r.getFormat());
         if (format > ImageCodec.ZPIXMAP) {
             throw ProtocolException.badValue(format);

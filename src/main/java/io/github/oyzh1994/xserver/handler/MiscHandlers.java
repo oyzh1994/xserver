@@ -61,6 +61,14 @@ public final class MiscHandlers {
     public void queryExtension(ClientConnection client, QueryExtension r) {
         String name = ascii(r.getName());
         Extension extension = server.extensions().byName(name);
+        // An extension an untrusted client may not see is not there, which is what a reference
+        // answers (F7): the answer and the request's opcode have to agree, or a client that checks
+        // first and then sends would be told yes and refused.
+        if (extension != null && !client.isTrusted()
+                && !io.github.oyzh1994.xserver.extension.SecurityExtension
+                        .visibleToUntrusted(extension)) {
+            extension = null;
+        }
         boolean present = extension != null;
         client.sendReply(QueryExtensionReply.builder()
                 .sequenceNumber(client.sequenceNumber())
@@ -73,7 +81,8 @@ public final class MiscHandlers {
 
     public void listExtensions(ClientConnection client, ListExtensions r) {
         List<Str> names = new ArrayList<>();
-        for (String name : server.extensions().names()) {
+        for (String name : client.isTrusted() ? server.extensions().names()
+                : visibleToUntrusted()) {
             names.add(Str.builder()
                     .name(ByteLists.immutable.of(name.getBytes(StandardCharsets.ISO_8859_1)))
                     .build());
@@ -82,6 +91,17 @@ public final class MiscHandlers {
                 .sequenceNumber(client.sequenceNumber())
                 .names(Lists.immutable.withAll(names))
                 .build());
+    }
+
+    /** The extensions an untrusted client may see - two on a reference, measured (F7). */
+    private List<String> visibleToUntrusted() {
+        List<String> names = new ArrayList<>();
+        for (Extension extension : server.extensions().all()) {
+            if (io.github.oyzh1994.xserver.extension.SecurityExtension.visibleToUntrusted(extension)) {
+                names.add(extension.name());
+            }
+        }
+        return names;
     }
 
     // ------------------------------------------------------------------
@@ -268,8 +288,12 @@ public final class MiscHandlers {
     // ------------------------------------------------------------------
 
     public void changeHosts(ClientConnection client, ChangeHosts r) {
-        // Host based access control is not enforced: the display is either open or requires a
-        // cookie, and adding hosts after startup would not change that.
+        // Host based access control is not what this server does: the display is either open or it
+        // wants a cookie, and a host rule would not change that. A reference answers `BadAccess`
+        // when access control is on and accepts the request when it is off (`-ac`), which is what
+        // this does - accepting it under --auth would tell a client its rule was added when nothing
+        // was (F7's probe measures both answers).
+        refuseHostRules();
     }
 
     public void listHosts(ClientConnection client, ListHosts r) {
@@ -290,6 +314,16 @@ public final class MiscHandlers {
     public void setAccessControl(ClientConnection client, SetAccessControl r) {
         if (r.getMode() != 0 && r.getMode() != 1) {
             throw ProtocolException.badValue(r.getMode());
+        }
+        refuseHostRules();
+    }
+
+    /** The refusal {@code ChangeHosts}/{@code SetAccessControl} deserve when a cookie is required. */
+    private void refuseHostRules() {
+        if (server.options().authRequired()) {
+            throw new ProtocolException(ProtocolException.ACCESS, 0,
+                    "host based access control is not available: this display authenticates with"
+                            + " cookies (--auth)");
         }
     }
 

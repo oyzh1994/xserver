@@ -18,6 +18,7 @@ these is meant to carry out, so keep them working.
 | the XDND pair | `tools/xdnd-source.py`, `tools/xdnd-target.py` | **a real GTK3 drag source and a real GTK3 drop target**, for the C5 work: run them as **two processes** (a drag inside one GTK process never uses XDND at all - GDK shortcuts it) and drive the gesture with XTEST. This is the "real toolkit on the other end" the C5 entry asked for: a Finder file dropped into a real GTK target on this server arrives, and an application answers the same conversation (`XdndStatus` and a `ConvertSelection` for the data, measured) - what it *cannot* do is open the file, because XDND hands over a host path (C5 has the measurement and `--drop-mount`). It prints every step, so a conversation that stops halfway is visible as the step that never arrived. Needs PyGObject + GTK3, which the VM has |
 | the host drag source | `tools/kit.sh HostDragSource <file> [x] [y]` (source: `src/test/java/io/github/oyzh1994/xserver/tools/HostDragSource.java`) | a macOS window that is `alwaysOnTop` and holds a real file: press on it and drag, and the platform starts a **real drag** - the gesture C5's host half needs, and the one a Finder-sourced scripted drag cannot produce here. It lives in the tools package like every other tool, so `mvn -o test-compile` keeps it compiling; **click it two or three times before dragging** or the first synthetic click is swallowed as the activation click (measured) |
 | the Xlib client for DOUBLE-BUFFER | `tools/xdbe-client.c` | a real Xlib client using `Xdbe`, built and run **on the VM** (`gcc xdbe-client.c -o /tmp/xdbe-client -lX11 -lXext`, needs `libxext-dev`): it is the one check `DbeProbe` cannot be, because it is **Xlib's own** readers that parse this server's `GetVisualInfo` reply and its own request builders that drive the swap - and it found a real difference the probe had not (a `GetVisualInfo` that names no drawable means "the display's screens", not "nothing"). Both servers print the same thing except the count of visuals, which is the screen's own |
+| the Xlib client for SECURITY | `tools/xsecurity-client.c` | a real Xlib client using XSecurity, built and run on the VM like the DBE one (`gcc xsecurity-client.c -o /tmp/xsecurity-client -lX11 -lXext`). It asks for an authorization, hands the token to a second connection through `XSetAuthorization`, checks that the root's pixels are refused while its own window is drawn and read, then revokes it and watches the connection end. It needs a display that checks credentials: `tools/xvfb.sh secure` (then `XAUTHORITY=<a file with that cookie> DISPLAY=192.168.22.147:97`) or this server with `--auth` |
 | the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window. **Both ends on the same point make it a click**, which is how D1's live check closes a window the way a user does (the close button is at the top left of the title bar, about 14,13 in from the bounds the first tool prints) |
 
 Run a tool with the test classpath - `tools/kit.sh` is that line with the classpath filled in, which
@@ -71,6 +72,15 @@ clang -o /tmp/type tools/host-type.c -framework ApplicationServices
 permission for whatever is at the top of the shell's parent chain (the same grant that screen
 recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its
 bottom-right corner resizes it, which is what C1's verification does.
+
+**A probe connects to the LAN, and this machine has a system proxy.** macOS's `java` launcher passes
+the system's HTTP and SOCKS proxy settings to the JVM, so on a machine where a proxy is running, a
+probe's socket goes to the proxy instead of to the display - which reads as `Malformed reply from
+SOCKS server` from a probe that has nothing to do with SOCKS, and only while that proxy happens to be
+up (measured 2026-09-28, twice, with two different misleading errors). Java's non-proxy list cannot
+save it: it matches host names and globs, not the `192.168.0.0/16` CIDR entry that would have covered
+this testbed. `RawXClient` therefore opens its socket with `Proxy.NO_PROXY`, and `tools/kit.sh` asks
+the JVM not to read the system settings either.
 
 **Do not `pkill` by a name the *test bed itself* is running under.** `pkill -9 -f dbus-daemon`, while
 setting up C10's input method on 2026-09-26, took the session bus down with it and EasyShell - still
@@ -318,6 +328,19 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   separates `Copied` (the buffer keeps what it had) from `Untouched` (the buffer gets the front's
   previous contents). It is **identical to the reference except the count of visuals**, which is the
   screen's own (7 here, 144 there) - see "What the sweep is expected to differ on".
+- `SecurityProbe` - SECURITY (F7), whose subject is a *connection* rather than a resource. It generates
+  an authorization, connects with it, and then sends the same battery of requests **from that
+  connection and from a trusted one**, printing both answers per request: an error that appears on both
+  is a request the probe got wrong, and only a difference is the trust level. That is what pins the six
+  `BadAccess` refusals, the two extensions an untrusted client may still see, and the fact that a
+  revoke closes the connection using it - none of which is in the specification to be read off. It
+  needs the reference to **check credentials** for the trust half to mean anything: `tools/xvfb.sh
+  secure` starts the second Xvfb for exactly that, and the probe's own (trusted) connection is
+  authenticated by passing the cookie: `SecurityProbe <host> <port> MIT-MAGIC-COOKIE-1 <hex>`. Both
+  pairs - the ordinary `-ac` one and the secured one - come out **identical** against this server, the
+  second with `--auth` on. **It never sends `SetAccessControl`**: that request changes the server for
+  every client, and on an `-ac` Xvfb it turns access control *on*, after which that reference refuses
+  the next run's connections (measured the hard way).
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -476,12 +499,13 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-28, after F5: 17 of the 26 probes identical.** The
+each server assigns for itself). **Full run 2026-09-28, after F7: 18 of the 27 probes identical.** The
 nine that differ are all deliberate, and each is measured rather than assumed - a run that reports one
 of these is a run that agrees with the reference, and a run that reports a *tenth* one is a finding.
-`RecordProbe` and `DbeProbe` are the two of this round: RECORD as this server streams it is
-byte-for-byte what the reference streams for the same gesture, element for element (the F2 entry's
-verify), and DOUBLE-BUFFER differs in `DbeProbe` by the one line below.
+`RecordProbe` and `SecurityProbe` are the two of this round that came out identical, and `DbeProbe` is
+the one that differs by a line: RECORD as this server streams it is byte-for-byte what the reference
+streams for the same gesture, element for element (the F2 entry's verify), and SECURITY agrees request
+for request on both the ordinary and the access-controlled pair (F7).
 
 - **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
   reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler

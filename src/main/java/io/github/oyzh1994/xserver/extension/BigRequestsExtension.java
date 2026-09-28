@@ -66,4 +66,13 @@ public final class BigRequestsExtension implements Extension {
                 .maximumRequestLength(MAXIMUM_REQUEST_LENGTH)
                 .build());
     }
+    /**
+     * Visible to an untrusted client: this extension only asks the server about itself, which is
+     * what a reference leaves visible to one (measured - see {@code SecurityExtension}).
+     */
+    @Override
+    public boolean visibleToUntrustedClients() {
+        return true;
+    }
+
 }

@@ -101,8 +101,8 @@ A prompt that starts a fresh session on this, verbatim:
 
 **§9 at the end of this file is a different kind of list**: capabilities this server does not have at
 all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. **Five of the seven were built on 2026-09-28 (F1, F2, F3, F4, F5);
-these are the two that remain, when the owner wants to schedule new work:**
+candidates rather than as items. **Six of the seven were built on 2026-09-28 (F1, F2, F3, F4, F5,
+F7); this is the one that remains, when the owner wants to schedule new work:**
 
 | id | candidate | size | why it is first (or last) |
 |----|-----------|------|---------------------------|
@@ -4680,12 +4680,12 @@ one by one:
   `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
   `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
 - **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way
-  (re-measured 2026-09-28, after F5 landed): the reference advertises **23** and this server **21**, of
-  which **20 are shared**. Three the reference has and this server does not - the table below - and one
+  (re-measured 2026-09-28, after F7 landed): the reference advertises **23** and this server **22**, of
+  which **21 are shared**. Two the reference has and this server does not - the table below - and one
   this server has and that reference build does not: **DPMS**, which is B7's work (the sweep documents
-  it as a deliberate difference). **Five of the seven rows below are now done**: the Generic Event
-  Extension, X-Resource, RECORD and DOUBLE-BUFFER are advertised and answered, so the list of absent
-  extensions is **three**, not seven - one declined (MIT-SHM) and two candidates (F6, F7).
+  it as a deliberate difference). **Six of the seven rows below are now done**: the Generic Event
+  Extension, X-Resource, RECORD, DOUBLE-BUFFER and SECURITY are advertised and answered, so the list
+  of absent extensions is **two**, not seven - one declined (MIT-SHM) and one candidate (F6).
 
 | extension | what it is | who asks | here |
 |-----------|-----------|----------|------|
@@ -4693,7 +4693,7 @@ one by one:
 | `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | ~~absent~~ **done 2026-09-28 (F4)** |
 | `MIT-SHM` | shared-memory images, so pixels do not travel over the socket | every toolkit probes it; all of them fall back | **absent, declined** - B8 has the reasons |
 | `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | ~~absent~~ **done 2026-09-28 (F2)** |
-| `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | **absent** |
+| `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | ~~absent~~ **done 2026-09-28 (F7)** |
 | `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | ~~absent~~ **done 2026-09-28 (F3)** |
 | `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | **absent** |
 
@@ -4720,8 +4720,8 @@ probe-and-fall-back this list is about, caught in the log (F5's entry has it). S
 capabilities a *different* client would use, and one of them was already asking, and the candidates
 below are
 ordered by **what breaks without it** - the first is the one to do if only one is done. **F1 through
-F5 were taken on 2026-09-28** and are full entries with a measurement behind them; the two that remain
-(F6, F7) are still candidates for the owner to schedule rather than items somebody has started.
+F5 and F7 were taken on 2026-09-28** and are full entries with a measurement behind them; **F6 is the
+one that remains**, and it is the weakest case of the seven by its own description
 
 ### [x] F1. `PresentNotifyMSC` and the SYNC alarms. **S-M** - done 2026-09-28, and one half was already in
 
@@ -5011,12 +5011,83 @@ video hardware behind the host window, so what would be built is a software scal
 xcb`) already falls back to that path today. It is listed because it is in the reference's list, not
 because anything breaks without it.
 
-### F7. `SECURITY` (XSecurity). **M**
+### [x] F7. `SECURITY` (XSecurity). **M** - done 2026-09-28
 
-Untrusted connections: a client can be given a restricted connection it cannot read the keyboard or
-other clients' windows through. It interacts with `--auth` (A7) and it is a real answer to "how do I run
-a client I do not trust", which today is "you do not". **Verify**: a client marked untrusted is refused
-the requests the extension says it must be, and can still draw its own window.
+**What it is.** The extension whose subject is not a resource but a **connection**: a trusted client
+asks for an authorization - a token - and hands it to a client it does not trust; the connection that
+client makes with the token is *untrusted*, and a restricted set of requests is refused on it. It is
+the real answer to "how do I run a client I do not trust", which without it is "you do not".
+
+**Current.** All three requests (`SecurityQueryVersion` 1.0 to every client that asks,
+`SecurityGenerateAuthorization`, `SecurityRevokeAuthorization`), the one event
+(`AuthorizationRevoked`), and the enforcement: an untrusted connection's refused requests, the
+extensions it cannot see, and the way a revoke ends its connections. There is **no generated protocol
+module for SECURITY** in the x11 library, so the requests, the replies and the event are hand written,
+and `SecurityTest` (seven cases) pins them.
+
+**What is not guessable, measured with `tools/SecurityProbe` against a reference with access control
+on.** The probe generates a token, connects with it, and sends the **same battery of requests from
+that connection and from a trusted one** - because an error that appears on *both* is a request the
+probe got wrong, and only a difference between the two is the trust level. The first version could not
+tell them apart, which is how a malformed request reads as a security rule.
+
+- **A token is an ordinary credential.** Two names that look right are not: the specification's prose
+  suggests `SECURITY` and the extension's own header defines `XSecurityAuthorizationName` as
+  "XC-QUERY-SECURITY-1", and a reference refuses **both** at the setup ("Authorization protocol not
+  supported by server"). `SecurityGenerateAuthorization` answers with the name the authorization was
+  created for (usually `MIT-MAGIC-COOKIE-1`) and a fresh sixteen byte cookie, and it is the trust level
+  stored with it that makes the connection untrusted.
+- **A generated authorization is *untrusted* unless it says otherwise**: the trust level is an
+  attribute (mask bit `XSecurityTrustLevel` with value `XSecurityClientTrusted`), and the first token
+  this project generated - with no attributes - produced a connection that could read the root's
+  pixels no more than the list below allows.
+- **Refused `BadAccess`, and only when the request names a window the client does not own**:
+  `GetImage`, `GetProperty`, `ChangeProperty`, `ConfigureWindow`, `SetInputFocus` - and the root is not
+  the client's. `SetSelectionOwner` is refused the same way whatever it names, because a selection is
+  shared state rather than a drawable.
+- **The extension itself is hidden**: an untrusted client's `ListExtensions` answers with **two**
+  extensions where a trusted client sees twenty three - `BIG-REQUESTS` and `XC-MISC` - `QueryExtension`
+  says "not present" for every other, and a request to a hidden extension's opcode is `BadRequest`
+  rather than `BadAccess`. That is what SECURITY's own requests get from an untrusted connection too.
+- **What it may still do is as measured**: draw its own windows and pixmaps, read its own pixels,
+  properties and geometry, and ask about *geometry* anywhere - `GetWindowAttributes`, `QueryTree` and
+  `GetGeometry` on any window are answered, which is what a toolkit needs to place itself.
+  `GrabServer`, `SendEvent`, `GetKeyboardMapping`, `GetMotionEvents` and `ChangeHosts` are accepted by
+  that reference, and they are accepted here for the same reason: a rule the reference does not have
+  is a difference a client can see. (What an *earlier* build of the probe measured for `ChangeHosts`
+  and `SetAccessControl` is in the entry's history: accepted by an `-ac` reference and refused
+  `BadAccess` by one with an authority file - and `SetAccessControl` is no longer sent at all, because
+  it changes the server for every client *and* turns access control back on in an `-ac` Xvfb, after
+  which that reference refuses the next run's connections.)
+- **A revoke closes the connections that use it**: the token cannot authenticate again (the setup
+  refuses it, as a wrong cookie would be), and a client still connected with it is disconnected - told
+  with `AuthorizationRevoked` only if its authorization asked for that event mask, which is what the
+  reference did with the mask unset.
+- **A token is honoured with or without `--auth`.** Measured on an `-ac` reference: it still treats a
+  connection that offers a generated token as untrusted, because `-ac` means "never refuse a client
+  for a missing cookie", not "ignore the credentials a client does offer". `--auth` decides only
+  whether a client that offers *nothing* is let in.
+
+**Verify**: `tools/SecurityProbe` against a reference with access control on (`tools/xvfb.sh secure`
+starts one on `:97` with a fixed cookie) and against this server with `--auth` - **identical line for
+line** - and the same probe against the ordinary `-ac` pair, also identical; plus the **real Xlib
+client** (`tools/xsecurity-client.c`: `XSecurityGenerateAuthorization`, the token handed to a second
+connection through `XSetAuthorization`, the root's pixels refused, its own window drawn and read, the
+revoke closing the connection) run against both servers with the same answers; plus `SecurityTest`'s
+seven cases and `mvn -o test`.
+
+**Live on `.147` (2026-09-28)**, the round's regression, server on the Mac in the mode the clients use
+(`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders** (menu bar, host
+list, welcome page), **typing lands** (its search box showed `al` and filtered the list to
+`aliyun SSH`) and **its context menu survives the out-and-back gesture**. Then the check this item
+adds: the **Xlib `XSecurity` client** run against that live server *while EasyShell was connected*
+asked for a token, connected with it, was **refused the root's pixels** (in the log as `GetImage
+refused: the connection is untrusted and 0x2 is not its own`, error 10 = `BadAccess`), drew and read
+its own window, and had its connection closed when the authorization was revoked - and EasyShell, a
+different connection with its own authorization, never noticed. **termora renders** as before, and the
+only other rejections in the log are the known `window 0x0` startup probes. `mvn test` **432/432**
+(425 plus this item's seven), and the headless run **432 with its 2 toolkit skips, BUILD SUCCESS**;
+the sweep is **18 of 27 probes identical**, `SecurityProbe` among them.
 
 **Not intended, and the reason, so that a later session does not size them as gaps**: `DRI3`/`DRI2`
 and `XFree86-VidMode.DGA` (there is no GPU behind the host window, and B6 measured that a GL client

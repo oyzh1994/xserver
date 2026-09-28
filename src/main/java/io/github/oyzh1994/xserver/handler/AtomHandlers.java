@@ -98,6 +98,8 @@ public final class AtomHandlers {
 
     public void changeProperty(ClientConnection client, ChangeProperty r) {
         XWindow window = window(client, r.getWindow());
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireOwned(client, window,
+                "ChangeProperty");
         int property = r.getProperty();
         if (property == AtomTable.NONE) {
             throw ProtocolException.badAtom(property);
@@ -151,6 +153,8 @@ public final class AtomHandlers {
 
     public void getProperty(ClientConnection client, GetProperty r) {
         XWindow window = window(client, r.getWindow());
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireOwned(client, window,
+                "GetProperty");
         XProperty property = window.properties().get(r.getProperty());
         if (property == null) {
             // A missing property is not an error: the reply carries type None and no data.
@@ -399,6 +403,11 @@ public final class AtomHandlers {
      * sending both.
      */
     public void setSelectionOwner(ClientConnection client, SetSelectionOwner r) {
+        // A selection is shared state rather than a drawable, so this is refused outright for an
+        // untrusted connection: a reference refuses it BadAccess even when the window it names is
+        // the client's own (measured).
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireTrusted(client,
+                "SetSelectionOwner");
         String name = selectionName(r.getSelection());
         XWindow owner = r.getOwner() == 0 ? null : window(client, r.getOwner());
         if (r.getTime() != 0 && !isNewerThanCurrent(r.getTime())) {

@@ -115,6 +115,15 @@ public final class RequestDispatcher {
             throw new ProtocolException(ProtocolException.REQUEST, opcode & 0xFF,
                     "unknown extension opcode " + (opcode & 0xFF));
         }
+        if (!io.github.oyzh1994.xserver.extension.SecurityExtension.visibleToUntrusted(extension)
+                && !client.isTrusted()) {
+            // An extension an untrusted client may not see is not merely refused: it is not there,
+            // and the answer is the one a client gets for an opcode that means nothing to this
+            // server. That is what a reference answers for SECURITY's own requests from an untrusted
+            // connection, and for every extension but BIG-REQUESTS and XC-MISC (measured for F7).
+            throw new ProtocolException(ProtocolException.REQUEST, opcode & 0xFF,
+                    "unknown extension opcode " + (opcode & 0xFF));
+        }
         XRequest request;
         try {
             request = extension.decodeRequest(minorOpcode & 0xFF, in);

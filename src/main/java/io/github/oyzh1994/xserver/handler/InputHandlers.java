@@ -209,6 +209,11 @@ public final class InputHandlers {
             // following the pointer. Measured against a reference server with tools/FocusProbe.
             window = window(client, focus);
         }
+        // The focus is machine-wide, so an untrusted connection may not move it onto a window that
+        // is not its own - which includes the root (F7, measured: BadAccess). PointerRoot names no
+        // window and is left alone, as a reference leaves it.
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireOwned(client,
+                pointerRoot ? null : window, "SetInputFocus");
         server.inputFor(client).setInputFocus(window, r.getRevertTo(), pointerRoot);
     }
 

@@ -60,6 +60,20 @@ public final class ClientConnection implements Runnable {
     private boolean bigRequestsEnabled;
     private boolean closed;
 
+    /**
+     * Whether this connection is trusted, which every connection is unless it authenticated with an
+     * authorization SECURITY generated as untrusted (F7).
+     *
+     * <p>Untrusted is a property of the *connection*, not of a request: what such a connection may do
+     * is refused at the requests that would read or change somebody else's drawable, and the
+     * extensions that are hidden from it are hidden everywhere ({@code ListExtensions},
+     * {@code QueryExtension}, and their opcodes).
+     */
+    private volatile boolean trusted = true;
+
+    /** The authorization this connection authenticated with, or zero; what a revoke acts on. */
+    private volatile int authorizationId;
+
     private short sequenceNumber;
     private byte currentOpcode;
     private byte currentMinorOpcode;
@@ -164,6 +178,25 @@ public final class ClientConnection implements Runnable {
 
     public boolean isShuttingDown() {
         return shuttingDown;
+    }
+
+    /** True unless this connection authenticated with an untrusted authorization. */
+    public boolean isTrusted() {
+        return trusted;
+    }
+
+    /**
+     * Marks this connection as belonging to an authorization: {@code trusted} is the level the
+     * authorization was created with, and the id is what {@code SecurityRevokeAuthorization} acts on.
+     */
+    public void authenticatedBy(int authorizationId, boolean trusted) {
+        this.authorizationId = authorizationId;
+        this.trusted = trusted;
+    }
+
+    /** The authorization this connection authenticated with, or zero. */
+    public int authorizationId() {
+        return authorizationId;
     }
 
     public boolean isClosed() {

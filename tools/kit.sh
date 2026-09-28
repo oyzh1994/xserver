@@ -31,5 +31,16 @@ fi
 
 TOOL="$1"
 shift
-exec java -cp "$HERE/target/test-classes:$HERE/target/classes:$(cat "$HERE/target/tools-cp.txt")" \
+# **No proxies.** Every probe talks to a server on the LAN (the Mac's own :61, or the VM's :98), and
+# this machine has a system HTTP/SOCKS proxy configured: a JVM that picks that up sends the connection
+# to the proxy instead, which shows up as "Malformed reply from SOCKS server" from a probe that has
+# nothing to do with SOCKS - and only while the proxy happens to be running. The non-proxy list cannot
+# save it either: Java matches host names and globs, not the `192.168.0.0/16` CIDR entry that would
+# have covered the testbed.
+# The proxies are bypassed in the code rather than here - `RawXClient` opens its socket with
+# `Proxy.NO_PROXY`, which is the only switch that works against macOS's launcher passing the system's
+# SOCKS proxy to the JVM (see tools/README.md) - but asking the JVM not to look at the system's
+# settings costs nothing and covers anything else that opens a socket.
+exec java -Djava.net.useSystemProxies=false \
+    -cp "$HERE/target/test-classes:$HERE/target/classes:$(cat "$HERE/target/tools-cp.txt")" \
     "io.github.oyzh1994.xserver.tools.$TOOL" "$@"

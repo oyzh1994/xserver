@@ -119,4 +119,13 @@ public final class XCMiscExtension implements Extension {
                 .ids(IntLists.immutable.ofAll(ids))
                 .build());
     }
+    /**
+     * Visible to an untrusted client: this extension only asks the server about itself, which is
+     * what a reference leaves visible to one (measured - see {@code SecurityExtension}).
+     */
+    @Override
+    public boolean visibleToUntrustedClients() {
+        return true;
+    }
+
 }

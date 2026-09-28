@@ -103,7 +103,8 @@ io.github.oyzh1994.xserver
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
                   XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS, GLX, RENDER, Composite, SYNC,
-                  Present, X-Resource, RECORD, DOUBLE-BUFFER and the Generic Event Extension
+                  Present, X-Resource, RECORD, DOUBLE-BUFFER, SECURITY and the Generic Event
+                  Extension
 ```
 
 Three decisions shape everything else:
@@ -438,6 +439,16 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   starts, and both a refusal *and* an error would leave it worse off than an answer it can read), there are no providers (`GetProviders` answers
   zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
   `xrandr --prop` prints no property lines.
+- **SECURITY, for running a client you do not trust.** A trusted client asks for an authorization
+  and hands the token to the client it does not trust; the connection that one makes is *untrusted* -
+  it draws its own windows and asks the questions every client asks, and it is refused the pixels,
+  properties, configuration and focus of windows that are not its own, refused the selections, and it
+  cannot even see the extensions a trusted client can (a reference answers its `ListExtensions` with
+  two where a trusted client sees twenty three). Revoking the authorization ends the connections using
+  it. Measured against a reference with access control on (`tools/xvfb.sh secure`), with
+  `tools/SecurityProbe`, and checked through Xlib's own `XSecurity` client
+  (`tools/xsecurity-client.c`). **A token works with or without `--auth`**: `-ac` means "never refuse a
+  client for a missing cookie", not "ignore the credentials it does offer".
 - **DOUBLE-BUFFER, so a client can draw off screen and show the result in one step.** A client
   allocates a back buffer *on* a window, draws into it with the ordinary requests - a back buffer is a
   drawable - and `SwapBuffers` makes what it drew the window's contents, which is what every toolkit's

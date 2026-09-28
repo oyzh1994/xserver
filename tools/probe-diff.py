@@ -52,6 +52,11 @@ SUBSTITUTIONS = [
     # size a probe prints so that only this one is normalised away; `release=` is a hex literal and
     # the role mapping below already handles it.
     (r"setupBytes=\d+", "setupBytes=N"),
+    # SECURITY hands out authorization ids from a counter of its own, and a probe prints the id it
+    # was given - which is a number the *server* assigned, like an atom's or a cursor's, and not a
+    # decision a client can compare.
+    (r"authId=\d+", "authId=?"),
+    (r"\(id=\d+", "(id=?"),
     (r"setupUnits=\d+", "setupUnits=N"),
 ]
 

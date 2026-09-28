@@ -243,6 +243,9 @@ public final class XServer {
 
     private io.github.oyzh1994.xserver.extension.RandRExtension randrExtension;
 
+    /** SECURITY, which the connection setup needs: a token is checked there, not at a request. */
+    private io.github.oyzh1994.xserver.extension.SecurityExtension securityExtension;
+
     /** The display's idle state, which the core screen-saver requests and MIT-SCREEN-SAVER share. */
     public io.github.oyzh1994.xserver.display.ScreenSaverState screenSaver() {
         return screenSaver;
@@ -348,6 +351,10 @@ public final class XServer {
         extensions.register(new io.github.oyzh1994.xserver.extension.RecordExtension(), 0, 1);
         // DOUBLE-BUFFER defines no events and one error, BadBuffer, which is F5's extension.
         extensions.register(new io.github.oyzh1994.xserver.extension.DbeExtension(), 0, 1);
+        // SECURITY defines one event, AuthorizationRevoked, and no errors of its own (F7): what an
+        // untrusted client is refused is a core BadAccess, which is what a reference answers.
+        this.securityExtension = extensions.register(
+                new io.github.oyzh1994.xserver.extension.SecurityExtension(), 1, 0);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }
@@ -733,6 +740,11 @@ public final class XServer {
 
     public int defaultFontId() {
         return defaultFontId;
+    }
+
+    /** SECURITY's authorizations, for the connection setup, or null on a server built without it. */
+    public io.github.oyzh1994.xserver.extension.SecurityExtension security() {
+        return securityExtension;
     }
 
     public ExtensionRegistry extensions() {

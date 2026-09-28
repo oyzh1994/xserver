@@ -45,22 +45,59 @@ public final class RawXClient implements AutoCloseable {
      * server on a different machine answers the same questions, and the answers are the point.
      */
     public static RawXClient connect(String host, int port) throws IOException {
-        Socket socket = new Socket();
+        return connect(host, port, null, null);
+    }
+
+    /**
+     * The same, offering credentials: the setup request carries an authorization protocol's name and
+     * its data, and a server with access control on either accepts them or refuses the connection.
+     *
+     * <p>SECURITY is what needs this: a client it is handed a token for offers that token under the
+     * protocol name {@code XC-QUERY-SECURITY-1} - the extension's own {@code
+     * XSecurityAuthorizationName}, and *not* "SECURITY", which a reference refuses outright - and the
+     * connection it gets is an *untrusted* one: a different kind of connection, not a different
+     * request (F7). A null name offers nothing.
+     */
+    public static RawXClient connect(String host, int port, String authName, byte[] authData)
+            throws IOException {
+        // **Proxy.NO_PROXY**, and it is not optional: macOS's java launcher reads the system proxy
+        // settings and passes them to the JVM, so on a machine with a SOCKS proxy running, a plain
+        // `new Socket()` connects to the proxy instead of to the display - which is a probe failure
+        // that reads as "Malformed reply from SOCKS server" and only happens while that proxy is up.
+        Socket socket = new Socket(java.net.Proxy.NO_PROXY);
         socket.connect(new InetSocketAddress(host, port), 5000);
         socket.setSoTimeout(5000);
         DataInputStream in = new DataInputStream(socket.getInputStream());
         OutputStream out = socket.getOutputStream();
 
-        byte[] setup = new byte[12];
+        byte[] name = authName == null ? new byte[0]
+                : authName.getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+        byte[] data = authData == null ? new byte[0] : authData;
+        int namePadded = (name.length + 3) & ~3;
+        int dataPadded = (data.length + 3) & ~3;
+        byte[] setup = new byte[12 + namePadded + dataPadded];
         setup[0] = 'l';                             // little endian client
         setup[2] = 11;                              // protocol major
+        writeShort(setup, 6, name.length);
+        writeShort(setup, 8, data.length);
+        System.arraycopy(name, 0, setup, 12, name.length);
+        System.arraycopy(data, 0, setup, 12 + namePadded, data.length);
         out.write(setup);
         out.flush();
 
         byte[] header = new byte[8];
         in.readFully(header);
         if ((header[0] & 0xFF) != 1) {
-            throw new IOException("the connection setup was refused");
+            // A refusal is the status byte, the reason's length in bytes and in words, and then the
+            // reason itself - not the 32 byte record a reply has, so it is read as its own shape and
+            // reading it as a reply would take the reason's first bytes for a sequence number.
+            int reasonLength = header[1] & 0xFF;
+            int words = (header[6] & 0xFF) | ((header[7] & 0xFF) << 8);
+            byte[] body = new byte[Math.max(0, words * 4)];
+            in.readFully(body);
+            throw new IOException("the connection setup was refused: "
+                    + new String(body, 0, Math.min(reasonLength, body.length),
+                            java.nio.charset.StandardCharsets.ISO_8859_1));
         }
         int length = (header[6] & 0xFF) | ((header[7] & 0xFF) << 8);
         byte[] rest = new byte[length * 4];
@@ -276,6 +313,25 @@ public final class RawXClient implements AutoCloseable {
         writeInt(request, 4, window);
         send(request);
         return readInt(readReply(), 8);
+    }
+
+    /**
+     * The extension names this client's {@code ListExtensions} answers with, which is what a server
+     * that hides extensions from an untrusted client (SECURITY, F7) filters.
+     */
+    public java.util.List<String> listExtensions() throws IOException {
+        send(new byte[]{99, 0, 1, 0});
+        byte[] reply = readReply();
+        int count = reply[1] & 0xFF;
+        java.util.List<String> names = new java.util.ArrayList<>();
+        int at = 32;
+        for (int i = 0; i < count; i++) {
+            int length = reply[at] & 0xFF;
+            names.add(new String(reply, at + 1, length,
+                    java.nio.charset.StandardCharsets.ISO_8859_1));
+            at += 1 + length;
+        }
+        return names;
     }
 
     /** Looks up an extension's major opcode, or 0 when the server does not have it. */

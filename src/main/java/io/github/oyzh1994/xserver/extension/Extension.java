@@ -73,4 +73,19 @@ public interface Extension {
     default boolean alwaysPresent() {
         return true;
     }
+
+    /**
+     * Whether an <b>untrusted</b> client may see this extension at all - in {@code ListExtensions},
+     * in {@code QueryExtension}, or by sending its requests.
+     *
+     * <p>Almost nothing may: a reference with access control on answers an untrusted client's
+     * {@code ListExtensions} with two extensions where a trusted client sees twenty three
+     * ({@code BIG-REQUESTS} and {@code XC-MISC}, both of which only ask about the server itself),
+     * says "not present" for every other, and answers a request to a hidden extension's opcode with
+     * {@code BadRequest}. That is the SECURITY extension's own rule applied to itself, and it is
+     * measured rather than derived - see {@link SecurityExtension}.
+     */
+    default boolean visibleToUntrustedClients() {
+        return false;
+    }
 }

@@ -658,7 +658,12 @@ public final class WindowHandlers {
     // ------------------------------------------------------------------
 
     public void configure(ClientConnection client, ConfigureWindow r) {
-        applyConfigure(window(client, r.getWindow()), r, client);
+        XWindow target = window(client, r.getWindow());
+        // Moving or resizing a window is not an untrusted connection's business when the window is
+        // not its own, the root included (F7, measured: BadAccess).
+        io.github.oyzh1994.xserver.extension.SecurityExtension.requireOwned(client, target,
+                "ConfigureWindow");
+        applyConfigure(target, r, client);
     }
 
     /**
