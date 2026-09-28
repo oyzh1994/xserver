@@ -943,7 +943,17 @@ public final class XInputExtension implements Extension {
      */
     private Xi2Event build(ClientConnection client, com.github.moaxcp.x11.protocol.XEvent core,
                            int eventNumber, int device) {
-        Xi2Event.Builder event = Xi2Event.builder(client, majorOpcode())
+        // **The event's shape follows its number, not the server's convenience.** A key, a button and
+        // a motion are device events; enter, leave and focus are not, and a reference sends them
+        // sixteen and forty-four bytes shorter with their fields somewhere else entirely. Measured
+        // 2026-09-29: 120 against 76 for a crossing and 104 for a focus, and every field from 48 on
+        // in a different place - see Xi2Event.Shape, which has the offsets.
+        Xi2Event.Shape shape = switch (eventNumber) {
+            case XInputMasks.ENTER, XInputMasks.LEAVE -> Xi2Event.Shape.CROSSING;
+            case XInputMasks.FOCUS_IN, XInputMasks.FOCUS_OUT -> Xi2Event.Shape.FOCUS;
+            default -> Xi2Event.Shape.DEVICE;
+        };
+        Xi2Event.Builder event = Xi2Event.builder(client, majorOpcode(), shape)
                 .evtype(eventNumber)
                 .device(device)
                 .source(device);
@@ -952,6 +962,11 @@ public final class XInputExtension implements Extension {
         int eventX = 0;
         int eventY = 0;
         int detail = 0;
+        // Only a crossing has these two, and only a crossing's shape has room for them: a device
+        // event's byte 18 is the high half of its own detail.
+        byte crossingMode = 0;
+        boolean crossingFocus = false;
+        boolean sameScreen = true;
         int time;
         int root;
         int window;
@@ -1029,6 +1044,11 @@ public final class XInputExtension implements Extension {
                 eventX = e.getEventX();
                 eventY = e.getEventY();
                 state = e.getState();
+                crossingMode = e.getMode();
+                // The core crossing packs the two flags a client reads: same-screen in bit 1 and
+                // "this window is the focus window" in bit 0.
+                crossingFocus = (e.getSameScreenFocus() & 0x01) != 0;
+                sameScreen = (e.getSameScreenFocus() & 0x02) != 0;
             }
             case com.github.moaxcp.x11.protocol.xproto.LeaveNotifyEvent e -> {
                 time = e.getTime();
@@ -1041,17 +1061,26 @@ public final class XInputExtension implements Extension {
                 eventX = e.getEventX();
                 eventY = e.getEventY();
                 state = e.getState();
+                crossingMode = e.getMode();
+                crossingFocus = (e.getSameScreenFocus() & 0x01) != 0;
+                sameScreen = (e.getSameScreenFocus() & 0x02) != 0;
             }
             // A core FocusIn has no time and no root - the event is thirty two bytes of type,
-            // detail, sequence and window - where the XI2 one has both. The time is the server's own
-            // clock, which is the same one the crossing and key events carry, and the root is the
-            // root of the window the event names.
+            // detail, sequence and window - where the XI2 one has both, and the pointer's position
+            // as well (a reference sends the pointer's coordinates in a focus event, measured). The
+            // time is the server's own clock, which is the same one the crossing and key events
+            // carry, and the root is the root of the window the event names.
             case com.github.moaxcp.x11.protocol.xproto.FocusInEvent e -> {
                 time = server.events().time();
                 root = rootOf(e.getEvent());
                 window = e.getEvent();
                 child = 0;
                 detail = e.getDetail();
+                int[] at = pointerAt(window);
+                rootX = at[0];
+                rootY = at[1];
+                eventX = at[2];
+                eventY = at[3];
             }
             case com.github.moaxcp.x11.protocol.xproto.FocusOutEvent e -> {
                 time = server.events().time();
@@ -1059,12 +1088,17 @@ public final class XInputExtension implements Extension {
                 window = e.getEvent();
                 child = 0;
                 detail = e.getDetail();
+                int[] at = pointerAt(window);
+                rootX = at[0];
+                rootY = at[1];
+                eventX = at[2];
+                eventY = at[3];
             }
             default -> {
                 return null;
             }
         }
-        return event
+        Xi2Event.Builder built = event
                 .time(time)
                 .detail(detail)
                 .root(root)
@@ -1072,8 +1106,38 @@ public final class XInputExtension implements Extension {
                 .child(child)
                 .rootPosition(rootX, rootY)
                 .windowPosition(eventX, eventY)
-                .modifiers(state)
-                .build();
+                .modifiers(state);
+        if (shape == Xi2Event.Shape.CROSSING) {
+            // A crossing carries its mode and detail as two bytes where a device event's detail is a
+            // word, and the two flags a client reads off it: same-screen, and whether this window is
+            // the focus window - which is what tells a toolkit the pointer arrived in the window it
+            // already had the keyboard in.
+            built.crossing(crossingMode).sameScreen(sameScreen).focus(crossingFocus);
+        } else if (shape == Xi2Event.Shape.FOCUS) {
+            // A reference sets same-screen and leaves `focus` clear on a focus event itself
+            // (measured), where a crossing beside it carries both.
+            built.sameScreen(true).focus(false);
+        }
+        return built.build();
+    }
+
+    /**
+     * The pointer's position, twice, for a focus event: on the root and in the window's coordinates.
+     *
+     * <p>A core focus event carries no coordinates and the XI2 one does, so they are read off the
+     * pointer here - which is what a reference sends (measured: its focus event had the pointer's
+     * own position in both fields, the same numbers its crossing for the same gesture carried).
+     * Answers zeros when the window is gone, which a focus pair can still name.
+     */
+    private int[] pointerAt(int windowId) {
+        io.github.oyzh1994.xserver.resource.XResource resource = server.resources().get(windowId);
+        if (!(resource instanceof XWindow window)) {
+            return new int[]{0, 0, 0, 0};
+        }
+        io.github.oyzh1994.xserver.input.InputState input = server.inputFor(window.screen());
+        int x = input.pointerX();
+        int y = input.pointerY();
+        return new int[]{x, y, x - window.absoluteX(), y - window.absoluteY()};
     }
 
     // ------------------------------------------------------------------

@@ -2245,6 +2245,37 @@ passive pair, which with one master pointer are the core grabs with an XI2 face.
 implies, and it is the one item where a half-finished state is *worse* than not starting: the failure
 mode is not "a client loses gestures", it is "a forwarded GTK application's menus stop working".
 
+**And the fixed part is not one shape: enter, leave and focus are different events** (found
+2026-09-29, chasing a report that EasyShell's search box "sometimes does not get the focus although
+typing works"). The eighty byte fixed part measured above is the **device** event's - a key, a button,
+a motion. A reference sends:
+
+```
+  key/button/motion   120 bytes   fixed 80, buttons_len 8 and valuators_len 2
+  enter/leave          76 bytes   fixed 72, buttons_len 1
+  focus in/out        104 bytes   fixed 72, buttons_len 8
+```
+
+with fields from offset 48 on in different places: `same_screen` at 48 and `focus` at 49 where a
+device event has its two length words, `buttons_len` at 50 where a device event has `valuators_len`,
+the modifier state as four CARD32 from 52 where a device event has its source id, four group bytes at
+68, and the button mask at 72 where a device event's is at 80 (a crossing also carries `sourceid` and
+its `mode`/`detail` as two bytes at 16-19, where a device event's detail is a word and a focus event's
+detail is a word again).
+
+This server sent all three in the device shape, which is the nastiest kind of wrong: the length field
+is honest so the stream stays in step, the event names the right window and device, and every field a
+reader takes from the second half lands two or eight bytes from where it was written - so **GDK read
+the server's `buttons_len` as `same_screen` and its mask eight bytes late**, and the window never
+looked focused: no focus ring, no caret, while the keys went on arriving (which is what hid it: the
+one thing that visibly worked was typing). Measured A/B by forcing the shape back: **1 of 3 starts
+showed the focus ring without the fix, 4 of 4 with it**, and the tap capture of our own stream has the
+same three sizes as Xvfb's. `Xi2Event.Shape` holds the layouts, `XInputTest.aCrossingAndAFocusEvent-
+HaveTheShapesAReferenceSends` pins them field by field, and one small difference is left and recorded:
+a **focus event's `detail`** is the core event's (0 for a change out of the root window, `Ancestor`)
+where a reference's XI2 event said 3 (`Nonlinear`) - measured in one case only, so it is written down
+rather than guessed at.
+
 ---
 
 ### [x] B5. DAMAGE, **every window keeps its own pixels**, and **Composite, Present and SYNC** - done 2026-09-27. **L**

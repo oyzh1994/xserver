@@ -86,6 +86,16 @@ the toolkit's own struct (`XWindow.handleButtonPressRelease` logs `XButtonEvent 
 button = ...`), which is how backlog A18's "Nonexistent button 16" was pinned to a *reading* of ours
 rather than to our bytes.
 
+**The same relay is how two servers' *events* are compared byte for byte, which is what found the XI2
+shapes** (2026-09-29). Point the *same* client at `tap.py <listen> <this-server>` on one run and at a
+second relay in front of the reference on another (`tap.py 6097 6098` **on the VM**, since the
+reference is there), drive the same gesture, and decode both logs as messages: a reply is 32 bytes
+plus four per length unit, an event 32, and a `GenericEvent` 32 plus four per its own length field -
+while **the first message on a connection, the setup reply, is the one with an eight byte header**
+(its length is a CARD16 at 6). The line to compare is the size: an XI2 key is 120 bytes, a crossing 76
+and a focus event 104, and a server that sends all of them at 120 is one whose fields sit where a
+toolkit does not read them.
+
 `winlist` needs no permission; `drag` posts events into the session and so needs the *Accessibility*
 permission for whatever is at the top of the shell's parent chain (the same grant that screen
 recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its

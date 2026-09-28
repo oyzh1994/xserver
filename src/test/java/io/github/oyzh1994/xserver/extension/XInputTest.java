@@ -245,6 +245,76 @@ class XInputTest {
         assertEquals(1, RawXClient.readInt(wire, 16), "the detail is the button");
     }
 
+    /**
+     * A crossing and a focus event are <b>not</b> device events, and a reference sends each of the
+     * three in its own shape.
+     *
+     * <p>Measured 2026-09-29 by tapping a byte-transparent relay in front of Xvfb while a real
+     * client started (`tools/tap.py`, with the summary in `tools/README.md`): a key is 120 bytes, an
+     * {@code EnterNotify} 76 and a {@code FocusIn} 104, and from offset 48 on the fields are in
+     * different places - {@code same_screen} at 48 and {@code focus} at 49 where a device event has
+     * its two lengths, {@code buttons_len} at 50 where a device event has {@code valuators_len}, the
+     * modifier state as four CARD32 from 52 where a device event has its source id, and the button
+     * mask at 72 where a device event's is at 80.
+     *
+     * <p>This server sent all three in the device shape, which left a toolkit reading this server's
+     * two length fields as its flags and its mask eight bytes late - the visible cost was a window
+     * that never looked focused in a forwarded application. Each assertion below is a field of the
+     * reference's own event.
+     */
+    @Test
+    void aCrossingAndAFocusEventHaveTheShapesAReferenceSends() {
+        Xi2Event crossing = Xi2Event.builder(false, (short) 7, 130, Xi2Event.Shape.CROSSING)
+                .evtype(7)
+                .device(2)
+                .source(2)
+                .time(1000)
+                .detail(0)
+                .root(0x1ff)
+                .event(0x200001)
+                .child(0)
+                .rootPosition(188, 82)
+                .windowPosition(188, 49)
+                .crossing((byte) 0)
+                .sameScreen(true)
+                .focus(true)
+                .modifiers(0)
+                .build();
+        byte[] wire = crossing.wire();
+        assertEquals(76, wire.length, "seventy-two bytes of fixed part and one word of button mask");
+        assertEquals(11, RawXClient.readInt(wire, 4), "length is the size in words, less eight");
+        assertEquals(2, RawXClient.readShort(wire, 16), "sourceid, where a device event has none");
+        assertEquals(1, wire[48] & 0xFF, "same_screen, where a device event's buttons_len sits");
+        assertEquals(1, wire[49] & 0xFF, "focus");
+        assertEquals(1, RawXClient.readShort(wire, 50), "buttons_len");
+        assertEquals(188 << 16, RawXClient.readInt(wire, 32), "root x as FP1616");
+
+        Xi2Event focus = Xi2Event.builder(false, (short) 7, 130, Xi2Event.Shape.FOCUS)
+                .evtype(10)
+                .device(3)
+                .source(3)
+                .time(1000)
+                .detail(3)
+                .root(0x1ff)
+                .event(0x200001)
+                .child(0)
+                .rootPosition(188, 82)
+                .windowPosition(188, 49)
+                .sameScreen(true)
+                .focus(false)
+                .modifiers(0)
+                .build();
+        wire = focus.wire();
+        assertEquals(104, wire.length, "seventy-two bytes of fixed part and eight words of button mask");
+        assertEquals(18, RawXClient.readInt(wire, 4), "length is the size in words, less eight");
+        assertEquals(3, RawXClient.readInt(wire, 16), "the detail is a word here, where a crossing has "
+                + "its source id, mode and detail in those four bytes");
+        assertEquals(1, wire[48] & 0xFF, "same_screen");
+        assertEquals(0, wire[49] & 0xFF, "focus, which a reference leaves clear on a focus event");
+        assertEquals(8, RawXClient.readShort(wire, 50), "buttons_len: eight words, where a crossing "
+                + "sends one");
+    }
+
     @Test
     void aRequestWithNoReplyIsNotAnswered() throws IOException {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {

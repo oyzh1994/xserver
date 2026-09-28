@@ -15,8 +15,8 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **449 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 449 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **450 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 450 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
@@ -60,6 +60,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 2.7 | auto-repeat: the delay, the rate, off/on, per-key | `XkbProbe setrate/setrepeat`, `xset r rate 200 50` on the VM | the delay and rate read back; repeat off gives **one** press and no run |
 | 2.8 | XInput2: version, device list, client pointer, selection, query/warp, device grabs | `XiProbe`, `xinput list` | identical except the documented device-list difference (two masters here, six devices there) |
 | 2.9 | XInput2 events: key/button/motion, the 80-byte fixed part, the masks | `XiProbe select`, `XInputTest` | a device event is **120 bytes for a key, 136 for a two-axis motion** - a 68-byte event is not rejected by GDK, it corrupts the application |
+| 2.9b | **the other two XI2 shapes**: a crossing and a focus event are not device events | `XInputTest`, a `tap.py` capture of the same gesture on both servers | the three sizes are **120 / 76 / 104**, `same_screen` is at 48 and `focus` at 49 in the two short ones, `buttons_len` at 50, the mask at 72 - send them in the device shape and a toolkit reads the server's lengths as its flags, which is a window that never looks focused while typing still works |
 | 2.10 | the cursor a client sets, and `HideCursor`/`ShowCursor` | `ChangeCursorProbe`, `CursorProbe` | identical; `ChangeCursorByName` stays refused (measured: a reference does nothing for it either) |
 | 2.11 | typing into a real application, in the host's input method | `tools/host-type.c`, the VM's `ibus` | the character arrives; a composed character uses the synthetic keycode and a `MappingNotify` |
 | 2.12 | the two apps' own gestures | EasyShell, termora by hand | EasyShell's context menu survives the out-and-back; typing lands; termora the same. **EasyShell is scriptable and was driven that way on 2026-09-28** (right-click a host row, leave and re-enter, capture: the menu is still there). **termora's is not, from a script**: its host tree had no rows to right-click on the run that day, so a scripted pass can only confirm it *renders* - a hand is what settles its menus, and the entry for the gesture says so everywhere it has been measured |
@@ -346,3 +347,17 @@ build throws the same exception with the same event log - and AWT's own logger s
 the event to be the strange part: the serial and the type byte are ours, and every other field holds
 the previous event's values. The wire, tapped through `tools/tap.py` during the same click, is three
 well-framed messages with `detail = 1` on the press. A18 has the detail, the harness and the next step.
+
+2. **An XI2 enter, leave or focus event was sent in the device event's shape, so a toolkit read the
+   server's own length fields as its flags** (found 2026-09-29, from the report that EasyShell's
+   search box "sometimes does not get the focus although typing works"). A reference sends 120 bytes
+   for a key, **76 for a crossing and 104 for a focus event**, with `same_screen`/`focus` at 48/49,
+   `buttons_len` at 50 and the button mask at 72 - this server sent all three at 120 with a device
+   event's offsets, so GDK read `buttons_len` as `same_screen` and its modifier state eight bytes
+   late, and the window never looked focused (no ring, no caret) while the keys kept arriving. The
+   A/B is the report's own "not always": **1 of 3 starts showed the focus ring before the fix, 4 of 4
+   after**. `Xi2Event.Shape` holds the three layouts and `XInputTest` pins them field by field; one
+   difference is left and written down rather than guessed - a focus event's `detail` comes from the
+   core event (0, `Ancestor`) where the reference's XI2 event said 3 (`Nonlinear`), measured in one
+   case only. The capture recipe is the one above: `tools/tap.py` in front of *both* servers with the
+   same client gesture, and the sizes read off the two logs.
