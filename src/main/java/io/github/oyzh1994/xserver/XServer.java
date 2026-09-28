@@ -355,6 +355,9 @@ public final class XServer {
         // untrusted client is refused is a core BadAccess, which is what a reference answers.
         this.securityExtension = extensions.register(
                 new io.github.oyzh1994.xserver.extension.SecurityExtension(), 1, 0);
+        // XVideo defines two events (VideoNotify, PortNotify) and three errors (BadPort,
+        // BadEncoding, BadControl) and advertises no adaptors, which is F6.
+        extensions.register(new io.github.oyzh1994.xserver.extension.XVideoExtension(), 2, 3);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }

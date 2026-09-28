@@ -117,6 +117,15 @@ public final class RawXClient implements AutoCloseable {
     }
 
     /**
+     * The first resource id this connection may use, which is how a server names it in everything it
+     * says about a client - and what a probe compares against when it wants to say *which* client a
+     * message belongs to without printing a number that differs between two servers.
+     */
+    public int resourceIdBase() {
+        return idBase;
+    }
+
+    /**
      * Shrinks this client's receive buffer, so a test that deliberately stops reading fills the
      * server's output queue for it quickly instead of needing a megabyte of traffic first.
      */

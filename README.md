@@ -103,8 +103,8 @@ io.github.oyzh1994.xserver
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
                   XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS, GLX, RENDER, Composite, SYNC,
-                  Present, X-Resource, RECORD, DOUBLE-BUFFER, SECURITY and the Generic Event
-                  Extension
+                  Present, X-Resource, RECORD, DOUBLE-BUFFER, SECURITY, XVideo and the Generic
+                  Event Extension
 ```
 
 Three decisions shape everything else:
@@ -439,6 +439,15 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   starts, and both a refusal *and* an error would leave it worse off than an answer it can read), there are no providers (`GetProviders` answers
   zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
   `xrandr --prop` prints no property lines.
+- **XVideo, answered honestly rather than decorated.** A player asks which adaptors the server has -
+  hardware that scales and colour-converts a video frame - and there is none behind this server's host
+  window, so `QueryAdaptors` says **zero adaptors**: the answer that sends a player down its own
+  non-Xv path, and the answer a reference server without that hardware gives too (measured). The
+  extension's own version 2.2, its two events and three errors are there, a request that names a port
+  is refused with its own `BadPort`, and `SelectVideoNotify` is accepted for a drawable. **No software
+  scaler is built behind it**, deliberately: this would be the only server advertising an adaptor it
+  does not have, and a player would take a video path that ends in a scaler nobody asked for instead of
+  the fallback it takes today.
 - **SECURITY, for running a client you do not trust.** A trusted client asks for an authorization
   and hands the token to the client it does not trust; the connection that one makes is *untrusted* -
   it draws its own windows and asks the questions every client asks, and it is refused the pixels,

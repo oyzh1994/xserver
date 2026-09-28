@@ -94,6 +94,10 @@ public final class RecordProbe {
     /** How many datums to print before the stream is left to the timeout. */
     private static final int MAX_DATUMS = 40;
 
+    /** The recorder's own resource base, and the recorded client's once its arrival says so. */
+    private static int recorderBase;
+    private static int actorBase;
+
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
             System.out.println("usage: RecordProbe <host> <port> [--element-headers] [--free-enabled]"
@@ -109,6 +113,7 @@ public final class RecordProbe {
 
         int[] info;
         try (RawXClient rec = RawXClient.connect(host, port)) {
+            recorderBase = rec.resourceIdBase();
             info = rec.queryExtensionInfo("RECORD");
             System.out.println("RECORD present=" + info[0] + " firstEvent=" + info[2]
                     + " firstError=" + info[3]);
@@ -369,8 +374,18 @@ public final class RecordProbe {
         return text.toString();
     }
 
+    /**
+     * One spec, named by what it is rather than by the base it carries.
+     *
+     * <p>A base is the *server's* to choose, and a server that reuses a freed one - this one does, a
+     * reference does not here - puts the same literal in two places, which is a difference the diff's
+     * role mapping turns into a run of unrelated differences (measured 2026-09-28: the same run
+     * reported identical and then different, with the datums themselves byte for byte alike). What
+     * the probe compares is which client a spec names, so that is what it prints.
+     */
     private static String specs(int resource, byte[] reply, int at, int ranges) {
-        StringBuilder text = new StringBuilder("spec=0x").append(Integer.toHexString(resource))
+        String which = resource == FUTURE_CLIENTS ? "future" : "keeper";
+        StringBuilder text = new StringBuilder("spec=").append(which)
                 .append(" ranges=").append(ranges);
         for (int r = 0; r < ranges; r++) {
             text.append("\n      ").append(describeRange(reply, at + 8 + r * 24));
@@ -417,8 +432,14 @@ public final class RecordProbe {
         // The stream does not end when the gesture does: it ends when the recording client says so.
         // Waiting for the actor to go quiet first is what gives the departure datum a chance to be
         // written before the stream is closed.
+        //
+        // **Three seconds, not one and a half**, because a departure is asynchronous on both sides:
+        // a reference notices a client's closed socket on its next select wakeup, which can be a
+        // second later, and with the shorter deadline the diff was sometimes 16 datums against this
+        // server's 17 - the client-died element of the *reference* arriving just after the probe had
+        // given up (measured 2026-09-28, the sweep catching a race nothing else had).
         Thread.sleep(300);
-        rec.socketTimeout(1500);
+        rec.socketTimeout(3000);
         if (freeWhileEnabled) {
             // Freeing a context that is *still enabled* is the other way a stream can end, and the
             // protocol's EndOfData has to be somewhere: this is where a recorder looks for it.
@@ -490,11 +511,35 @@ public final class RecordProbe {
                 + lengthField
                 + " element=0x" + Integer.toHexString(header[8] & 0xFF)
                 + " swapped=" + (header[9] & 0xFF)
-                + " idBase=0x" + Integer.toHexString(RawXClient.readInt(header, 12))
+                + " idBase=" + whichClient(RawXClient.readInt(header, 12))
                 + " time=" + (RawXClient.readInt(header, 16) & 0xFFFFFFFFL)
                 + " recordedSeq=" + RawXClient.readInt(header, 20)
                 + " " + describeData(category, data));
         return category != 5;
+    }
+
+    /**
+     * Which client a datum belongs to, named rather than numbered.
+     *
+     * <p>The base is the server's to choose and differs between two servers by construction; what a
+     * comparison needs is *which* of the probe's connections it names. A client-started element is
+     * what tells the probe the recorded client's base, so it is recorded here as it goes past.
+     */
+    private static String whichClient(int base) {
+        if (base == 0) {
+            return "0";
+        }
+        if (base == recorderBase) {
+            return "recorder";
+        }
+        if (base == actorBase) {
+            return "actor";
+        }
+        if (actorBase == 0) {
+            actorBase = base;                   // the first client-started element is the actor
+            return "actor";
+        }
+        return "other";
     }
 
     /**

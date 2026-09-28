@@ -51,7 +51,7 @@ OUT="${OUT:-/tmp/xs-sweep}"
 PROBES="PointProbe GravityProbe PolyProbe WindowStateProbe DamageProbe CursorProbe ChangeCursorProbe
         GlyphCursorProbe XiProbe GlxProbe RandrProbe XineramaProbe ScreenSaverProbe SelectionProbe
         FontProbe FocusProbe AllowEventsProbe MenuProbe CompositeProbe SyncProbe PresentProbe
-        XgeProbe ResProbe RecordProbe DbeProbe SecurityProbe"
+        XgeProbe ResProbe RecordProbe DbeProbe SecurityProbe XvProbe"
 PROBES="$PROBES GrabProbe:button"
 if [ $# -gt 0 ]; then
     PROBES="$*"

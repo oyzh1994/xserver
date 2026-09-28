@@ -101,8 +101,8 @@ A prompt that starts a fresh session on this, verbatim:
 
 **§9 at the end of this file is a different kind of list**: capabilities this server does not have at
 all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. **Six of the seven were built on 2026-09-28 (F1, F2, F3, F4, F5,
-F7); this is the one that remains, when the owner wants to schedule new work:**
+candidates rather than as items. **All seven were built on 2026-09-28** (F1, F2, F3, F4, F5, F6, F7),
+and each is a full entry with a measurement behind it:
 
 | id | candidate | size | why it is first (or last) |
 |----|-----------|------|---------------------------|
@@ -4679,13 +4679,11 @@ one by one:
   a cookie) and `SetAccessControl` (the same switch, read-only). `KillClient`, `SetCloseDownMode`,
   `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
   `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
-- **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way
-  (re-measured 2026-09-28, after F7 landed): the reference advertises **23** and this server **22**, of
-  which **21 are shared**. Two the reference has and this server does not - the table below - and one
-  this server has and that reference build does not: **DPMS**, which is B7's work (the sweep documents
-  it as a deliberate difference). **Six of the seven rows below are now done**: the Generic Event
-  Extension, X-Resource, RECORD, DOUBLE-BUFFER and SECURITY are advertised and answered, so the list
-  of absent extensions is **two**, not seven - one declined (MIT-SHM) and one candidate (F6).
+- **The extensions are no longer where the gaps are.** Measured with `xdpyinfo` on both sides the
+  same way (re-measured 2026-09-28, after F6 landed): **both advertise 23**, and **22 of them are the
+  same extension**. The two that differ are one the reference has and this server does not -
+  **MIT-SHM**, declined by decision (B8) - and one this server has and that reference build does not:
+  **DPMS**, which is B7's work. Every row of the candidate table below is done.
 
 | extension | what it is | who asks | here |
 |-----------|-----------|----------|------|
@@ -4695,7 +4693,7 @@ one by one:
 | `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | ~~absent~~ **done 2026-09-28 (F2)** |
 | `SECURITY` (XSecurity) | per-connection authorization, generated auth, trusted/untrusted | Xinerama-less sandboxes, `xauth generate` users | ~~absent~~ **done 2026-09-28 (F7)** |
 | `X-Resource` | per-client resource accounting (memory, windows, pixmaps) | `xrestop` | ~~absent~~ **done 2026-09-28 (F3)** |
-| `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | **absent** |
+| `XVideo` (Xv) | video overlay/port: a player hands frames to the server to scale in hardware | `mplayer -vo xv`, `vlc --vout xcb`; both fall back to plain X11 drawing | ~~absent~~ **done 2026-09-28 (F6)**, with no adaptors - which is what a reference without the hardware answers |
 
 And the holes *inside* extensions this server does have, from the same walk of the request surface:
 
@@ -4719,9 +4717,9 @@ termora's AWT connection queried the extension as it started and asked `GetVisua
 probe-and-fall-back this list is about, caught in the log (F5's entry has it). So these are
 capabilities a *different* client would use, and one of them was already asking, and the candidates
 below are
-ordered by **what breaks without it** - the first is the one to do if only one is done. **F1 through
-F5 and F7 were taken on 2026-09-28** and are full entries with a measurement behind them; **F6 is the
-one that remains**, and it is the weakest case of the seven by its own description
+ordered by **what breaks without it** - the first is the one to do if only one is done. **All seven
+were taken on 2026-09-28**, each with a measurement behind it and each in this file as a full entry,
+so the list is a record of what was built rather than a queue
 
 ### [x] F1. `PresentNotifyMSC` and the SYNC alarms. **S-M** - done 2026-09-28, and one half was already in
 
@@ -5003,13 +5001,57 @@ log are the known `window 0x0` startup probes the toolkits make. `mvn test` **42
 item's nine), and the headless run **425 with its 2 toolkit skips, BUILD SUCCESS**; the sweep is
 **17 of 26 probes identical** with the ninth difference being this one's visual count.
 
-### F6. `XVideo`. **M-L, and the weakest case of the seven**
+### [x] F6. `XVideo`. **M-L** - done 2026-09-28, and it is the *smallest* implementation of the seven
 
-A port/adapter model for video: a player hands frames over to be scaled by the server. There is no
-video hardware behind the host window, so what would be built is a software scaler with a
-`PutImage`-equivalent behind it - and every player that asks for it (`mplayer -vo xv`, `vlc --vout
-xcb`) already falls back to that path today. It is listed because it is in the reference's list, not
-because anything breaks without it.
+**What it is.** The extension a video player asks for: which adaptors the server has (hardware that
+scales and colour-converts a frame), which ports and encodings each offers, and then it hands frames
+over to be scaled. There is no such hardware behind this server's host window and there never can be -
+the picture arrives as pixels like everything else.
+
+**What the reference does, measured first with `tools/XvProbe`, and it settles the size of this item**:
+Xvfb advertises XVideo and then answers **zero adaptors**. That is the whole of its surface on a
+machine with no video hardware, and it is what a player reads before taking its non-Xv path - the path
+every player has. So the honest implementation here is the same answer, and it is three lines of
+behaviour rather than a scaler:
+
+- **`QueryAdaptors` answers zero adaptors**, with the reply otherwise empty. The drawable it names is
+  still resolved, so an id that is not a drawable is the core `BadDrawable` rather than silence.
+- **`QueryExtension`** - Xv's own, not the core one - answers the extension's **own version, 2.2**.
+  The extension is registered with its own two events (`VideoNotify`, `PortNotify`) and three errors
+  (`BadPort`, `BadEncoding`, `BadControl`), so a client's cache of it is right.
+- **Every request that names a port is refused with `BadPort`** - this extension's own error, at its
+  error base - in the **reference's order of checks**: `PutVideo`, `PutStill`, `GetVideo`,
+  `GetStill`, `PutImage` and `ShmPutImage` resolve their drawable and GC *first*, so a GC of `None` is
+  `BadGContext` and only well-formed requests reach `BadPort`. (`StopVideo` carries no GC at all; the
+  probe caught the first implementation checking one there and answering `BadGContext` where the
+  reference answers `BadPort`.)
+- **`SelectVideoNotify` names a drawable rather than a port and a reference accepts it** even with no
+  adaptors: the mask is recorded and nothing ever fires. A client that arms it and waits sees silence
+  on both servers.
+
+**Why this is the whole of it, and not a software scaler behind `PutImage`.** The scaler is what the
+candidate entry proposed, and it would be a *better* answer for a client that reaches a port - but no
+client can reach one here, because this server would then be alone in advertising an adaptor it does
+not have. A player would take a video path that ends in a scaler nobody asked for, at the cost of the
+fallback it takes today; and the fallback draws the same frames through the same window. The extension
+exists here so that "is XVideo there?" is answered truthfully, which is what a player actually asks.
+
+**Verify**: `tools/XvProbe` against Xvfb and against this server - **identical line for line**, the
+whole surface including the check order - plus `XvTest`'s four cases and `mvn -o test`.
+
+**Live on `.147` (2026-09-28)**, the round's regression, server on the Mac in the mode the clients use
+(`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders** (menu bar, host
+list, welcome page), **typing lands** (its search box showed `al` and filtered the list to
+`aliyun SSH`) and **its context menu survives the out-and-back gesture**; **termora renders** as
+before, and the only rejections in the log are the known `window 0x0` startup probes. The check this
+item adds is the **Xlib `Xvlib` client** (`tools/xv-client.c`) against that live server: version 2.2,
+**zero adaptors**, `XvQueryAdaptors` parsed by Xlib's own reader, and its exit status 0 - the same
+answers the reference gives. **Neither application asks for XVideo**, and that is the finding rather
+than an accident: no client in this bed wants a video path, which is why this item is the smallest of
+the seven and why its implementation is the reference's own answer instead of a scaler. `mvn test`
+**436/436** (432 plus this item's four), and the headless run **436 with its 2 toolkit skips, BUILD
+SUCCESS**; the sweep is **19 of 28 probes identical** - `XvProbe` among them - with the same nine
+documented differences.
 
 ### [x] F7. `SECURITY` (XSecurity). **M** - done 2026-09-28
 

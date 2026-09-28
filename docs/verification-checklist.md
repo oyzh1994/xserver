@@ -15,11 +15,11 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **432 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 432 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **436 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 436 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
-| 0.5 | `tools/sweep.sh` | the probe sweep | **18 identical of 27, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding |
+| 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
 | 0.6 | stop everything: `pkill -f 'io.github.oyzh1994.xserver.Main'`, `tools/xvfb.sh stop`, kill the VM's clients | - | nothing left listening on 6010 or 6062-6099, no `Xvfb`/`x11vnc`/AppImage on the VM (a leftover makes the *next* run fail as if the code were broken) |
 
 `tools/kit.sh <Tool> <args>` is the launcher with the classpath filled in; run `mvn -o test-compile`
@@ -79,6 +79,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 3.12 | RECORD: a context registered on this server and on Xvfb produces the same stream for the same gesture | `RecordProbe`, `RecordTest` | identical element for element - same categories in the same order, same framing, same stamps and the same attribution - with one deliberate difference: there is no device-event stage here, so a reference's device elements are not reproduced |
 | 3.13 | DOUBLE-BUFFER: a client draws into a back buffer and swaps it in front of its window | `DbeProbe`, `DbeTest`, an Xlib `Xdbe` client on the VM | identical to the reference - the four swap actions, every refusal, the resize and the cross-client cases - except the visual count in `GetVisualInfo`, which is the screen's own (7 here, 144 there). The Xlib client is the check the probe cannot be: Xlib's **own** readers parse this server's replies (`XdbeGetVisualInfo` especially) and its own request builders drive the swap |
 | 3.14 | SECURITY: an untrusted connection is refused what it must be and can still draw its own window | `SecurityProbe`, `SecurityTest`, an Xlib `XSecurity` client on the VM | identical to the reference **twice over**: against the ordinary `-ac` pair, and against a reference with access control on (`tools/xvfb.sh secure`) with this server under `--auth`. What is compared is a battery sent from an untrusted connection *and* from a trusted one - only a difference between the two is the trust level - plus the hidden-extension list an untrusted client is given, and the way a revoke closes the connection using it |
+| 3.15 | XVideo: a player asks for adaptors, ports and encodings, and is told there are none | `XvProbe`, `XvTest` | identical to the reference line for line - zero adaptors, the extension's own version 2.2, its two events and three errors, `BadPort` for every request that names a port **in the reference's order of checks** (drawable and GC first), and `SelectVideoNotify` accepted for a drawable |
 
 ## 4. The host window - where this server is not a plain server
 

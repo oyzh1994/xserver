@@ -73,6 +73,15 @@ permission for whatever is at the top of the shell's parent chain (the same gran
 recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its
 bottom-right corner resizes it, which is what C1's verification does.
 
+**The sweep's id mapping is a run's own, so a probe that prints *another client's* id makes the
+verdict flaky.** `probe-diff.py` maps every hex literal to the order it first appears in, which is
+stable for ids the probe itself chooses - but a base the *server* assigns to another client can appear
+twice in one run and once in the other when a server reuses a freed one (this one does; a reference did
+not, on 2026-09-28), and the numbering of everything after it shifts. `RecordProbe` was reported
+identical on one sweep and different on the next with the datums byte for byte alike. The rule that
+came out of it: **a probe prints what an id means, not the id** - "idBase=actor", "spec=keeper" - and
+the numbers stay where they are compared deliberately, in the tests.
+
 **A probe connects to the LAN, and this machine has a system proxy.** macOS's `java` launcher passes
 the system's HTTP and SOCKS proxy settings to the JVM, so on a machine where a proxy is running, a
 probe's socket goes to the proxy instead of to the display - which reads as `Malformed reply from
@@ -341,6 +350,16 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   second with `--auth` on. **It never sends `SetAccessControl`**: that request changes the server for
   every client, and on an `-ac` Xvfb it turns access control *on*, after which that reference refuses
   the next run's connections (measured the hard way).
+- `XvProbe` - XVideo (F6), which is the smallest of the seven because the reference is small too: it
+  walks the whole surface a player walks - the extension's own version, `QueryAdaptors`, and then every
+  request that names a port (encodings, attributes, formats, image attributes, grab, put, stop,
+  ungrab, `ShmPutImage`) - and prints what came back for each, because "there is no adaptor here" and
+  "this request was refused" are different findings to a player. Xvfb advertises XVideo and answers
+  **zero adaptors**, so that is what this server answers, and the requests that name a port are refused
+  with the extension's own `BadPort`. The run is **identical** on both servers, including the *order*
+  the errors are raised in: the drawable and the GC are resolved before the port, which is how a GC of
+  `None` is `BadGContext` rather than `BadPort` - the one thing this probe caught in the first
+  implementation of the extension.
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -499,13 +518,14 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-28, after F7: 18 of the 27 probes identical.** The
+each server assigns for itself). **Full run 2026-09-28, after F6: 19 of the 28 probes identical.** The
 nine that differ are all deliberate, and each is measured rather than assumed - a run that reports one
 of these is a run that agrees with the reference, and a run that reports a *tenth* one is a finding.
-`RecordProbe` and `SecurityProbe` are the two of this round that came out identical, and `DbeProbe` is
-the one that differs by a line: RECORD as this server streams it is byte-for-byte what the reference
-streams for the same gesture, element for element (the F2 entry's verify), and SECURITY agrees request
-for request on both the ordinary and the access-controlled pair (F7).
+`RecordProbe`, `SecurityProbe` and `XvProbe` are the three of this round that came out identical, and
+`DbeProbe` is the one that differs by a line: RECORD as this server streams it is byte-for-byte what
+the reference streams for the same gesture (F2), SECURITY agrees request for request on both the
+ordinary and the access-controlled pair (F7), and XVideo answers a player's whole query surface the way
+a reference with no video hardware does (F6).
 
 - **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
   reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler
