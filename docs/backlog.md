@@ -110,12 +110,14 @@ and each is a full entry with a measurement behind it:
 | ~~F2~~ | ~~`RECORD`~~ **done 2026-09-28**: the eight requests and the stream, with one deliberate difference (no device-event stage) | extension | M |
 | ~~F3~~ | ~~`X-Resource`~~ **done 2026-09-28**: all six requests of 1.2, with two deliberate differences | extension | S |
 | ~~F4~~ | ~~`Generic Event Extension`~~ **done 2026-09-28**: advertised and answered, and it exposed a real `QueryExtension` defect that is now fixed | extension | S |
-| [ ] F5 | `DOUBLE-BUFFER` (Xdbe) | M | B5's store makes the back buffer nearly free |
-| [ ] F6 | `XVideo` | M-L | every client of it falls back today - the weakest case |
-| [ ] F7 | `SECURITY` | M | the answer to "run a client I do not trust" |
+| ~~F5~~ | ~~`DOUBLE-BUFFER` (Xdbe)~~ **done 2026-09-28**: the eight requests, the buffer that is a drawable, and the four swap actions measured colour by colour - the wire format is **not** the specification's | extension | M |
+| ~~F6~~ | ~~`XVideo`~~ **done 2026-09-28**: the reference answers zero adaptors, so this does too, with `BadPort` for every port request and no scaler behind `PutImage` (deliberately) | extension | M-L |
+| ~~F7~~ | ~~`SECURITY`~~ **done 2026-09-28**: tokens, the untrusted rules measured request by request, the extension hiding and the revoke that closes a connection | extension | M |
 
-Each becomes a full entry (*Current*, *Traps*, *Verify*) when it is picked up; §9 has the measured
-inventory behind them and the list of things that are deliberately *not* candidates.
+Each became a full entry (*Current*, *Traps*, *Verify*) when it was picked up, and each entry now ends
+with what its verification measured. §9 has the inventory behind them, which is now **both servers at
+23 extensions with 22 of them the same**, and the list of things that are deliberately *not*
+candidates.
 
 ---
 
