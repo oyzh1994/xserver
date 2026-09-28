@@ -4,6 +4,7 @@ import com.github.moaxcp.x11.protocol.XProtocolPlugin;
 import com.github.moaxcp.x11.protocol.XRequest;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.resource.XWindow;
 
 /**
  * An X extension served by this server.
@@ -50,6 +51,19 @@ public interface Extension {
 
     /** Lets an extension drop state belonging to a client that has gone away. */
     default void clientDisconnected(XServer server, ClientConnection client) {
+    }
+
+    /**
+     * Told when a window changes size, which an extension holding buffers sized to that window cannot
+     * wait to be asked about.
+     *
+     * <p>DOUBLE-BUFFER is the extension this exists for: a back buffer is allocated at its window's
+     * size, and a reference server reallocates it - and fills it with the window's background - when
+     * the window is resized (measured). Nothing else in the protocol tells an extension about a
+     * {@code ConfigureWindow}, and catching up on the next request of its own would leave a client
+     * that resizes and draws before it swaps with a buffer of the wrong size.
+     */
+    default void windowResized(XServer server, XWindow window, int oldWidth, int oldHeight) {
     }
 
     /**

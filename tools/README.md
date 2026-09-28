@@ -17,6 +17,7 @@ these is meant to carry out, so keep them working.
 | the cursor font generator | `tools/gen-cursor-font.py` | regenerates `resource/CursorFont.java` from `cursor.pcf` with PIL - run it on the VM, where the X11 fonts live, and copy the result back |
 | the XDND pair | `tools/xdnd-source.py`, `tools/xdnd-target.py` | **a real GTK3 drag source and a real GTK3 drop target**, for the C5 work: run them as **two processes** (a drag inside one GTK process never uses XDND at all - GDK shortcuts it) and drive the gesture with XTEST. This is the "real toolkit on the other end" the C5 entry asked for: a Finder file dropped into a real GTK target on this server arrives, and an application answers the same conversation (`XdndStatus` and a `ConvertSelection` for the data, measured) - what it *cannot* do is open the file, because XDND hands over a host path (C5 has the measurement and `--drop-mount`). It prints every step, so a conversation that stops halfway is visible as the step that never arrived. Needs PyGObject + GTK3, which the VM has |
 | the host drag source | `tools/kit.sh HostDragSource <file> [x] [y]` (source: `src/test/java/io/github/oyzh1994/xserver/tools/HostDragSource.java`) | a macOS window that is `alwaysOnTop` and holds a real file: press on it and drag, and the platform starts a **real drag** - the gesture C5's host half needs, and the one a Finder-sourced scripted drag cannot produce here. It lives in the tools package like every other tool, so `mvn -o test-compile` keeps it compiling; **click it two or three times before dragging** or the first synthetic click is swallowed as the activation click (measured) |
+| the Xlib client for DOUBLE-BUFFER | `tools/xdbe-client.c` | a real Xlib client using `Xdbe`, built and run **on the VM** (`gcc xdbe-client.c -o /tmp/xdbe-client -lX11 -lXext`, needs `libxext-dev`): it is the one check `DbeProbe` cannot be, because it is **Xlib's own** readers that parse this server's `GetVisualInfo` reply and its own request builders that drive the swap - and it found a real difference the probe had not (a `GetVisualInfo` that names no drawable means "the display's screens", not "nothing"). Both servers print the same thing except the count of visuals, which is the screen's own |
 | the host-window tools | `tools/host-windows.c`, `tools/host-drag.c`, `tools/host-type.c` | C, built with `clang -framework ApplicationServices`: the first lists the on-screen windows with their bounds (needs no permission), the second makes a left-button drag between two points - which is how a real window is moved or resized by a script, and the only way C7's "remember where the window was" and C1's "the screen grows with the window" could be verified against a real window. **Both ends on the same point make it a click**, which is how D1's live check closes a window the way a user does (the close button is at the top left of the title bar, about 14,13 in from the bounds the first tool prints) |
 
 Run a tool with the test classpath - `tools/kit.sh` is that line with the classpath filled in, which
@@ -305,6 +306,18 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   on both servers once the normaliser has, as usual, mapped the ids and the clock - plus, for this
   probe, the size of the setup reply, which is a different reply on each server for the obvious
   reason and is not what the extension is being measured for.
+- `DbeProbe` - DOUBLE-BUFFER (F5), which is the extension every toolkit's no-flicker path asks for.
+  It lives a buffer's whole life: the version handshake, what `GetVisualInfo` answers (and what it
+  answers for a request that names no drawable), allocating a buffer on a mapped window, drawing into
+  it - it is a drawable, so the ordinary core requests address it - the swap under **each** of the four
+  actions, the attributes query, the refusals an id that is not your buffer deserves, two buffers on
+  one window swapped in one request, a window resized under its buffers, the two idiom requests, and a
+  **second client** that may swap this one's window but cannot see or free its buffer. Front and back
+  are told apart by colour: both are filled with a colour of their own before every swap, so one line
+  says which surface the window shows afterwards and what the buffer was left holding - which is what
+  separates `Copied` (the buffer keeps what it had) from `Untouched` (the buffer gets the front's
+  previous contents). It is **identical to the reference except the count of visuals**, which is the
+  screen's own (7 here, 144 there) - see "What the sweep is expected to differ on".
 - `DamageProbe` - the harness for DAMAGE: it creates a damage object on a window at a chosen level,
   draws, prints every `DamageNotify` (level, area, and the drawable's geometry), then subtracts and
   draws again - which is the part the extension turns on. `DamageProbe <host> <port> [level]`, with
@@ -463,11 +476,12 @@ exception, and had been there since the request was first tried.
 
 `tools/sweep.sh` runs every protocol probe against Xvfb and against this server and diffs the two
 (`tools/probe-diff.py`, which ignores the opcodes, resource ids, atom ids, cursor serials and clocks
-each server assigns for itself). **Full run 2026-09-28, after F2: 17 of the 25 probes identical.** The
-eight that differ are all deliberate, and each is measured rather than assumed - a run that reports one
-of these is a run that agrees with the reference, and a run that reports a *ninth* one is a finding.
-`RecordProbe` is one of the seventeen: RECORD as this server streams it is byte-for-byte what the
-reference streams for the same gesture, element for element, which is the F2 entry's verify.
+each server assigns for itself). **Full run 2026-09-28, after F5: 17 of the 26 probes identical.** The
+nine that differ are all deliberate, and each is measured rather than assumed - a run that reports one
+of these is a run that agrees with the reference, and a run that reports a *tenth* one is a finding.
+`RecordProbe` and `DbeProbe` are the two of this round: RECORD as this server streams it is
+byte-for-byte what the reference streams for the same gesture, element for element (the F2 entry's
+verify), and DOUBLE-BUFFER differs in `DbeProbe` by the one line below.
 
 - **`SyncProbe`** - one line. `ListSystemCounters` answers **no** system counters here where the
   reference keeps eight (elapsed-time counters for its own scheduling): this server has no scheduler
@@ -497,6 +511,13 @@ reference streams for the same gesture, element for element, which is the F2 ent
   even the resource's own**, so a probe asking with the WINDOW atom gets one row here and none from
   Xvfb. The last two are this repository's decisions and are recorded as such in the F3 entry.
 
+- **`DbeProbe`** - three lines, and they are one fact: `GetVisualInfo` reports **this server's
+  screen**, which has 7 visuals against the reference's 144, so the count and the reply's length
+  differ. Everything else in the run is identical, including all four swap actions colour for colour,
+  every refusal, a window resized under its buffers, and what a second client may do with the first
+  one's window and buffer. The count is the screen's own answer rather than the extension's - the same
+  kind of difference `ResProbe`'s client list is - and the reply's *shape* (a section per drawable, a
+  count per section, eight byte records) is what the comparison is for.
 - **`ChangeCursorProbe`** - this server refuses `XFixesChangeCursorByName` with `BadImplementation`,
   where a reference **accepts every name and does nothing with it** (its cursor font has no glyph
   names, so the lookup finds nothing and the cursor is left alone): both are "the name changes

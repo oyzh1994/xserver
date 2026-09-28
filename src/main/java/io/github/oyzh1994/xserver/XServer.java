@@ -346,6 +346,8 @@ public final class XServer {
         // (BadContext) and no events, so its event range is empty and QueryExtension reports zero for
         // it. Registered last so no existing extension's opcode moves.
         extensions.register(new io.github.oyzh1994.xserver.extension.RecordExtension(), 0, 1);
+        // DOUBLE-BUFFER defines no events and one error, BadBuffer, which is F5's extension.
+        extensions.register(new io.github.oyzh1994.xserver.extension.DbeExtension(), 0, 1);
         for (Extension extension : extensions.all()) {
             extension.init(this);
         }
@@ -398,6 +400,20 @@ public final class XServer {
     /** A connection ended, the client-died element of a recording. */
     public void recordClientDied(ClientConnection client) {
         recorder.clientDied(client);
+    }
+
+    /**
+     * A window changed size, told to every extension that registered an interest.
+     *
+     * <p>Called from the core {@code ConfigureWindow} path, before anything that draws reacts to it,
+     * because an extension holding buffers sized to the window has to resize them first: a client
+     * that resizes and then draws into a buffer would otherwise draw into the old size. Only DBE
+     * listens today (see {@link io.github.oyzh1994.xserver.extension.Extension#windowResized}).
+     */
+    public void windowResized(XWindow window, int oldWidth, int oldHeight) {
+        for (io.github.oyzh1994.xserver.extension.Extension extension : extensions.all()) {
+            extension.windowResized(this, window, oldWidth, oldHeight);
+        }
     }
 
     // ------------------------------------------------------------------

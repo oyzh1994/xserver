@@ -101,8 +101,8 @@ A prompt that starts a fresh session on this, verbatim:
 
 **§9 at the end of this file is a different kind of list**: capabilities this server does not have at
 all (an extension a client might ask for), measured against a reference on 2026-09-27 and sized as
-candidates rather than as items. **Four of the seven were built on 2026-09-28 (F1, F2, F3, F4); these
-are the three that remain, when the owner wants to schedule new work:**
+candidates rather than as items. **Five of the seven were built on 2026-09-28 (F1, F2, F3, F4, F5);
+these are the two that remain, when the owner wants to schedule new work:**
 
 | id | candidate | size | why it is first (or last) |
 |----|-----------|------|---------------------------|
@@ -4680,16 +4680,16 @@ one by one:
   `ForceScreenSaver`, `ChangeKeyboardControl`, `RecolorCursor`, `StoreColors`, `QueryColors`,
   `AllocColorCells`, `CopyPlane`, `ClearArea` and `QueryBestSize` are all implemented, not stubs.
 - **The extensions are where the gaps are.** Measured with `xdpyinfo` on both sides the same way
-  (re-measured 2026-09-28, after F2, F3 and F4 landed): the reference advertises **23** and this server
-  **20**, of which **19 are shared**. The difference is four the reference has and this server does
-  not - the table below - and one this server has and that reference build does not: **DPMS**, which
-  is B7's work (the sweep documents it as a deliberate difference). **Three of the seven rows below are
-  now done**: the Generic Event Extension, X-Resource and RECORD are advertised and answered, so the
-  list of absent extensions is four, not seven.
+  (re-measured 2026-09-28, after F5 landed): the reference advertises **23** and this server **21**, of
+  which **20 are shared**. Three the reference has and this server does not - the table below - and one
+  this server has and that reference build does not: **DPMS**, which is B7's work (the sweep documents
+  it as a deliberate difference). **Five of the seven rows below are now done**: the Generic Event
+  Extension, X-Resource, RECORD and DOUBLE-BUFFER are advertised and answered, so the list of absent
+  extensions is **three**, not seven - one declined (MIT-SHM) and two candidates (F6, F7).
 
 | extension | what it is | who asks | here |
 |-----------|-----------|----------|------|
-| `DOUBLE-BUFFER` (Xdbe) | a client draws into an off-screen back buffer and swaps | toolkits that refuse to flicker (older GTK/Qt paths, games); most fall back to normal drawing | **absent** |
+| `DOUBLE-BUFFER` (Xdbe) | a client draws into an off-screen back buffer and swaps | toolkits that refuse to flicker (older GTK/Qt paths, games); most fall back to normal drawing | ~~absent~~ **done 2026-09-28 (F5)** |
 | `Generic Event Extension` (XGE) | the handshake for extension-defined events | clients that query it before using generic events - Xlib's cookie API is client-side, so this is a *handshake*, not a mechanism this server lacks (XI2's generic events already work) | ~~absent~~ **done 2026-09-28 (F4)** |
 | `MIT-SHM` | shared-memory images, so pixels do not travel over the socket | every toolkit probes it; all of them fall back | **absent, declined** - B8 has the reasons |
 | `RECORD` | a client subscribes to the event stream (all clients', or one's) | `x11vnc -record`, screen recorders, input loggers | ~~absent~~ **done 2026-09-28 (F2)** |
@@ -4713,12 +4713,15 @@ And the holes *inside* extensions this server does have, from the same walk of t
 measured rather than assumed: a client that queries an absent extension gets "not present" rather than
 a refusal, so the evidence is the **request profiles** - EasyShell's profile against the reference and
 against this server agrees request for request (the A/B method), and a sweep of thirty client tools
-against this server produced no refusals beyond the known two. None of them reached for Xdbe, Xv, RECORD
-or the rest. So these are capabilities a *different* client would use, and the candidates below are
-ordered by **what breaks without it** - the first is the one to do if only one is done. **F1, F2, F3
-and F4 were taken on 2026-09-28** and are full entries with a measurement behind them; the three that
-remain (F5, F6, F7) are still candidates for the owner to schedule rather than items somebody has
-started.
+against this server produced no refusals beyond the known two. None of them reached for Xv, RECORD
+or the rest. **One of them did reach for DOUBLE-BUFFER once it was there**: on the F5 round's live run,
+termora's AWT connection queried the extension as it started and asked `GetVisualInfo` - the
+probe-and-fall-back this list is about, caught in the log (F5's entry has it). So these are
+capabilities a *different* client would use, and one of them was already asking, and the candidates
+below are
+ordered by **what breaks without it** - the first is the one to do if only one is done. **F1 through
+F5 were taken on 2026-09-28** and are full entries with a measurement behind them; the two that remain
+(F6, F7) are still candidates for the owner to schedule rather than items somebody has started.
 
 ### [x] F1. `PresentNotifyMSC` and the SYNC alarms. **S-M** - done 2026-09-28, and one half was already in
 
@@ -4919,15 +4922,86 @@ now reports 0 for a range it did not allocate. Nothing in the suite depended on 
 **Verify****: `tools/XgeProbe` against both - **identical** - plus `xdpyinfo` listing
 `Generic Event Extension`, and `XgeTest`'s three cases.
 
-### F5. `DOUBLE-BUFFER` (Xdbe). **M**
+### [x] F5. `DOUBLE-BUFFER` (Xdbe). **M** - done 2026-09-28
 
-**Still a candidate: nothing has been started on it.**
+**What it is.** The extension a client uses to draw into a buffer nobody is looking at and then show
+it in one step: every toolkit's no-flicker path asks for it, and until now every one of them fell back
+to plain drawing. B5's per-window store is what makes it cheap here - a back buffer is a pixmap of the
+window's size, and the window's own pixels are the front buffer it swaps with.
 
-A real feature - a back buffer, a swap, and a swap interval - whose clients all fall back to ordinary
-drawing today. B5's per-window store makes the back buffer nearly free (the pixels already exist), so
-what is left is the buffer allocation, the swap's copy and the events. **Verify**: a client that
-double-buffers (or a probe) swaps and sees the front buffer change atomically, with no tearing
-observable in the frame the server presents.
+**Current.** All eight requests (`QueryVersion`, `AllocateBackBufferName`, `DeallocateBackBufferName`,
+`SwapBuffers`, `BeginIdiom`, `EndIdiom`, `GetVisualInfo`, `GetBackBufferAttributes`) and the one error
+`BadBuffer`. There is **no generated protocol module for DBE** in the x11 library, so the decoders and
+the two replies are hand written, and `DbeTest` (nine cases) pins the offsets. A back buffer is an
+ordinary pixmap registered under the client's id, which is what makes it a **drawable**: every
+core request addresses it without knowing DBE exists.
+
+**What is not guessable, measured with `tools/DbeProbe` against Xvfb**, and written into
+`DbeExtension`'s class comment. The first version of this was written from the Xdbe *specification*'s
+own request tables and **every request was refused**; the layouts a client actually compiles against
+are in `X11/extensions/dbeproto.h` (on the VM), and they differ in three places that matter:
+
+- **`AllocateBackBufferName` is window, buffer, swapAction** - the buffer before the action - **and has
+  no reply at all**. Xlib's own `XdbeAllocateBackBufferName` returns `Success` without reading
+  anything, which is why the probe's "accepted" is the whole of that request's evidence.
+- **`SwapBuffers` names a window, not a buffer**: the request is a count followed by that many
+  (window, swapAction) pairs, so a window's buffers are swapped together and there is no field that
+  could name one. `buffer = 0` does not mean "all buffers" here - that idea belonged to the wrong
+  reading of the request.
+- **`GetBackBufferAttributes` is minor 7**, where 6 is `GetVisualInfo` - and a client that sends 6 with
+  a buffer in it is answered `BadLength` with the buffer as the error's value, which reads as "the
+  buffer is bad" rather than "the request is".
+- **`GetVisualInfo`'s reply is not the flat list its header describes**: it is a count of the drawables
+  answered and then, *per drawable*, a count followed by that many `{visualID, depth, perfLevel}`
+  records. The reference's reply for one drawable is 289 units long with 144 records in it; the flat
+  reading expects two records in eight bytes, and the two arithmetics differ - which is what settled it.
+
+**What each swap action does**, measured colour by colour with **two** buffers on one window (with one
+buffer, "keeps its own contents" and "is given the front's contents" are the same picture): the front
+takes the **first allocated** buffer's contents, and then **every** buffer of that window is left
+holding what the action names - `Copied` and `Undefined` the new front (the reference treats the two
+identically), `Untouched` the front's *previous* contents, `Background` the window's background.
+
+**The refusals, also measured**: a swap for a window with no buffers is `BadMatch`; an undefined action
+is `BadValue` on both the allocate and the swap; an id that is already a resource is `BadIDChoice`; a
+buffer allocated on an id that is not a window is `BadWindow`; freeing an id that is not the client's
+own buffer is `BadBuffer`, this extension's own error; and **asking about one answers zero rather than
+raising** - for an id that was never a buffer, for a freed one, and for another client's, which is what
+a reference does. A `SwapBuffers` is validated whole before any of it happens: two pairs with a bad
+second one left the first window's pixels exactly as they were. And a **second client may swap another
+client's window** (a window is not private in X) while being unable to see or free its buffers.
+
+**A buffer follows its window.** A resize reallocates it to the new size and fills it with the window's
+background (measured: a read outside the old size answers the background, not an error) - which is what
+`Extension#windowResized` exists for, called from the core `ConfigureWindow` path, because catching up
+on the extension's next request would leave a client that resizes and draws with a buffer the window
+has outgrown.
+
+**One deliberate difference** in the probe's output and only one: `GetVisualInfo` reports **this
+server's screen** - 7 visuals against the reference's 144 - which is the same kind of difference
+`ResProbe`'s client list has, and the reply's *shape* is what the comparison is for.
+
+**Verify**: `tools/DbeProbe` against Xvfb and against this server - identical line for line except the
+visual count above - plus a **real Xlib client** (`Xdbe` itself, compiled on the VM: `XdbeQueryExtension`
+1.0, `XdbeGetVisualInfo` parsed by Xlib's own reader, allocate, attributes, drawing into the buffer,
+`XdbeSwapBuffers` showing it, the idioms, deallocate) run against both servers with the same result,
+plus `DbeTest`'s nine cases and `mvn -o test`.
+
+**Live on `.147` (2026-09-28)**, the whole round's regression, server on the Mac in the mode the
+clients use (`:95`, `--single-window`, JavaFX window) with `--log-requests`: **EasyShell renders** (its
+menu bar, host list and welcome page), **typing lands** (its search box showed `al` and filtered the
+host list to `aliyun SSH`), and **its context menu survives the out-and-back gesture** - the same
+gesture the F2 entry records. Then the two checks this item adds: the **Xlib `Xdbe` client** run
+against that live server while EasyShell was connected did the whole transaction (1.0 handshake, the
+visual list, allocate, attributes, drawing into the buffer, the swap showing it, both idioms,
+deallocate), and **termora's own toolkit asked for the extension** - the JDK's AWT connection sent
+`QueryExtension` three times and then `GetVisualInfo (DOUBLE-BUFFER)` as it started, which is exactly
+the probe-and-fall-back F5 removes: before this round that query answered "not present" and the
+toolkit took its non-double-buffered path. It went no further than asking, which is its own decision
+rather than the server's. **termora renders** as it did before, and the only rejections in the whole
+log are the known `window 0x0` startup probes the toolkits make. `mvn test` **425/425** (416 plus this
+item's nine), and the headless run **425 with its 2 toolkit skips, BUILD SUCCESS**; the sweep is
+**17 of 26 probes identical** with the ninth difference being this one's visual count.
 
 ### F6. `XVideo`. **M-L, and the weakest case of the seven**
 

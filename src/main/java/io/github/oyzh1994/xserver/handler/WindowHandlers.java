@@ -720,6 +720,12 @@ public final class WindowHandlers {
             }
             window.setSize(window.width(), height);
         }
+        if (window.width() != oldWidth || window.height() != oldHeight) {
+            // An extension holding buffers sized to this window has to follow it now rather than on
+            // its next request: a client that resizes and then draws would otherwise draw into a
+            // buffer the window has outgrown (DOUBLE-BUFFER; see Extension#windowResized).
+            server.windowResized(window, oldWidth, oldHeight);
+        }
         if (ConfigWindow.BORDER_WIDTH.isEnabled(mask)) {
             window.setBorderWidth(r.getBorderWidth());
         }

@@ -103,7 +103,7 @@ io.github.oyzh1994.xserver
 ├── handler/      the request implementations, grouped by area
 └── extension/    extension framework plus BIG-REQUESTS, XC-MISC, SHAPE, XTEST, XFIXES, XINERAMA,
                   XInput2, RANDR, XKEYBOARD, MIT-SCREEN-SAVER, DPMS, GLX, RENDER, Composite, SYNC,
-                  Present, X-Resource, RECORD and the Generic Event Extension
+                  Present, X-Resource, RECORD, DOUBLE-BUFFER and the Generic Event Extension
 ```
 
 Three decisions shape everything else:
@@ -438,6 +438,17 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   starts, and both a refusal *and* an error would leave it worse off than an answer it can read), there are no providers (`GetProviders` answers
   zero, so `xrandr --listproviders` prints `number : 0` like the reference), and
   `xrandr --prop` prints no property lines.
+- **DOUBLE-BUFFER, so a client can draw off screen and show the result in one step.** A client
+  allocates a back buffer *on* a window, draws into it with the ordinary requests - a back buffer is a
+  drawable - and `SwapBuffers` makes what it drew the window's contents, which is what every toolkit's
+  no-flicker path is looking for and what all of them fall back from today. The buffer follows its
+  window: a resize reallocates it at the new size and fills it with the window's background. The four
+  swap actions are the measured part and one rule covers them - the window takes the first allocated
+  buffer's contents, and every buffer of that window is then left holding what the action names
+  (`Copied` and `Undefined` the new front, `Untouched` the front's previous contents, `Background` the
+  window's background). Measured against a reference with `tools/DbeProbe`, and checked the harder way
+  with **Xlib's own `Xdbe` client** (`tools/xdbe-client.c`), whose readers parse these replies and whose
+  request builders drive the swaps: identical on both servers.
 - **RECORD, which is how one client watches another's traffic.** A client creates a context over a set
   of clients and a set of ranges - requests and replies, core and extension, delivered events, errors,
   a client arriving and a client leaving - enables it, and from then on receives one reply per recorded
