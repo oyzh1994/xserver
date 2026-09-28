@@ -214,6 +214,7 @@ public final class XServer {
         created.setDefaultColormap(colormap);
         created.setBlackPixel(rootVisual.fromArgb(0xFF000000));
         created.setWhitePixel(rootVisual.fromArgb(0xFFFFFFFF));
+        publishXkbRulesNames(created);
         if (options.scale() > 1) {
             publishDpi(created);
         }
@@ -524,6 +525,28 @@ public final class XServer {
      * <p>It is only half of HiDPI, and the other half is not a server's to do - see
      * {@code ServerOptions.hostScale} and the README.
      */
+    /**
+     * Publishes {@code _XKB_RULES_NAMES}, the property that says which rules, model, layout and
+     * options built the keyboard a client is typing on.
+     *
+     * <p>A reference server writes it for itself at startup - measured on a fresh Xvfb, before any
+     * client has run: {@code "evdev", "pc105", "us", "", ""} - and clients read it back. It is not
+     * decoration: `setxkbmap` reads it to know which rules file describes the loaded keymap, and both
+     * `setxkbmap -print` and the property it writes afterwards follow from that one answer. Without
+     * it, ours reported the client's own fallback ("base", and a keycodes component of "xfree86")
+     * where a reference reports the evdev ones.
+     *
+     * <p>The value is one STRING of five NUL separated names, exactly as a reference's own bytes have
+     * it (measured raw: {@code evdev\0pc105\0us\0\0\0}).
+     */
+    private void publishXkbRulesNames(Screen screen) {
+        int name = atoms.intern("_XKB_RULES_NAMES");
+        int string = atoms.intern("STRING");
+        byte[] value = new byte[] {'e', 'v', 'd', 'e', 'v', 0, 'p', 'c', '1', '0', '5', 0, 'u', 's',
+                0, 0, 0};
+        screen.root().properties().put(name, new XProperty(name, string, 8, value));
+    }
+
     private void publishDpi(Screen screen) {
         int atom = atoms.intern("RESOURCE_MANAGER", true);
         int string = atoms.intern("STRING", true);
@@ -681,6 +704,12 @@ public final class XServer {
 
     public ScreenSession openClientScreen(ClientConnection client) {
         Screen privateScreen = createScreen(0);
+        // Every screen's root carries it, not just the master's: in the default mode a client sees
+        // *its own* root, so a client that asks which rules built the keyboard - `setxkbmap` does,
+        // before it changes anything - would find the property missing and fall back to its own
+        // defaults, which is a difference from a reference it then writes back into the property
+        // (measured: "base"/"xfree86" against a reference's "evdev").
+        publishXkbRulesNames(privateScreen);
         InputState privateInput = new InputState(this, privateScreen);
         ScreenSession session = new ScreenSession(privateScreen, privateInput, client);
         screenInputs.put(privateScreen, privateInput);

@@ -15,8 +15,8 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **445 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 445 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **447 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 447 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
@@ -175,7 +175,18 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
   indirect context is refused. `--no-glx` turns it off.
 - **XKB**: a variant is served as its base layout; the compatibility map, indicator names, a
   `SetNames` round-trip, every control other than repeat, `LatchLockState` and XKB events are absent;
-  `GetDeviceInfo` is refused (no client in this bed sends it).
+  `GetDeviceInfo` is refused (no client in this bed sends it). Two consequences a real client shows,
+  measured on 2026-09-28: `xset q` prints **`XKB indicators: None`** where a reference lists thirteen
+  (the names are what it would print), and **`xkbcomp -xkb <display>` cannot export the map** - it
+  stops at `XkbGetCompatMap` with `BadImplementation` and then at `XkbGetGeometry` - while the
+  direction that matters for a client that wants a layout (`xkbcomp <file> <display>`, `setxkbmap
+  -layout <name>`) works. `setxkbmap -print` and `_XKB_RULES_NAMES`, which follow from the rules
+  property, are **identical** to a reference's for the layouts in the kit.
+- **The per-key repeat bitmap differs on four keycodes**: 204-207, the extra evdev Alt/Meta/Super/Hyper
+  keys, repeat on a reference and not here. Its repeat map comes from the XKB map's key *behaviours*,
+  which this server does not carry, so the rule it uses is the simpler "every key but the modifiers of
+  the keymap in force" - and those four are modifiers here. Nothing types them (their unshifted level
+  is `NoSymbol`), which is why the difference is recorded rather than chased.
 - **XI2**: touch, tablets, barriers, the raw event family and the property *writes* are refused; both
   property *reads* are answered "nothing".
 - **MIT-SHM is not done** (deliberate, with reasons).
@@ -264,6 +275,11 @@ the next round cheaper:
    window resize it sent a 130 character run, got `X Error: BadRequest ... X_ImageText8`, and quit -
    taking its host window with it. Both requests are hand-decoded now, and `DrawTextTest` pins the
    boundary.
+
+The round also closed a difference that was *not* invisible: `_XKB_RULES_NAMES` was never published, so
+`setxkbmap` described the keyboard in its own fallback terms ("base", a keycodes component of
+`xfree86`) where a reference says `evdev` - in the property and in `setxkbmap -print` both. It is
+published on every screen's root now, and `setxkbmap -print` is byte-identical for `us`, `de` and `cn`.
 
 Two differences were *not* defects, and are recorded as traps above so the next round does not chase
 them: the reference's screen saver settings belong to `x11vnc`, and `Ctrl`/`Shift` do reach the
