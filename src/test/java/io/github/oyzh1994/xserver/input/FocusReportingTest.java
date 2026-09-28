@@ -101,12 +101,12 @@ class FocusReportingTest {
         quiet();
         assertEquals(client.root(), focusOf(),
                 "the root window is a window, and GetInputFocus names it; answering PointerRoot here"
-                        + " folds two states together that behave differently");
+                        + " folds two states together that report different events");
 
         client.setInputFocus(POINTER_ROOT, REVERT_TO_PARENT);
         client.flush();
         quiet();
-        assertEquals(POINTER_ROOT, focusOf(), "and this is the state that does follow the pointer");
+        assertEquals(POINTER_ROOT, focusOf(), "and this is the state that says so in the reply");
     }
 
     @Test

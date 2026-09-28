@@ -68,6 +68,24 @@ clang -o /tmp/type tools/host-type.c -framework ApplicationServices
 /tmp/keypid <pid> "你好"            # the same, posted straight to a process instead of the front window
 ```
 
+**A client that misreads an event can be read from its own side, and for AWT that is a logging
+switch.** `tap.py` shows what a server *sent*; when a client behaves as though it were sent something
+else, the JDK's event logger shows the other half - what the toolkit *read*. Put
+
+```
+handlers=java.util.logging.FileHandler
+.level=INFO
+java.util.logging.FileHandler.pattern=/root/jul.log
+java.util.logging.FileHandler.append=false
+sun.awt.X11.event.level=FINE
+```
+
+in a properties file and start the Swing application with
+`JAVA_TOOL_OPTIONS="-Djava.util.logging.config.file=<that file>"`: every button event is printed as
+the toolkit's own struct (`XWindow.handleButtonPressRelease` logs `XButtonEvent = type = ...
+button = ...`), which is how backlog A18's "Nonexistent button 16" was pinned to a *reading* of ours
+rather than to our bytes.
+
 `winlist` needs no permission; `drag` posts events into the session and so needs the *Accessibility*
 permission for whatever is at the top of the shell's parent chain (the same grant that screen
 recording needs, see the testbed notes). Dragging a window by its title bar moves it; dragging its
@@ -138,6 +156,17 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   through a sequence of `SetInputFocus`, pointer warps and
   grabs, printing every focus and crossing event with its detail and mode. This is the `Probe` the
   design notes' focus measurements were made with, and the harness for backlog items A5 and A6.
+- `KeyTargetProbe` - **where a keystroke lands**, which is the half of the focus no diff of the focus
+  *events* can see: two servers can send the same `FocusIn`/`FocusOut` around a revert and route the
+  keys that follow to different windows. It maps a window of its own with the pointer parked inside
+  it, leaves the focus on the root - `SetInputFocus(root)`, or the revert a client gets when the page
+  it focused is unmapped with `revert_to = Parent` - and presses a key through XTEST, printing the
+  window each `KeyPress` is reported against. **Measured against Xvfb and here on 2026-09-29**: a
+  reference reports it against the window the pointer is in for `PointerRoot`, for the root window and
+  for that revert alike, and nowhere for `None`; this server sent it to the root window in the two
+  states that are not `PointerRoot`, which is how EasyShell's search box stopped accepting input after
+  its 片段 page was closed. The modes are `unmap` (default), `kill`, `root`, `pointer`, `none` and
+  `parent`, the last being the control where the focus is on the window the pointer is in.
 - `MenuProbe` - the same idea for the menu gesture: maps a popup under a held button, grabs the
   pointer, leaves and re-enters, and prints the crossings - marking any `EnterNotify` that arrives in
   a step where no motion was sent (`! enter without a move`), which is the event shape measured to

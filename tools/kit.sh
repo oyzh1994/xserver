@@ -14,7 +14,7 @@ MVN="${MVN:-/Users/oyzh/Documents/Tools/apache-maven-3.9.11/bin/mvn}"
 
 if [ $# -lt 1 ]; then
     echo "usage: tools/kit.sh <Tool> [args ...]" >&2
-    echo "tools: Drive Keys Shot Wire FocusProbe MenuProbe PointProbe WinTree Focus Pixel Xwd" >&2
+    echo "tools: Drive Keys Shot Wire FocusProbe KeyTargetProbe MenuProbe PointProbe WinTree Focus Pixel Xwd" >&2
     echo "       Blocks Colors Shift Rect Crop AuthProbe SelectionProbe CursorProbe" >&2
     echo "       ClipboardProbe WindowStateProbe XProxy XkbProbe RandrProbe XineramaProbe" >&2
     echo "       ScreenSaverProbe GravityProbe GrabProbe AllowEventsProbe PolyProbe" >&2

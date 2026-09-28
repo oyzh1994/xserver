@@ -208,8 +208,11 @@ public final class InputHandlers {
             pointerRoot = true;
         } else {
             // The root window asked for by id is *not* PointerRoot, and a client can tell the two
-            // apart: GetInputFocus answers the id, and the keys go to the root window rather than
-            // following the pointer. Measured against a reference server with tools/FocusProbe.
+            // apart: GetInputFocus answers the id, and the two report different chains of FocusIn and
+            // FocusOut. Where the *keys* go is the one thing they share - either way they belong to
+            // the window the pointer is in, measured with tools/KeyTargetProbe - so this is the state
+            // a RevertToParent out of a child of the root leaves a client in, and its text fields go
+            // on working.
             window = window(client, focus);
         }
         // The focus is machine-wide, so an untrusted connection may not move it onto a window that

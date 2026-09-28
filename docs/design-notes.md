@@ -1031,13 +1031,15 @@ probe reads the status first and the events after it.
   the pointer is already in the window asking for the focus, which is not a no-op: a reference server
   sends the whole pair, and treating it as one leaves the client that asked never told. That was the
   difference between a menu that is dismissed and a menu that is not. But `PointerRoot` is *not* the
-  root window: `GetInputFocus` answers `PointerRoot` for one and the root's own id for the other, a
-  key goes to the window under the pointer in one state and to the root in the other, and the events
-  differ - a reference server sends a chain of `FocusOut`/`FocusIn` on the way out of one and
-  something else entirely out of the other, measured with `FocusProbe` for both. A fresh server's
+  root window: `GetInputFocus` answers `PointerRoot` for one and the root's own id for the other, and
+  the events differ - a reference server sends a chain of `FocusOut`/`FocusIn` on the way out of one
+  and something else entirely out of the other, measured with `FocusProbe` for both. A fresh server's
   focus is the root **window** (`xdpyinfo`'s "focus: window 0x1ff"), which is what a client gets
   before it asks for anything, and folding the two is how a client that focuses the root to hand the
-  keyboard back to the desktop was told a focus it did not ask for.
+  keyboard back to the desktop was told a focus it did not ask for. **Where a *key* goes is the one
+  thing they share**, and that half was wrong here until 2026-09-29: both deliver a `KeyPress` to the
+  window the pointer is in, and only `None` leaves it with nowhere to go. See the omitted-things list
+  at the end of this file for the measurement, and `InputState.focusWindow` for the rule.
 - **The chain arrives outermost first, on the way in as well as on the way out.** A change to
   `PointerRoot` tells the window holding the one the pointer is in before the window itself, and the
   same for any other chain of ancestors - a toolkit walks *down* into the window that gained the
@@ -1805,15 +1807,30 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   its clients with it: persisting across a restart would mean journalling the framebuffer and
   re-establishing the clients' connections, which plain X11 has no way to do. The honest answer is the
   one D1 records - the server stays up instead.
-- **The focus does not follow the pointer, and a reference server's does not either.** With the focus
-  on `PointerRoot` the *keys* follow the pointer (`InputState.focusWindow`) and no `FocusIn`/`FocusOut`
-  is generated as it moves - which was verified against Xvfb rather than assumed, because the obvious
-  reading of the specification says otherwise and an earlier version of these notes claimed it. What
-  tells a client it has the focus there is the crossing's focus bit. `SetInputFocus`, the ends of a
-  keyboard grab and a focused window going away are what produce focus events, and that covers what a
-  toolkit actually does. The reporting differences that *were* real are listed in `backlog.md` A5,
-  which is now closed: the probe's default sequence prints the same lines against both servers, and
-  the rules behind it are in "The focus is the client's to be told about" above.
+- **The focus does not follow the pointer, and a reference server's does not either.** No
+  `FocusIn`/`FocusOut` is generated as the pointer moves, whichever state the focus is in - which was
+  verified against Xvfb rather than assumed, because the obvious reading of the specification says
+  otherwise and an earlier version of these notes claimed it. What tells a client it has the focus
+  there is the crossing's focus bit. `SetInputFocus`, the ends of a keyboard grab and a focused window
+  going away are what produce focus events, and that covers what a toolkit actually does. The
+  reporting differences that *were* real are listed in `backlog.md` A5, which is now closed: the
+  probe's default sequence prints the same lines against both servers, and the rules behind it are in
+  "The focus is the client's to be told about" above.
+- **Where a key goes under `PointerRoot` and under the root window: the window the pointer is in, for
+  both.** The two states are told apart by what they *report* - `GetInputFocus`, and the chain of
+  `FocusIn`/`FocusOut` a change between them produces - and not by where the keys go, which is the
+  same window either way, with only `None` leaving them nowhere. This was measured on 2026-09-29 with
+  a probe written for the question (`tools/KeyTargetProbe`: park the pointer in one of the probe's own
+  windows, focus another with `revert_to = Parent`, unmap it, press a key through XTEST) - against Xvfb
+  a `KeyPress` is reported against the window the pointer is in for the revert case, for
+  `SetInputFocus(root)` and for `PointerRoot` alike, and nowhere at all for `None`. This server sent it
+  to the **root window** in the two states that are not `PointerRoot`, which no client is listening
+  for, and the cost was **EasyShell's home page losing the ability to type into its search box**: its
+  片段 page is a toplevel of its own, the client focuses it and closes it by unmapping it, and the
+  revert out of a child of the root lands on the root window. Everything pointer-driven kept working,
+  which is exactly the shape of an input bug that is not in the input path. `InputState.focusWindow`
+  now sends the keys to the pointer's window from either state, and `InputFocusTest` pins all three
+  cases (both states, and the revert that reaches one of them).
 - The X11 protocol classes come from a fork of `moaxcp/x11-protocol`, and three of its faults are
   patched in `ClientOutput` rather than worked around at each caller, because every reply and event
   already passes through there: the generator ignores the `number` on an `eventcopy`, which is why

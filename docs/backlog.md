@@ -94,6 +94,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
+| [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
 | [ ] E6 | keep the three documents in step - **ongoing**: the discipline rather than a task, and what the sweep after every change is | engineering | S |
@@ -1014,9 +1015,15 @@ all:
 3. **`SetInputFocus` on the root window is not the same as `PointerRoot`.** `FocusProbe`'s `focus
    root` sends the root *window id*; the reference then answers `GetInputFocus` with that id
    (`focus = 0x1ff`) and reports the transition against it, where this server folds "the root window"
-   into `PointerRoot` and answers `1`. The two behave differently - keys go to the root window in one
-   and follow the pointer in the other - and a client that focuses the root window to "hand the
-   keyboard back to the desktop" is the case that tells them apart.
+   into `PointerRoot` and answers `1`. The two states are two, and a client can tell them apart by
+   both answers. **Corrected 2026-09-29**: the *keys* are not one of the differences - "keys go to the
+   root window in one and follow the pointer in the other" was an inference from the states being
+   different, and it is wrong. Measured with `tools/KeyTargetProbe` (written for the question): against
+   Xvfb a `KeyPress` is reported against **the window the pointer is in** for `PointerRoot`, for
+   `SetInputFocus(root)` and for a revert that lands on the root alike, and only `None` leaves it
+   unreported. This server sent it to the root window in the two states that are not `PointerRoot`,
+   which is a text field that looks focused and accepts nothing - see the 2026-09-29 entry in
+   `verification-checklist.md` and the omitted-things list in `design-notes.md`.
 
 **Traps.** Both the pointer *and* the focus outlive the connection, so a probe that does not park the
 pointer and set the focus before its first step is measuring its own previous run: "the reference
@@ -2624,6 +2631,66 @@ copy-into-a-store-window path was untested. `RawXClient.copyArea` and
 test really pins, and the mutation that shows it bites). It is a small thing, but it is the part of
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
+
+### [ ] A18. A click on termora's 密钥管理器 button throws in AWT on this server and opens the dialog on the reference. **M** - open, found 2026-09-29
+
+**What it is.** termora (Swing/AWT, 2.0.0-beta.16, the AppImage's own **Java 25.0.2** runtime) started
+against a `--single-window` server on the Mac: a click on the toolbar's 密钥管理器 (key manager)
+button at (1093,18) makes the application's toolkit thread throw
+
+```
+java.lang.IllegalArgumentException: Nonexistent button 16
+        at java.awt.event.MouseEvent.<init>
+        at sun.awt.X11.XWindow.handleButtonPressRelease
+        at sun.awt.X11.XContentWindow.handleButtonPressRelease
+```
+
+and the dialog never opens. **The same click on Xvfb opens it** (captured), with no exception.
+
+**What AWT itself says it read.** The JDK's event logger is the instrument, and it is worth recording
+because it is the only way to see the client's *reading* of an event rather than the bytes:
+
+```sh
+# on the VM, a properties file with sun.awt.X11.event.level=FINE (see the tool's entry in
+# tools/README.md), then:
+JAVA_TOOL_OPTIONS="-Djava.util.logging.config.file=/root/jul.properties" \
+  DISPLAY=<our server> /root/termora-...AppImage
+```
+
+It prints, for the failing click:
+
+```
+XButtonEvent = type = ButtonPress, serial = 1303, send_event = false,
+  window = sun.awt.X11.XContentWindow[0,0,1280x800], root = 0, subwindow = 2, time = 0,
+  x = -383051049, y = 0, x_root = 1083, y_root = 18, state = 1093, button = 18, same_screen = false
+```
+
+`serial = 1303` is **our ButtonPress's own sequence number** (0x0517, read off the tap), and the type
+byte is right - but almost every other field is wrong, and the *wrong* values are the coordinates of
+the **previous** event on the same spot (1083/18 are that event's `event_x`/`event_y`, 1093/18 its
+`root_x`/`root_y`). That is the shape of a struct read out of a **stale buffer**: the first bytes of
+this server's message landing in AWT's native `XEvent` and the rest still holding the event before it.
+`button = 18` is what turns into "button 16": AWT maps extra buttons by subtracting two.
+
+**What the wire says, which is the puzzle.** A byte-transparent tap in front of this server during the
+same click (`tools/tap.py 6096 6095`, termora on `:96`) captured exactly three well-framed 32-byte
+messages - `MotionNotify`, `ButtonPress` with `detail = 1`, `ButtonRelease` with `detail = 1` - and
+`xev` against this server prints `button 1, same_screen YES` for the same click. So the button AWT
+complains about is not in the stream as Xlib reads it, and the two servers' bytes have not been
+diffed field by field yet.
+
+**Not a regression from the focus fix of the same day.** The pre-fix build throws the same exception
+with the same garbage struct (measured: the fix's source was reverted, rebuilt and the click repeated
+- identical log line, identical exception), and the changed method (`InputState.focusWindow`) is
+reached only from the key paths.
+
+**Next step.** Run the tap and AWT's logger *at the same time* so the 32 bytes AWT was handed and the
+struct it printed can be lined up field by field - that identifies whether AWT read a *different*
+message, or ours with an offset. Two candidates to check first: termora selects XI2 (`XIAllDevices`)
+on the **root** and on its icon window but not on the content window that was clicked, and AWT asked
+for XI2 2.2 where this server answers 2.0 (`Desired version is 2.2, server version is 2.0`, in the
+same log) - a toolkit that half-enables XI2 is the kind of client whose event reading is worth
+distrusting, and the reference answers 2.2.
 
 ### [x] B6. GLX / OpenGL. **XL** - done 2026-09-27, and it needed no renderer: a software GL client renders itself and blits
 

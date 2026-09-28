@@ -268,9 +268,11 @@ public final class FocusProbe {
             return "C";
         }
         if (window == root) {
-            // The root window's id, which is a *different* state from PointerRoot: the keys go to the
-            // root rather than following the pointer, and a reference server answers it here where
-            // this one used to answer PointerRoot. Both are named, so a diff shows which.
+            // The root window's id, which is a *different* state from PointerRoot: GetInputFocus
+            // answers PointerRoot for one and this id for the other, and a reference server answers
+            // the id here where this one used to answer PointerRoot. Both are named, so a diff shows
+            // which. Where a *key* goes is not one of the differences - see `KeyTargetProbe`, which
+            // is the probe that asks that question.
             return "R";
         }
         // A focus of 1 is PointerRoot, and 0 is None - the two states that are not windows. Their

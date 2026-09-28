@@ -72,6 +72,58 @@ public class InputFocusTest {
         assertEquals(outer, server.input().focusWindow(), "keys belong to the window under the pointer");
     }
 
+    /**
+     * The root window asked for by id is a state of its own, and the keys follow the pointer in it
+     * just as they do for {@code PointerRoot}.
+     *
+     * <p>Measured against a reference server with {@code tools/KeyTargetProbe}: with the focus on the
+     * root - whether asked for directly or reached by a revert - the {@code KeyPress} is reported
+     * against the window the pointer is in, and only {@code None} leaves it unreported. A server that
+     * hands the key to the root window instead sends it to a client that never asked for it, which is
+     * a text field that looks focused, still reacts to the mouse, and accepts nothing.
+     */
+    @Test
+    void theRootWindowFocusedByIdAlsoSendsKeysToTheWindowUnderThePointer() {
+        XServer server = serverWithTwoWindows();
+        XWindow outer = (XWindow) server.resources().get(0x400001);
+        // The three-argument form, because the two-argument one is the shorthand for "the root means
+        // PointerRoot": the request handler passes the flag the request carried, and a client that
+        // names the root's id asks for the root window, which GetInputFocus then answers.
+        server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_PARENT, false);
+        server.input().pointerMoved(60, 60);
+
+        assertEquals(server.rootWindow(), server.input().inputFocus(), "the root window, not a window"
+                + " of its own");
+        assertEquals(false, server.input().focusIsPointerRoot(), "and not PointerRoot either");
+        assertEquals(outer, server.input().focusWindow(), "keys still belong to the pointer's window");
+    }
+
+    /**
+     * The gesture a toolkit makes: it moves the focus to the page it just opened and closes the page
+     * by unmapping it, so the revert - not the client - is what puts the focus back.
+     *
+     * <p>{@code RevertToParent} out of a child of the root lands on the root window, and from there
+     * the keys have to reach the window under the pointer or the application's own window never sees
+     * another keystroke: EasyShell's 片段 page closed this way on 2026-09-29 left its home page's
+     * search box unable to accept input until an unrelated dialog was opened and closed.
+     */
+    @Test
+    void afterTheFocusedWindowIsUnmappedTheKeysReachTheWindowUnderThePointer() {
+        XServer server = serverWithTwoWindows();
+        XWindow outer = (XWindow) server.resources().get(0x400001);
+        // The page: a toplevel of its own, so the revert has nowhere to go but the root.
+        XWindow page = window(server.screen(), server.rootWindow(), 0x400003, 200, 200, 20, 20);
+        server.resources().add(page);
+        page.setMapped(true);
+        server.input().setInputFocus(page, InputState.REVERT_TO_PARENT);
+        server.input().pointerMoved(60, 60);
+
+        server.windows().unmapWindow(page, false);
+
+        assertEquals(server.rootWindow(), server.input().inputFocus(), "the revert landed on the root");
+        assertEquals(outer, server.input().focusWindow(), "and the keys reach the pointer's window");
+    }
+
     @Test
     void aFocusOfNoneSendsKeysNowhere() {
         XServer server = serverWithTwoWindows();

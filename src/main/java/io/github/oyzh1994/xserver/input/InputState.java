@@ -171,7 +171,14 @@ public final class InputState implements DisplayBackend.InputSink {
     public static final int REVERT_TO_PARENT = 2;
 
     private XWindow inputFocus;
-    /** True when {@link #inputFocus} - always the root window then - means PointerRoot. */
+    /**
+     * True when {@link #inputFocus} - always the root window then - means PointerRoot rather than the
+     * root window itself.
+     *
+     * <p>Two states a client can tell apart, since {@code GetInputFocus} answers {@code PointerRoot}
+     * for one and the root's own id for the other, and a change between them reports a different chain
+     * of focus events. Where a key goes is what they have in common: see {@link #focusWindow()}.
+     */
     private boolean focusIsPointerRoot;
     private int focusRevertTo = 1;   // RevertToPointerRoot
     private boolean focusSet;
@@ -2144,11 +2151,23 @@ public final class InputState implements DisplayBackend.InputSink {
     /**
      * The window key events are reported against.
      *
-     * <p>A focus of the root window means {@code PointerRoot}: the focus follows the pointer, so the
-     * keys belong to the window the pointer is in. That is the state a toolkit leaves behind when it
-     * hands the focus back to the desktop, and without it every keystroke is reported against the
-     * root - which no client owns - so the keys are dropped and text fields stop accepting input
-     * while everything driven by the pointer keeps working.
+     * <p><b>A focus of the root window means the keys follow the pointer</b> - exactly what
+     * {@code PointerRoot} means, and not what the prose of the specification suggests. The two states
+     * are still two: {@code GetInputFocus} answers the root's own id for one and {@code PointerRoot}
+     * for the other, a change between them reports a different chain of {@code FocusIn}/{@code FocusOut}
+     * (see {@link EventDispatcher#deliverFocusChange}), and this field keeps them apart. What they have
+     * in common is where a key goes, and it is the case a toolkit lands in without asking for it: a
+     * {@code RevertToParent} out of a window whose parent is the root reverts to the root window, and a
+     * client whose page or dialog has just been unmapped is left in that state.
+     *
+     * <p>Measured rather than reasoned, because the obvious reading of the specification says the keys
+     * belong to the root: {@code tools/KeyTargetProbe} parks the pointer in a window of its own and
+     * presses a key with the focus on the root - reached both by {@code SetInputFocus(root)} and by the
+     * revert - and a reference server reports the {@code KeyPress} against the window the pointer is
+     * in, byte for byte what it does with the focus on {@code PointerRoot}. Sending it to the root
+     * window instead is invisible to any client diff of the focus events and is fatal to a text field:
+     * the window under the pointer looks focused, the clicks keep working, and not one character
+     * arrives. Only {@code None} leaves the keys with nowhere to go.
      */
     public XWindow focusWindow() {
         if (inputFocus == null) {
@@ -2156,11 +2175,12 @@ public final class InputState implements DisplayBackend.InputSink {
             // hand them to a client that never asked for them.
             return null;
         }
-        if (focusIsPointerRoot) {
+        if (inputFocus.isRoot()) {
+            // Both states that name the root: the keys belong to the window the pointer is in, and to
+            // the root itself when the pointer is over no window at all - which is where a reference
+            // server puts them too, the root being the window the pointer is then in.
             return pointerWindow == null ? screen.root() : pointerWindow;
         }
-        // The root window focused explicitly is not PointerRoot: the keys go to the root window and
-        // stay there, where a client that focused it (rather than asking for PointerRoot) put them.
         return inputFocus;
     }
 

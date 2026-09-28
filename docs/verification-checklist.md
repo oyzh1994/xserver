@@ -15,8 +15,8 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **447 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 447 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **449 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 449 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
@@ -52,6 +52,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 |---|----|------|-----------|
 | 2.1 | pointer motion, buttons, keys through XTEST | `Drive` (`M x y`, `P n`, `R n`, `K kc`, `W ms`), `Keys` | the client reacts identically to the reference |
 | 2.2 | focus: `SetInputFocus`, reverts, a focused window going away, `PointerRoot` | `Focus`, `FocusProbe` | `FocusProbe` identical to the reference, including the revert cases (`kill A`, `unmap A`) |
+| 2.2b | **where a key lands** in each focus state - the window the pointer is in, or nowhere | `KeyTargetProbe` | identical to the reference in all six modes: `pointer`, `root` and the `unmap`/`kill` reverts report the `KeyPress` against the window the pointer is in, `parent` against the focused window, and `none` reports nothing. A server that answers the focus events correctly and sends the key to the root window still fails here |
 | 2.3 | crossings: enter/leave, details, modes, the flags byte | `MenuProbe`, `FocusProbe` | identical to the reference - **and the menu gesture must be run fresh** (§8) |
 | 2.4 | grabs: pointer, keyboard, passive grabs, owner-events | `GrabProbe`, `GrabCrossingTest` | identical; passive grabs are matched, and a disconnecting client's arms are dropped with it |
 | 2.5 | `AllowEvents`: freeze/thaw, the held queue, replay | `AllowEventsProbe` | all five arrangements identical to the reference |
@@ -285,3 +286,63 @@ Two differences were *not* defects, and are recorded as traps above so the next 
 them: the reference's screen saver settings belong to `x11vnc`, and `Ctrl`/`Shift` do reach the
 following key on this server (measured with `xev` on both) whatever a first look at an application
 suggests.
+
+## What the 2026-09-29 bug round found
+
+The bug branch works through what a *user* of a real application reports, one item per branch. The
+first of them:
+
+1. **A keystroke went to the root window instead of the window the pointer is in, once the focus was
+   left on the root window - which is where a `RevertToParent` out of a child of the root lands.**
+   Reported as "click 片段, close the page, then click the home page's search box: no character
+   arrives; open and close 设置 and it types again", and it is not a client bug and not a rendering
+   one: everything pointer-driven kept working, and the search box even took the focus the click gave
+   it. Traced in the server log with EasyShell on the VM against a `--single-window` server:
+
+   - the 片段 page is a toplevel of its own (`0x40001e`), the client calls
+     `SetInputFocus(page, revert_to = Parent)` when it opens it, and closing it sends `UnmapWindow`
+     and nothing else - the client is relying on the server's revert;
+   - the revert runs, and lands correctly on the root window: `focus reverted from 0x40001e to 0x2
+     (the root window)`, which is what Xvfb does with the same gesture too (`xdpyinfo` on the
+     reference after closing the page: `focus: window 0x1ff, revert to None`);
+   - **but this server then delivered the keys to the root window** (`InputState.focusWindow`
+     returned the focus window itself, and only `PointerRoot` followed the pointer), so every
+     keystroke went to a window no client is listening for and was dropped;
+   - the 设置/关于 dialogs "fix" it because they are *transient* windows: the client puts the focus
+     back itself (`SetInputFocus(main)` one millisecond before the `UnmapWindow`, in the log), which
+     is why the same code path behaved differently for the two gestures.
+
+   **Measured, not reasoned.** `tools/KeyTargetProbe` was written for the question - it parks the
+   pointer in a window of its own, leaves the focus on the root (`SetInputFocus(root)`, or the revert
+   from unmapping a focused child), presses a key through XTEST, and prints the window the
+   `KeyPress` is reported against. Against Xvfb and here, all six modes: `pointer`, `root`, `unmap`
+   and `kill` report the key against **the window the pointer is in**, `parent` against the focused
+   window, `none` reports nothing. Before the fix this server reported nothing at all for `root`,
+   `unmap` and `kill` - the key had gone to the root. The probe run is identical line for line to the
+   reference's (`tools/probe-diff.py`) with no other client's window under the pointer it parks.
+
+   **The fix** is one rule in `InputState.focusWindow`: the root window and `PointerRoot` are two
+   states a client can still tell apart - `GetInputFocus` answers the id for one and `1` for the
+   other, and a change between them reports different event chains - but the keys follow the pointer
+   from either, and only `None` leaves them nowhere. `InputFocusTest` pins the three cases (both
+   states, and the revert that reaches the root window), and both of the new tests were seen to fail
+   without the fix.
+
+   **Verified end to end**: EasyShell on the VM against this server, the same gesture, typed `abc`
+   into the home page's search box with no dialog opened in between - and the app receives it as
+   `Xi2Event[evtype=2 device=3]` (XI2 `KeyPress`), which is how the toolkit reads the keyboard.
+
+**termora, the second application in the bed, was checked the same way** - it is Swing/AWT and reads
+the keyboard through core events rather than XI2, so it is the control for "the fix is not a
+JavaFX-shaped accident". Started against the same server, with the focus left on the root window by a
+fourth client's probe (`tools/KeyTargetProbe root`) and its pointer parked over termora's window, the
+three typed keys arrive as `KeyPressEvent -> client[1]` - core `KeyPress`/`KeyRelease`, which is what
+AWT dispatches to a focused component. Before the fix this is the state in which nothing arrives.
+
+**And one finding that is *not* the reported bug, left open as `backlog.md` A18**: clicking termora's
+密钥管理器 toolbar button on this server makes its toolkit thread throw `Nonexistent button 16` and the
+dialog never opens, where the same click on Xvfb opens it. It is **not** from this fix - the pre-fix
+build throws the same exception with the same event log - and AWT's own logger shows its *reading* of
+the event to be the strange part: the serial and the type byte are ours, and every other field holds
+the previous event's values. The wire, tapped through `tools/tap.py` during the same click, is three
+well-framed messages with `detail = 1` on the press. A18 has the detail, the harness and the next step.
