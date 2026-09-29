@@ -2667,6 +2667,58 @@ test really pins, and the mutation that shows it bites). It is a small thing, bu
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
 
+### [x] A22. A forwarded application's input fields ignore their context menu and every Control shortcut. **M** - fixed 2026-09-30
+
+**The report.** "In EasyShell's home page the input box's native right-click menu does nothing - the
+items are clickable but 剪切/复制/粘贴 have no effect - and the same in 新增目录's dialog and in the box inside
+an open SSH tab. Ctrl+A, Ctrl+C and Ctrl+V do nothing either. Through Xvfb+VNC, and on a Mac Finder
+connection, it is fine."
+
+**Two independent causes, found one after the other, and the first had to be fixed before the second
+could be seen at all.**
+
+1. **The toolkit's connection was being killed by us.** A GTK3 probe on the same display (the toolkit
+   the application's own Linux backend is built on) reported, on its first click into a text field:
+   `The program received an X Window System error. The error was 'BadMatch' ... request_code 93 (core
+   protocol)`. 93 is the **core** `CreateCursor`, and GTK sends one with a one pixel *placeholder*
+   pixmap and its hotspot at (1,1) - outside it - when it installs the real, RENDER-built cursor on the
+   window. This server answered `BadMatch`; GTK's default error handler ends the process. Everything
+   after that (the selection ownership a copy needs, the XFixes cursor change) went nowhere, which is
+   what "the menu items do nothing" was. **Measured against a reference**: a 1x1 source with hotspot
+   (1,1) is accepted - Xvfb creates the cursor, and this server does now (a C probe run against both).
+   The hotspot is an offset into the image, so one outside it is a cursor whose image hangs off its own
+   origin, which is drawable. Both handlers dropped the check (`ResourceHandlers.createCursor` and the
+   RENDER `createCursor`).
+
+2. **The XI2 key event did not carry the modifier state where a toolkit reads it.** With the connection
+   alive, Ctrl+A still did nothing - and the application typed a plain `a`. A core event's `state` was
+   right (`xev`: `state 0x4` on the `a` of a Ctrl+A), so the probe went to what *GDK* believes:
+
+   ```
+   against Xvfb      KEY press keyval=a state=0x4 ctrl=True
+   against ours      KEY press keyval=a state=0x0 ctrl=False
+   ```
+
+   GDK takes it from the **device** event, and a byte-for-byte diff of the two XI2 `a` presses found
+   the field: an XI2 device event carries the modifier bits **twice** - the four bytes at 60-63 the
+   protocol documents, and the word at 72 - and a reference fills both (`04` at 63 and `04` at 72)
+   while this server wrote the first and left the second nought. **The A/B is the measurement**: setting
+   that word made GDK report `state=0x4 ctrl=True` for the gesture that reported `state=0x0` without it.
+
+**Verified end to end** on EasyShell's search box: Ctrl+A selects (typing then replaces the whole
+field), Ctrl+C copies, Ctrl+V pastes it back, and the field's 复制 menu item puts the text on the Mac's
+clipboard. The only refusals left in the server's log are the application's own two `window 0x0` probes,
+which a reference refuses too.
+
+**Traps this cost, both worth keeping.** *A stale server process is a false A/B*: two rounds of "the
+rule is in the source and the behaviour is unchanged" were a server started before the change still
+holding the port; check the process's start time against the build. And *a test's own request can be
+wrong in a way that makes it pass*: `CursorRequestTest` first wrote the cursor's hotspot at offsets 24/26
+where they are 28/30 (after the two six-word colours), so it never sent the case it was about - and its
+error reader looked for the opcode at offset 11, which is the minor half, where an error carries the
+major opcode at 10. Both were found by making the test prove it can fail: a second request that *must* be
+refused is sent with the same reader, and the rule was put back to watch the first one fail.
+
 ### [x] A21. With the SSH tab open the pointer sprite flickered on this build and not on `main`. **M** - fixed 2026-09-29
 
 **The report.** "Open a connection (aliyun) and the SSH tab: the loading animation and, once the tab is
