@@ -18,7 +18,7 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 | 0.1 | `mvn -o test` on this machine | Maven | **453 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
 | 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 453 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
-| 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
+| 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray --no-focus-on-click` (the last one for a *comparison* run: focusing on a click is on by default and a reference does not do it) | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray --no-focus-on-click` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
 | 0.7 | **before comparing two servers, put both in the same state** | the probes, and the reason below | a run compared against a reference that still carries the *previous* run's state reports differences that are not differences - `setxkbmap`'s layout, `xset r rate`, the parked pointer. Restart both, or set both to the same thing, before believing a diff |
 
@@ -164,7 +164,11 @@ report those as bugs either, but for the other reason: nobody has built them yet
 Each of these was measured against a reference and decided; `docs/design-notes.md`'s "Deliberately
 not done" and `docs/backlog.md`'s §7 have the measurement.
 
-- **No window-manager semantics**: no decorations, no `_NET_*` beyond C3, no activation protocol.
+- **No window-manager semantics**: no decorations, no `_NET_*` beyond C3, no activation protocol -
+  **except that a click moves the input focus** (`--focus-on-click`, on by default), which is what a
+  forwarded application whose page leaves the focus on the root window needs to get its menus back.
+  **`--no-focus-on-click` is the comparison switch**: a reference server does not focus a window on a
+  click, so a sweep or an A/B whose gesture presses a button wants it off.
 - **The crossing pair a grab implies** (`NotifyGrab`/`NotifyUngrab`) is not delivered - measured 3/3:
   EasyShell tears its menus down within a millisecond of receiving it.
 - **A window appearing under a stationary pointer** is reported as entered at the map (the *pair*
@@ -425,6 +429,7 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    `SetInputFocus`, `revert_to = Parent`), the revert left the focus on the **root window**, no server
    focuses a window on a click, and the application never asks for it - so the main window is unfocused
    and a toolkit hides the popup of an unfocused owner. **`--focus-on-click`** is the missing
-   window-manager half, off by default: a click moves the focus to the toplevel it lands in with
-   `revert_to = PointerRoot`. With it on the menu opens after the page closes (77999 / 6003) and the
-   rest of the session is unchanged; with it off nothing moves, which is what a reference does.
+   window-manager half, and **on by default** (the owner's call): a click moves the focus to the
+   toplevel it lands in with `revert_to = PointerRoot`. With it on the menu opens after the page closes
+   (77999 / 6003) and the rest of the session is unchanged; `--no-focus-on-click` is the comparison
+   switch, since with it off nothing moves a focus on a click, which is what a reference does.

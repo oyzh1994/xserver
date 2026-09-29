@@ -2674,8 +2674,8 @@ the 片段 click it is fine." Reported as new, after the XI2 shape and button-ma
 the X input focus to it (`SetInputFocus(page, revert_to = Parent)`, in this server's log; against Xvfb
 `xdpyinfo` says `focus: window 0xe0001f, revert to Parent` - the page - after the same click). The main
 window is therefore **unfocused**, and it stays that way: neither server focuses a window on a click -
-that is a window manager's job and this server deliberately has none (the design notes' division, and
-`main` and Xvfb behave the same) - and the client never asks for it either: a tap of the client's own
+that is the window-manager half this server did not have at the time (it has it now, on by default -
+see the switch below), and `main` and Xvfb behave the same - and the client never asks for it either: a tap of the client's own
 stream against Xvfb during the gesture has **one** `SetInputFocus` in it (the page's) and none after the
 click on the main window, the same as this server's log.
 
@@ -2711,10 +2711,13 @@ describes ("it disappears at once") rather than "it never appears". Nothing focu
 on either server, and the application never asks after the page closes, so the main window stays
 unfocused and its menus cannot stay open. **`--focus-on-click`** gives the missing window-manager half:
 a click moves the input focus to the toplevel it lands in, with `revert_to = PointerRoot` so a window
-that goes away afterwards hands the focus back to the window the pointer is in. **Off by default** - a
-reference does not do it, and a client that put the focus somewhere would see it taken away - and with
-it on, the reported sequence opens the menu again (measured: 77999 / 6003 after the page is closed,
-against 76968 / 4169 with the switch off, which is what the reference gives too).
+that goes away afterwards hands the focus back to the window the pointer is in. **On by default** (the
+owner's call, 2026-09-29): this server is the window manager for what it forwards, and the reported
+sequence opens the menu again with it on (measured: 77999 / 6003 after the page is closed, against
+76968 / 4169 without it, which is what the reference gives). `--no-focus-on-click` is the comparison
+switch - a reference does not focus a window on a click, so a probe gesture that presses a button is no
+longer byte-identical to one with it on (measured with `MenuProbe`: the press arrives with a
+`FocusIn`).
 
 ### [ ] A19. EasyShell's process dies when it copies - reported, not reproduced yet. **M** - open, 2026-09-29
 

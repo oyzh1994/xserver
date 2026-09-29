@@ -129,17 +129,17 @@ public class InputFocusTest {
 
 
     /**
-     * With {@code --focus-on-click}, the click that lands in a window the focus is not already inside
-     * moves the focus there - the window-manager half this server leaves out by default, and the one
-     * an application whose page left the focus on the root window needs to get its menus back.
+     * The click that lands in a window the focus is not already inside moves the focus there - the
+     * window-manager half, and the one an application whose page left the focus on the root window
+     * needs to get its menus back. **On by default**.
      *
      * <p>The window focused is the **toplevel** the click landed in, and the revert mode it is given is
      * a window manager's: {@code PointerRoot}, so a window that goes away afterwards hands the focus
      * to the window the pointer is in rather than leaving it on the root.
      */
     @Test
-    void aClickMovesTheFocusToTheToplevelItLandsInWhenAskedFor() {
-        XServer server = serverWithTwoWindows("--focus-on-click");
+    void aClickMovesTheFocusToTheToplevelItLandsIn() {
+        XServer server = serverWithTwoWindows();
         XWindow outer = (XWindow) server.resources().get(0x400001);
         // The focus on the root window: where a page that closed left it.
         server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_PARENT, false);
@@ -154,16 +154,15 @@ public class InputFocusTest {
     }
 
     @Test
-    void aClickLeavesTheFocusWhereItIsByDefault() {
-        XServer server = serverWithTwoWindows();
+    void noFocusOnClickIsTheComparisonSwitch() {
+        XServer server = serverWithTwoWindows("--no-focus-on-click");
         server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_PARENT, false);
         server.input().pointerMoved(60, 60);
 
         server.input().buttonChanged(1, true, 60, 60);
 
         assertEquals(server.rootWindow(), server.input().inputFocus(),
-                "without the switch nothing moves the focus on a click - a reference server does not"
-                        + " either");
+                "with it off nothing moves the focus on a click - which is what a reference does");
     }
 
     @Test

@@ -61,19 +61,23 @@ public final class ServerOptions {
     private boolean singleWindow;
 
     /**
-     * Whether a click moves the input focus to the window it lands in - the window-manager half this
-     * server leaves out, **off by default**.
+     * Whether a click moves the input focus to the window it lands in - the window-manager half, **on
+     * by default**.
      *
-     * <p>A reference server does not do this either, so it stays a switch rather than a default: a
-     * client that asked for the focus to be somewhere sees its windows fight over it otherwise. What
-     * it is for is the workflow this server's own host window makes ordinary - an application whose
-     * page or dialog takes the focus, and hands it to nobody when it closes. The focus then sits on
-     * the root window, and a toolkit hides the popup of a window it believes is unfocused: the
-     * application's context menus stop opening (measured 2026-09-29, and **identical on Xvfb**: the
-     * application's behaviour, not this server's mistake). With this on, the click that lands in the
-     * application's window focuses it again, which is what a desktop with a window manager gives it.
+     * <p>It is on because this server is the window manager for what it forwards - it owns the host
+     * window, and a forwarded application draws its own title bar and its own menus - and because the
+     * half it adds is the one a desktop gives every application: an application whose page or dialog
+     * takes the focus and hands it to nobody when it closes is left with the focus on the root window,
+     * and a toolkit hides the popup of a window it believes is unfocused, so its context menus stop
+     * opening (measured 2026-09-29, and *identical on a reference server*: the application's
+     * behaviour, and this is the switch that gives it what a desktop would). With it on, the click
+     * that lands in the application's window focuses it again.
+     *
+     * <p>**`--no-focus-on-click` is the comparison switch**, the way `--no-glx` is: a reference server
+     * does not focus a window on a click, so a measurement that has to be byte-identical to one wants
+     * this off - the sweep of probes and any A/B whose gesture presses a button.
      */
-    private boolean focusOnClick;
+    private boolean focusOnClick = true;
     /**
      * Whether GLX is advertised, which it is **by default** - a client that wants OpenGL needs it, and
      * there is nothing measured that it costs one that does not. That is the other way round from how
@@ -225,6 +229,7 @@ public final class ServerOptions {
                 case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
                 case "--single-window" -> options.singleWindow = true;
                 case "--focus-on-click" -> options.focusOnClick = true;
+                case "--no-focus-on-click" -> options.focusOnClick = false;
                 case "--max-screen" -> options.parseMaxScreen(next(args, ++i));
                 case "--drop-mount" -> options.parseDropMount(next(args, ++i));
                 case "--no-clipboard" -> options.clipboard = false;
@@ -311,10 +316,11 @@ public final class ServerOptions {
                   --local               only listen on loopback
                   --log-requests        log every request
                   --focus-on-click      a click moves the input focus to the window it lands in, the
-                                        way a window manager does it (off by default: a reference
-                                        server does not, and a client that put the focus somewhere
-                                        would see it taken away). It is what an application whose
-                                        page leaves the focus nowhere needs for its menus to open
+                                        way a window manager does it. **On by default**, because this
+                                        server is the window manager for what it forwards and it is
+                                        what an application whose page leaves the focus nowhere needs
+                                        for its menus to open; --no-focus-on-click is the comparison
+                                        switch, since a reference does not do it
                   --glx / --no-glx      advertise GLX, which it does by default: a GL client needs
                                         it, and a toolkit that does not use it only pays one
                                         abandoned context (--no-glx is the comparison switch)
@@ -375,7 +381,7 @@ public final class ServerOptions {
     }
 
     /** True when the caller asked for an explicit size. */
-    /** Whether a click moves the input focus to the window it lands in (opt-in; see the field). */
+    /** Whether a click moves the input focus to the window it lands in (on unless disabled; see the field). */
     public boolean focusOnClick() {
         return focusOnClick;
     }
