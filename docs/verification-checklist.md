@@ -388,3 +388,18 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    values must follow the whole mask array, not one word, and a motion has to be in the same branch as
    a key when the two length fields at 48/50 are written. What crashes a client that is handed the
    reference's own shape is not known.
+
+4. **"The context menu vanishes after the 片段 page has been opened"** - reported 2026-09-29, **not
+   reproduced**, and the measurements say it is not this branch's: with a fresh client, a right-click on
+   a host **row** opens the menu on this server *and* on Xvfb, with the client's own pixels identical
+   (77999 non-background pixels and 6003 ink with no page; 77999/2334 here against 77998/2332 there with
+   the page open), the menu stays for as long as it is watched, `MenuProbe` is identical to the
+   reference, and the same gesture on `main` - where there is no XInput2 at all - behaves the same. The
+   state the report turns on is real and worth knowing: **the 片段 page holds the X input focus** (the
+   client asks for it; `xdpyinfo` on Xvfb agrees), so the main window is unfocused, no server focuses a
+   window on a click (neither does Xvfb), and the client never asks for it either - a tap of its stream
+   against the reference has one `SetInputFocus` in it, the page's. `backlog.md` A20 has the table, the
+   candidate mechanism (JavaFX hides a popup whose owner window is not focused) and what a capture from
+   the machine where it happens would add. **Run the menu gesture on a row, not on the panel's empty
+   background**: the background is where the client's own behaviour is flaky under automation, on the
+   reference as much as here.

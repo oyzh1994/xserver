@@ -96,6 +96,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | [ ] A19 | EasyShell's process dies when it copies (复制连接, or a text selection copied from a menu) - **reported, not reproduced**; the bed's own crash logs are Xlib's fatal I/O path, i.e. the server closed the connection | correctness | M |
+| [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
 | [ ] E6 | keep the three documents in step - **ongoing**: the discipline rather than a task, and what the sweep after every change is | engineering | S |
@@ -2663,6 +2664,49 @@ copy-into-a-store-window path was untested. `RawXClient.copyArea` and
 test really pins, and the mutation that shows it bites). It is a small thing, but it is the part of
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
+
+### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
+
+**The report.** "Click 片段, then right-click the host list: the context menu disappears at once. Without
+the 片段 click it is fine." Reported as new, after the XI2 shape and button-mask fixes of the same day.
+
+**What the state is, on both servers.** The 片段 page is a toplevel of its own and the *client* moves
+the X input focus to it (`SetInputFocus(page, revert_to = Parent)`, in this server's log; against Xvfb
+`xdpyinfo` says `focus: window 0xe0001f, revert to Parent` - the page - after the same click). The main
+window is therefore **unfocused**, and it stays that way: neither server focuses a window on a click -
+that is a window manager's job and this server deliberately has none (the design notes' division, and
+`main` and Xvfb behave the same) - and the client never asks for it either: a tap of the client's own
+stream against Xvfb during the gesture has **one** `SetInputFocus` in it (the page's) and none after the
+click on the main window, the same as this server's log.
+
+**Measured side by side, same window, same pointer, fresh client, the client's own rendering compared by
+pixels** (`Shot` of the menu's rectangle):
+
+| state | this server | Xvfb |
+|---|---|---|
+| right-click a host **row**, no page | menu opens, 77999 non-background pixels, 6003 ink | identical numbers |
+| right-click a host row, **page open** | menu opens, 77999 / 2334 | 77998 / 2332 |
+
+so the menu opens and stays in both states on both servers, and the one time it did not, the click was
+on the **panel's empty background** rather than a row - where the client's own behaviour is flaky under
+automation (a documented trap: "EasyShell's menus are flaky in scripted runs, including on the
+unmodified server"). `MenuProbe` - the protocol-level menu gesture, the crossings around a popup that
+maps under a held button and the grab it takes - is **identical to the reference** on this build.
+
+**And it is not this branch's changes**: the same gesture on `main` (which has no XInput2 at all, so the
+client is on the core rail) behaves the same, and so does Xvfb (which does have XInput2). The three
+builds agree, so the difference the report sees is not in the input path these changes touched.
+
+**What would settle it** is a capture from the machine where it happens: the server started with
+`--log-requests`, the gesture done by hand, and the client's own log - the two together say which event
+the client acted on, and the menu's own window (an override-redirect popup, whose map and destroy are
+both in the server's log) says whether it was ever mapped. **One candidate mechanism is worth naming**,
+because it is a client rule this project has met before: JavaFX keeps a popup focused only while its
+owner window is focused, so a context menu opened from an unfocused main window is hidden again - the
+shape the report describes ("it disappears at once") rather than "it never appears". If that is it, the
+fix is *not* in the server: it is the missing window-manager half (focus the window a click lands in),
+which this server deliberately does not do, and which Xvfb does not do either - so it would have to be
+the owner's decision, as a deliberate departure, not a quiet repair.
 
 ### [ ] A19. EasyShell's process dies when it copies - reported, not reproduced yet. **M** - open, 2026-09-29
 
