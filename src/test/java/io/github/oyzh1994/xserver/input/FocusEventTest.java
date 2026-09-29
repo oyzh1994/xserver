@@ -77,7 +77,17 @@ class FocusEventTest {
         client.mapWindow(outer);
         client.mapWindow(inner);
         client.mapWindow(other);
+        // **The pointer is parked outside every window first.** It outlives the server that moved it
+        // and the class runs its tests in one JVM, so a test that leaves it in a window leaves it
+        // there for the next one - and a case whose answer depends on what the pointer is inside then
+        // answers differently depending on the order it ran in. Measured the hard way: with the
+        // pointer inside a window, a focus change between two windows of one client reports the
+        // pointer's own pair as well (`FocusOut <pointer's window> detail=Pointer` first, which a
+        // reference sends too), and the assertions below - written for a pointer outside - stopped
+        // matching. Parking it is what the probes do, and for the same reason.
+        client.fakeMotion(xtest, 550, 380);
         client.flush();
+        quiet();
     }
 
     /**

@@ -177,6 +177,18 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   states that are not `PointerRoot`, which is how EasyShell's search box stopped accepting input after
   its 片段 page was closed. The modes are `unmap` (default), `kill`, `root`, `pointer`, `none` and
   `parent`, the last being the control where the focus is on the window the pointer is in.
+- `FocusRevertProbe` - **what a client is told when a window that holds the focus *and the pointer*
+  goes away**: two windows of one client, both children of the root and overlapping (so the point the
+  pointer is parked on is inside both), the focus moved to the one in front with
+  `revert_to = Parent`, and then that window unmapped or destroyed. Every message is printed with the
+  crossings' `same_screen`/`focus` flags, which is the pair a toolkit with no window manager goes by.
+  It exists because a report ("the context menu flashes and vanishes after a page is closed") led to a
+  corner no probe covered: the pointer being *in* the window that disappears. A reference reports
+  `FocusOut <gone> detail=Ancestor`, `FocusIn <underneath> detail=Inferior` and the crossing pair, and
+  nothing else; this server added a `FocusIn <gone> detail=Pointer` to the window that was leaving,
+  which GDK took for where the focus lives - so the window underneath was left looking unfocused.
+  `FocusProbe`'s `"warp 50 50" "focus B" "unmap B"` is the same corner one level down, and the two
+  together are what pinned the rule (`FocusRevertProbe <host> <port> [unmap|kill]`).
 - `MenuProbe` - the same idea for the menu gesture: maps a popup under a held button, grabs the
   pointer, leaves and re-enters, and prints the crossings - marking any `EnterNotify` that arrives in
   a step where no motion was sent (`! enter without a move`), which is the event shape measured to

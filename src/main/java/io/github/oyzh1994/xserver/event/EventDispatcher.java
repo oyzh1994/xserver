@@ -361,18 +361,24 @@ public final class EventDispatcher {
             if (!pointerArrived(current, currentFollowsPointer, w)) {
                 continue;
             }
-            // The window the change arrived on is named by the ordinary pair above, and so is the one
-            // it left - except under PointerRoot, which tells the window the pointer is in even when
-            // that window is the one it just came from: measured, {@code "focus A" "warp 50 50"
-            // "focus pointer"} reports {@code FocusOut B / FocusIn A / FocusIn B}, and its own
-            // {@code FocusOut A} is not repeated as a FocusIn.
-            if (!currentFollowsPointer && current.isRoot() ? w == previous : w == current) {
+            // **A window that is leaving the focus is not told the pointer's half of the change** -
+            // except under PointerRoot, where it is: measured, {@code "focus A" "warp 50 50" "focus
+            // pointer"} reports {@code FocusIn A}, and the window the pointer is in is told the
+            // keyboard never left it. Everywhere else the two ends are the windows the ordinary pair
+            // above already named, and a window on its way out must not be handed a {@code FocusIn}:
+            // measured with {@code tools/FocusRevertProbe} and with {@code FocusProbe}'s
+            // {@code "warp 50 50" "focus B" "unmap B"}, where the pointer is *in* the window that goes
+            // away and a reference reports {@code FocusOut B detail=Ancestor} and
+            // {@code FocusIn A detail=Inferior} and nothing else - this server added
+            // {@code FocusIn B detail=Pointer} to the window that was leaving, and GDK took that for
+            // where the focus lives: the window underneath was left looking unfocused, and a toolkit
+            // hides the popup of an owner it believes unfocused (the context menu that flashed and
+            // vanished after the 片段 page was closed, reported 2026-09-29).
+            if (w == current || (w == previous && !currentFollowsPointer)) {
                 continue;
             }
-            // A change *to* PointerRoot subtracts nothing here either: the window it is leaving is
-            // told the focus went to the pointer and that the pointer is still in it, both - measured,
-            // {@code "focus A" "warp 50 50" "focus pointer"} reports {@code FocusIn B} after
-            // {@code FocusIn A}.
+            // And a window inside the one that is leaving is not told either: that half of the change
+            // belongs to the window holding it, which the ordinary pair above has already named.
             if (!sameWindow && !currentFollowsPointer
                     && pointerLeft(previous, previousFollowsPointer, w)) {
                 continue;

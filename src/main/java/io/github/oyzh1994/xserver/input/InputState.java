@@ -1582,6 +1582,12 @@ public final class InputState implements DisplayBackend.InputSink {
         settlePointerWindow();
     }
 
+    private void notePointerWindow() {
+        if (pointerKnown) {
+            pointerWindow = windowAtPointer();
+        }
+    }
+
     /**
      * Reports the crossing a client is owed for a window change that happened without the pointer
      * moving, if one is still outstanding.
@@ -1592,20 +1598,6 @@ public final class InputState implements DisplayBackend.InputSink {
      * that opened it is still down, because the implicit grab withholds the enter, and the crossing
      * is owed until the button comes up; that is where a reference server reports it too.
      */
-    /**
-     * Recomputes what window the pointer is in, without moving it and without reporting a crossing.
-     *
-     * <p>This is what a button or key event owes when it is played out of a freeze. A live one is
-     * delivered with the pointer's own position and moves the pointer to it; a held one was made
-     * before the device moved on, and using its coordinates would drag the pointer back - measured:
-     * a replayed press stamped with its own old position reads as the server having moved the
-     * pointer, which is the one thing a client that froze it is watching for.
-     */
-    private void notePointerWindow() {
-        if (pointerKnown) {
-            pointerWindow = windowAtPointer();
-        }
-    }
 
     public void settlePointerWindow() {
         if (!pointerKnown) {

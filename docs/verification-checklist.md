@@ -403,3 +403,17 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    the machine where it happens would add. **Run the menu gesture on a row, not on the panel's empty
    background**: the background is where the client's own behaviour is flaky under automation, on the
    reference as much as here.
+
+5. **A window on its way out was handed a `FocusIn`** (found 2026-09-29, from the same report as the
+   menu above: chasing it produced a corner no probe had covered - the pointer being *in* the window
+   that holds the focus when it goes away). Two probes now pin it: `tools/FocusRevertProbe` (new: two
+   overlapping root children, the focus on the front one with `revert_to = Parent`, then unmapped or
+   destroyed) and `FocusProbe`'s `"warp 50 50" "focus B" "unmap B"`. A reference reports the ordinary
+   pair and the crossings and **nothing else**; this server added `FocusIn <the departing window>
+   detail=Pointer`, a window no client can act on - and GDK took it for where the focus lives, which is
+   what leaves the window underneath looking unfocused (and what a toolkit hides a popup over). The
+   rule in `EventDispatcher` is now that a window is not told the pointer's half of a change when it is
+   the one leaving, unless the focus is going to `PointerRoot`, where a reference *does* tell it
+   (measured). Both probes are identical to the reference, and `FocusEventTest`'s class parks the
+   pointer in its setup: it had been relying on wherever the previous test left it, which is the same
+   trap §8 records for the probes.

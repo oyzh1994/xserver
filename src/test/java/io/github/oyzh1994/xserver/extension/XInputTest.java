@@ -214,6 +214,89 @@ class XInputTest {
         }
     }
 
+    /**
+     * When the window holding the focus - **and the pointer** - goes away and the focus reverts to the
+     * root window, the window the pointer is in is told **only** its crossing, on either rail.
+     *
+     * <p>Measured against a reference with {@code tools/FocusRevertProbe}, which drives exactly this:
+     * {@code PAGE} (100,100 100x100) covers part of {@code A} (0,0 300x300), both children of the
+     * root, the pointer is at 150,150 - inside both - the client focuses {@code PAGE}, and then unmaps
+     * it. A reference answers
+     *
+     * <pre>
+     *   EnterNotify win=A detail=Nonlinear
+     *   focus = R
+     * </pre>
+     *
+     * and nothing else: the focus went to the *root window*, and every window is inside it, so no
+     * window of the pointer's chain is named on the focus rail. This server reported a {@code FocusIn}
+     * to the window that was going away ({@code detail=Pointer}) instead - a window a client can do
+     * nothing with, and GDK took it as where the focus lives, leaving the window underneath looking
+     * unfocused. That is what a toolkit hides a popup over: the context menu that flashed and vanished
+     * after the 片段 page was closed, reported 2026-09-29.
+     */
+    @Test
+    void aChangeToTheRootWindowNamesNoWindowOfThePointersChain() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int xtest = client.queryExtension("XTEST");
+            request(client, opcode, XI_QUERY_VERSION, 2, 0);
+
+            // The window the pointer ends up in: XInput2 focus events, the core focus mask and the
+            // crossings, so both rails are watched and the crossing is one of them.
+            int under = client.allocateId();
+            client.createWindow(under, client.root(), 0, 0, 300, 300, 0x00FF00);
+            client.mapWindow(under);
+            client.selectInput(under, 0x10 | 0x20 | 0x200000);   // Enter, Leave and FocusChange
+            selectXi2Focus(client, opcode, under);
+            // The page: a window of its own that covers the pointer's position.
+            int page = client.allocateId();
+            client.createWindow(page, client.root(), 100, 100, 100, 100, 0x0000FF);
+            client.mapWindow(page);
+            client.flush();
+
+            client.fakeMotion(xtest, 150, 150);     // the pointer into the page, inside `under` too
+            client.setInputFocus(page, 2);          // the client focuses the page...
+            client.flush();
+            client.unmapWindow(page);               // ...and takes it away with the pointer still in it
+            client.flush();
+
+            boolean focusNamed = false;
+            boolean crossing = false;
+            for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+                int type = event[0] & 0x7F;
+                if (type == RawXClient.GENERIC_EVENT) {
+                    if (RawXClient.readShort(event, 8) == 9 && RawXClient.readInt(event, 24) == under) {
+                        focusNamed = true;
+                    }
+                } else if (type == 9 || type == 10) {
+                    if (RawXClient.readInt(event, 4) == under) {
+                        focusNamed = true;
+                    }
+                } else if (type == 7 && RawXClient.readInt(event, 12) == under) {
+                    crossing = true;
+                }
+            }
+            assertFalse(focusNamed, "no window of the pointer's chain is named on the focus rail");
+            assertTrue(crossing, "and the crossing is what tells it where the pointer is");
+        }
+    }
+
+    /** Selects XI2 focus events on a window, the way a toolkit does. */
+    private static void selectXi2Focus(RawXClient client, int opcode, int window) throws IOException {
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = XI_SELECT_EVENTS;
+        RawXClient.writeShortAt(select, 2, 5);
+        RawXClient.writeIntAt(select, 4, window);
+        RawXClient.writeShortAt(select, 8, 1);              // one mask record
+        RawXClient.writeShortAt(select, 12, 1);             // XIAllMasterDevices
+        RawXClient.writeShortAt(select, 14, 1);             // one mask word
+        RawXClient.writeIntAt(select, 16, (1 << 9) | (1 << 10));   // XI_FocusIn | XI_FocusOut
+        client.sendRequest(select);
+        client.flush();
+    }
+
     @Test
     void theDeviceEventIsTheSizeAClientSizesItFrom() {
         // Built for a little endian reader, which is what every client in this suite is.
