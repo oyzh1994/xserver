@@ -41,6 +41,7 @@ Options:
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
 | `--no-tray` | do not serve the notification area (the tray a client's icon docks in) |
+| `--focus-on-click` | a click moves the input focus to the window it lands in, the way a window manager does - **off by default**, because a reference server does not do it either and a client that put the focus somewhere would see it taken away. It is what an application whose page leaves the focus on the root window needs for its own menus to open again |
 | `--glx` / `--no-glx` | GLX is advertised (so a software OpenGL client - `glxgears`, a browser, anything with a GL surface - can render); `--no-glx` turns it off, which is what comparing two builds wants |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--drop-mount H=C` | where the host's path prefix `H` is on the client's filesystem, for a file dragged onto a forwarded application (see below) |

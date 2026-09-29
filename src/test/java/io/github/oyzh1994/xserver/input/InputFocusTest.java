@@ -25,9 +25,12 @@ public class InputFocusTest {
                 screen.rootVisual(), x, y, w, h, 0);
     }
 
-    private static XServer serverWithTwoWindows() {
-        XServer server = new XServer(ServerOptions.parse(
-                new String[]{"--display", "93", "--backend", "headless"}));
+    private static XServer serverWithTwoWindows(String... extra) {
+        String[] all = {"--display", "93", "--backend", "headless"};
+        String[] merged = new String[all.length + extra.length];
+        System.arraycopy(all, 0, merged, 0, all.length);
+        System.arraycopy(extra, 0, merged, all.length, extra.length);
+        XServer server = new XServer(ServerOptions.parse(merged));
         XWindow outer = window(server.screen(), server.rootWindow(), 0x400001, 10, 10, 60, 60);
         server.resources().add(outer);
         outer.setMapped(true);
@@ -122,6 +125,45 @@ public class InputFocusTest {
 
         assertEquals(server.rootWindow(), server.input().inputFocus(), "the revert landed on the root");
         assertEquals(outer, server.input().focusWindow(), "and the keys reach the pointer's window");
+    }
+
+
+    /**
+     * With {@code --focus-on-click}, the click that lands in a window the focus is not already inside
+     * moves the focus there - the window-manager half this server leaves out by default, and the one
+     * an application whose page left the focus on the root window needs to get its menus back.
+     *
+     * <p>The window focused is the **toplevel** the click landed in, and the revert mode it is given is
+     * a window manager's: {@code PointerRoot}, so a window that goes away afterwards hands the focus
+     * to the window the pointer is in rather than leaving it on the root.
+     */
+    @Test
+    void aClickMovesTheFocusToTheToplevelItLandsInWhenAskedFor() {
+        XServer server = serverWithTwoWindows("--focus-on-click");
+        XWindow outer = (XWindow) server.resources().get(0x400001);
+        // The focus on the root window: where a page that closed left it.
+        server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_PARENT, false);
+        server.input().pointerMoved(60, 60);
+
+        server.input().buttonChanged(1, true, 60, 60);
+
+        assertEquals(outer, server.input().inputFocus(),
+                "the click moved the focus into the window it landed in");
+        assertEquals(InputState.REVERT_TO_POINTER_ROOT, server.input().focusRevertTo(),
+                "and gave it the revert a window manager gives");
+    }
+
+    @Test
+    void aClickLeavesTheFocusWhereItIsByDefault() {
+        XServer server = serverWithTwoWindows();
+        server.input().setInputFocus(server.rootWindow(), InputState.REVERT_TO_PARENT, false);
+        server.input().pointerMoved(60, 60);
+
+        server.input().buttonChanged(1, true, 60, 60);
+
+        assertEquals(server.rootWindow(), server.input().inputFocus(),
+                "without the switch nothing moves the focus on a click - a reference server does not"
+                        + " either");
     }
 
     @Test

@@ -1121,6 +1121,9 @@ public final class InputState implements DisplayBackend.InputSink {
                             : "");
         }
         if (pressed) {
+            focusOnClick();
+        }
+        if (pressed) {
             // A passive grab is matched before the event is delivered: if one fires, the press
             // belongs to the client that armed it, wherever it landed.
             // The *modifiers*, not the whole pointer state: the state also carries the button
@@ -2174,6 +2177,42 @@ public final class InputState implements DisplayBackend.InputSink {
             return pointerWindow == null ? screen.root() : pointerWindow;
         }
         return inputFocus;
+    }
+
+    /**
+     * Moves the input focus to the window a click landed in - the window-manager half this server
+     * leaves out unless {@code --focus-on-click} asks for it.
+     *
+     * <p>It focuses the **toplevel** the click landed in, with {@code revert_to = PointerRoot}: that is
+     * what a window manager does, and the revert mode is the half that matters afterwards - a window
+     * that goes away hands the focus back to the window the pointer is in rather than leaving it on
+     * the root, which is the state an application cannot get itself out of (its own menus stop opening
+     * there, because a toolkit hides the popup of an owner it believes is unfocused; measured
+     * 2026-09-29 and identical on a reference server, so it is the application's behaviour and this is
+     * the switch that gives it what a desktop would).
+     *
+     * <p>Nothing happens when the state is already what the click asks for: the window under the
+     * pointer is inside the window that has the focus, or the focus is {@code PointerRoot}, where the
+     * keys already follow the pointer and a client that asked for it would only see a change it did
+     * not ask for.
+     */
+    private void focusOnClick() {
+        if (!server.options().focusOnClick() || pointerWindow == null) {
+            return;
+        }
+        XWindow target = pointerWindow;
+        while (target.parent() != null && !target.parent().isRoot()) {
+            target = target.parent();
+        }
+        // A focus that is already on an ordinary window the click landed inside is left alone. The
+        // root window and None are *not*: those are exactly the states a client cannot get out of by
+        // itself - a click in a window while the focus sits on the root is what has to move it - and
+        // PointerRoot already follows the pointer.
+        if (inputFocus != null && !inputFocus.isRoot() && !focusIsPointerRoot
+                && inputFocus.isAncestorOf(target)) {
+            return;
+        }
+        setInputFocus(target, REVERT_TO_POINTER_ROOT, false);
     }
 
     /**

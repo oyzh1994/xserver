@@ -15,8 +15,8 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 | # | do | tool | pass when |
 |---|----|------|-----------|
-| 0.1 | `mvn -o test` on this machine | Maven | **450 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
-| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 450 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
+| 0.1 | `mvn -o test` on this machine | Maven | **453 tests, 0 failures, 0 errors, 0 skipped** (a desktop run should skip nothing) |
+| 0.2 | `MVN_OPTS=-Djava.awt.headless=true ci.sh` | `ci.sh` | 453 tests, **2 skipped** (exactly `JavaFxBackendTest`'s two toolkit cases) and `BUILD SUCCESS`; it prints the surefire report path |
 | 0.3 | `tools/xvfb.sh start` | the reference display | Xvfb `:98` and x11vnc up, `6098` and `5900` listening. `tools/xvfb.sh secure` additionally starts `:97` **with access control**, which §3.14 needs |
 | 0.4 | start this server on `:61`, `--single-window --no-clipboard --no-tray` | `java -cp target/classes:$(cat target/tools-cp.txt) io.github.oyzh1994.xserver.Main --display 61 --geometry 1300x800 --single-window --no-clipboard --no-tray` | it says `display :61 ready` |
 | 0.5 | `tools/sweep.sh` | the probe sweep | **19 identical of 28, and the 9 differences are exactly the documented ones** (the list in `tools/README.md`) - a *tenth* difference is a finding (run it twice before believing a single run: two probes sit on timing, and the diff's id mapping is a run's own) |
@@ -417,3 +417,14 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    (measured). Both probes are identical to the reference, and `FocusEventTest`'s class parks the
    pointer in its setup: it had been relying on wherever the previous test left it, which is the same
    trap §8 records for the probes.
+
+6. **`--focus-on-click`, and the application behaviour it is for** (2026-09-29). With the 片段 page
+   *closed*, this application's context menus do not open - on this server **and on Xvfb**, to the
+   pixel (77968 non-background pixels / 4169 ink, which is the panel's own text; the menu is 77999 /
+   6003). The state is real and is the application's: the page took the X focus (its own
+   `SetInputFocus`, `revert_to = Parent`), the revert left the focus on the **root window**, no server
+   focuses a window on a click, and the application never asks for it - so the main window is unfocused
+   and a toolkit hides the popup of an unfocused owner. **`--focus-on-click`** is the missing
+   window-manager half, off by default: a click moves the focus to the toplevel it lands in with
+   `revert_to = PointerRoot`. With it on the menu opens after the page closes (77999 / 6003) and the
+   rest of the session is unchanged; with it off nothing moves, which is what a reference does.

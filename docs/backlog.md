@@ -2680,18 +2680,22 @@ stream against Xvfb during the gesture has **one** `SetInputFocus` in it (the pa
 click on the main window, the same as this server's log.
 
 **Measured side by side, same window, same pointer, fresh client, the client's own rendering compared by
-pixels** (`Shot` of the menu's rectangle):
+pixels** (`Shot` of the menu's rectangle), and **the correction matters**: an earlier run of this table
+counted *override-redirect windows in the tree* instead of the pixels, and a tree lists unmapped ones -
+so "the menu is there" was read off a window that is always there. By pixels, with the page **closed**
+(the reporter's actual sequence - "open 片段, close it, then right-click"):
 
 | state | this server | Xvfb |
 |---|---|---|
-| right-click a host **row**, no page | menu opens, 77999 non-background pixels, 6003 ink | identical numbers |
+| right-click a host **row**, no page | menu opens, 77999 non-background pixels, 6003 ink | identical |
 | right-click a host row, **page open** | menu opens, 77999 / 2334 | 77998 / 2332 |
+| right-click a host row, **page closed** | **no menu**: 76968 / 4169 (the panel's own text) | **76968 / 4169 - identical** |
 
-so the menu opens and stays in both states on both servers, and the one time it did not, the click was
-on the **panel's empty background** rather than a row - where the client's own behaviour is flaky under
-automation (a documented trap: "EasyShell's menus are flaky in scripted runs, including on the
-unmodified server"). `MenuProbe` - the protocol-level menu gesture, the crossings around a popup that
-maps under a held button and the grab it takes - is **identical to the reference** on this build.
+so **the reference does not open the menu after the page closes either** - the numbers are equal to the
+pixel - and the behaviour is the application's, not a difference between servers. `MenuProbe` - the
+protocol-level menu gesture, the crossings around a popup that maps under a held button and the grab it
+takes - is identical to the reference too. (The click must be aimed at a host **row**: on the panel's
+empty background the client's own menus are flaky under automation, on the reference as much as here.)
 
 **And it is not this branch's changes**: the same gesture on `main` (which has no XInput2 at all, so the
 client is on the core rail) behaves the same, and so does Xvfb (which does have XInput2). The three
@@ -2700,13 +2704,17 @@ builds agree, so the difference the report sees is not in the input path these c
 **What would settle it** is a capture from the machine where it happens: the server started with
 `--log-requests`, the gesture done by hand, and the client's own log - the two together say which event
 the client acted on, and the menu's own window (an override-redirect popup, whose map and destroy are
-both in the server's log) says whether it was ever mapped. **One candidate mechanism is worth naming**,
-because it is a client rule this project has met before: JavaFX keeps a popup focused only while its
-owner window is focused, so a context menu opened from an unfocused main window is hidden again - the
-shape the report describes ("it disappears at once") rather than "it never appears". If that is it, the
-fix is *not* in the server: it is the missing window-manager half (focus the window a click lands in),
-which this server deliberately does not do, and which Xvfb does not do either - so it would have to be
-the owner's decision, as a deliberate departure, not a quiet repair.
+both in the server's log) says whether it was ever mapped. **The mechanism is the one this project has met before**, and the
+*switch* that answers it is now in: JavaFX keeps a popup focused only while its owner window is
+focused, so a context menu opened from an unfocused main window is hidden again - the shape the report
+describes ("it disappears at once") rather than "it never appears". Nothing focuses a window on a click
+on either server, and the application never asks after the page closes, so the main window stays
+unfocused and its menus cannot stay open. **`--focus-on-click`** gives the missing window-manager half:
+a click moves the input focus to the toplevel it lands in, with `revert_to = PointerRoot` so a window
+that goes away afterwards hands the focus back to the window the pointer is in. **Off by default** - a
+reference does not do it, and a client that put the focus somewhere would see it taken away - and with
+it on, the reported sequence opens the menu again (measured: 77999 / 6003 after the page is closed,
+against 76968 / 4169 with the switch off, which is what the reference gives too).
 
 ### [ ] A19. EasyShell's process dies when it copies - reported, not reproduced yet. **M** - open, 2026-09-29
 
