@@ -96,6 +96,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | [ ] A19 | EasyShell's process dies when it copies (复制连接, or a text selection copied from a menu) - **reported, not reproduced**; the bed's own crash logs are Xlib's fatal I/O path, i.e. the server closed the connection | correctness | M |
+| [ ] A21 | with the SSH tab open the **pointer sprite flickers** on this build (6 of 12 capture pairs) and not on `main` (0 of 12) - `--no-glx` halves it; the sprite is not in the framebuffer, so only a host-window capture sees it | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -2664,6 +2665,47 @@ copy-into-a-store-window path was untested. `RawXClient.copyArea` and
 test really pins, and the mutation that shows it bites). It is a small thing, but it is the part of
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
+
+### [ ] A21. With the SSH tab open the pointer sprite flickers on this build and not on `main`. **M** - open, 2026-09-29
+
+**The report.** "Open a connection (aliyun) and the SSH tab: the loading animation and, once the tab is
+open, the cursor keeps flickering, and the page is very laggy - `main` is normal. Other tabs and pages
+are fine."
+
+**Reproduced, and it is the mouse pointer, not the terminal's caret.** With the tab open and the app
+repainting its window, two captures of the **host window** 0.25-0.35s apart differ in the sprite's own
+box - the arrow, ~31x44 at the capture's scale, **753 pixels** - where `main` shows nothing:
+
+| build | consecutive capture pairs whose sprite box changed |
+|---|---|
+| this build, GLX on (the default) | **6 of 12** |
+| this build, `--no-glx` | 3 of 12 |
+| `main` | **0 of 12** |
+
+so it is a regression between `main` and now, and GLX **modulates** it rather than causing it. Seen by
+eye in the two crops: the same arrow drawn once crisp and once washed out (its outline's antialiasing
+differs), which is what "the cursor flickers" describes.
+
+**The instrument matters, and it is two things.** The sprite is drawn **over** the frame and never into
+the framebuffer - this project's own rule - so every X-level measurement says the screen is still: a
+`GetImage`, the frame dumps and the fast `tools/BlinkProbe` (new: times the changes in a screen
+rectangle at thousands of samples a second) all report **zero changes** while the sprite is flickering.
+Only a capture of the **host window** sees it: `screencapture -l <window number>`, with the number from
+`tools/host-windows.c` (extended to print it - that is the only way to capture a window this machine's
+own shells keep covering).
+
+**What is *not* the cause, measured**: the app's own frames are pixel-identical on both builds (it
+repaints ~300 frames/s of the same content, which costs this server about a full core - a waste worth
+an item of its own, and the same on `main`); the host window is not being resized (`fitWindowToViewport`
+leaves it at 1300x828 across ten samples, so a canvas clear from a resize is out); the app sends no
+`SetInputFocus` at all in the steady state, so `--focus-on-click` is not implicated.
+
+**Where to look next.** `JavaFxBackend.flushDamage` draws the damage from the framebuffer and then
+`drawCursor` - in that order, unconditionally, which reads as correct, so the interesting question is
+whether the *canvas* keeps the sprite between frames in which its box is inside the damage: capture
+twenty frames quickly and classify each by whether the sprite is present, which turns "half the frames"
+into a pattern (every other frame, or runs of a few). The dumps cannot answer it: they are written once
+per second, and a flicker at the app's repaint rate lands on the same phase every sample.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

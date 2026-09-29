@@ -433,3 +433,13 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    toplevel it lands in with `revert_to = PointerRoot`. With it on the menu opens after the page closes
    (77999 / 6003) and the rest of the session is unchanged; `--no-focus-on-click` is the comparison
    switch, since with it off nothing moves a focus on a click, which is what a reference does.
+
+7. **The pointer sprite flickers with a client that repaints continuously** (2026-09-29, reported as "the
+   cursor keeps flickering and the page is very laggy with the SSH tab open; `main` is normal").
+   Reproduced on the **host window** and nowhere else: the sprite's box changes in **6 of 12** capture
+   pairs on this build against **0 of 12** on `main` (`--no-glx` halves it, so GLX modulates rather than
+   causes). The sprite is drawn over the frame and never into the framebuffer, so `GetImage`, the frame
+   dumps and `BlinkProbe` all report a still screen while it flickers - **a flicker of the pointer needs
+   a capture of the host window** (`screencapture -l <number>`, the number from `tools/host-windows.c`).
+   The app's own frames are identical on both builds, it just repaints ~300 a second, which costs about
+   a full core here as it does on `main`.

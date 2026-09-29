@@ -149,6 +149,15 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   (the opcode numbering from 18 up, and `QueryServerString` being screen and name with no string), and
   the measurement that reframed B6 - a software GL client sends **no GL commands at all**, it renders
   itself and blits with `PutImage`.
+- `BlinkProbe` - **times the changes in a small rectangle of the screen**: it reads the box with
+  `GetImage` as fast as the server answers (thousands a second) and prints a line with the interval
+  whenever the pixels change, which separates a blink from a still picture where the frame dumps cannot
+  (they are written once a second, so a flicker at thirty frames a second lands on the same phase every
+  sample). The box is on the *root*, so it watches what the screen shows - an application's own drawing.
+  **It cannot see the pointer sprite**, which is drawn over the frame and never into the framebuffer
+  (backlog A21 is what that cost: every X-level measurement reported a still screen while the sprite was
+  flickering; only `screencapture -l <window number>` saw it, with the number from
+  `tools/host-windows.c`).
 - `Drive` - XTEST driver: `M x y`, `P n`, `R n`, `K kc`, `KD/KU kc`, `W ms`.
 - `Keys` - types a string through XTEST (`Keys <host> <port> "hello"`, `--delay ms` for a slower
   typist): resolves each character against the keymap read with `GetKeyboardMapping`, presses it
