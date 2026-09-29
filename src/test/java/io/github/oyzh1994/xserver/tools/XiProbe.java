@@ -531,6 +531,13 @@ public final class XiProbe {
                 + " in-window " + fixed(Wire.readInt(message, 40)) + ","
                 + fixed(Wire.readInt(message, 44))
                 + " source " + Wire.readShort(message, 52)
+                // The keyboard state, which is what a client reads a Ctrl+A out of. A device event
+                // packs it as four bytes at 60-63 (base, latched, locked, effective) where the two
+                // shorter shapes spend four CARD32 on it; measured against a reference.
+                + " mods base=" + (message[60] & 0xFF)
+                + " latched=" + (message[61] & 0xFF)
+                + " locked=" + (message[62] & 0xFF)
+                + " effective=" + (message[63] & 0xFF)
                 + " bytes " + message.length;
     }
 

@@ -29,8 +29,11 @@ import java.io.IOException;
  *   16 detail                      50  valuators_len   = 2, two zero words follow
  *   20 root window                 52  source id
  *                                  54  pad, then flags, modifiers, group
- *                                  68  twelve bytes the measurement finds and the XML does not
- *                                  80  the button mask, where the arrays start
+ *                                  60  base, latched, locked, effective - the modifier state
+ *                                  64  the four group bytes
+ *                                  68  a pad word
+ *                                  72  the modifier bits again, which is the word a toolkit reads
+ *                                  76  a pad word, then the masks at 80
  * </pre>
  *
  * <p>Writing the fixed part as sixty eight bytes - which is what the protocol XML's field list adds
@@ -432,6 +435,16 @@ public final class Xi2Event implements XEvent {
                 bytes[60] = (byte) (mods & ~locked);        // base
                 bytes[62] = (byte) locked;                  // locked
                 bytes[63] = (byte) mods;                    // effective
+                // **And the field at 72, which is the one GDK reads.** A device event's modifiers
+                // live in two places: the four bytes at 60-63 and the word at 72 - the one the
+                // protocol calls the group state. A reference fills both with the same modifier bits
+                // (measured on the event for a Ctrl+A: 04 at 63 and 04 at 72), and this server wrote
+                // the first and left the second nought. GDK's own key event carries `state` from that
+                // word, so a forwarded application saw no Control at all: Ctrl+A, Ctrl+C and Ctrl+V
+                // were dead keys in every input field while ordinary typing worked (A23, 2026-09-30).
+                // The A/B is the measurement: with this word set, GDK reports `state=0x4 ctrl=True`
+                // for the same gesture that reported `state=0x0` without it.
+                card32(72, mods);
                 return this;
             }
             card32(52, mods & ~locked);                     // base

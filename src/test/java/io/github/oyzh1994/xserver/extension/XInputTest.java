@@ -329,6 +329,41 @@ class XInputTest {
     }
 
     /**
+     * A device event carries the keyboard's modifier state <b>twice</b>, and a toolkit reads the
+     * second one.
+     *
+     * <p>The four bytes at 60-63 are the state the protocol documents - base, latched, locked,
+     * effective - and the word at 72 carries the same bits again, which is the field a reference
+     * fills for a Ctrl+A (measured on the event: {@code 04} at 63 and {@code 04} at 72) and which
+     * this server left nought. GDK's own key event takes its {@code state} from that word, so a
+     * forwarded application saw no Control at all: Ctrl+A, Ctrl+C and Ctrl+V did nothing in its
+     * input fields while ordinary typing worked. The A/B is the measurement: with the word set, GDK
+     * reports {@code state=0x4 ctrl=True} for the gesture that reported {@code state=0x0} without it.
+     */
+    @Test
+    void aDeviceEventCarriesTheModifierStateWhereAToolkitReadsIt() {
+        Xi2Event event = Xi2Event.builder(false, (short) 1, 130)
+                .evtype(2)
+                .device(3)
+                .source(3)
+                .time(1000)
+                .detail(38)
+                .root(0x1ff)
+                .event(0x200001)
+                .child(0)
+                .rootPosition(1, 1)
+                .windowPosition(1, 1)
+                .modifiers(0x4)                         // Control, as the core event carries it
+                .build();
+        byte[] wire = event.wire();
+        assertEquals(4, wire[60] & 0xFF, "base");
+        assertEquals(0, wire[62] & 0xFF, "locked: Control is not a lock");
+        assertEquals(4, wire[63] & 0xFF, "effective");
+        assertEquals(4, RawXClient.readInt(wire, 72),
+                "and the same bits at 72, which is where a toolkit reads a Ctrl+A from");
+    }
+
+    /**
      * A crossing and a focus event are <b>not</b> device events, and a reference sends each of the
      * three in its own shape.
      *
