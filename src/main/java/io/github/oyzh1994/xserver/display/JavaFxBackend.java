@@ -831,6 +831,21 @@ public final class JavaFxBackend implements DisplayBackend {
     /**
      * Runs on the FX thread.
      */
+    /**
+     * The rectangle a frame has to repaint: the damage, and the sprite's own box.
+     *
+     * <p>Package-private and static so it can be pinned without a window: the reason the sprite's box
+     * is in here is the A21 flicker (see {@link #flushDamage}), and a rule about rectangles is worth a
+     * test that does not need a display.
+     */
+    static Rectangle damageWithSprite(Rectangle damage, CursorSprite cursor) {
+        if (cursor == null) {
+            return damage;
+        }
+        return damage.union(new Rectangle(cursor.x(), cursor.y(), cursor.width(),
+                cursor.height()));
+    }
+
     private void flushDamage() {
         fitWindowToViewport();
         Rectangle region;
@@ -861,9 +876,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // box is covered by accident, and `main` damaged the whole screen every frame so it could not
         // happen at all. With this the sprite in the canvas is exactly one frame old, always,
         // whatever the client underneath is repainting.
-        Rectangle damage = cursor == null ? region
-                : region.union(new Rectangle(cursor.x(), cursor.y(), cursor.width(),
-                        cursor.height()));
+        Rectangle damage = damageWithSprite(region, cursor);
         // The buffer position must be zero when JavaFX uploads it. Anything that reads through the
         // buffer - a diagnostic, a future feature - can leave it at the end, and the upload then
         // fails with "only 0 elements remain", leaving the window frozen on an old frame.

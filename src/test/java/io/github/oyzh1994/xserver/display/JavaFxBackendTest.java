@@ -1,5 +1,6 @@
 package io.github.oyzh1994.xserver.display;
 
+import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.JavaFxBackend;
 import io.github.oyzh1994.xserver.display.Screen;
@@ -60,6 +61,32 @@ class JavaFxBackendTest {
                 "the background should have reached the JavaFX image too");
 
         backend.stop();
+    }
+
+    /**
+     * The frame's damage always covers the sprite's own box, whatever the client repainted.
+     *
+     * <p>Without it a client whose damage misses the sprite leaves last frame's copy of the arrow in
+     * the canvas, and the next frame composites that one again - a pointer that darkens and lightens
+     * as the client repaints, which is A21 (EasyShell's SSH tab: the sprite's own pixels alternated
+     * between 17 and 102 dark ones across captures, and 17 throughout with this). The app's damage
+     * alternates between rectangles that reach the sprite and rectangles that do not, which is why a
+     * client that repaints its whole window never showed it.
+     */
+    @Test
+    void theFrameDamageCoversTheSprite() {
+        CursorSprite cursor = new CursorSprite(100, 200, 24, 24, 8, 8, new int[24 * 24]);
+        // A band of the screen the sprite is not in - the case that used to leave the sprite's copy
+        // in the canvas, and so draw the arrow twice.
+        Rectangle band = new Rectangle(0, 0, WIDTH, 10);
+
+        Rectangle covered = JavaFxBackend.damageWithSprite(band, cursor);
+
+        assertTrue(covered.contains(100, 200, 24, 24),
+                "the sprite's box has to be repainted from the framebuffer: " + covered);
+        assertTrue(covered.contains(0, 0, WIDTH, 10), "and the damage itself is still there");
+        assertEquals(band, JavaFxBackend.damageWithSprite(band, null),
+                "with no sprite there is nothing to cover");
     }
 
     /**
