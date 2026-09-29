@@ -96,7 +96,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | [ ] A19 | EasyShell's process dies when it copies (复制连接, or a text selection copied from a menu) - **reported, not reproduced**; the bed's own crash logs are Xlib's fatal I/O path, i.e. the server closed the connection | correctness | M |
-| [ ] A21 | with the SSH tab open the **pointer sprite flickers** on this build (6 of 12 capture pairs) and not on `main` (0 of 12) - `--no-glx` halves it; the sprite is not in the framebuffer, so only a host-window capture sees it | correctness | M |
+| ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -2666,7 +2666,7 @@ test really pins, and the mutation that shows it bites). It is a small thing, bu
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
 
-### [ ] A21. With the SSH tab open the pointer sprite flickers on this build and not on `main`. **M** - open, 2026-09-29
+### [x] A21. With the SSH tab open the pointer sprite flickered on this build and not on `main`. **M** - fixed 2026-09-29
 
 **The report.** "Open a connection (aliyun) and the SSH tab: the loading animation and, once the tab is
 open, the cursor keeps flickering, and the page is very laggy - `main` is normal. Other tabs and pages
@@ -2700,12 +2700,23 @@ an item of its own, and the same on `main`); the host window is not being resize
 leaves it at 1300x828 across ten samples, so a canvas clear from a resize is out); the app sends no
 `SetInputFocus` at all in the steady state, so `--focus-on-click` is not implicated.
 
-**Where to look next.** `JavaFxBackend.flushDamage` draws the damage from the framebuffer and then
-`drawCursor` - in that order, unconditionally, which reads as correct, so the interesting question is
-whether the *canvas* keeps the sprite between frames in which its box is inside the damage: capture
-twenty frames quickly and classify each by whether the sprite is present, which turns "half the frames"
-into a pattern (every other frame, or runs of a few). The dumps cannot answer it: they are written once
-per second, and a flicker at the app's repaint rate lands on the same phase every sample.
+**The cause, found by logging one frame's damage against the sprite's box.** This server damages
+*part* of the screen - a B5-era optimisation - and the app's damage **alternates** between rectangles
+that reach the sprite and rectangles that do not (`Rectangle[0,33 1300x700]` against
+`Rectangle[0,0 1300x300]`). The sprite is drawn over the frame and never into the framebuffer, so the
+canvas keeps last frame's copy wherever this frame's damage does not reach it - and `drawCursor` then
+composites that one **again**, darkening the arrow's antialiased edges. Measured on the sprite's own
+pixels: 17 dark pixels on a frame whose damage covered it against 102 on one whose damage did not, at
+the same centroid, i.e. the same sprite drawn twice. `main` damages the **whole screen** every frame
+(`markScreenDirty` there is `markAllDirty`), so the defect could not exist on it - which is exactly why
+the report says "main is normal", and it is why a prompt that repaints its whole window never shows it.
+
+**The fix** is in `JavaFxBackend.flushDamage`: the sprite's own box is unioned into the damage before
+it is drawn, so the sprite in the canvas is exactly one frame old, always, whatever the client
+underneath is repainting. Measured across eight captures with the SSH tab open:
+**`17 17 17 17 17 17 17 17`** after, against **`17 96 96 17 17 17 17 17`** before. The Swing backend
+does not need it: its panel is an opaque `JPanel`, so the dirty rectangle is erased before it is
+painted.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

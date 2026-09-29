@@ -849,7 +849,21 @@ public final class JavaFxBackend implements DisplayBackend {
         if (region.isEmpty()) {
             return;
         }
-        Rectangle damage = region;
+        // **The sprite's own box is always part of what gets repainted from the framebuffer.**
+        //
+        // <p>The sprite is drawn over the frame and never into the framebuffer, so the canvas keeps
+        // the copy drawn last frame wherever this frame's damage does not reach it - and
+        // {@link #drawCursor} then composites that one again, which darkens the antialiased edges of
+        // the arrow: measured with a client that repaints (EasyShell's SSH tab does it thirty times a
+        // second), the sprite's own pixels alternate between 17 and 102 below a tenth of full
+        // brightness, and the pointer visibly flickers. A prompt that repaints the *whole* window
+        // never shows it, which is why this went unnoticed: with a whole-window damage the sprite's
+        // box is covered by accident, and `main` damaged the whole screen every frame so it could not
+        // happen at all. With this the sprite in the canvas is exactly one frame old, always,
+        // whatever the client underneath is repainting.
+        Rectangle damage = cursor == null ? region
+                : region.union(new Rectangle(cursor.x(), cursor.y(), cursor.width(),
+                        cursor.height()));
         // The buffer position must be zero when JavaFX uploads it. Anything that reads through the
         // buffer - a diagnostic, a future feature - can leave it at the end, and the upload then
         // fails with "only 0 elements remain", leaving the window frozen on an old frame.

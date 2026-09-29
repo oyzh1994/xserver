@@ -443,3 +443,16 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    a capture of the host window** (`screencapture -l <number>`, the number from `tools/host-windows.c`).
    The app's own frames are identical on both builds, it just repaints ~300 a second, which costs about
    a full core here as it does on `main`.
+
+8. **A sprite drawn twice: part-screen damage that misses the pointer** (A21, fixed 2026-09-29). The
+   sprite is drawn over the frame and never into the framebuffer, so the canvas keeps last frame's copy
+   wherever this frame's damage does not reach it - and the next frame's `drawCursor` composites it
+   again, which darkens the arrow. Seen only with a client whose damage **alternates** between
+   rectangles that reach the sprite and rectangles that do not (EasyShell's SSH tab; the fix is in
+   `JavaFxBackend.flushDamage`, which now unions the sprite's box into the damage). `main` damaged the
+   whole screen every frame, so it could not happen there - and **a prompt that repaints its whole
+   window never shows it**, which is why `tools/RepaintProbe` (a client that repaints in a loop) does
+   not reproduce it either: its damage always covers the sprite. To see it at all the capture has to be
+   of the **host window** (`screencapture -l <number>`), and the measurement is the sprite's own dark
+   pixels across eight captures: `17 17 17 17 17 17 17 17` after the fix against
+   `17 96 96 17 17 17 17 17` before.
