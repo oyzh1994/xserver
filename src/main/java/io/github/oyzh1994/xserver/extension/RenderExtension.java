@@ -1349,10 +1349,10 @@ public final class RenderExtension implements Extension {
         int hotY = Short.toUnsignedInt(request.getY());
         int width = source.width();
         int height = source.height();
-        if (hotX >= width || hotY >= height) {
-            // The hotspot has to be a point within the source.
-            throw ProtocolException.badMatch();
-        }
+        // The hotspot is *not* required to be inside the source: a reference accepts one outside it
+        // (measured with a 1x1 source and hotspot (1,1)), and a toolkit installs a RENDER cursor that
+        // way. Refusing it arrived as an X error and killed the application - see
+        // ResourceHandlers.createCursor for the whole measurement.
         if (width > MAX_CURSOR_SIZE || height > MAX_CURSOR_SIZE) {
             // A cursor is drawn on every pointer move, so an enormous one is a denial of service
             // rather than a cursor. Real servers bound this too.

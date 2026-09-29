@@ -923,6 +923,17 @@ public final class ResourceHandlers {
      * The foreground and background colours of the request are not used: {@link XCursor} renders
      * cursor bitmaps in the standard black/white form, which is what every toolkit's cursors are
      * drawn with anyway.
+     *
+     * <p><b>The hotspot is not required to be inside the pixmap.</b> A reference server accepts a
+     * hotspot outside it - measured with a 1x1 source and hotspot (1,1), which Xvfb creates and this
+     * server used to refuse with {@code BadMatch} - and a toolkit does exactly that: GTK builds a
+     * cursor out of RENDER pictures and installs it by calling {@code CreateCursor} with a one pixel
+     * placeholder source, a hotspot outside it, and the real image on the window through
+     * {@code XRenderCreateCursor}. The refusal was not a cosmetic one: it arrived at the toolkit as an
+     * X error, and GTK's default handler ends the process - which is why a forwarded application's
+     * input fields lost their right-click menus, their clipboard items and their Ctrl+A (A22). The
+     * hotspot is only an offset into the cursor image, so a hotspot outside it is a cursor whose image
+     * hangs off its own origin, which is a perfectly drawable thing.
      */
     public void createCursor(ClientConnection client, CreateCursor r) {
         checkNewId(client, r.getCid());
@@ -935,9 +946,6 @@ public final class ResourceHandlers {
         int height = source != null ? source.height() : mask.height();
         int hotspotX = Short.toUnsignedInt(r.getX());
         int hotspotY = Short.toUnsignedInt(r.getY());
-        if (hotspotX >= width || hotspotY >= height) {
-            throw ProtocolException.badMatch();
-        }
         XCursor cursor = XCursor.fromBitmaps(r.getCid(), client, source, mask, 0, 0, 0, 0, width,
                 height, hotspotX, hotspotY);
         server.resources().add(cursor);
