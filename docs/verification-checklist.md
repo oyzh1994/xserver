@@ -456,3 +456,15 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    of the **host window** (`screencapture -l <number>`), and the measurement is the sprite's own dark
    pixels across eight captures: `17 17 17 17 17 17 17 17` after the fix against
    `17 96 96 17 17 17 17 17` before.
+
+9. **A forwarded application's input fields ignore their context menu and every Control shortcut**
+   (A22, fixed 2026-09-30) - **two causes, in this order**. (1) The toolkit's connection was being
+   killed: GTK sends a **core `CreateCursor` with a 1x1 placeholder pixmap and hotspot (1,1), outside
+   it**, when it installs a RENDER-built cursor, and this server answered `BadMatch`, which ends a GTK
+   process. A reference accepts it. (2) With the connection alive, Ctrl+A still did nothing: an XI2
+   device event carries the modifier bits **twice** - the four bytes at 60-63 *and* the word at 72 -
+   and GDK reads the second, which this server left nought. The instruments: **a GTK3 probe on the same
+   display** (the toolkit the application itself uses) printing its own `state` per key, and a
+   byte-for-byte diff of the same gesture's XI2 event on both servers. Two traps are recorded in A22:
+   **a stale server process is a false A/B**, and **a test's own request can be malformed in a way that
+   makes it pass** - both of that test's bugs were found by making it prove it can fail.
