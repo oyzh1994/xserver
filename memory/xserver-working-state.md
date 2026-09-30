@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 463 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 464 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,30 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-09-30, sixth session (branch `bugfix`): A26 - the JavaFX backend threw
+`IllegalArgumentException: Destination region ... must fit within texture content bounds` and the window
+never appeared.** The rectangle in the message named it: 48 wide, 25 high, 1268..1316 against a 1300
+wide canvas is **two** 24 wide cursor sprites side by side - the union of the sprite's box now with the
+one it came from. `flushDamage` clipped the damage to the screen and the viewport and then unioned the
+**sprite's own box** into it (that union is A21's fix), without clipping the union; the sprite's box
+reaches past the screen whenever the pointer is on the last pixel, and JavaFX does not clip a
+`drawImage` destination region. `drawCursor` had the same hole for the cursor image.
+
+- **The fix:** `damageWithSprite(damage, cursor, bounds)` returns `union ∩ bounds`, and
+  `visibleSprite(sprite, viewport)` clips the sprite for the cursor image (drawn from the matching
+  source offset). The clip is applied **before** `logical()` - the canvas is in logical pixels.
+- **Reproduced live, and this is the recipe to reuse:** Mac, `--backend javafx --single-window
+  --geometry 700x500`, plus **a client that keeps drawing** (a throwaway `RawXClient` main: map a
+  window, fill a rectangle every 200 ms - without a client the session is idle and no sprite is
+  composited at all, which is why the first attempts saw nothing), then walk the host pointer to the
+  last column with `tools/host-input.c` (`clang -o hostinput tools/host-input.c -framework
+  ApplicationServices`; `hostinput move x y`). Where the window is comes from the X pointer itself:
+  move to two known host points and `PointProbe` reports the X coordinates. **A/B: HEAD threw 21
+  times in one run, identically shaped; the fixed build 0.**
+- **Tests:** `JavaFxBackendTest.aSpriteHangingOverTheEdgeIsClippedToWhatTheCanvasCovers` (new) and
+  `theFrameDamageCoversTheSprite`, which had a sprite at (100,200) on a **64x48** bed - off screen -
+  and passed only because nothing clipped. **464 tests green.**
 
 **2026-09-30, fifth session (branch `bugfix`): A25, the WIRE half of "less smooth than Xvfb+x11vnc",
 is fixed - and it was not CPU at all.** Counted, not guessed, with a new instrument committed as

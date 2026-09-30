@@ -234,6 +234,14 @@ reads it back. Two rules make it behave:
   leaves it drawn everywhere else. The platform's side is separate and does not change: the host
   window still hides the *system* pointer over itself, so with the sprite hidden too the window shows
   no pointer until the client shows it again.
+- **It is clipped to what the canvas covers, like anything else drawn into it.** The box a sprite is
+  drawn from is the sprite's own rectangle, and a pointer on the last column or row has one that
+  reaches past the screen - which is a normal position, not an error. The sprite's box is unioned into
+  the frame's repaint rectangle (the bullet above), so the union has to be clipped as well, and JavaFX
+  does not clip a `drawImage` destination region: it throws `Destination region ... must fit within
+  texture content bounds` from the *paint*, which for a window being drawn for the first time means
+  the window never appears at all. Both `JavaFxBackend.damageWithSprite` and
+  `JavaFxBackend.visibleSprite` exist for that clip, and both are pinned without a display.
 
 ## The host pointer on macOS
 
@@ -301,6 +309,10 @@ viewport, the damage rectangles, the sprite - and only the two edges convert: `l
 out to the window, and `screenCoordinate`'s multiplication by `N` on the way in from it. A drag is
 reported in framebuffer pixels, because that is what the client's window is resized in, and the
 window's own maximum size is converted back the other way.
+
+**The clip belongs on the framebuffer side of that edge**: the canvas is in logical pixels, so
+anything that has to fit inside it is clipped before `logical()` divides it - which is also the only
+place where "the part of the sprite the canvas shows" has a source offset to go with it.
 
 Why it is off by default: a client that ignores the resolution gets a screen twice the size and lays
 itself out exactly as before, which on a HiDPI display means a window in the corner at half the

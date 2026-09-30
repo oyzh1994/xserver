@@ -101,6 +101,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
 | ~~A24~~ | ~~"much slower than Xvfb+x11vnc, especially EasyShell - every operation is very slow"~~ **fixed 2026-09-30**: the frame path's copies, fills and image uploads were per-pixel - now row-bulk; measured on the bed, the server's CPU for EasyShell's aliyun tab went **~90-100% -> ~20%** | performance | M |
 | ~~A25~~ | ~~A24's remaining half: the same screen still felt less smooth than Xvfb+x11vnc~~ **fixed 2026-09-30**: the session re-sent the whole damage rectangle even when the pixels equalled what the client had - **5.39 MB/s and 61 updates/s on a screen that was not changing**, against `x11vnc`'s nothing; now the update is the box the differencing pixels are in, and an unchanged one is not sent at all: **0.00 MB/s with the request held**, and pointer motion costs nothing | performance | M |
+| ~~A26~~ | ~~`java.lang.IllegalArgumentException: Destination region ... must fit within texture content bounds`, sometimes, and the window never appears~~ **fixed 2026-09-30**: the frame's repaint rectangle covered the pointer sprite's own box, which reaches past the screen when the pointer sits on the last pixel - and JavaFX does not clip a `drawImage` destination region. Reproduced on the real backend (21 throws with the pointer at the right edge), 0 after clipping the union and the sprite; the canvas is in logical pixels | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -2953,6 +2954,63 @@ during that read marks damage again - which is why the flood test ends in a pixe
 than a stale one. The comparison is **ARGB**, deliberately stricter than the client's packed pixel:
 skipping a real change is a wrong screen, sending an update too many is only a cost. The server still
 belongs on `.147` (a Mac-side server puts every X request on the LAN and is not this comparison).
+
+### [x] A26. `IllegalArgumentException: Destination region ... must fit within texture content bounds` on the JavaFX backend. **M** - fixed 2026-09-30
+
+**The report.** "Sometimes this is thrown, and the window never appears":
+
+```
+java.lang.IllegalArgumentException: Destination region (x=1268, y=489, w=48, h=25) must fit within
+texture content bounds (contentWidth=1300, contentHeight=800)
+        at com.sun.prism.impl.BaseTexture.checkUpdateParams(BaseTexture.java:375)
+        at com.sun.prism.impl.BaseResourceFactory.getCachedTexture(BaseResourceFactory.java:248)
+        at com.sun.javafx.sg.prism.NGCanvas.handleRenderOp(NGCanvas.java:1355)
+        ...
+        at io.github.oyzh1994.xserver.display.JavaFxBackend.openWindow(JavaFxBackend.java:689)
+```
+
+Three things in it say what it is before any experiment does. The destination region **runs past the
+canvas** (1268 + 48 = 1316 > 1300) while the canvas is the size of the screen; the region is **48 wide
+and 25 high**, which is not one cursor sprite but *two* side by side - the union of the box the pointer
+is in now (24 wide) with the one it came from; and the throw is inside the paint the window is
+**opened** with, which is why "the window never appears" rather than a frame being lost.
+
+**Reproduced on the real backend, not reasoned about.** On the Mac, `--backend javafx --single-window
+--geometry 700x500`, a client that draws in a loop (a throwaway `RawXClient` main: map a window, fill a
+rectangle every 200 ms - a session that is **not idle**, which matters, because the sprite is only
+composited for a session with a client on it), and the host pointer walked to the last column of the
+window with `tools/host-input.c` (`hostinput move x y`). The window's position on the display comes from
+the X pointer itself - move to two known host points and `PointProbe` reports the X coordinates, which
+gives the mapping without trusting `CGWindowListCopyWindowInfo`'s title-bar-inclusive bounds. **A/B:
+the build at HEAD threw 21 times in one run, of exactly the reported shape** (`Destination region
+(x=494, y=141, w=212, h=16) ... contentWidth=700, contentHeight=500`); the fixed build, same script,
+same coordinates, **0**.
+
+**The cause.** `JavaFxBackend.flushDamage` clips the damage to the screen and the viewport and then
+unions the **pointer sprite's own box** into it - that union is A21's fix, a sprite whose box the damage
+misses leaves last frame's arrow in the canvas. The union was never clipped again, and neither was the
+sprite: `sprite.x() + sprite.width()` reaches past the screen whenever the pointer sits on the last
+column or row, which an X pointer is allowed to do. JavaFX clips *drawing* but not a `drawImage`
+destination region: `NGCanvas` asks Prism to update a texture region outside the canvas and
+`checkUpdateParams` throws. `drawCursor` had the same hole for the cursor image itself (a 24 wide box
+at the edge, rather than the union's 48).
+
+**The fix.** `damageWithSprite(damage, cursor, bounds)` takes the clip the canvas imposes and returns
+`union ∩ bounds`, and `visibleSprite(sprite, viewport)` gives the part of the sprite the canvas covers
+(the cursor image is drawn from the matching source offset). Both are static and package-private, so
+both are pinned by tests that need no window.
+
+**Verification.** New `JavaFxBackendTest.aSpriteHangingOverTheEdgeIsClippedToWhatTheCanvasCovers` (a
+sprite at `WIDTH-4, HEIGHT-4` must leave the repaint inside the canvas and still cover the damage and the
+visible part of the sprite), the updated `theFrameDamageCoversTheSprite` - which had been written with a
+sprite at (100,200) on a **64x48** bed, i.e. entirely off the screen, and passed only because nothing
+clipped - and the live A/B above. Suite: **464 tests, green**.
+
+**Traps.** The clip has to be applied **before** `logical()`, because the canvas is in logical pixels and
+the framebuffer is not; this is a *paint-time* failure, so it surfaces far from the code that recorded
+the op (a stack that names `openWindow` is telling you where the canvas was first painted, not where the
+rectangle was built); and a sprite at the edge is not an error to be avoided, it is the normal state of
+a pointer on the last pixel.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 
