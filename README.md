@@ -78,10 +78,13 @@ shares the one screen; X clients connect exactly as they otherwise do (`DISPLAY=
 client's mouse and keyboard *are* the X pointer and keyboard. With `--vnc-ws-port`, a
 browser reaches it too - `noVNC` pointed at `ws://host:6080`, with **nothing to install and no bridge
 process**: open its `vnc.html` and put the host and port in the URL (the page itself is not served by
-this server, only the RFB inside the WebSocket). What is sent is raw
-frames of the damage since the last update - **raw, or ZRLE when the client lists it**, which every
-VNC client does and which is what makes a desktop of text or flat colour cheap; `Tight` and `CoRRE` are
-the encodings still on the list in [docs/backlog.md](docs/backlog.md) (D2).
+this server, only the RFB inside the WebSocket). What is sent is the part of the damage whose pixels
+**actually differ from what that client already has** - **raw, or ZRLE when the client lists it**,
+which every VNC client does and which is what makes a desktop of text or flat colour cheap. An
+unchanged screen costs nothing at all: the comparison is against what the viewer was last sent, so an
+application that repaints identical content (EasyShell's aliyun tab does it ~300 times a second) sends
+nothing, as it does with `x11vnc`. `Tight` and `CoRRE` are the encodings still on the list in
+[docs/backlog.md](docs/backlog.md) (D2).
 
 ## Architecture
 
@@ -559,8 +562,12 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   viewer, and a browser can be one of the clients (`--vnc-ws-port`, no bridge needed). Frames are raw
   unless the client asks for **ZRLE**, which every VNC client understands and which turns a desktop of
   flat colours into kilobytes instead of megabytes, and a client that asks for the **Cursor**
-  pseudo-encoding is sent the X pointer's own shape. Not there: `Tight`/`CoRRE` (optimisations on top
-  of ZRLE).
+  pseudo-encoding is sent the X pointer's own shape. **An update is the box the differing pixels are
+  in, and an unchanged screen is sent nothing** - the session holds what each client has been given and
+  compares against it, so a viewer watching an application that repaints the same pixels costs no
+  bandwidth and no decoding at all (measured: 5.39 MB/s and 61 updates a second before that comparison,
+  against `x11vnc`'s nothing - A25 in [docs/backlog.md](docs/backlog.md)). Not there: `Tight`/`CoRRE`
+  (optimisations on top of ZRLE).
 - **A tray icon is shown in the menu bar and stays where the client drew it.** The docked window is
   a window of the X screen like any other - this server has one surface, so a window off it would
   have no pixels to read - and its image is copied into the menu bar on top of that. A client's own

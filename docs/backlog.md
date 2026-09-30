@@ -100,6 +100,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A22~~ | ~~a forwarded application's input fields ignore their context menu and every Control shortcut~~ **fixed 2026-09-30**: two causes - the toolkit's connection was killed by a **BadMatch on a cursor whose hotspot is outside its 1x1 placeholder pixmap**, and the **XI2 key event left the word at 72 nought**, which is where GDK reads the modifier state from | correctness | M |
 | ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
 | ~~A24~~ | ~~"much slower than Xvfb+x11vnc, especially EasyShell - every operation is very slow"~~ **fixed 2026-09-30**: the frame path's copies, fills and image uploads were per-pixel - now row-bulk; measured on the bed, the server's CPU for EasyShell's aliyun tab went **~90-100% -> ~20%** | performance | M |
+| ~~A25~~ | ~~A24's remaining half: the same screen still felt less smooth than Xvfb+x11vnc~~ **fixed 2026-09-30**: the session re-sent the whole damage rectangle even when the pixels equalled what the client had - **5.39 MB/s and 61 updates/s on a screen that was not changing**, against `x11vnc`'s nothing; now the update is the box the differencing pixels are in, and an unchanged one is not sent at all: **0.00 MB/s with the request held**, and pointer motion costs nothing | performance | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -146,6 +147,13 @@ toolkit desynchronised at its first device event. Fixed, and the first use is in
 `tools/README.md` - EasyShell's profile against Xvfb and against this server, for the same interaction
 driven by the same driver, agrees request for request. That is the instrument for the next "why does
 this client behave differently here" question; use it before re-deriving one by hand.
+
+**And the wire has an instrument of its own (2026-09-30): `tools/vnc-meter.py`**, a real RFB client that
+keeps one incremental request outstanding and counts what comes back - MB/s, updates/s, and the seconds
+a request was *held* because nothing had changed. It is what turned "the same screen still feels less
+smooth than `x11vnc`" into a number (A25: 5.39 MB/s and 61 updates a second of an unchanging screen,
+against `x11vnc`'s nothing), and `--dump` decodes ZRLE into the client's own picture so a skip can be
+checked as not being a lost update.
 
 ### [x] E0. Finish the verification kit. **S** - done 2026-09-25
 
@@ -2883,10 +2891,68 @@ the server renders correctly (terminal, SFTP list, toolbar). **Traps:** the serv
 (a Mac-side server puts every X request on the LAN and is not this comparison), and on the Mac it needs
 `-Djava.awt.headless=true` or `GraphicsEnvironment` aborts the JVM.
 
-**Still open - the wire half of "slower than x11vnc".** `RfbSession` sends the whole damage rectangle
-every time even when the pixels equal the last frame, where `x11vnc` compares tiles and sends nothing
-when they have not changed. A per-session last-frame `int[]`, compared before encoding and skipped when
-equal (looping in `updateRequest` so the client keeps waiting), is the shape of that fix.
+**The wire half of "slower than x11vnc" was still open here** - that the same screen was re-sent 61
+times a second for as long as a viewer was watching it. It is **A25**, right below.
+
+### [x] A25. The wire: an unchanged screen was still re-sent 61 times a second. **M** - fixed 2026-09-30
+
+**The report.** After A24, "less smooth than Xvfb+x11vnc" was still true on the same bed. The user's own
+comparison is the sharp one: run `EasyShell` against the VM's `Xvfb :98` with `x11vnc` in front of it and
+watch it from the Mac's own VNC client, and that is visibly smoother than the same application on this
+server's VNC backend.
+
+**Measured, on the bed, with a client that counts what it is sent** (`tools/vnc-meter.py`: the handshake,
+ZRLE, then **one incremental request outstanding** - a real client's own pace - counting the bytes that
+come back). Aliyun tab open, nothing touched, `.147`:
+
+| | our server | `x11vnc` on `Xvfb :98` |
+|---|---|---|
+| idle, nothing changing | **5.39 MB/s, 61 updates/s** | **nothing at all** (the request is held) |
+| pointer moved across the window | 5.42 MB/s | nothing |
+
+**The cause.** `RfbSession.updateRequest` took the damage rectangle and `sendUpdate` built and sent a
+ZRLE frame for it - every time, whatever the pixels were. EasyShell's aliyun tab repaints its whole panel
+~300 times a second without changing a pixel (A21 measured the same thing), so the tick had damage every
+frame and the session answered a viewer with a full-window ZRLE 61 times a second, forever. `x11vnc`
+compares 64x64 tiles against what the client has and sends nothing when they are equal, which is why it
+is smooth: its viewer does no decoding work at all for a screen that is not changing, and every update it
+does send is a change.
+
+**The fix.** The session remembers **what this client has been sent** (`sentPixels`, one entry per screen
+pixel, dropped on a resize, null until the first frame) and `sendUpdate` compares it against the
+framebuffer before building anything:
+
+- the update is the **bounding box of the pixels that really differ**, not the damage rectangle. A redraw
+  that changes nothing is not sent, and it is not a lie by omission: `updateRequest` loops back into its
+  wait, so the request stays outstanding until something really changes - the same answer `x11vnc` gives.
+  A blink that costs one cell of pixels now costs that cell (~28 bytes measured), not a 1300x733 ZRLE.
+- rows are compared with `Arrays.equals`, and only a row that differs has its extent found pixel by
+  pixel, so the common case is a vectorised compare of the damage and nothing else.
+- a **full** request is always answered with the pixels it asked about, whatever the client holds, so a
+  viewer that reconnects or resizes still gets a screen.
+- the region buffer and the ZRLE tile buffer are reused per session: a full-screen update allocated 4 MB
+  plus one `int[4096]` per tile (273 of them) before this. They are now paid once.
+
+**Measured after, same bed and state:** idle **0.00 MB/s, 0 updates, the request held for the whole
+run**; pointer motion **0.00 MB/s** (the sprite's box is damage but its pixels do not change, so a viewer
+that draws its own pointer is not sent a frame for moving it); typing, scrolling and a `yes | head -3000`
+flood **0.01-0.05 MB/s**, at the updates the changes are in - and `x11vnc` costs the same order on the
+same flood, which is the point.
+
+**Verification.** `tools/vnc-meter.py` decodes ZRLE and dumps the client's own picture; diffed with the
+kit's own `Xwd` against `xwd -root` of the server's framebuffer after the flood, **136 of 1,040,000 pixels
+differ and all of them are inside 583,678..590,694** - the text cursor's cell, where the blink raced the
+capture. Everything else is the same picture to the pixel. New
+`VncBackendTest.aRedrawThatChangesNothingIsNotSentButAChangeAfterItIs` holds the behaviour: an identical
+redraw is not sent, the change after it is, and it arrives as the box that differs. The whole suite is
+green.
+
+**Traps.** A skipped update must not become a **lost** one: the request is not answered and the wait
+restarts, the damage is cleared only after the comparison has read the pixels, and any draw that lands
+during that read marks damage again - which is why the flood test ends in a pixel-identical screen rather
+than a stale one. The comparison is **ARGB**, deliberately stricter than the client's packed pixel:
+skipping a real change is a wrong screen, sending an update too many is only a cost. The server still
+belongs on `.147` (a Mac-side server puts every X request on the LAN and is not this comparison).
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

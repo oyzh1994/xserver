@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) both of the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it) and **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup). 458 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape; the *server* half of the 300 fps repaint cost is fixed 2026-09-30 (a bulk request-body read - see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)), the VNC *wire* half (send nothing when the pixels did not change) is still open. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 463 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,30 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-09-30, fifth session (branch `bugfix`): A25, the WIRE half of "less smooth than Xvfb+x11vnc",
+is fixed - and it was not CPU at all.** Counted, not guessed, with a new instrument committed as
+`tools/vnc-meter.py` (a real RFB client that keeps one incremental request outstanding). EasyShell's
+aliyun tab open, untouched, server on `.147`: our server was sending **5.39 MB/s and 61 full-window
+updates a second** - the tick rate, for a screen that was not changing, because the application
+repaints its whole panel ~300 times a second without changing a pixel - where `x11vnc` sends **nothing
+at all** and holds the request.
+
+- **The fix:** `RfbSession` remembers what each client has been sent (`sentPixels`) and sends only the
+  **bounding box of the pixels that really differ**; an unchanged region is not sent, and
+  `updateRequest` loops back into its wait so the request stays outstanding. **After: 0.00 MB/s idle,
+  0.00 MB/s for pointer motion** (the sprite's box is damage but its pixels do not change), and
+  0.01-0.05 MB/s for typing/scroll/flood - the same order `x11vnc` costs on that flood.
+- **Verification that a skip is not a lost update:** the meter's decoded picture vs `xwd -root` of the
+  server's framebuffer after a flood = **136 differing pixels out of 1,040,000, all in the text
+  cursor's 8x17 cell** (the blink raced the capture). New
+  `VncBackendTest.aRedrawThatChangesNothingIsNotSentButAChangeAfterItIs`; whole suite **463/463**.
+- **Committed this time** (the fourth session's sandbox could not): `5be50f9` (frame path), `e431f51`
+  (docs + memory) and this session's perf commits, and the iMessage route works. **Not pushed.**
+- **Traps:** a leftover `--backend headless --display 68` server on the Mac makes `TrayBridgeTest`,
+  `DropBridgeTest` and `XInputTest` fail with "Address already in use" (killed this session); the
+  meter's client-view XWD needs `header_size` in **bytes** (100) or the picture is shifted by most of
+  a row; the comparison in the server is ARGB, deliberately stricter than the client's packed pixel.
 
 **2026-09-30, fourth session (branch `bugfix`): the "everything is very slow, especially EasyShell"
 report is FIXED, and it was the frame path's per-pixel loops, not (only) the byte-at-a-time reads.**
@@ -35,14 +59,12 @@ Measured on the real bed, not guessed: server **on `.147`** with `--backend vnc`
 - **Traps this cost**: the server must run **on `.147`** for a fair comparison (a Mac-side server puts
   every X request on the LAN); on the Mac it needs `-Djava.awt.headless=true` or `GraphicsEnvironment`
   aborts the JVM; easy to launch/stop with `setsid nohup` + `xdotool` on `.147`. Bed stopped after.
-- **Not done (the wire half of "slower than x11vnc")**: `RfbSession` still sends the whole damage
-  rectangle every time even when the pixels equal the last frame, where x11vnc compares tiles and sends
-  nothing when they have not changed; a per-session last-frame `int[]` compared before encoding and
-  skipped when equal (looping in `updateRequest`) is the shape of that fix.
-- **This session could not commit or notify**: the sandbox keeps **`.git` read-only** (`touch .git/x`
-  = `EPERM`) and blocks Apple Events to Messages (`hiservices-xpcservice` `Connection Invalid`), so
-  `git add`/`commit` and the iMessage both failed even after network was enabled. Changes left in the
-  working tree.
+- **The wire half of "slower than x11vnc" was left open here, and is A25** (see the fifth session
+  above): `RfbSession` sent the whole damage rectangle every time even when the pixels equalled the
+  last frame, where x11vnc compares tiles and sends nothing when they have not changed.
+- **This session could not commit or notify** (the sandbox kept `.git` read-only and blocked Apple
+  Events to Messages). **Both were done by hand in the fifth session**: the frame-path work is
+  `5be50f9`, the docs and memory are `e431f51`, and iMessage works.
 
 **2026-09-30, third session (branch `bugfix`): A23 is FIXED - the right-click menu that ignored the
 mouse - and the fix is three lines in `InputState.focusOnClick`.** `mvn test` **458/458**, commits
