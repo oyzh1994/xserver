@@ -273,17 +273,27 @@ shape that (`JavaFxBackend.hostCursor`, `MacCursor`):
   few pixels apart - until the user clicked. `pointerOverWindow` is set by *any* mouse event inside,
   not by `MOUSE_ENTERED` alone, because a window that opens under a stationary pointer never gets an
   enter event.
+- **But the platform only lets the *active* application hide the pointer at all** (A28, measured
+  2026-10-01). A native probe called `[NSCursor hide]` and watched `CGCursorIsVisible` go 0 -> 1 the
+  moment another application was activated, and it never came back; JavaFX's own
+  `MacCursor.setVisible_impl` additionally skips the native call whenever its cached
+  `isNSCursorVisible` agrees with what is wanted, and that cache is stale from that moment on. So the
+  hide is applied only while this process has a focused window (`JavaFxBackend.applicationActive`), and
+  **the sprite is what gives way** when it does not: `drawCursor` draws nothing while the application
+  is in the background, which is one pointer either way - the X one whenever the server is the
+  application in front, the platform's when it is not. A focus change repaints the sprite's own box,
+  because nothing a client draws changes when the host window comes or goes.
 
 Two things cannot be verified from a test and need an eye on the screen: **`screencapture -C`
 composites the cursor itself and ignores whether the application has hidden it** (a capture with the
 pointer deliberately visible and one with it hidden came out byte-identical), and the pointer is only
 painted where the application is active.
 
-Known gap: an application that is not the active one is ignored by macOS for cursor changes. A
-host window that opens behind the IDE never becomes active (its title bar stays grey), so the desktop
-arrow stays until the user clicks it. Raising and focusing the window once when its client first
-draws would fix it; it is deliberately not done, because a window that jumps to the front on every
-client is worse than the arrow.
+A host window that opens behind the IDE never becomes active (its title bar stays grey), so the
+platform's arrow is the pointer there until the user clicks it - and since A28 the sprite is not drawn
+in that state, so what the user sees is one pointer, not two. Raising and focusing the window once when
+its client first draws would make the sprite appear earlier; it is deliberately not done, because a
+window that jumps to the front on every client is worse than the arrow.
 
 ## Input is mapped through the viewport
 

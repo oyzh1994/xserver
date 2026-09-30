@@ -19,11 +19,19 @@ on the machine (macOS + JavaFX 25.0.1 loaded from the classpath) on 2026-09-22:
   in `stop()`. Left in place it takes the pointer off the desktop and off every other application -
   the bug the user first reported.
 
-  **The window being the active one is deliberately *not* part of that test** (it was, until
-  2026-09-22): a freshly opened window is usually not active, so requiring focus left the platform
-  arrow on top of the client's cursor - two pointers a few pixels apart - until the user clicked the
-  window. `pointerOverWindow` is set by *any* mouse event inside, not by `MOUSE_ENTERED` alone,
-  because a window that opens under a stationary pointer never gets an enter event at all.
+  `pointerOverWindow` is set by *any* mouse event inside, not by `MOUSE_ENTERED` alone, because a
+  window that opens under a stationary pointer never gets an enter event at all.
+
+  **A background application cannot hide the pointer at all** (measured 2026-10-01, A28). A native
+  probe - no JavaFX in it - called `[NSCursor hide]` and then watched `CGCursorIsVisible`: 0, then **1**
+  the moment another application was activated, and never back. JavaFX does not even retry:
+  `MacCursor.setVisible_impl` returns **without the native call** when its cached `isNSCursorVisible`
+  already equals what is wanted (visible = wanted && !isCursorNONE), and the cache is stale from the
+  moment the platform re-shows the cursor. Forcing it through `DEFAULT` then `NONE` in one FX task does
+  not help while another application is in front. So the policy is: hide only while **this process has
+  a focused window** (`JavaFxBackend.applicationActive`), and **do not draw the sprite** while it does
+  not - one pointer either way, which is what the two reported "two pointers" cases were. `A28` in
+  `docs/backlog.md` has the numbers and the screenshot harness.
 - **`ImageCursor` is ignored by this platform - do not reach for it.** It looks like the clean
   answer (scoped to the window, no global hide) and does nothing: an **opaque red** 32x32 image
   cursor was measured still showing the standard macOS arrow over the window. JavaFX does its part -

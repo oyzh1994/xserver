@@ -11,6 +11,31 @@ metadata:
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
 
+**2026-10-01, eighth session (branch `bugfix`): A28 - two pointers over the window, fixed by making
+the *sprite* give way.** Reported: moving the mouse over the server's window showed the system arrow
+*and* the X sprite until the window was clicked, and dragging another application's window over it
+brought the system arrow back. One cause, and the platform decides it:
+
+- **The pointer belongs to the active application.** A native probe (no JavaFX) called
+  `[NSCursor hide]` and watched `CGCursorIsVisible`: 0, then **1** the moment another application was
+  activated, and never back. JavaFX's `MacCursor.setVisible_impl` also **skips the native call** when
+  its cached `isNSCursorVisible` agrees with what is wanted, and the cache is stale from that moment -
+  forcing `DEFAULT` then `NONE` does not help while another application is in front.
+- **The fix:** hide the platform pointer only while this process has a focused window
+  (`JavaFxBackend.applicationActive`, a count of focused windows - the hide is per process), and draw
+  **no sprite** while it does not; a focus change repaints the sprite's own box
+  (`repaintCursorArea`), since no client draws anything when the host window comes or goes.
+- **Measured live** (server on `:95` + a client that draws, pointer on a root area of the window,
+  `screencapture -R` of a 40x30 region **without** `-C`, plus `CGCursorIsVisible`): ours-in-front
+  **hidden/394 sprite pixels**; Finder-in-front **visible/0**; ours again **hidden/394**. Before the
+  fix the middle row was **visible/402** - the two pointers. **466 tests green.**
+- **The harness that made it measurable** (reusable): `/tmp/xsn/cursorvisible.c`
+  (`CGCursorIsVisible`), `screencapture -x -R"x,y,w,h"` + `sips -s format bmp` + a pixel count against
+  the background colour (`/tmp/xsn/region_check.py`) to see whether the *sprite* is on the canvas, and
+  `osascript -e 'tell application "System Events" to set frontmost of first process whose unix id is
+  <pid> to true'` to make *this* application the front one by pid (a synthetic click does **not**
+  activate it reliably).
+
 **2026-10-01, seventh session (branch `bugfix`): A27 - the dock's Quit did not end the process.** The
 report was "right-click xserver in the dock, press Quit, and the EasyShell process on `.147` is not
 released". What the Quit *is* turned out to be the whole answer:

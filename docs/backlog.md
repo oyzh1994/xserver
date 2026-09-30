@@ -103,6 +103,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A25~~ | ~~A24's remaining half: the same screen still felt less smooth than Xvfb+x11vnc~~ **fixed 2026-09-30**: the session re-sent the whole damage rectangle even when the pixels equalled what the client had - **5.39 MB/s and 61 updates/s on a screen that was not changing**, against `x11vnc`'s nothing; now the update is the box the differencing pixels are in, and an unchanged one is not sent at all: **0.00 MB/s with the request held**, and pointer motion costs nothing | performance | M |
 | ~~A26~~ | ~~`java.lang.IllegalArgumentException: Destination region ... must fit within texture content bounds`, sometimes, and the window never appears~~ **fixed 2026-09-30**: the frame's repaint rectangle covered the pointer sprite's own box, which reaches past the screen when the pointer sits on the last pixel - and JavaFX does not clip a `drawImage` destination region. Reproduced on the real backend (21 throws with the pointer at the right edge), 0 after clipping the union and the sprite; the canvas is in logical pixels | correctness | M |
 | ~~A27~~ | ~~the dock's **Quit** did not quit: the window closed and the clients were released, but the process stayed for ever (and an app with no window heard the Quit not at all)~~ **fixed 2026-10-01**: on macOS a JavaFX app's Quit is `GlassStage.requestClosingAllWindows()` - a close on every window, never `System.exit` - and the toolkit's `JavaFX-KeepAlive` thread is not a daemon and outlives `Platform.exit()`. `XServer.startEventLoop` now returns the display thread and `Main` waits for it, then exits the process: EasyShell released at **+1s**, the server gone at **+3s**, both modes | correctness | S |
+| ~~A28~~ | ~~**two pointers** over the window: the system arrow *and* the X sprite, until the window is clicked - and again while another application is being used in front of it~~ **fixed 2026-10-01**: the pointer belongs to the **active** application - a native probe watched `[NSCursor hide]` be undone the moment another application was activated, and JavaFX's own cache never retries - so the sprite is what gives way: it is drawn only while this process has a focused window. Measured: active = system pointer hidden + sprite drawn, in the background = system pointer visible + **no** sprite, both by screenshot | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -3083,6 +3084,54 @@ closed. Three traps, each measured or paid for:
 
 New `XServerShutdownTest.stoppingTheServerAsksTheClientsToCloseBeforeItCutsThemOff`. Suite: **466 tests,
 green**.
+
+### [x] A28. Two pointers over the window: the system arrow and the X sprite together. **M** - fixed 2026-10-01
+
+**The report, two faces of one thing.** "Start the server, run EasyShell on `.147` against it, then move
+the mouse over the server's window: **two pointers**, the system one and the server's own - until you
+click on the page, when the system one goes. And if you drag another application's window over it, the
+pointer that was the server's alone becomes two again." (The Xvfb+x11vnc comparison does not do this,
+which is the tell: there the *client* draws the only pointer and the server composites none.)
+
+**Measured, and the platform is the one that decides.** The pointer belongs to the **active**
+application:
+
+- a native probe (no JavaFX in it at all) called `[NSCursor hide]` and then watched
+  `CGCursorIsVisible`: **0, then 1** the moment another application was activated, and it never went
+  back. A background application cannot keep the pointer hidden, whatever it calls.
+- JavaFX does not even try again: `MacCursor.setVisible_impl` compares the wanted visibility with its
+  own cached `isNSCursorVisible` and **returns without calling the native method** when they agree - and
+  the cache is stale the moment the platform re-shows the cursor. Forcing it through (setting `DEFAULT`
+  and then `NONE` again) did not help either: measured, still visible, because the hide itself is gone
+  while another application is in front.
+- so the state was: the sprite drawn *and* the system cursor visible, which is the "two pointers".
+  Clicking the window made this process active, the hide took effect and the system pointer went - the
+  user's "after a click it disappears". Dragging another application's window over this one is the same
+  state: that application is the active one for the length of the drag.
+
+**The fix: the sprite is what gives way.** `JavaFxBackend.hostCursor(pointerOverWindow,
+applicationActive)` hides the platform pointer only while this process has a focused window
+(`applicationActive`, a count of focused windows, because the pointer is hidden per *process*), and
+`drawCursor` draws nothing while it does not. One pointer either way: the X one whenever the server is
+the application in front, the platform's when it is not - which is also the pointer that belongs to
+whatever the user is actually using then. A focus change also repaints the sprite's own box
+(`repaintCursorArea`), because nothing a *client* draws changes when the host window comes or goes, so
+the canvas would otherwise keep the sprite after the application went to the background and keep not
+having it after it came back.
+
+**Verification, live on the Mac** (server on `:95` with a client drawing, the pointer parked on a root
+area of the window, `screencapture -R` of a 40x30 region **without** `-C` so it shows the sprite and not
+the system pointer, plus `CGCursorIsVisible` for the other one):
+
+| application in front | system pointer | sprite on the canvas |
+|---|---|---|
+| this server | **hidden** | **394 pixels** (drawn) |
+| Finder (this server in the background) | **visible** | **0** (not drawn) |
+| this server again | **hidden** | **394** (no stale state) |
+
+On the build before the fix the same three states read `hidden/394`, **`visible/402`**, `hidden/394` -
+the middle row is the reported two pointers. `JavaFxBackendTest`'s cursor test now pins all three
+decisions, and the suite is **466 tests, green**.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 
