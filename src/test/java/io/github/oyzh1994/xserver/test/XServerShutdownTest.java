@@ -66,6 +66,47 @@ class XServerShutdownTest {
     }
 
     @Test
+    void stoppingTheServerAsksTheClientsToCloseBeforeItCutsThemOff() throws Exception {
+        // The stop path, not the window-close one: Ctrl-C, a signal, the control port - a server that
+        // only cut the connections left an application whose toolkit never learned to quit running on
+        // the far machine for ever (A27). And through the *clients*, not the sessions: in
+        // single-window mode - which is what this test runs - every client's windows are on the
+        // master screen and the master session has no client of its own, so a loop over
+        // `session.client()` asks nobody at all.
+        TestServer server = new TestServer(88);
+        try (RawXClient client = RawXClient.connect(server.display)) {
+            int protocols = client.internAtom("WM_PROTOCOLS");
+            int deleteWindow = client.internAtom("WM_DELETE_WINDOW");
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 0, 0, 200, 200);
+            client.setAtomListProperty(window, protocols, protocols, deleteWindow);
+            client.mapWindow(window);
+            client.flush();
+
+            // The stop runs on its own thread, because the ask has to be *readable* while it is
+            // happening: a stop that blocked the reader would have cut the connection first, and a
+            // cut with unread input is a reset, which is exactly how a real application loses a
+            // WM_DELETE_WINDOW it was never given the chance to read.
+            Thread stopping = new Thread(server::stop, "test-stop");
+            stopping.start();
+
+            byte[] message = client.readEvent(CLIENT_MESSAGE);
+            assertNotNull(message, "the client was never asked to close by the stop path");
+            assertEquals(window, RawXClient.readInt(message, 4), "the window being asked to close");
+            assertEquals(deleteWindow, RawXClient.readInt(message, 12), "WM_DELETE_WINDOW");
+
+            // What a toolkit does with it: quit, which closes the connection. The stop then has
+            // nothing left to wait for and returns at once.
+            client.close();
+            stopping.join(2000);
+            assertFalse(stopping.isAlive(), "the stop waited for the client instead of cutting it off"
+                    + " as soon as it was gone");
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
     void theDisplayLoopEndsWhenTheServerDoes() throws Exception {
         // `Main` waits for this thread and then ends the process - which is what the macOS Quit
         // needed: the JavaFX toolkit's keep-alive thread is not a daemon and outlives

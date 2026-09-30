@@ -1932,16 +1932,65 @@ public final class XServer {
      * the display it was drawing to has gone. A window that never listed the protocol is left out -
      * cutting its connection, which is what happens to it next, is the only notice there is.
      */
-    private void closeClientWindows(Screen screen, ClientConnection client) {
+    private int closeClientWindows(Screen screen, ClientConnection client) {
         int protocols = atoms.intern("WM_PROTOCOLS", true);
         int deleteWindow = atoms.intern("WM_DELETE_WINDOW", true);
         if (protocols == AtomTable.NONE || deleteWindow == AtomTable.NONE) {
-            return;
+            return 0;
         }
+        int asked = 0;
         for (XWindow window : screen.root().children()) {
             if (window.owner() == client && asksToClose(window, protocols, deleteWindow)) {
                 log.debug("asking 0x{} to close", Integer.toHexString(window.id()));
                 events.send(client, deleteWindowMessage(client, window, protocols, deleteWindow));
+                asked++;
+            }
+        }
+        return asked;
+    }
+
+    /**
+     * Asks every client to close, and gives the ones that were asked the grace period to go.
+     *
+     * <p>What a server that is stopping owes an application whose display it is: the same courtesy the
+     * window-close path gives - {@code WM_DELETE_WINDOW} while there is still a connection to carry
+     * it, and only then the cut. Cutting alone leaves an application whose toolkit was never told to
+     * quit running on the far machine with a dead display, which is the difference between "the
+     * program exited" and "a process is still there" (A27).
+     *
+     * <p><b>Through {@code clients} and not through the sessions.</b> In single-window mode - which
+     * {@code --backend vnc} implies - every client's windows are on the master screen and the master
+     * session has no client of its own, so a loop over {@code session.client()} asks **nobody**
+     * (measured: {@code --backend vnc} with EasyShell connected sent no ask at all; through the
+     * clients it sends four, one per toplevel). {@link #screenOf} is the same rule every other answer
+     * to a client uses for finding that client's screen.
+     *
+     * <p>Nothing is waited for when nobody was asked, and nothing is asked twice: a client that never
+     * registered {@code WM_DELETE_WINDOW} has no softer notice than the cut, and one the window-close
+     * path has already asked is already inside its own grace.
+     */
+    private void askClientsToCloseForStop() {
+        if (masterSession.closeDeadline() != 0) {
+            return;
+        }
+        int asked = 0;
+        for (ClientConnection client : clients) {
+            ScreenSession session = client.session();
+            if (session != null && session.closeDeadline() != 0) {
+                continue;
+            }
+            asked += closeClientWindows(screenOf(client), client);
+        }
+        if (asked == 0) {
+            return;
+        }
+        long deadline = System.currentTimeMillis() + options.closeGraceMillis();
+        while (!clients.isEmpty() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
     }
@@ -2106,6 +2155,9 @@ public final class XServer {
 
     public void stop() {
         running = false;
+        // Before anything is torn down: tell the clients, so a toolkit can quit by itself instead of
+        // discovering that its display has gone. This is the stop counterpart of the window-close path.
+        askClientsToCloseForStop();
         if (clipboard != null) {
             clipboard.stop();
         }
@@ -2131,6 +2183,7 @@ public final class XServer {
         // no window is left, which is now.
         DisplayBackend window = sharedBackend;
         if (window != null) {
+            window.stop();
             window.releaseToolkit();
         }
     }

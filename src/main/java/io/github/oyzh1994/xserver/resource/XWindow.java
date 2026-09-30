@@ -9,6 +9,7 @@ import io.github.oyzh1994.xserver.display.VisualInfo;
 import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A window: a rectangular region of the screen that draws into the screen framebuffer and
@@ -43,7 +44,7 @@ public final class XWindow extends XResource {
     private final VisualInfo visual;
 
     private XWindow parent;
-    private final List<XWindow> children = new ArrayList<>();
+    private final List<XWindow> children = new CopyOnWriteArrayList<>();
 
     private int x;
     private int y;

@@ -590,7 +590,6 @@ public final class JavaFxBackend implements DisplayBackend {
         // only ever a loan - see hostCursor for what that costs.
         scene.setOnMouseEntered(event -> {
             enterWindow();
-            applyHostCursor();
         });
         scene.setOnMouseExited(event -> {
             pointerOverWindow = false;

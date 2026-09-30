@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -32,8 +33,8 @@ public final class ClientListener {
     public static final Path UNIX_SOCKET_DIR = Path.of("/tmp/.X11-unix");
 
     private final XServer server;
-    private final List<ServerSocketChannel> channels = new ArrayList<>();
-    private final List<Path> socketPaths = new ArrayList<>();
+    private final List<ServerSocketChannel> channels = new CopyOnWriteArrayList<>();
+    private final List<Path> socketPaths = new CopyOnWriteArrayList<>();
     private final AtomicBoolean running = new AtomicBoolean();
     private Thread acceptThread;
     private Path unixSocketPath;
