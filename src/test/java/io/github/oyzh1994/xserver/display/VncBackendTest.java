@@ -109,6 +109,53 @@ class VncBackendTest {
     }
 
     @Test
+    void aRedrawThatChangesNothingIsNotSentButAChangeAfterItIs() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 100, 0xFFFFFF);
+                client.mapWindow(window);
+                int gc = client.allocateId();
+                client.createGC(gc, client.root(), RED);
+                client.fillRectangle(window, gc, 20, 30, 40, 10);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestFullFrame();
+                Frame frame = viewer.readFrame();
+                assertEquals(RED, frame.pixel(25, 35), "the viewer has the rectangle");
+
+                // The application draws the same rectangle again - EasyShell's aliyun tab redraws
+                // its whole panel ~300 times a second without changing a pixel, and this is what
+                // that used to cost: the viewer was sent the whole screen 61 times a second. The
+                // damage still exists, so the request is woken, and the answer is still nothing.
+                client.fillRectangle(window, gc, 20, 30, 40, 10);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestIncrementalFrame();
+                viewer.readTimeout(400);
+                assertEquals(null, viewer.readFrameOrNull(),
+                        "a redraw that changes no pixel is not sent");
+
+                // And the request is still outstanding, so a real change does not have to wait for
+                // the viewer to ask again - which is the whole risk of skipping: a skipped update
+                // must not become a lost one.
+                viewer.readTimeout(4000);
+                int other = client.allocateId();
+                client.createGC(other, client.root(), GREEN);
+                client.fillRectangle(window, other, 100, 60, 20, 20);
+                client.flush();
+                Frame changed = viewer.readFrame();
+                assertNotNull(changed, "the change after an identical redraw is sent");
+                assertEquals(GREEN, changed.pixel(105, 65), "and it carries the new pixels");
+                assertTrue(changed.width <= 24 && changed.height <= 24,
+                        "and it is the box the difference is in, not the damage rectangle: "
+                                + changed.width + "x" + changed.height);
+            }
+        }
+    }
+
+    @Test
     void theCustomersOwnPixelFormatIsHonoured() throws Exception {
         try (Server server = new Server()) {
             try (RawXClient client = RawXClient.connect(DISPLAY);

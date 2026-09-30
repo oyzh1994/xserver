@@ -54,12 +54,26 @@ final class ZrleEncoder {
      */
     static byte[] encode(int[] argb, int width, int height, java.util.function.IntUnaryOperator
             packer, int cpxel, Deflater deflate) {
+        return encode(argb, width, height, packer, cpxel, deflate, new int[TILE * TILE]);
+    }
+
+    /**
+     * The same, with the tile buffer owned by the caller.
+     *
+     * <p>{@code scratch} holds one tile's packed pixels and must be at least {@code TILE * TILE}
+     * long; a session keeps one and passes it here, because a tile allocates its own otherwise and a
+     * full 1300x800 frame is 273 tiles - a few megabytes of garbage for every frame an application
+     * redraws, which a terminal scrolling at 60 Hz produces for as long as the user scrolls.
+     */
+    static byte[] encode(int[] argb, int width, int height, java.util.function.IntUnaryOperator
+            packer, int cpxel, Deflater deflate, int[] scratch) {
         ByteArrayOutputStream raw = new ByteArrayOutputStream(Math.max(64, width * height / 2));
         for (int tileY = 0; tileY < height; tileY += TILE) {
             int tileHeight = Math.min(TILE, height - tileY);
             for (int tileX = 0; tileX < width; tileX += TILE) {
                 int tileWidth = Math.min(TILE, width - tileX);
-                encodeTile(raw, argb, width, tileX, tileY, tileWidth, tileHeight, packer, cpxel);
+                encodeTile(raw, argb, width, tileX, tileY, tileWidth, tileHeight, packer, cpxel,
+                        scratch);
             }
         }
 
@@ -85,12 +99,12 @@ final class ZrleEncoder {
     /** One tile: the cheapest of the four subencodings, then its pixels. */
     private static void encodeTile(ByteArrayOutputStream out, int[] argb, int stride, int tileX,
                                    int tileY, int width, int height,
-                                   java.util.function.IntUnaryOperator packer, int cpxel) {
+                                   java.util.function.IntUnaryOperator packer, int cpxel,
+                                   int[] tile) {
         // The palette first: up to 127 colours, and the first repeat settles whether RLE is the way.
         int[] palette = new int[128];
         int colours = 0;
         int pixels = width * height;
-        int[] tile = new int[pixels];
         int at = 0;
         for (int y = 0; y < height; y++) {
             int row = (tileY + y) * stride + tileX;

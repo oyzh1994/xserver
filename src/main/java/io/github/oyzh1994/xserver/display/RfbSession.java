@@ -221,6 +221,26 @@ final class RfbSession implements Runnable {
     private CursorSprite sentCursor;
     private int[] lastCursorPixels;
 
+    /**
+     * What this client has already been sent, one entry per screen pixel, and a scratch buffer for
+     * one update's pixels.
+     *
+     * <p>This is the half of "much slower than Xvfb+x11vnc" that the pixel loops were not: an
+     * application that repaints identical content (EasyShell's aliyun tab does it ~300 times a
+     * second) marked damage every time, and this session sent the rectangle every time, 61 times a
+     * second and 5.4 MB/s of pixels the viewer already had - measured against the same screen on
+     * {@code x11vnc}, which sends nothing at all in that state because it compares before it sends.
+     *
+     * <p>{@code sentPixels} is null until the first frame goes out and is dropped on a resize, so a
+     * region that has never been sent is always sent. {@code regionBuffer} is reused because a
+     * full-screen update allocated 4 MB per frame before this, which is a garbage collector's worth
+     * of work for a frame that is usually skipped.
+     */
+    private volatile int[] sentPixels;
+    private int[] regionBuffer;
+    /** One ZRLE tile's packed pixels, reused for the same reason {@link #regionBuffer} is. */
+    private int[] tileScratch;
+
     private volatile boolean running = true;
 
     /** The pointer's last position and button state, so a change can be told from a repeat. */
@@ -328,6 +348,10 @@ final class RfbSession implements Runnable {
     void screenResized() {
         synchronized (lock) {
             resized = true;
+            // The pixels this client holds are of a screen that no longer exists, so nothing may be
+            // skipped against them - the next update sends whatever the new screen is made of, and
+            // the one after that compares against those pixels again.
+            sentPixels = null;
             lock.notifyAll();
         }
     }
@@ -594,73 +618,66 @@ final class RfbSession implements Runnable {
         if (asked.isEmpty()) {
             return;
         }
-        // Whatever is queued that is not damage goes first, and for both kinds of request: a fresh
-        // viewer's first request is a full one, which is where a client that asked for the cursor
-        // expects to hear about it.
-        flushPending();
-        Rectangle send;
-        synchronized (lock) {
-            if (incremental) {
-                while (running && !resized && pendingCutText == null && pendingCursor == null
-                        && (pending == null || pending.intersection(asked).isEmpty())) {
-                    try {
-                        lock.wait(1000);             // a wake-up is also how a closed socket is noticed
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
-                }
-                if (!running) {
-                    return;
-                }
-                if (pendingCutText != null || pendingCursor != null) {
-                    // A clipboard change or a new pointer is not damage: it goes whatever the area
-                    // asked about, and then the request waits for damage again.
-                    flushPending();
-                    if (pending == null || pending.intersection(asked).isEmpty()) {
-                        while (running && !resized && pendingCutText == null
-                                && pendingCursor == null
-                                && (pending == null || pending.intersection(asked).isEmpty())) {
-                            try {
-                                lock.wait(1000);
-                            } catch (InterruptedException e) {
-                                Thread.currentThread().interrupt();
-                                return;
-                            }
-                        }
-                        if (!running) {
+        while (true) {
+            // Whatever is queued that is not damage goes first, and on every pass: a fresh viewer's
+            // first request is a full one, which is where a client that asked for the cursor expects
+            // to hear about it. Outside the lock, because this writes to a socket and the display
+            // tick is on the other side of that lock.
+            flushPending();
+            Rectangle send = null;
+            boolean announceResize = false;
+            synchronized (lock) {
+                if (incremental) {
+                    while (running && !resized && pendingCutText == null && pendingCursor == null
+                            && (pending == null || pending.intersection(asked).isEmpty())) {
+                        try {
+                            lock.wait(1000);         // a wake-up is also how a closed socket is noticed
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
                             return;
                         }
                     }
-                }
-                if (resized) {
-                    resized = false;
-                    if (desktopSizeWanted) {
-                        sendDesktopSize();
+                    if (!running) {
+                        return;
                     }
+                    if (resized) {
+                        resized = false;
+                        announceResize = desktopSizeWanted;
+                    }
+                    // Cleared *before* the pixels are read, so a draw that lands during the read is
+                    // damage again and is sent by the update after this one.
+                    if (pending != null) {
+                        send = pending.intersection(asked);
+                        pending = null;
+                    }
+                } else {
+                    // A full request is answered with the pixels it asked about, so damage inside
+                    // that area is no longer unsent - leaving it pending would send the same
+                    // rectangle again to the next incremental request, and a viewer that just
+                    // connected would see the damage it already has twice. Damage outside the area
+                    // stays: the client did not ask about it and has not seen it.
+                    send = asked;
+                    if (pending != null && asked.contains(pending)) {
+                        pending = null;
+                    }
+                    resized = false;
                 }
-                if (pending == null) {
-                    return;
-                }
-                // Cleared *before* the pixels are copied, so a draw that lands during the copy is
-                // damage again and is sent by the update after this one.
-                send = pending.intersection(asked);
-                pending = null;
-            } else {
-                // A full request is answered with the pixels it asked about, so damage inside that
-                // area is no longer unsent - leaving it pending would send the same rectangle again
-                // to the next incremental request, and a viewer that just connected would see the
-                // damage it already has twice. Damage outside the area stays: the client did not
-                // ask about it and has not seen it.
-                send = asked;
-                if (pending != null && asked.contains(pending)) {
-                    pending = null;
-                }
-                resized = false;
             }
-        }
-        if (!send.isEmpty()) {
-            sendUpdate(send);
+            if (announceResize) {
+                sendDesktopSize();
+            }
+            if (send != null && !send.isEmpty() && sendUpdate(send, incremental)) {
+                return;
+            }
+            if (!incremental) {
+                // A full request is asked and answered once: a client that wants the pixels again
+                // asks again, and one that got nothing new is told nothing.
+                return;
+            }
+            // Nothing went out: the pixels are the ones this client already has, so the request
+            // stays outstanding and the wait starts again. That is what a viewer sitting on a screen
+            // that its application repaints identical content onto costs - which is nothing, and the
+            // same answer `x11vnc` gives.
         }
     }
 
@@ -832,8 +849,20 @@ final class RfbSession implements Runnable {
      * <p>Raw is <em>w * h * (bits per pixel / 8)</em> bytes with no compression, which is why the
      * updates are damage-shaped rather than screen-shaped: a full 1300x800 frame is 4 MB, and a
      * keystroke in a terminal is a few hundred bytes.
+     *
+     * <p>{@code compare} asks for the pixels to be held up against what this client already has
+     * before anything is written: the rectangle that goes out is the box the differences are in (see
+     * {@link #changedBox}), and false means there was no difference at all - nothing went out, and
+     * the caller waits for the next damage instead of answering the request. A full request passes
+     * false: a client that asks for the pixels is given them, whatever it already holds.
      */
-    private void sendUpdate(Rectangle region) throws IOException {
+    private boolean sendUpdate(Rectangle region, boolean compare) throws IOException {
+        if (compare) {
+            region = changedBox(region);
+            if (region == null) {
+                return false;
+            }
+        }
         int width = region.width;
         int height = region.height;
         int[] argb = regionPixels(region, width, height);
@@ -847,7 +876,11 @@ final class RfbSession implements Runnable {
         writeU16(height);
         if (zrleWanted) {
             int cpxel = compressedPixelBytes();
-            byte[] zrle = ZrleEncoder.encode(argb, width, height, this::packedPixel, cpxel, deflater);
+            if (tileScratch == null) {
+                tileScratch = new int[64 * 64];
+            }
+            byte[] zrle = ZrleEncoder.encode(argb, width, height, this::packedPixel, cpxel,
+                    deflater, tileScratch);
             writeInt(ENCODING_ZRLE);
             // The length of the compressed data, which ZRLE carries in the rectangle itself rather
             // than in the message header - a reader that took it for pixels would lose the frame.
@@ -862,13 +895,99 @@ final class RfbSession implements Runnable {
                 pixels = new byte[needed];
             }
             int at = 0;
-            for (int i = 0; i < argb.length; i++) {
+            // `width * height` and not `argb.length`: the region buffer is reused and may be longer
+            // than this update, and a stale tail would be sent as pixels.
+            for (int i = 0; i < width * height; i++) {
                 at = store(pixels, packedPixel(argb[i]), at, bytesPerPixel);
             }
             writeInt(ENCODING_RAW);
             out.write(pixels);
         }
         out.flush();
+        rememberSent(region, argb, width, height);
+        return true;
+    }
+
+    /**
+     * The part of {@code region} this client has not been sent, or null when it has all of it.
+     *
+     * <p>The comparison is against the framebuffer directly and not against a copy, and it is the
+     * reason a viewer watching an application that redraws identical content costs no bandwidth: the
+     * drawing still marks damage, so the display tick still wakes this session up, and this answers
+     * "the viewer has those pixels already", so no update is built at all.
+     *
+     * <p>The answer is the <b>bounding box of the pixels that really differ</b> and not the damage
+     * rectangle. An application that repaints a whole window to blink a text cursor damages the whole
+     * window, and sending that is ~100 KB of ZRLE for two cells of pixels - measured on the bed, as
+     * twice a second with the aliyun tab sitting still (down from 61 times a second before the
+     * comparison existed at all, which is what the "less smooth than x11vnc" report was). `x11vnc`
+     * answers the same way at 64x64 tile granularity; a rectangle of any size is a legal update, so
+     * this is that idea without the tiles.
+     *
+     * <p>Comparing ARGB rather than the client's packed pixel is deliberately the stricter test: two
+     * colours that pack to the same 16 bit value are still a difference here, which sends an update
+     * a packed comparison would have skipped. Sending too much is a cost; skipping a real change is a
+     * wrong screen. (Which is also why a row that differs has its extent found pixel by pixel while a
+     * row that does not is one vectorised comparison.)
+     */
+    private Rectangle changedBox(Rectangle region) {
+        int[] sent = sentPixels;
+        if (sent == null) {
+            return region;
+        }
+        io.github.oyzh1994.xserver.draw.Framebuffer framebuffer = screen.framebuffer();
+        if (!framebuffer.allocated()) {
+            return region;
+        }
+        int screenWidth = screen.width();
+        if (sent.length < screenWidth * screen.height()) {
+            return region;
+        }
+        int[] source = framebuffer.pixels();
+        int stride = framebuffer.stride();
+        int left = Integer.MAX_VALUE;
+        int right = -1;
+        int top = -1;
+        int bottom = -1;
+        for (int y = 0; y < region.height; y++) {
+            int row = (region.y + y) * stride + region.x;
+            int base = (region.y + y) * screenWidth + region.x;
+            if (java.util.Arrays.equals(sent, base, base + region.width,
+                    source, row, row + region.width)) {
+                continue;
+            }
+            int first = 0;
+            int last = region.width - 1;
+            while (first < region.width && sent[base + first] == source[row + first]) {
+                first++;
+            }
+            while (last > first && sent[base + last] == source[row + last]) {
+                last--;
+            }
+            left = Math.min(left, region.x + first);
+            right = Math.max(right, region.x + last);
+            if (top < 0) {
+                top = region.y + y;
+            }
+            bottom = region.y + y;
+        }
+        if (right < 0) {
+            return null;
+        }
+        return new Rectangle(left, top, right - left + 1, bottom - top + 1);
+    }
+
+    /** Remembers the pixels that went out, so the next update can be skipped if nothing changed. */
+    private void rememberSent(Rectangle region, int[] argb, int width, int height) {
+        int screenWidth = screen.width();
+        int[] sent = sentPixels;
+        if (sent == null || sent.length < screenWidth * screen.height()) {
+            sent = new int[screenWidth * screen.height()];
+            sentPixels = sent;
+        }
+        for (int y = 0; y < height; y++) {
+            System.arraycopy(argb, y * width, sent, (region.y + y) * screenWidth + region.x, width);
+        }
     }
 
     /**
@@ -906,14 +1025,24 @@ final class RfbSession implements Runnable {
                 | (scale(argb & 0xFF, format.blueMax) << format.blueShift);
     }
 
-    /** The region's pixels as ARGB, in row-major order, for whichever encoding sends them. */
+    /**
+     * The region's pixels as ARGB, in row-major order, for whichever encoding sends them.
+     *
+     * <p>The buffer is the session's and reused - only its first {@code width * height} entries are
+     * this update's - because a full-screen frame here was 4 MB of allocation per update before it.
+     * Callers must not keep it past the next call.
+     */
     private int[] regionPixels(Rectangle region, int width, int height) {
         io.github.oyzh1994.xserver.draw.Framebuffer framebuffer = screen.framebuffer();
-        int[] pixels = new int[width * height];
+        int count = width * height;
+        int[] pixels = regionBuffer;
+        if (pixels == null || pixels.length < count) {
+            pixels = regionBuffer = new int[count];
+        }
         if (!framebuffer.allocated()) {
             // Nothing has ever been drawn on this screen, and reading it through `pixels()` would
             // allocate the whole thing (E4 is about exactly that). Every pixel is the background.
-            java.util.Arrays.fill(pixels, framebuffer.pixel(0, 0));
+            java.util.Arrays.fill(pixels, 0, count, framebuffer.pixel(0, 0));
             return pixels;
         }
         int[] source = framebuffer.pixels();
