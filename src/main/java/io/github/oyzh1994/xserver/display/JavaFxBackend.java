@@ -590,6 +590,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // only ever a loan - see hostCursor for what that costs.
         scene.setOnMouseEntered(event -> {
             enterWindow();
+            applyHostCursor();
         });
         scene.setOnMouseExited(event -> {
             pointerOverWindow = false;
@@ -832,18 +833,44 @@ public final class JavaFxBackend implements DisplayBackend {
      * Runs on the FX thread.
      */
     /**
-     * The rectangle a frame has to repaint: the damage, and the sprite's own box.
+     * The rectangle a frame has to repaint: the damage, the sprite's own box, and the clip the canvas
+     * imposes on both.
      *
      * <p>Package-private and static so it can be pinned without a window: the reason the sprite's box
      * is in here is the A21 flicker (see {@link #flushDamage}), and a rule about rectangles is worth a
      * test that does not need a display.
+     *
+     * <p><b>The clip is not decoration.</b> A sprite's box is the sprite's own rectangle, and the
+     * pointer can sit on the very last pixel of the screen, so that box - and the union of it with
+     * damage that has already been clipped - can reach past what the canvas covers. The
+     * {@code drawImage} that follows then asks Prism to update a destination region outside the
+     * texture and JavaFX throws
+     * {@code IllegalArgumentException: Destination region (x=1268, y=489, w=48, h=25) must fit within
+     * texture content bounds (contentWidth=1300, contentHeight=800)}. That is not a lost frame: the
+     * paint that throws is usually the **first** one, so the window never opens at all - measured as
+     * "sometimes, when the pointer is at the right edge". 48 wide is exactly the union of the sprite's
+     * box with the 24 wide position it came from, which is how this was recognised.
      */
-    static Rectangle damageWithSprite(Rectangle damage, CursorSprite cursor) {
-        if (cursor == null) {
-            return damage;
+    static Rectangle damageWithSprite(Rectangle damage, CursorSprite cursor, Rectangle bounds) {
+        Rectangle wanted = cursor == null
+                ? damage
+                : damage.union(new Rectangle(cursor.x(), cursor.y(), cursor.width(),
+                        cursor.height()));
+        return wanted.intersection(bounds);
+    }
+
+    /**
+     * The part of the sprite the canvas covers - the sprite alone, because the pointer can hang over
+     * the edge of the screen or of this window's viewport, and drawing the whole of it asks Prism for
+     * a destination region outside the canvas, which is the same exception {@link #damageWithSprite}
+     * exists to avoid. An empty rectangle means the pointer is not on this window at all.
+     */
+    static Rectangle visibleSprite(CursorSprite sprite, Rectangle viewport) {
+        if (sprite == null) {
+            return new Rectangle();
         }
-        return damage.union(new Rectangle(cursor.x(), cursor.y(), cursor.width(),
-                cursor.height()));
+        return new Rectangle(sprite.x(), sprite.y(), sprite.width(), sprite.height())
+                .intersection(viewport);
     }
 
     private void flushDamage() {
@@ -859,8 +886,10 @@ public final class JavaFxBackend implements DisplayBackend {
         if (region == null || pixelBuffer == null) {
             return;
         }
-        region = region.intersection(new Rectangle(0, 0, screenWidth, screenHeight));
-        region = region.intersection(viewport);
+        // What the canvas covers, and so the clip for everything drawn into it: the part of the
+        // screen this window shows.
+        Rectangle bounds = new Rectangle(0, 0, screenWidth, screenHeight).intersection(viewport);
+        region = region.intersection(bounds);
         if (region.isEmpty()) {
             return;
         }
@@ -876,7 +905,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // box is covered by accident, and `main` damaged the whole screen every frame so it could not
         // happen at all. With this the sprite in the canvas is exactly one frame old, always,
         // whatever the client underneath is repainting.
-        Rectangle damage = damageWithSprite(region, cursor);
+        Rectangle damage = damageWithSprite(region, cursor, bounds);
         // The buffer position must be zero when JavaFX uploads it. Anything that reads through the
         // buffer - a diagnostic, a future feature - can leave it at the end, and the upload then
         // fails with "only 0 elements remain", leaving the window frozen on an old frame.
@@ -925,15 +954,19 @@ public final class JavaFxBackend implements DisplayBackend {
             cursorImage.getPixelWriter().setPixels(0, 0, sprite.width(), sprite.height(),
                     PixelFormat.getIntArgbInstance(), sprite.pixels(), 0, sprite.width());
         }
-        if (!viewport.intersects(new Rectangle(sprite.x(), sprite.y(), sprite.width(),
-                sprite.height()))) {
+        Rectangle visible = visibleSprite(sprite, viewport);
+        if (visible.isEmpty()) {
             // The pointer is outside what this window shows: another window's business, and drawing
             // it here would paint it twice.
             return;
         }
-        graphics.drawImage(cursorImage, logical(sprite.x() - viewport.x),
-                logical(sprite.y() - viewport.y), logical(sprite.width()),
-                logical(sprite.height()));
+        // Only the visible part, with the source offset that goes with it: a pointer at the edge of
+        // the screen has a sprite box that reaches past the canvas, and asking Prism to draw that
+        // throws instead of clipping.
+        graphics.drawImage(cursorImage, visible.x - sprite.x(), visible.y - sprite.y(),
+                visible.width, visible.height,
+                logical(visible.x - viewport.x), logical(visible.y - viewport.y),
+                logical(visible.width), logical(visible.height));
     }
 
     /**

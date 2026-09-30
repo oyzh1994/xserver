@@ -75,18 +75,52 @@ class JavaFxBackendTest {
      */
     @Test
     void theFrameDamageCoversTheSprite() {
-        CursorSprite cursor = new CursorSprite(100, 200, 24, 24, 8, 8, new int[24 * 24]);
+        CursorSprite cursor = new CursorSprite(10, 10, 24, 24, 8, 8, new int[24 * 24]);
         // A band of the screen the sprite is not in - the case that used to leave the sprite's copy
         // in the canvas, and so draw the arrow twice.
         Rectangle band = new Rectangle(0, 0, WIDTH, 10);
+        Rectangle bounds = new Rectangle(0, 0, WIDTH, HEIGHT);
 
-        Rectangle covered = JavaFxBackend.damageWithSprite(band, cursor);
+        Rectangle covered = JavaFxBackend.damageWithSprite(band, cursor, bounds);
 
-        assertTrue(covered.contains(100, 200, 24, 24),
+        assertTrue(covered.contains(10, 10, 24, 24),
                 "the sprite's box has to be repainted from the framebuffer: " + covered);
         assertTrue(covered.contains(0, 0, WIDTH, 10), "and the damage itself is still there");
-        assertEquals(band, JavaFxBackend.damageWithSprite(band, null),
+        assertEquals(band, JavaFxBackend.damageWithSprite(band, null, bounds),
                 "with no sprite there is nothing to cover");
+    }
+
+    /**
+     * A pointer at the edge of the screen is clipped to the window, and the window still opens.
+     *
+     * <p>The pointer can sit on the very last pixel, so the sprite's box reaches past the screen -
+     * and the union of that box with damage that is already inside the screen reaches past it too.
+     * `drawImage` then asks Prism to update a destination region outside the canvas and JavaFX throws
+     * `IllegalArgumentException: Destination region (x=1268, y=489, w=48, h=25) must fit within
+     * texture content bounds (contentWidth=1300, contentHeight=800)`. The report was "sometimes, and
+     * then the window never appears", which is the shape of an exception thrown by the paint the
+     * window is opened with. The 48 is the union of the sprite's box with the position it came from.
+     */
+    @Test
+    void aSpriteHangingOverTheEdgeIsClippedToWhatTheCanvasCovers() {
+        CursorSprite cursor = new CursorSprite(WIDTH - 4, HEIGHT - 4, 24, 24, 8, 8, new int[24 * 24]);
+        Rectangle damage = new Rectangle(WIDTH - 10, HEIGHT - 10, 10, 10);
+        Rectangle bounds = new Rectangle(0, 0, WIDTH, HEIGHT);
+
+        Rectangle covered = JavaFxBackend.damageWithSprite(damage, cursor, bounds);
+
+        assertTrue(covered.x + covered.width <= WIDTH && covered.y + covered.height <= HEIGHT,
+                "the repaint has to stay inside the canvas: " + covered);
+        assertTrue(covered.contains(damage), "and it still covers the damage: " + covered);
+        assertTrue(covered.contains(WIDTH - 4, HEIGHT - 4), "and the visible part of the sprite");
+
+        // The sprite alone, for the cursor image itself: drawing the whole of it is the same
+        // exception on the other `drawImage` this backend makes.
+        Rectangle visible = JavaFxBackend.visibleSprite(cursor, bounds);
+        assertEquals(4, visible.width, "only the part on the screen is drawn");
+        assertEquals(4, visible.height);
+        assertTrue(JavaFxBackend.visibleSprite(cursor, new Rectangle(0, 0, 10, 10)).isEmpty(),
+                "a pointer on another window is not drawn here at all");
     }
 
     /**
