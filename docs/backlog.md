@@ -99,6 +99,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A23~~ | ~~a forwarded application's context menu opens and then ignores the mouse~~ **fixed 2026-09-30**: `--focus-on-click` gave the input focus to the **menu itself** - an override-redirect window the window manager never focuses - so the window the menu belonged to was told `FocusOut` and the toolkit unmapped its own popup; 5 of 5 presses destroyed the menu before the fix and 5 of 5 survive after, in both modes | correctness | M |
 | ~~A22~~ | ~~a forwarded application's input fields ignore their context menu and every Control shortcut~~ **fixed 2026-09-30**: two causes - the toolkit's connection was killed by a **BadMatch on a cursor whose hotspot is outside its 1x1 placeholder pixmap**, and the **XI2 key event left the word at 72 nought**, which is where GDK reads the modifier state from | correctness | M |
 | ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
+| ~~A24~~ | ~~"much slower than Xvfb+x11vnc, especially EasyShell - every operation is very slow"~~ **fixed 2026-09-30**: the frame path's copies, fills and image uploads were per-pixel - now row-bulk; measured on the bed, the server's CPU for EasyShell's aliyun tab went **~90-100% -> ~20%** | performance | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -2838,6 +2839,54 @@ underneath is repainting. Measured across eight captures with the SSH tab open:
 **`17 17 17 17 17 17 17 17`** after, against **`17 96 96 17 17 17 17 17`** before. The Swing backend
 does not need it: its panel is an opaque `JPanel`, so the dirty rectangle is erased before it is
 painted.
+
+### [x] A24. "Much slower than Xvfb+x11vnc, especially EasyShell - every operation is very slow." **M** - fixed 2026-09-30
+
+**The report.** "This xserver is much slower than starting `Xvfb` + `x11vnc` on the remote `.147` and
+connecting from the Mac - especially EasyShell: open a connection (e.g. aliyun) and every operation is
+very slow." It is the *frame path*, and it is the cost A21 recorded as "the app repaints ~300 frames/s
+of nearly identical content and this server spends about a full core on it".
+
+**Reproduced and measured on the real bed, not guessed.** The server runs **on `.147`** with
+`--backend vnc` (the same shape as the `Xvfb`+`x11vnc` baseline, not a Mac-side server), EasyShell runs
+on `.147` against it, and the aliyun SSH tab is opened and allowed to settle. `top -H` names the
+EasyShell connection thread, and repeated `jstack` of it showed the whole cost in four per-pixel loops:
+
+- `XServer.compositeOwnPixels` -> `Framebuffer.copyFrom` - the copy of a window's own pixels onto the
+  screen that ends **every** drawing request - per pixel with a per-pixel `markDirty`;
+- `DrawHandlers.copyArea` -> `Rasterizer.copyRect` - the terminal's scroll - per pixel with a clip test,
+  and its source is an **XPixmap** (a toolkit's off-screen buffer), not another window store;
+- `RenderExtension.fillRectangles` -> `Compositor.draw`/`blend` - a toolkit's panel and text-background
+  paint, and its alpha `Clear`s - per pixel; this was the single hottest frame;
+- `ImageCodec.putZ` - a `PutImage`, which is how a JavaFX/GTK frame is uploaded - per pixel through
+  `Rasterizer.writePixel`.
+
+The request-body read and the image decode were byte-at-a-time too (a 4.16 MB image: **~16-17 ms per
+byte loop against ~0.5 ms in bulk**), which is real but was not the whole core.
+
+**The A/B, same machine and same application state: `git archive HEAD` = ~90-100% of one core; the fix
+= ~20%.**
+
+**The fix.** `Framebuffer.copyFrom` copies a row at a time (`System.arraycopy`) when the values need no
+conversion; `Rasterizer.copyRect` does the same for a plain copy inside the clip and now accepts an
+`XPixmap` source (and marks the store's damage, which `DamageTrackingTest` caught missing);
+`Rasterizer.writeRun` + `ImageCodec.putZ` decode an image row into an `int[]` and write it in bulk;
+`Picture.fillArgb` + `Compositor.fillRectangles` fill the writable rectangles (`Clear`, and an opaque
+colour under `Src`/`Over`) a row at a time. The request body is read in bulk, `readPutImage` copies the
+image out of the request's own bytes, and three per-request `log.info` lines are `log.debug` now.
+
+**Verification.** New `draw/FramebufferCopyTest` holds the `copyFrom` fast path to the pixel-by-pixel
+answer over two surfaces, a same-surface overlap in both axes, and an off-edge request;
+`DamageTrackingTest`, `RasterizerTest`, `ImageCodecTest`, `BlendFastPathTest`, `AlphaMaskTest`,
+`ArgbAlphaTest`, `VariableLengthDecodersTest` and `ZrleEncoderTest` pass; a capture of the aliyun tab on
+the server renders correctly (terminal, SFTP list, toolbar). **Traps:** the server belongs on `.147`
+(a Mac-side server puts every X request on the LAN and is not this comparison), and on the Mac it needs
+`-Djava.awt.headless=true` or `GraphicsEnvironment` aborts the JVM.
+
+**Still open - the wire half of "slower than x11vnc".** `RfbSession` sends the whole damage rectangle
+every time even when the pixels equal the last frame, where `x11vnc` compares tiles and sends nothing
+when they have not changed. A per-session last-frame `int[]`, compared before encoding and skipped when
+equal (looping in `updateRequest` so the client keeps waiting), is the shape of that fix.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

@@ -1,0 +1,1235 @@
+---
+name: xserver-working-state
+description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) both of the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it) and **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup). 458 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape; the *server* half of the 300 fps repaint cost is fixed 2026-09-30 (a bulk request-body read - see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)), the VNC *wire* half (send nothing when the pixels did not change) is still open. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 01353543-0895-4938-81fe-8b2a65312ab8
+  modified: 2026-09-30T11:16:14.775Z
+---
+
+**The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
+This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-09-30, fourth session (branch `bugfix`): the "everything is very slow, especially EasyShell"
+report is FIXED, and it was the frame path's per-pixel loops, not (only) the byte-at-a-time reads.**
+Measured on the real bed, not guessed: server **on `.147`** with `--backend vnc` (the same shape as the
+`Xvfb`+`x11vnc` baseline), EasyShell on `.147`, the aliyun SSH tab open, settled.
+
+- **The A/B: `git archive HEAD` = ~90-100% CPU of one core; the fixed build = ~20%.** `top -H` named the
+  EasyShell connection thread, and repeated `jstack` of it showed the whole cost was four per-pixel
+  loops: `XServer.compositeOwnPixels` -> `Framebuffer.copyFrom` (the copy that ends every draw),
+  `DrawHandlers.copyArea` -> `Rasterizer.copyRect` (a scroll, and its source was an **XPixmap**, which
+  the row fast path first rejected), `RenderExtension.fillRectangles` -> `Compositor.draw`/`blend`, and
+  `ImageCodec.putZ` (a `PutImage`).
+- **The fix**: row-bulk `Framebuffer.copyFrom` (`System.arraycopy`); row-bulk `Rasterizer.copyRect`
+  accepting a pixmap source and marking the store's damage; `Rasterizer.writeRun` + `ImageCodec.putZ`
+  bulk row write; `Picture.fillArgb` + `Compositor.fillRectangles` bulk fill for opaque
+  `Src`/`Over` and `Clear`; plus the request body read in bulk, `readPutImage` copying from the
+  request's own bytes, and three per-request `log.info` demoted to `log.debug`.
+- **New test** `draw/FramebufferCopyTest` pins the `copyFrom` fast path against the pixel loop (both
+  surfaces, same-surface overlap both axes, off-edge); `DamageTrackingTest` caught the one real miss
+  (the fast copy did not mark the framebuffer's damage). Green: `RasterizerTest`, `ImageCodecTest`,
+  `BlendFastPathTest`, `AlphaMaskTest`, `ArgbAlphaTest`, `VariableLengthDecodersTest`, `ZrleEncoderTest`;
+  a screenshot of the aliyun tab renders correctly.
+- **Traps this cost**: the server must run **on `.147`** for a fair comparison (a Mac-side server puts
+  every X request on the LAN); on the Mac it needs `-Djava.awt.headless=true` or `GraphicsEnvironment`
+  aborts the JVM; easy to launch/stop with `setsid nohup` + `xdotool` on `.147`. Bed stopped after.
+- **Not done (the wire half of "slower than x11vnc")**: `RfbSession` still sends the whole damage
+  rectangle every time even when the pixels equal the last frame, where x11vnc compares tiles and sends
+  nothing when they have not changed; a per-session last-frame `int[]` compared before encoding and
+  skipped when equal (looping in `updateRequest`) is the shape of that fix.
+- **This session could not commit or notify**: the sandbox keeps **`.git` read-only** (`touch .git/x`
+  = `EPERM`) and blocks Apple Events to Messages (`hiservices-xpcservice` `Connection Invalid`), so
+  `git add`/`commit` and the iMessage both failed even after network was enabled. Changes left in the
+  working tree.
+
+**2026-09-30, third session (branch `bugfix`): A23 is FIXED - the right-click menu that ignored the
+mouse - and the fix is three lines in `InputState.focusOnClick`.** `mvn test` **458/458**, commits
+`e931b4a` (fix + test), `9b10cea` (docs), **not pushed**.
+
+- **The cause, and it is `--focus-on-click` (the default) doing the wrong half of its job**: it gave the
+  input focus to the toplevel a click landed in, and the toplevel a click *inside a menu* lands in is
+  **the menu** - an override-redirect window. So the window the menu belonged to was told `FocusOut` on
+  the press, and a toolkit hides a popup whose owner it believes unfocused: EasyShell unmapped its own
+  menu **3 ms** later, the release was reported against the window underneath, and every item was dead
+  to the mouse while the keyboard still activated them. A window manager never focuses an
+  override-redirect window. The fix: `if (target.isOverrideRedirect()) return;` before the
+  already-focused check, so the window-manager half this server added on purpose stays.
+- **The A/B is one build with the flag the only difference**: the popup is destroyed after a press on an
+  item **5 of 5** times with the rule missing and **survives 5 of 5** with it, in `--single-window`
+  headless (XTEST) *and* in the default per-client mode (the host window driven by `tools/hostinput`,
+  built from `tools/host-input.c`). The line to read is the window a button is *reported against*:
+  `button 1 up at (234,160) -> 0x40001e` is the popup, `-> 0x400002` is the window underneath.
+- **`main` is normal because it has no `--focus-on-click` at all** - the user's own premise, measured.
+  Its worktree is `/private/tmp/xmain` (already built); the same gesture there gives press **and**
+  release in the popup and the item's dialog 40 ms later. Also: **`--focus-on-click` still focuses an
+  ordinary toplevel** (the log shows `focus set to 0x400002, was the pointer` when the search box is
+  right-clicked), which is the A20 case it exists for.
+- **The previous round's "`--focus-on-click` is ruled out" was wrong**, and what it lacked is the
+  control: **a fresh server AND a fresh client per run**. Restart the client between rows - the app's
+  own state drifts across scripted gestures, and one successful activation leaves a modal dialog over
+  the next run.
+- **Bed notes this round**: `tools/bed.sh` passes `$XSERVER_OPTIONS` to the **JVM**, so `--backend` and
+  friends cannot go there (`Unrecognized option: --backend`) - start the server by hand instead
+  (`nohup java -Dlogback.configurationFile=... -cp "target/classes:$(cat target/tools-cp.txt)"
+  io.github.oyzh1994.xserver.Main --display 95 ...`). The EasyShell AppImage is
+  `/root/EasyShell_v1.2.2_linux_arm64_build.AppImage` and the left-panel **search box is at screen
+  (186,115)**; the menu it opens is the *host list's* (添加连接/添加目录/…), not a text menu - the
+  复制/粘贴/全选 of the report belong to a text field elsewhere. In per-client mode the host window was
+  at global (106,81) 1300x728 with its content 1:1 over screen (0,33) - **offset +106,+76**, calibrated
+  off the log rather than off a capture.
+
+**2026-09-30, second session (branch `bugfix`): A19 is FIXED - a copy kills the application because the
+clipboard bridge asked through a window on the wrong screen - and A23 is new and open: a context menu
+that opens and then ignores the mouse.** Commits `4f16ed6` (the fix + its test), `24a3498` (docs +
+instruments), **not pushed**.
+
+- **The cause, and it is the *mode* that hid it for a day**: the bridge is made once at startup, so its
+  window is a child of the **master** screen's root - and in the **default** (one window per client)
+  mode every connection gets a screen of its own, whose setup reply names that root and no other. The
+  `requestor` of the bridge's `SelectionRequest` was therefore a window the client could not place; GDK
+  wraps whatever window it is asked through (`gdk_x11_window_foreign_new_for_display`) and dies in
+  `XScreenNumberOfScreen` on the attributes struct a failed lookup left uninitialised. The bridge keeps
+  **one window per screen** now and asks through the owner's own screen's.
+- **Every "not reproduced" attempt in the previous entry ran `--single-window`**, where the master
+  screen *is* every client's screen and the window was already placeable. **A bed that never runs the
+  default mode cannot see this class of bug** - that is now checklist item 10.
+- **The reproduction is 20 lines**: `tools/clipboard-owner.py` (a GTK3 window that takes `CLIPBOARD`,
+  so the bridge then asks it for the data) - `EXIT=124` (alive, killed by the timeout) against
+  `--single-window`, `EXIT=139` (SIGSEGV) in the default mode, with gdb giving the application's own
+  three frames. The app itself, driven through the host window with `tools/host-input.c`: Ctrl+A then
+  Ctrl+C puts the box's text on the Mac's clipboard and the process lives. `ClipboardBridgeTest` now
+  runs in the default mode and asks the requestor's root (`RawXClient.rootOf`); it fails without the
+  fix.
+- **A23 (open)**: the menu opens, the item under the pointer highlights, and the click does nothing
+  while **the same item activated from the keyboard copies** (Down, Return: the Mac's clipboard went
+  from a hash string to the box's `aa`). The press and release *are* delivered to the menu's own window
+  as XI2 device events; a **GTK3** client's menu item does activate on the same server, so it is what
+  the toolkit reads out of the event rather than where it goes. Ruled out by measurement:
+  `--focus-on-click`, the grab status (`status 0` every time), and the XI2 button mask (flipping it to
+  the buttons held *during* the event did not fix it and was **reverted** - `buttons(state)` is what the
+  verified title-bar drag stands on). Next step is `tools/tap.py` on both servers with the same gesture,
+  diffing the XI2 button event; `tools/XiProbe`'s dump now prints the mask at 80 for that.
+- **Two aiming traps, both in A23**: `screencapture -l <window>` pads a window by **56 points on every
+  side** (1280x728 comes out 1392x840), so `screen = origin - 56 + 0.696 * displayed` - three "the item
+  is dead" readings were misses before that; and the **hover highlight** is the cheap way to prove the
+  pointer is on a row. Also: `pkill -9 -f "[E]asyShell"` matches the *launch* line when both are in one
+  remote command, so it kills the shell about to start the app - two `tools/vm.sh` calls.
+- **A WIP hunk is left in the working tree, uncommitted, and it is not mine**: `ClipboardBridge`'s
+  `FETCH_TARGETS` with `COMPOUND_TEXT` added (the previous session's paste hypothesis, 03:17). It looks
+  wrong on the merits - the bridge serves UTF-8 bytes for *every* text target, so offering
+  `COMPOUND_TEXT` invites a client to decode UTF-8 as compound-text - and nothing measured it. The
+  paste path was measured working today without needing it (`wait_for_text` returns the host's text).
+  My fix and test were committed with that hunk taken out, so the tree's only difference from HEAD is
+  that hunk.
+- **`mvn test` 457 tests, one flake**: `ExposeOnMapTest` failed once with `Connection reset` on connect
+  (display 96) and passes on re-run in isolation - a port/timing flake, not the change. The three new
+  instruments are in `tools/` now: `clipboard-owner.py`, `gtk-menu-probe.py` (prints its own menu
+  geometry - the aiming fix), `host-input.c` (click/type/`ctrl` with the Control key itself held).
+
+**2026-09-30 (branch `bugfix`): an application's input fields lost their context menu AND their Control
+shortcuts - two independent causes.** `mvn test` **456/456**, commits `6d8be4f` (the cursor), `b5fa930`
+(the XI2 modifier word), `839ccfa`/`a3c24f1` (docs), **not pushed**.
+
+- **Cause 1, and it had to be fixed first: this server was killing the toolkit's connection.** GTK
+  installs a RENDER-built cursor by sending a **core `CreateCursor` with a 1x1 placeholder pixmap and
+  hotspot (1,1)** - outside it - and we answered **`BadMatch`**; GTK's default handler *ends the
+  process*. Everything after that (the selection ownership a copy needs) went nowhere, which is what
+  "the menu items are clickable but do nothing" was. A reference accepts it (measured with a C probe on
+  both displays). Both handlers dropped the check.
+- **Cause 2: the XI2 device event left the word at 72 nought.** A device event carries the modifier
+  bits **twice** - the four bytes at 60-63 (documented) and the word at 72 - and **GDK reads the
+  second**: against Xvfb it reported `state=0x4 ctrl=True` for a Ctrl+A where ours reported `state=0x0`.
+  Measured by a byte-for-byte diff of the same XI2 event on both servers.
+- **The instrument that found both: a GTK3 probe on the same display** (the toolkit the application's
+  own Linux backend uses) printing its own `state` per key - `strings libgdk-3.so` shows it calls
+  XkbGetState/XkbGetMap/XkbSelectEvents, so it is GDK's reading that decides, never the core event's.
+- **Two traps, both recorded in A22**: **a stale server process is a false A/B** (two rounds of "the
+  change is in the source and nothing changed" were a server started *before* the build still holding
+  the port - check `ps -o lstart` against the build), and **a test's own request can be malformed in a
+  way that makes it pass** (the new test wrote the cursor hotspot at 24/26 where they are 28/30, and its
+  error reader looked at offset 11 instead of 10) - found by making the test prove it can fail.
+
+**2026-09-29 (branch `bugfix`): the flickering pointer is a sprite drawn twice - part-screen damage
+left last frame's copy in the canvas.** `mvn test` **454/454**, commits `63da328` (docs + instruments),
+`d4acd75` (the fix), `08709aa` (the test).
+
+- **The cause**: `main` damages the **whole screen** every frame; this branch damages *part* of it (a
+  B5-era optimisation), and the app's damage alternates between rectangles that reach the sprite and
+  rectangles that do not. The sprite is drawn over the frame and never into the framebuffer, so the
+  canvas kept last frame's copy wherever the damage missed it - and `drawCursor` composited **that**
+  again: the arrow's antialiased edges darkened (17 dark pixels on a covered frame against 102 on an
+  uncovered one, same centroid).
+- **The fix**: `JavaFxBackend.flushDamage` unions the sprite's box into the damage
+  (`damageWithSprite`, unit-tested - the test fails without it). Measured across 8 host-window captures
+  with the SSH tab open: `17 96 96 17 17 17 17 17` before, `17 17 17 17 17 17 17 17` after. The Swing
+  backend needs nothing: an opaque `JPanel` erases the dirty rect first.
+- **The instruments that were needed**, because the sprite is not in the framebuffer: capture the
+  **host window** (`screencapture -l <number>`, and `tools/host-windows.c` prints the number now), and
+  time the changes rather than sampling once a second (`tools/BlinkProbe`). A frame dump writes once a
+  second, so a flicker at the client's repaint rate lands on the same phase every sample.
+- **`tools/RepaintProbe`** drives the frame path without an application, with a note that it does *not*
+  reproduce this one: its damage always covers the sprite.
+- **Still open, and it is the "laggy" half of the report**: the app repaints ~300 frames/s of nearly
+  identical content and this server spends about a full core on it - the same on `main`, so it is a
+  frame-path cost rather than a regression.
+
+**2026-09-29, later (branch `bugfix`): "the context menu flashes and vanishes after the 片段 page is
+closed" - measured as the *application's* behaviour, and a switch answers it.** `mvn test` **453/453**,
+commits `e44b6b1` (a focus-reporting corner), `275e5ad` (`--focus-on-click`), **not pushed**.
+
+- **The measurement that settled it**: with the page *closed*, a right-click on a host row renders no
+  menu on **this server and on Xvfb identically** (76968 non-background pixels / 4169 ink = the panel's
+  own text; the menu is 77999 / 6003). My first run of that table counted *override-redirect windows in
+  the tree* - which lists unmapped ones - and read "the menu is there" off a window that is always
+  there; **the correction is the lesson**: compare the client's *pixels*, not the tree's rows.
+- **The state** (both servers): the page takes the X focus (`SetInputFocus(page, revert_to = Parent)`),
+  the revert out of a child of the root leaves it on the **root window**, nothing focuses a window on a
+  click on either server, and the application never asks afterwards - so the main window is unfocused
+  and JavaFX hides a popup whose owner looks unfocused. That is the flash.
+- **`--focus-on-click`** (off by default, because a reference does not do it): a click moves the focus to
+  the toplevel it lands in, with `revert_to = PointerRoot` so a window that goes away hands it back to
+  the pointer's window. With it on, the reported sequence opens the menu again (77999 / 6003).
+- **A real divergence found on the way** (`e44b6b1`): a window *on its way out* was handed
+  `FocusIn <departing> detail=Pointer`, which a reference never sends and GDK takes for where the focus
+  lives. Two probes pin it now - the new **`tools/FocusRevertProbe`** (the pointer *in* the window that
+  goes away: two overlapping root children, `FocusOut`, `FocusIn <underneath> detail=Inferior`, and
+  nothing else) and `FocusProbe`'s `"warp 50 50" "focus B" "unmap B"` - and both are identical to the
+  reference. The rule: a leaving window is not told the pointer's half, *except* under PointerRoot,
+  where a reference does tell it.
+- **`FocusEventTest` parks the pointer in its setup now**: one of its cases depends on what the pointer
+  is in, and it had been reading whatever the previous test left behind - the §8 trap, in a test.
+
+**2026-09-29 (twenty-fifth round, branch `bugfix`): two more reported bugs - a window that could not be
+dragged, and a flaky focus that turned out to be the XI2 event shapes.** `mvn test` **450/450**, commits
+`e2f1bdd` (the shapes), `b6424b4` (the button mask), `8bd95fb` (docs), **not pushed**; iMessage sent and
+the beds stopped.
+
+- **The "sometimes the input box does not get the focus although typing works"** was **the XI2 enter,
+  leave and focus events sent in the device event's shape**: a reference sends 120 bytes for a key,
+  **76 for a crossing and 104 for a focus event**, with `same_screen`/`focus` at 48/49, `buttons_len`
+  at 50 and the mask at 72; all three came out at 120 with a device event's offsets, so GDK read this
+  server's lengths as its flags and its mask eight bytes late. A/B: **1 of 3 starts showed the focus
+  ring before, 4 of 4 after**. `Xi2Event.Shape` holds the layouts and `XInputTest` pins them.
+- **"No window can be dragged by its title bar, main was fine"** was **the XI2 button mask left zero on
+  every device event**: GDK reads the drag state from it, so a motion with nothing held is a move. A
+  reference sends bit n for button n (button 1 = `0x02`) and the state *before* the event (a press is
+  clear, its release still set - the core `state` convention). Same scripted drag: 60 px on `main`
+  (core rail, no XI2 there), 20 px before the fix, 60 px after.
+- **The measured tool for both was `tools/tap.py` in front of *both* servers with the same client
+  gesture**, decoding each log as messages (a reply 32 + 4/unit, an event 32, a GenericEvent 32 + its
+  own length, and **the setup reply is the one with an eight byte header**). `tools/README.md` has the
+  recipe; the sizes are the line to compare.
+- **Two traps on the way, both mine and both pinned by the test now**: an XI2 event's arrays follow the
+  *whole* mask (values four bytes early are read as garbage), and a motion must be written in the
+  *device* branch of the two length fields at 48/50 - get either wrong and the client reads past the
+  event: **GDK died of it (SIGSEGV at a nought pointer plus `0x90` inside `gdk_display_get_event`)
+  every time a title bar was dragged**, which is what a "process crash" looks like from the outside.
+- **A reference motion's shape (136 bytes, two FP3232 axes) is written and measured but no caller uses
+  it**: GDK dies on its first arrival (same SIGSEGV) while the shorter, valid form works. Recorded in
+  `Xi2Event.Shape.MOTION` and the checklist.
+- **The copy crash is NOT reproduced** and is open as **A19**: A19 has the report, the bed's own crash
+  signature (Xlib's `_XIOError`/SIGBUS - the display connection died, seen in both apps before today),
+  the four places this server closes a connection with the log line each leaves, everything tried (the
+  connection menu's 复制信息, the search box's 右键 → 复制 with Ctrl+A and a drag selection, Ctrl+C/V,
+  the host clipboard set and empty, on both builds) and the two candidates left (the clipboard round
+  trip looping, and the bridge's INCR branch). **The next step is a capture, not a theory**: the
+  server's disconnect line plus the app's `hs_err_pid*.log` name which side died first.
+- **Bed notes**: `es-run.sh` on the VM now waits for a real start and reports `FAILED display|db-lock`
+  (a stale instance makes a fresh start die of the H2 lock and reads as a crash); a leftover server on
+  a display the suite binds (6094 was mine) makes `VncBackendTest` fail with `BindException`; and the
+  app's own crash logs live in `/root/hs_err_pid*.log` - they are the first thing to fetch.
+
+**2026-09-29 (twenty-fourth round, branch `bugfix`): the first user-reported bug - a keystroke went to
+the *root window* when the focus was left on it, so EasyShell could not type after closing a page.**
+`mvn test` **449/449** (was 447), headless **449 with its 2 skips, BUILD SUCCESS**, commit `1aefb94`,
+**not pushed**; iMessage sent and the beds stopped.
+
+- **The report** (the user's own words, from the phone): click 片段, close the page, then click the home
+  page's search box - no character arrives; open and close 设置 and it types again.
+- **The cause, from the server log with the client on the VM**: the 片段 page is a toplevel of its own,
+  the client calls `SetInputFocus(page, revert_to = Parent)` when it opens it and closes it with
+  **`UnmapWindow` alone** (it relies on the server's revert, which X11 allows). The revert lands on the
+  root window - a reference does the same (`xdpyinfo` on Xvfb after the same gesture: `focus: window
+  0x1ff, revert to None`) - **but this server then reported every keystroke against the root window**,
+  where no client listens, so the keys were dropped (`InputState.focusWindow` returned the focus window
+  and only `PointerRoot` followed the pointer). Nothing told the app's window either. The 设置/关于
+  dialogs "fix" it because they are *transient*: the client puts the focus back itself, one log line
+  before the unmap. **A text field that looks focused, reacts to clicks, and accepts nothing.**
+- **Measured, not reasoned**: new tool **`tools/KeyTargetProbe`** (parks the pointer in its own window,
+  leaves the focus on the root - `SetInputFocus(root)` or the unmap revert - and prints the window each
+  XTEST `KeyPress` is reported against). Six modes; **before: nothing reported for `root`/`unmap`/`kill`;
+  after: identical to Xvfb line for line in all six** (`tools/probe-diff.py`). `InputFocusTest` +2 cases,
+  **both seen to fail without the fix**.
+- **The fix** is one condition: `if (inputFocus.isRoot())` in `InputState.focusWindow` - the two states
+  stay two (GetInputFocus answers the id vs `1`, different focus-event chains) but the keys follow the
+  pointer from either; only `None` leaves them nowhere. Comments that said the opposite were corrected
+  in `InputState`, `InputHandlers` and `FocusProbe`, plus the design notes' omitted-things list and
+  backlog A5's leftover bullet.
+- **Verified end to end**: EasyShell on the VM, the gesture, `hello` typed into the search box with no
+  dialog in between, arriving as `Xi2Event[evtype=2 device=3]` (XI2 KeyPress). **termora**, the bed's
+  Swing/AWT app, receives core `KeyPress`/`KeyRelease` in the same state (focus left on the root).
+- **Found and left OPEN as A18**: clicking termora's 密钥管理器 toolbar button throws
+  `IllegalArgumentException: Nonexistent button 16` in its toolkit thread here, where the same click
+  opens the dialog on Xvfb. **Not from this change** (the pre-fix build throws it too, same log line),
+  and AWT's own logger shows its *reading* of the event to be the strange part (the serial and type byte
+  are ours, every other field holds the previous event's values) while the tapped wire is three
+  well-framed messages with `detail = 1`. The recipe - `tools/tap.py` plus
+  `JAVA_TOOL_OPTIONS=-Djava.util.logging.config.file=…` with `sun.awt.X11.event.level=FINE` - is in
+  `tools/README.md`.
+- **Bed notes this round**: a `--single-window` server on `:95` plus `tools/kit.sh Drive/Shot/Keys`
+  drives EasyShell exactly (the window lands at `+0+33`, so click at window coordinates **+33 in y** -
+  clicking the visual position in the *screen* screenshot hits the root); `pkill -f '[m]ount_EasySh'`
+  and `'[m]ount_termor'` for the clients; Xvfb via `tools/xvfb.sh start/stop`; **stop the `:95` server
+  before `mvn test` or `GrabCrossingTest` fails with `BindException`** (it binds 95); and a background
+  `nohup` script started from a one-shot shell does not always survive - run long A/B scripts with the
+  harness's background mode.
+
+**2026-09-28 (twenty-third round): F5 `DOUBLE-BUFFER`, F6 `XVideo`, F7 `SECURITY` - the rest of §9.**
+`mvn test` **436/436** (was 416), headless **436 with its 2 skips, BUILD SUCCESS**, sweep **19 of 28
+identical** with the same 9 documented differences, **not pushed**; iMessages sent and both beds stopped.
+
+- **F5 Xdbe** (`DbeExtension`): the wire format is *not* the specification's - `AllocateBackBufferName`
+  is window/buffer/swapAction with **no reply**, `SwapBuffers` names a *window* with (window, action)
+  pairs, `GetBackBufferAttributes` is minor **7**, and `GetVisualInfo`'s reply is a per-drawable count
+  then records. The swap rule with two buffers: the front takes the first-allocated buffer's contents
+  and every buffer is then left holding what the action names. `Extension#windowResized` is new (the
+  core ConfigureWindow path calls it) because a buffer follows its window.
+- **F6 XVideo** (`XVideoExtension`): the reference answers **zero adaptors**, so this does too, with
+  version 2.2, two events, three errors, `BadPort` for every port request **in the reference's order**
+  (drawable and GC first) and `SelectVideoNotify` accepted. No scaler, deliberately.
+- **F7 SECURITY** (`SecurityExtension`): a token is an ordinary `MIT-MAGIC-COOKIE-1` credential
+  (**not** "SECURITY" or "XC-QUERY-SECURITY-1" - both refused by a reference), untrusted by default;
+  the six `BadAccess` denials, the hidden-extension list (an untrusted client sees only BIG-REQUESTS
+  and XC-MISC), `BadRequest` for a hidden opcode, and a revoke that closes the connections using it.
+  `Extension#visibleToUntrustedClients` is the rule; `ConnectionSetup` checks a generated token even
+  when `--auth` is off, which is what an `-ac` reference does.
+- **Kit lessons this round**: macOS's `java` launcher hands the JVM the system SOCKS proxy, so
+  `RawXClient` opens its socket with `Proxy.NO_PROXY`; a probe must not send `SetAccessControl` (it
+  turns access control back on in an `-ac` Xvfb and breaks the next run); `tools/xvfb.sh secure`
+  starts a second reference on `:97` with an authority file; and a probe prints what a base *means*
+  ("idBase=actor") rather than the number, because a reused base destabilises the diff's id mapping.
+- Live on `.147` for each item: EasyShell renders/types/keeps its context menu, termora renders, and
+  the round's own clients - the Xlib `Xdbe` client, the Xlib `XSecurity` client (against a live server
+  with an application connected) and the Xlib `Xvlib` client - all answered identically to the
+  reference.
+
+**2026-09-28 (twenty-second round): F2, `RECORD`.** `mvn test` **416/416** (was 407), headless
+**416 with its 2 skips, BUILD SUCCESS**, sweep **17 of 25 identical** with the same 8 documented
+differences, **not pushed**; iMessage sent and the servers/clients stopped.
+
+- **F2 `RECORD` (new `RecordExtension` + the `ProtocolRecorder` hook)**: the eight requests, the one
+  error and the stream. The scripture that is not guessable is in the class comment and the probe:
+  specs come **first** on the wire and ranges after (the `GetContext` reply is the other way round), a
+  range is 24 bytes with **six**-byte extension slots, `CurrentClients` resolves to each base and
+  `FutureClients` to the literal 2, a datum's length counts the data after its 32 byte header,
+  `ClientStarted` carries the **whole setup reply** (and it is not also a FromServer datum),
+  `ClientDied` carries the client's **last sequence number**, consecutive `FromClient` items share one
+  datum, and **no stream ends with EndOfData**.
+- The hook is **`ClientOutput.setListener`** - one call covers replies, events, errors and every
+  hand-encoded image - and it is attached *after* the setup reply is sent, which is what keeps
+  ClientStarted from being preceded by a redundant datum.
+- Two tests taught the traps: `RecordTest`'s MapNotify check must read **past the FromServerTime
+  stamp** (a datum's first byte is a stamp, not the event type), and `IdleScreenMemoryTest` now
+  measures the heap **after a collection** (`settledHeap()`), because the raw number carried the JVM's
+  uncollected garbage and failed its 20 MB bound (20572 KB against a settled 2.5-3 MB).
+- Live on `.147`: EasyShell renders, typing lands, its context menu survives the out-and-back, and a
+  `RecordProbe` context over `AllClients` recorded **EasyShell's own traffic** (its setup reply and a
+  910 KB request batch). termora renders. No refusals but the two known `window 0x0` probes.
+
+**2026-09-28 (twenty-first round): the three small capability candidates - F1, F3, F4 - and the two
+extension modules that were already in the dependency but unused.** `mvn test` **407/407** (was 393),
+headless **407 with its 2 skips, BUILD SUCCESS**, sweep **16 of 23 identical** with the 8 documented
+differences, **not pushed**.
+
+- **F4 `Generic Event Extension` (new `XgeExtension`)**: advertised, `QueryVersion` answers 1.0 to a
+  1.0 and a 0.0 client (measured). **No generated protocol module exists for XGE in the x11 library**,
+  so the request decoder and the reply are hand-written. It exposed a **real defect**: `QueryExtension`
+  reported the registry's next free code for `first_event`/`first_error` even for an extension that
+  defines none - a reference answers **0** for both (measured on BIG-REQUESTS, XC-MISC, Composite,
+  Present, XGE) and 64/0 for SHAPE, which defines one event. `ExtensionRegistry` now reports 0 for a
+  range it did not allocate; nothing depended on the old numbers.
+- **F3 `X-Resource` (new `ResExtension`)**: all six requests of 1.2, from the server's own resource
+  table (the generated module `x11-protocol-res` was already a dependency). Measured with the new
+  `tools/ResProbe`: version is the server's 1.2; `QueryClients` lists the **server's own resources as a
+  client with base zero** first; the type atoms are interned **lazily** (the six core names read off a
+  reference, extension types upper-cased from `typeName()`); an id no client owns is **BadValue**;
+  `QueryClientIds` answers the XID bit with an **empty value list** (a reference's own answer) and the
+  local-pid bit with nothing (all transport here is TCP, so no pid is knowable). **Two deliberate
+  differences, both in `tools/README.md`**: a *window* holds bytes here (4/pixel, B5's store) where a
+  reference says 0, and `QueryResourceBytes` **matches a named `type` against the resource's own atom**
+  (the spec's rule) where a reference answers nothing for any non-zero type.
+- **F1 SYNC alarms** - and **half the item was already done**: `PresentNotifyMSC` has been answered
+  since B5, so §9's "refused today" was **stale** (`PresentProbe` now pins it: kind 1, the client's
+  serial, identical on both). The alarms are new in `SyncExtension`: `CreateAlarm`/`ChangeAlarm`/
+  `DestroyAlarm`/`QueryAlarm` plus the **`AlarmNotify` event** (a real extension event at
+  `firstEvent + 1`, so **SYNC is now registered with 2 events**, not 0). **The trigger rules are
+  measured, not recalled** (`SyncProbe`'s alarm section is identical to the reference line for line):
+  a transition fires on the crossing and stays active; **after firing the threshold moves by the delta,
+  added whatever the test is** (10→110→210 for +100; 10→-90 for -100); a comparison fires once and goes
+  **inactive**; and **a transition whose delta would move its threshold the wrong way is refused
+  `BadMatch` on its own id** (negative+positive delta, positive+negative delta). Unmeasured and marked
+  as this server's reading in the class: `Relative` value type, `ChangeAlarm` re-arms without firing,
+  no fire at creation. **Also fixed**: SYNC ids that are not the right resource now answer the
+  extension's own `BadCounter`/`BadAlarm`/`BadFence` instead of a core `BadDrawable`.
+- **Sweep additions**: `XgeProbe` (**identical** on both) and `ResProbe` (a documented difference) are
+  in `tools/sweep.sh`; `probe-diff.py` now normalises `counter=`/`alarm=` (server-assigned ids printed
+  in decimal) and `SyncProbe` names an extension error by its **offset from the error base**, so
+  `BadAlarm` reads the same on two servers with different bases.
+- **Live regression on `.147`** (server on the Mac, `:95 --single-window`, JavaFX window, `--log-requests`):
+  **EasyShell renders, typing lands** (its search box showed the two characters typed), **its context
+  menu opens and survives the out-and-back**, **termora renders**; each client's log has only the two
+  known `window 0x0` refusals. **termora's menu gesture is not scriptable in its current profile
+  state** - its host tree had no rows to right-click, so a hand is what settles it (the checklist's
+  §2.12 now says so).
+- **Still open**: F2 (RECORD), F5 (Xdbe), F6 (XVideo), F7 (SECURITY) - the remaining §9 candidates -
+  plus C5's drag-out (parked), E2 (waiting on the GitHub mirror) and E6 (ongoing). **xdpyinfo now shows
+  19 extensions against the reference's 23, 18 shared**.
+
+**2026-09-28 (twentieth round): the capability inventory - what this server is missing *as an X
+server*.** Commits `2976cca`, `f996397`, **not pushed**; `mvn test` **393/393**.
+
+- **Measured against a reference, not recalled**: `xdpyinfo` on both sides shows the reference
+  advertising **23** extensions and this server **17** (16 shared); the difference is seven the
+  reference has and **DPMS is the one only here** (B7). And the *core* protocol is complete at the
+  dispatch level - **all 120 xproto requests have a case**, all but two doing real work (`ChangeHosts`
+  and `SetAccessControl` are deliberate no-ops: host-based access control is not enforced).
+- **The seven absent extensions**: DOUBLE-BUFFER (Xdbe), Generic Event Extension (XGE), MIT-SHM
+  (declined, B8), RECORD, SECURITY, X-Resource, XVideo. **The holes inside the ones we have**: SYNC's
+  alarms, Present's `PresentNotifyMSC`, `ShapeGetRectangles`, XFixes' tail
+  (`GetCursorImageAndName`, `ChangeSaveSet`), XI1 beyond the device list, and pointer acceleration
+  (`ChangePointerControl` is accepted-and-ignored, `GetPointerControl` replies a constant). All of it is
+  `docs/backlog.md` **§9**, with each candidate sized by what breaks without it (F1 MSC+alarms, F2
+  RECORD, F3 X-Resource, F4 XGE, F5 Xdbe, F6 XVideo, F7 SECURITY) and a "not intended" list (DRI3/DRI2,
+  VidMode, XDMCP, MIT-SHM, the dead protocols).
+- **The honest half**: no client in this bed asks for any of them - measured from the request profiles
+  (the A/B method and the thirty-tool client sweep), not assumed. These are capabilities for clients
+  this project has not met yet.
+- The verification checklist's §7 now points at §9, so a pass that hits an absent extension finds it as
+  "not built yet" rather than as "decided".
+
+**2026-09-27 (nineteenth round): GLX is on by default, the whole-server checklist exists, and the
+proxy's framing is pinned.** `mvn test` **393/393**, commits `2a50319`, `07bda16`, `5c7d488`, `92aa398`,
+`fc60986`, **not pushed**.
+
+- **GLX is now advertised by default and `--no-glx` is the switch** - the owner's call, on the
+  measurement that made it opt-in being closed (A17: the caret blinks either way, the hover asks for no
+  repaint). What is left of the difference: a toolkit finds GLX, creates a context, finds no GPU that
+  suits it and falls back to the same software pipeline - one abandoned context, and the only way a GL
+  client renders here. Live: on a *default* server `glxinfo` says `direct rendering: Yes` and
+  `glxgears` runs on llvmpipe. GlxTest now runs without the flag (so the class exercises the shipped
+  default) and its default-pinning case is inverted.
+- **`docs/verification-checklist.md` is new**: the whole-server tour - baseline, core and drawing,
+  input, extensions, host window, transports, engineering - as "do this → with this tool → it passes
+  when", plus the two sections that stop false alarms: what is deliberately different, and how a run
+  lies (the ten measured traps). Linked from the README's Tests section and the backlog's opening.
+- **`XProxyFramingTest`** pins the proxy's three framing rules, which were each a silent bug: a
+  one-unit request is four bytes (not eight - `Enable`, sent on every connection), a zero length field
+  means read the next word (and *not* "the opcode is 139"), and a generic event carries its length like
+  a reply (76 bytes for an 11-unit event, not 32 - the EasyShell stall). Both mutations of the helpers
+  are caught: 4 against 8, and 76 against 32. The arithmetic is two small functions now.
+- **The §0 table was lying** (C5 still "both directions fail", E2 unwired, and D4/E6 had no row) - the
+  table is what a session is planned from, so it was repaired with the entries.
+- **Nothing else is open**: D4 is out of scope, MIT-SHM is deliberate, C8 declined, C5 parked (drag-out
+  left as-is), E1 closed, E2 waiting on the GitHub mirror, E6 ongoing (and swept again this round).
+
+**2026-09-27 (eighteenth round): C5's drag-in is OWNER-VERIFIED - it works, with a filesystem the
+client can see.** Commit `32ec154`, **not pushed**.
+
+- **The working configuration**: a host directory shared into the VM, and the server started with
+  `--drop-mount /Users/oyzh/MacDrop=/mnt/hgfs/MacDrop` (any mount will do - the point is that the path
+  in the URI exists where the application runs). A file dragged from *inside that directory* onto a
+  forwarded EasyShell arrives and the application uses it. The owner's own words: **it works, but
+  setting it up is a nuisance**.
+- **What was offered and declined**: a server-side push (`--drop-push user@host:/dir`) that copies the
+  dropped file to the client machine and hands over that path - so any file could be dragged from
+  anywhere, with no mount. Declined because it **writes files silently onto another machine**; if ever
+  added it must be opt-in. It copies to the machine *running the client*, not to the host the
+  application's own session points at.
+- **The other half is unchanged**: the drag *out* is still the reverted trigger.
+- **The drag source lives in the tools package now** (`src/test/java/.../tools/HostDragSource.java`,
+  run by `tools/kit.sh HostDragSource <file> [x] [y]`) - the owner chose that home over the single-file
+  script under `tools/`, which is deleted. Commit `34eaef0`.
+- **C5 is parked by the owner** (2026-09-27): drag-in works and is verified, and the drag-out trigger
+  is deliberately left alone rather than carried on with. The entry says so, so the next session does
+  not treat it as pending.
+- **E2 is parked too, and its one unknown is gone**: Gitee is a **code host only** - the repository will
+  be **mirrored to GitHub**, and CI will run on **GitHub Actions**. The missing file is a
+  `.github/workflows/*.yml` whose single job runs `ci.sh`, to be written when the mirror exists. And
+  **the no-display case is not the owner's own use** (this server is meant to be rendered by JavaFX on
+  a desktop) - headless support stays as a *means* to CI, not a goal, and nothing about it changes.
+
+**2026-09-27 (seventeenth round): E1's generator fix is written and verified, E2's last unmeasured claim
+is measured, E6 swept.** `mvn test` **387/387**, commits `c5ebe64`, `d1648d8`, `f39c89d`, `120c935`,
+**not pushed**.
+
+- **E1 is CLOSED (2026-09-27) by the owner's decision, and the constraint is a standing one: the x11
+  library is never forked, built or republished, and Lombok is never a dependency.** The rewrite in
+  `ClientOutput` is therefore *the fix* (the seventh entry in the README's "Bugs worked around in the
+  protocol library"), pinned by `EventTypeByteTest`. The fallback is a same-named-class override, whose
+  two safety facts were checked (nothing else in the library constructs/references the five classes;
+  this server never decodes them, so only `write`/`getNumber` matter) and whose price is ~450 lines
+  written out without Lombok - recorded in `docs/fork-eventcopy-fix.md`, not built.
+- **What that round had measured for the upstream fix** (kept in that file, useful if anyone ever
+  builds the library): The root cause: the
+  generator *reads* a copy's own number and then takes the copied event's **whole unit list** as its
+  own - the first unit being the `NUMBER` field carrying the *ref's* constant - so five events go out
+  with the wrong type byte (a release as a second press, a leave as an enter, a focus-out as a
+  focus-in). Patch, reasoning and recipe are in **`docs/fork-eventcopy-fix.md`** (in the repository,
+  because the fork is a plain directory and a fix there is not restorable). Verified: published
+  locally, numbers read back 5/3/8/10/27 (was 4/2/7/9/26); with `EVENT_NUMBERS` **disabled** the new
+  test is 5/5; with the *published* artifact back and the rewrite still off, **4 of 5 fail** - each
+  with its symptom. (The rewrite and the upstream fix were measured compatible, so the order never
+  mattered - and neither is pursued now, per the decision above.)
+- **The new test** is `client/EventTypeByteTest`: written against the **wire** (drive the event, read
+  the type byte) rather than against the classes, so it passes in both worlds and fails only when
+  neither the fix nor the rewrite is there. Its two traps: keys need `SetInputFocus` first (buttons go
+  to the pointer's window), and a `KeyRelease`'s byte 1 is the keycode, not zero.
+- **The fork's build traps**: its Gradle wrapper cannot read this machine's default JDK 27 class files
+  (`Unsupported class file major version 71`) - use `JAVA_HOME` = the JBR 21; and a local publish needs
+  signing off (`--init-script` disabling `org.gradle.plugins.signing.Sign`).
+- **E2**: `ci.sh` with `-Dmaven.repo.local` pointed at a directory that did not exist (a runner's
+  empty repository - the one claim never tested here) resolves everything from Central and finishes
+  **387 tests, 2 skips, BUILD SUCCESS**; it also resolved the *published* artifacts, which is E1's
+  compatibility claim seen from the other side.
+- **E2's pipeline, settled by the owner (2026-09-27)**: **Gitee is a code host only** - the repository
+  is going to be **mirrored to GitHub**, and CI will run on **GitHub Actions**. The missing file is
+  therefore a `.github/workflows/*.yml` whose one job runs `ci.sh` (the script is the whole interface;
+  it needs a JDK and Maven), to be written when the mirror exists. **And the no-display case is not the
+  owner's use** - this server is meant to be rendered by JavaFX on a desktop - so headless support is
+  kept as a *means* to CI, not as a goal; nothing about it changes.
+- **E6 sweep**: three stale claims fixed (the README's workaround list was missing the eventcopy one;
+  the kit's note said a forwarded application "ignores" the drag, which this session disproved; the
+  README's drag bullet). And **`tools/host-drag-source.java` is checked in** - the always-on-top
+  JavaFX drag source that can drive a real platform drag for C5's host half, with the activation-click
+  trap in its header.
+- **Next**: the drag-out trigger (needs a hand), the GitHub Actions workflow once the mirror
+exists, E6 ongoing.
+
+**2026-09-27 (sixteenth round): C5's drag-in mystery is solved - the protocol works and the *file* is on
+the wrong machine.** `mvn test` **382/382**, commits `aa6ac00`, `80d2afa`, **not pushed**.
+
+- **The measurement, and it needed a controlled drag source**: a Finder-sourced drag cannot be driven
+  from a script here (several stacked windows, and every new shell command raises the IDE over them),
+  so `/tmp/HostDragSource.java` is a JavaFX window holding a real file with `setAlwaysOnTop(true)` -
+  it cannot be covered, and a `CGEventPost` drag from it starts a **real platform drag**. One lesson
+  inside that: **a synthetic click on a window whose app is not active is swallowed as the activation
+  click** - three clicks before the drag made it work, and the JavaFX source then logs its own
+  `drag started`.
+- **What the log showed**: the drop reaches the server (`the host dropped 1 file(s) at ...`), the bridge
+  sends `XdndEnter`/`XdndPosition`/`XdndDrop`, and **EasyShell answers** - an `InternAtom` burst (GDK
+  resolving the type atoms), `SendEvent` twice (its `XdndStatus`), `ConvertSelection` six times asking
+  for the data, which the bridge serves. **So the C5 entry's "the application never answers: no
+  XdndStatus, and no ConvertSelection" is stale** and was corrected in the entry.
+- **The real blocker**: what is handed over is a **host path** - `file:///private/tmp/...` - and XDND
+  is URI-based (a target *opens* the path, it does not download a file). Across machines that path is
+  nowhere, which is the whole of "nothing happens" **and why the macOS build of the same application
+  shows its release marker** (there the URI resolves).
+- **Two real defects fixed on this side**: `DropBridge.toUris` escaped only spaces (a `#` starts a
+  fragment, a `%` an escape, and a non-ASCII name - the common case for this user - is not a byte a URI
+  may carry raw), and the path carried macOS's resolved `/private` prefix, so even a client sharing
+  `/tmp` could not open it. Both directions now escape/decode UTF-8 byte by byte (3 new tests).
+- **`--drop-mount H=C`** (new, opt-in): with the client mounting the host's directory, the URI is
+  rewritten to the client path, which is the one configuration where drag-in actually works. Longest
+  prefix wins; unit-tested, fails without it.
+- **Still open**: the drag-out trigger (still the reverted one), and whether the *applications* do
+  something useful with a path they *can* open (that needs a shared folder and the owner's hands).
+
+**2026-09-27 (fifteenth round): the same-client-two-servers comparison is a working method now, and
+its first use is clean.** `mvn test` **379/379**, commits `47358ae`, `d097ae6`, **not pushed**.
+
+- **The method**: same client through `XProxy` against a reference and directly against this server,
+  the **same interaction driven by the same driver** (`xdotool` on the VM - using XTEST here for one
+  side and xdotool for the other compares the *drivers*, a third of the traffic), profiles taken
+  **after a mark** in each log (comparing one run's startup against another's interaction is the other
+  way to get nonsense), compared by core request name and by **(extension, minor)**.
+- **The result**: EasyShell agrees request for request - `QueryExtension` 70/70, `GetInputFocus`
+  21/21, `GetProperty` 19/19, `GetKeyboardMapping` 18/18, `GetModifierMapping` 14/14, and the RENDER /
+  XKEYBOARD / XFixes / XTEST / XInput sets within a couple. The only real difference is ~25% more
+  *drawing* on this side (`PutImage` 408 vs 314) - this server's compositing against a server that
+  draws to the screen, i.e. a performance note, not a protocol difference. (Not chased; E3 is closed.)
+- **Two more `XProxy` faults, both of which made its own logs lie**: the core opcode name table was
+  out by one through the input range (33 printed `GrabKeyboard` where it is `GrabKey`, 37 as
+  `GrabServer` where it is `UngrabServer`) and stopped at 43; and extension requests carried no minor,
+  which is the only label two servers' extension traffic can be compared by (they number the
+  extensions differently). Both fixed - the protocol's own list is the table now, through 119
+  (`GetModifierMapping`).
+- **Watch for**: `Enable` in our log is `BIG-REQUESTS Enable` in the proxy's - the same request, two
+  names, and it reads as a difference in a diff.
+
+**2026-09-27 (fourteenth round): the owner's hands disproved my drag-in claim, and the hunt for
+something else found a months-old tool bug.** `mvn test` **379/379**, commits `61aaf97`, `4f9f76d`,
+`d097ae6` on top of the thirteenth round's, **not pushed**.
+
+- **Correction to the thirteenth round**: a Finder drag onto a forwarded **EasyShell** still does
+  nothing (the macOS build of the same app shows its release marker), so C5 is *not* done in either
+  direction - my "drag-in verified" was measured against a GTK script, and a target that accepts is
+  not the application that has to. The backlog entry says so at the top now, with the next step
+  (GTK target and EasyShell side by side on this server, compare what each is sent).
+- **`XProxy` truncated every GenericEvent** (type 35: it carries its own length) to 32 bytes - and
+  GDK's input path is XI2, so a forwarded application desynchronised at its **first device event** and
+  stalled before drawing. **That is the "EasyShell hangs through XProxy, the reason was never found"
+  the kit had given up on.** With type 35 framed like a reply, EasyShell renders through the proxy on
+  Xvfb, complete; all eight of its connection streams check out against their own length fields.
+  Two smaller framing bugs went with it (an eight byte head assumed for every request - `Enable` is
+  four; an extended length triggered by opcode 139 rather than a zero length field).
+- **The proxy's lines now carry a connection id**, and that is not cosmetic: a client opens several X
+  connections into one file, and a reader that assumes one stream sees a misframe that is not there
+  (an hour of this session went to exactly that).
+- **The A/B it exists for now works, and the first run is clean**: EasyShell's request profile against
+  the reference and against this server line up request for request; the three differences are the
+  *reference's* environment (GetAtomName for `X11VNC_TICKER`/root properties x11vnc leaves, two
+  CreateColormaps for Xvfb's extra visuals, a GetMotionEvents probe not made here).
+- **Two sweeps, both recorded**: thirty real client tools plus a GTK app and nautilus -> **no X error
+  from any of them**; the probe sweep is 15 identical with the same seven documented differences. And
+  the two `bad window 0x0` refusals in every log are the **client's** - a GTK client makes the same
+  two requests against Xvfb, so a reference refuses them too and GDK ignores both.
+- **Still open**: C5 both directions (needs the corrected drag-out trigger *and* the owner's hands),
+  E1 (the fork), E2 (the CI host), E6 (ongoing). The next session's cheapest real win is probably the
+  side-by-side drag comparison above, with the proxy finally able to show what a client is told.
+
+**2026-09-27 (thirteenth round): the XI2 property *family* (both reads) is answered, and C5's drag-in
+is measured with a real toolkit.** `mvn test` **379/379**, commits `543d6e2` and `544672c`, **not
+pushed**.
+
+- **`XIListProperties` (minor 56) was refused like `XIGetProperty` was**, and `xinput list-props 2`
+  said so (BadRequest against us, a device and two properties against Xvfb). Answered now with an
+  empty list; the reply layout came off a reference's reply for a device that *has* properties
+  (`XiProbe listprops 2`, new): count is a CARD16 at 8, atoms follow the header, byte 1 is the minor
+  opcode. **A reference refuses the pseudo-devices (0/1) for property requests** (`XiProbe listprops
+  0` answers an error), so both reads do now too - `checkDevice` is right for the queries and wrong
+  here.
+- **C5's drag-IN works with a real GTK3 drop target** (`tools/xdnd-source.py` / `tools/xdnd-target.py`,
+  new and checked in): a real Finder drag onto this server ends with the target printing
+  `DATA ['file:///…/dropped.txt']`. The bridge's conversation is one a real toolkit accepts.
+- **Four harness facts, each of which looks like something else** (all in the C5 entry): a drag
+  between two windows of **one** GTK process never uses XDND (GDK shortcuts it - the capture has no
+  `XdndEnter` in it); `host-drag.c` is too abrupt to deliver a *drop* (needs ~700 ms before the
+  button-up); `tap.py` logs byte **chunks**, so a reader has to frame the stream (a C2S setup is 12
+  bytes **plus auth**, padded); and **any new shell command raises the IDE over Finder**, so a
+  Finder-sourced drag only works inside a single command that re-raises it - and even then it is not
+  reliable, so the two-process GTK pair is the scriptable oracle.
+- **`XProxy` was broken for every xcb client** and that is the mystery the kit's notes had given up
+  on: it assumed an eight byte head, `BIG-REQUESTS`' `Enable` is four, so it desynced one message in
+  and the client hung with nothing logged. Fixed (four byte head; extended length triggered by a
+  **zero length field**, not by opcode 139; a server's messages always have the full header). It
+  still cannot proxy VM→reference, so compile it **on the VM** (`java` is there).
+- **Still open**: C5's drag-out trigger (the corrected condition is "start the platform drag only
+  when the gesture leaves the host window with the button down") needs implementing *and* a hand to
+  confirm the applications' own internal drags and menus survive - and the two apps' answer to a
+  drag-in was not reproduced either way this session, so it is not settled. The rest is E1 (the fork),
+  E2 (the CI host) and E6 (ongoing).
+
+**2026-09-27 (twelfth round): B1 is DONE, and an XI2 device property read is answered instead of
+refused.** `mvn test` **378/378**, commits `7fa7b13`, `4493df3`, `ad1cb89`, **not pushed**. Both
+forwarded applications were re-run on `.147` and both logs are clean.
+
+- **`setxkbmap -layout <name>` exits 0 now, and the missing half was the *reply*, not an upload.** The
+  entry had two beliefs and `strace -e writev` on the VM killed both: a real `setxkbmap` sends **no
+  `SetMap`** (the XKB handshake, one `GetKbdByName`, then a root property update), and a reference
+  **answers** that request - the `BadAccess` an earlier session recorded was a hand-built probe of the
+  wrong length. Simpler than a proxy for reading a client's own stream: `strace -e writev -x -s 400`.
+- **What Xlib does with the answer is the whole fix**: `XkbGetKeyboardByName` gives up when `reported`
+  is zero and otherwise reads **one whole component reply per bit set in it** (map for `Types|Symbols`,
+  then compat, names, geometry) and insists the buffer was consumed exactly. `reported = 0` with
+  `loaded = 1` is therefore indistinguishable from "not loaded". The reply now embeds the `GetMap`
+  reply whole, under a header whose length counts it, and claims 0x0d.
+- **The request's shape was wrong here too and harmlessly so**: twelve fixed bytes and **six** counted
+  strings with the symbols string **fifth** - the reader assumed ten bytes and eight strings, and the
+  two byte shift happened to make it read the right string out of the wrong field. A request with eight
+  strings is refused with `BadLength`, which is how the count was measured.
+- **`GetNames` is answered** (refusing it is the worst XKB answer: Xlib's default handler kills the
+  client). Its atoms are in the reply's **tail**, not the fixed part the field list suggests; what this
+  server reports is the symbols component a by-name load recorded, and `which = 0` before any has.
+- **XI2 `XIGetProperty` (minor 59)**: both apps ask it as they start (`libinput Tapping Enabled` on
+  device 2) and it used to be a `BadRequest` from the decoder's throw. Now answered "absent" - a
+  reference's reply for a property that does not exist (`type = None`, everything else zero). Measured,
+  not reasoned: the request is **six** four byte units (seven gets `BadLength`), and the reply's byte 1
+  carries the request's minor opcode (`XiProbe getprop` is how both were read).
+- **THE TRAP OF THIS ROUND, and it cost an afternoon of believing the change broke EasyShell's menus.**
+  The out-and-back gesture closed the menu on the new build 2/2 and survived on the old one, which read
+  as a regression in a change that touches no part of the input path. It was the *runs*: with a fresh
+  server **and** a fresh client **and** the pointer parked before anything maps, the same build is
+  **3/3 survived**. A real application driven through XTEST needs all three controlled, not just the
+  pointer - `tools/README.md` rule 5 now says so. (Sanity check that settled it: the protocol-level gate
+  `MenuProbe` against Xvfb was identical throughout.)
+- **Measured, for the record**: all seven layouts `xmodmap -pke`-identical to Xvfb through real
+  `setxkbmap`; `xkbcomp`/`xset q`/`xset r rate`/`xdotool` still fine with no `rejected` line;
+  EasyShell renders, its context menu opens at Xvfb's own geometry (157x378+75+132) and survives 3/3,
+  typing after `setxkbmap -layout de` puts `zy` in its search box; termora renders and its menu
+  survives 3/3. Both logs show only the two known window-0x0 asks.
+- **Kit**: `XkbProbe getkbdname|getnames`, `XiProbe getprop`, `XProxy`'s raw dump argument. Note
+  `tools/tap.py` is the byte-transparent proxy to use when a client hangs through `XProxy` (EasyShell
+  does, after its first `QueryExtension`) - and the `XProxy` raw dump only ever worked for
+  Mac-originated clients; the VM-to-reference direction is what `tap.py` exists for.
+
+**2026-09-27 (eighth round): B5 is DONE - Composite, Present and SYNC are in, and the backlog has no
+extension item left.** `mvn test` **369/369**, commits `98cb61c`, `7dbfc58`, `f36f61d`, `910d324`,
+**not pushed**. Sweep **15 of 21 identical** with the seven documented differences.
+
+- **The store is what made them cheap.** Every window already draws into pixels of its own and is
+  composited from them, so redirection is the *stopping* of that compositing - `XServer.compositeOwnPixels`
+  is the single place every screen composite goes through, and the guard there is three lines.
+  `NameWindowPixmap` hands over `XPixmap.view` (a live view of the store, resolved per access because a
+  resize replaces the array). The reference says drawing *into* a named window pixmap lands, so the view
+  is read-write.
+- **The trap: this server is right by default in every test that never redirects anything.** With every
+  window composited from a store, forgetting the guard changes nothing any test could see. The reference
+  is what says otherwise - repaint a redirected window there and its pixmap holds the new colour while
+  the screen holds the old one.
+- **The overlay window is the one part that could not be inherited** - and **the design it was first
+  given here was wrong in all three respects**, which the ninth round below records: it was made the
+  depth 32 visual with a transparent background and a rule that a translucent window does not obscure.
+  The right answer is the root's own depth and visual, no background at all, and an exemption from
+  redirection. That first version also introduced and then removed a change to
+  `XWindow.visibleRegion`'s obscuring rule that nothing needed - do not re-add it.
+- **Four rules came out of measuring, three of them not what the obvious implementation does.**
+  (1) The version rule is **per-extension and they disagree**: Composite and SYNC answer *the server's*
+  (0.4 to a 0.4 and to a 0.2 client; 3.1 to 3.1 and 3.0), Present **echoes the client's** (1.0 to 1.0).
+  (2) **`CreateFence` carries the drawable before the fence** - the opposite of the generated getters'
+  order, and the reference answers `BadDrawable` on the fence's own id if you believe the getters.
+  (3) **`PresentPixmap`'s `valid`/`update` are region ids, not flags** (None = the whole of each).
+  (4) **A generic event's length field was never written** - Present's completion arrived as 32 bytes
+  where the reference sends 40, *with the same kind, mode and serial inside*, so every field read
+  correctly and the client then hung on the next request (the 8 bytes of `ust`/`msc` stayed in the
+  stream). Fixed in `ClientOutput` beside `correctEventType`.
+- **And one measurement was wrong first, worth not repeating**: reading the window's pixels *before*
+  the completion notification makes the reference look as though it never copies the pixmap. Its
+  present is **asynchronous**, so that samples a race. Read the event first and the two agree exactly.
+- **`PresentPixmap` is decoded by hand** (`PresentExtension.decodeRequest`): the generated reader sizes
+  its trailing notifies list from `length - javaStart` (four-byte units against a byte offset) and
+  refuses every present with no extra notifies. Same fault as `VariableLengthDecoders`' sixteen.
+- **`RegionResource` moved out of XFixes into `resource/`** - both XFixes and Composite traffic in
+  regions and a region made by one has to be usable by the other.
+- **`SyncProbe`'s system counters are the seventh deliberate sweep difference**: this server answers
+  none where the reference keeps eight, whose entries are variable length with a name stride the first
+  probe mis-read. Everything else in SYNC agrees line for line.
+- **Test-bed note**: `tools/kit.sh` runs the probes; the new ones are `CompositeProbe`, `SyncProbe`,
+  `PresentProbe`, all three in `tools/sweep.sh`. **`PresentProbe` is the one probe that serialises with
+  the generated protocol classes rather than hand-built bytes** - a dozen fields, several 64 bit - and
+  that is safe because the comparison is against a reference that refuses what it cannot read.
+
+**2026-09-27 (eleventh round): B1's "layout by name" is in - off tables captured from a reference,
+and the item's framing was wrong.** `mvn test` **375/375**, commit `31c626d`, **not pushed**. Sweep
+unchanged at 15 of 21 with the seven documented differences.
+
+- **"Choosing a layout by name needs a compiler in the server" was the wrong framing**: a display
+  server compiles nothing. `tools/GenLayouts` + `tools/gen-layouts.sh` read the layouts off a reference
+  (the D3 trick), and `GetKbdByName` serves them by name. Seven: us, gb, de, fr, es, ru, cn.
+- **What a client asks with is not the word "de"**: `setxkbmap` sends the components the rules file
+  resolved to (`pc+de+inet(pc105)`), as one counted string in a list. **Which one was measured** by
+  varying it (`-variant nodeadkeys` changes only the sixth) - never read out of a spec the fork has no
+  class for. The layout is the first `+`-part this server has a table for; a variant's parentheses are
+  dropped.
+- **The tables are the *core* mapping at the reference's own width (7 keysyms per keycode)** - the
+  client does the level arithmetic, so the server never has to understand a level beyond the second.
+  This server's own keymap stays two levels until a layout is installed.
+- **Verified byte for byte**: after a layout is installed, `GetKeyboardMapping`'s whole reply (248
+  keycodes x 7 levels) is identical to Xvfb's in the same layout, for `de` and for `ru`.
+  `XkbTest`'s new case fails with the install taken out. **`Keymap` is process-global** - the test
+  restores the built-in layout, and a real server keeps a client's choice for its lifetime (a keyboard
+  is one keyboard).
+- **`setxkbmap` still reports `Error loading new keyboard description`, and that corrected the entry:**
+  **a reference refuses this request too** (Xvfb answers `BadAccess` to the very bytes a real
+  `setxkbmap -layout ru` sends), so what sets a layout on a reference is the client compiling the
+  keymap and uploading it with `SetMap`. **The entry's claim that a client "can go on to SetMap" is
+  measurably false - no request at all follows the reply.** The missing half is the *upload*
+  (`SetMap` + `SetCompatMap`/`SetNames`/`SetGeometry`), which is where the next session should look.
+- **Traps**: a JVM method is capped at 64KB of bytecode (all SEVEN tables in one initialiser is past
+  it - one method per layout), and **a trailing comma is legal in an array initialiser and not in a
+  method's argument list**. Also `mvn test-compile` cannot run while a *main* source is broken, so
+  changing a generator that produces a main source needs a valid stub in place first.
+
+**2026-09-27 (tenth round): C5's drag-out was built, verified with a synthetic client, and then
+REVERTED the same day because the owner tried it by hand and it broke both apps.** The X half is in
+and inert; the trigger is gone. **Neither direction works with a real application yet.**
+
+- **What broke, and why it is a design fault not a bug**: the host window started a platform drag
+  whenever **any** client owned `XdndSelection` - and a client dragging **inside itself** takes the
+  same selection (X's DnD is client to client; an internal drag is a drag between two windows of one
+  application). So the platform took over drags the application meant to keep: **termora froze** (it
+  waited for a drop the platform had hijacked) and **EasyShell did nothing**.
+- **The corrected condition**: start the platform drag only when the pointer **leaves the host window
+  with the button still down**. macOS keeps delivering dragged events to the view that got the press,
+  so the session can be started from the event that crosses the edge. That is the next attempt.
+- **The other direction stops short too, measured for the first time**: EasyShell's window publishes
+  `XdndAware` v5, the bridge finds it and sends `XdndEnter`/`XdndPosition`/`XdndDrop`, the app's own
+  UI reacts (it renames its window to `===松开鼠标以释放文件`) — and then **it never answers**: no
+  `XdndStatus`, no `ConvertSelection`, so nothing is uploaded. What a real toolkit wants that we do
+  not provide is **not yet known**.
+- **THE LESSON, and it is the same as B5's Verify's: a synthetic client is not a client.**
+  `DropBridgeTest`'s target is this kit's own client, so the bridge agreed with it by construction,
+  and the drag-out "verification" was a probe the bridge itself had asked to answer. Both directions
+  need a real toolkit before either is called done. **Ask the owner to try gestures by hand before
+  believing a new interaction works.**
+- **Still true and worth keeping**: X *does* announce a drag (the `XdndSelection`), a JavaFX window
+  *can* start a platform drag (`setOnDragDetected` + `startDragAndDrop`), and the whole drag-out path
+  *is* scriptable (`DragOutProbe` + `/tmp/drag` + a Finder window on a scratch directory - Finder
+  copied both files). The mistake was the trigger's condition, nothing else.
+
+**The original tenth-round note, kept for what it built:**
+
+**2026-09-27 (tenth round): C5's other half - the reason it was left open was wrong twice.** `mvn test` **374/374**, commits `09e9d07` and `f88e311`, **not pushed**. Sweep unchanged at
+**15 of 21 identical** with the seven documented differences.
+
+- **X *does* say when a drag has started**: a client that decides to drag **takes the
+  `XdndSelection`**. That is the whole of the design - `DropBridge` watches it (via
+  `XServer.setSelectionOwner`, the same hook the clipboard bridge uses), asks the owner for
+  `text/uri-list` **the moment it sees it**, and a backend starts a platform drag from its
+  drag-detected handler when `InputSink.draggingOut()` says so.
+- **Asking on sight is the timing argument**: the host's drag must start from the gesture already in
+  progress and JavaFX's dragboard holds **real files, not a promise**, so the answer has to be in
+  hand by then - and a client answers in the time it takes the user to move a few pixels.
+- **The entry's two reasons were wrong**: "a JavaFX window cannot start a platform drag" (it can,
+  `setOnDragDetected` + `startDragAndDrop`), and "the payload cannot be scripted" - true of dragging
+  *from* the desktop *into* an app, never of dragging out, where the payload comes from the X client.
+  **The two directions were conflated in the backlog for three days.**
+- **Verified end to end with a script**, which the entry said could not be done: `tools/DragOutProbe`
+  stands in for the application, `/tmp/drag` posts a hand's gesture in the host window, and a Finder
+  window opened on a scratch directory **received both files with their contents intact**. The
+  server's log names each step (`a forwarded application is dragging from 0x…`, `the dragging client
+  offers 2 file(s)`, `a drag of 2 file(s) left a forwarded application`).
+- **The probe trap that cost its first version**: it did `geometry()` after `setSelectionOwner` to
+  sync, and a reply read **skips events** - so it ate the SelectionRequest it existed to answer. The
+  server asks while *processing* SetSelectionOwner. **A probe never round-trips after the request it
+  is waiting for.**
+- **A scene-level drag-detected handler had to be checked against the two clients** (their menus are
+  press-and-move gestures): EasyShell's menu still survives 6/6 and typing still lands, termora's 6/6.
+- **Still unverified**: a *real* application offering a real drag - the probe decides to drag, whether
+  EasyShell or termora do is up to them.
+
+**2026-09-27 (ninth round): B5's own Verify was run - `picom` against this server - and it found
+three bugs the probes and the whole suite had missed.** `mvn test` **371/371**, commits `c077584` and
+`dbfa0b7`, **not pushed**. Sweep back to **15 of 21 identical** with the seven documented differences.
+
+- **The lesson: run the Verify step the item names.** All three are invisible to `CompositeProbe` as
+  it was and to every test, and the first is a **segfault**.
+- 1. **The overlay was depth 32 where the reference's is 24** -> `picom` creates a RENDER picture on
+  it with the root's format -> `BadMatch` -> it keeps the null picture and dereferences it. Found by
+  making `CompositeProbe` print the overlay's depth.
+- 2. **The overlay was itself redirected** - a compositor redirects the root's whole subtree including
+  the window it draws on; on a reference the driver shows the overlay by its own path, here being
+  composited is its only path to the screen. Blank screen, picom running happily.
+- 3. **The overlay painted its background over the screen** (this server approximates
+  `background = None` by painting the desktop colour - harmless for an ordinary window, wrong for a
+  screen-sized one). Fixed by giving the server's own surface no pixels until something draws into it.
+- Each fix has a test that fails without it, **checked by mutation rather than by passing** - and the
+  third test's first version passed with the whole fix removed and was a restatement, which is the
+  trap to watch for. A mutation that does *not* fail the test is the signal.
+- **The two findings it left open were one bug, fixed the same day** (`3dc1f3e`, `8954afe`): **a
+  RENDER write into a depth 8 picture stored the whole ARGB value where the drawable's store holds a
+  byte**. `Picture.writePixel` put `0x80000000` into a 1x1 A8 mask; the read side decodes such a store
+  *through the format*, whose mask looks at the low byte, so the mask read back as **zero coverage** -
+  every masked composite wrote nothing (black frames) and `--opacity-rule` did nothing. Fixed by
+  `Picture.storedForm` (the write half of a convention `AlphaMaskTest` already pinned for reads).
+  **What found it was adding the pixel counts to the composite's debug line**: `-> wrote 0 pixels,
+  23711 blocked`, where the blocked ones were a clip and the rest were the empty mask. The request is
+  *accepted* either way - nothing else in any log would have said so.
+- **The 1x1-mask/repeat lead above was a red herring**: `picom` *does* set `repeat=1` (RepeatNormal)
+  on its 1x1 alpha pictures, one call before using them (the `SetPicture repeat=` log line added for
+  this is kept). The mask was empty for a different reason.
+- **A flaky measurement nearly sent me the wrong way twice**: I concluded the overlay-background fix
+  broke picom from one black sample, reverted it, then found picom black without it too. Sampling
+  three times settled it. **Sample before concluding.**
+- **`git checkout --` is dangerous mid-item**: it reverted the *uncommitted* redirect-exemption fix
+  along with the change I meant to drop. Back up with `cp` to /tmp before reverting.
+- **The trap that bit three times**: `pkill -f <pattern>` kills the ssh command running it when the
+  pattern is anywhere on that command line - **including as an argument** (`sh /tmp/x.mount.sh` is
+  fine, `sh xeyes-start.sh 192.168.22.1:61 xeyes` is not). Bake the command into a neutrally-named
+  script and pass no application name on the line.
+- **picom 10.2 and gdb are now installed on .147**; the launchers used live in `/tmp` on the VM
+  (`xs-client.sh`, `xs-comp.sh`, `xs-at.sh`) and go through `tools/vm.sh`.
+
+**2026-09-27 (seventh round): A17 is CLOSED by measurement - it is not a server defect.** `mvn test`
+**362/362**, commits `75d04e6` (test) and `639b414` (docs), **not pushed**.
+
+- **The symptom was the owner's**: with GLX advertised, a context menu item with no hover colour and a
+  caret that never blinks, while clicks and typing worked. The entry said "not reproduced"; this round
+  answered it from the side the first attempt could not - **what the client asks the server for**.
+- **The caret blinks on both builds.** Ten whole-screen `xwd` captures 0.2 s apart, the search box
+  clicked and the pointer parked away, hashed over the box's own rectangle: exactly two alternating
+  states (frames 1,3,6,7,8,10 vs 2,4,5,9 default; 1,3,6,7,10 vs 2,4,5,9 with `--glx`), period
+  0.8-1.0 s = JavaFX's 500 ms on/off.
+- **The hover paints nothing because the client draws nothing.** With the menu open and the pointer
+  walked across its items in 1 px steps, the server's request log shows the menu drawn **once**
+  (`CreatePixmap`/`CreatePicture`/`FillRectangles`/`PutImage`/`CopyArea`) and then **no drawing request
+  at all**; the log's `WarpPointer`/`GetInputFocus`/`QueryPointer` groups are **`xdotool`'s own**, which
+  is what makes the two separable. The screen agrees: 12 pointer positions, menu rectangle
+  byte-identical. On Xvfb the same gesture is also 0 pixels - but that half is weak evidence, because
+  EasyShell's saved state cannot be reset from a script and two attempts to open the menu on the
+  reference landed in an already-open session's file list.
+- **No code change.** The mitigation stands (GLX only under `--glx`). What the item left behind is
+  `RawXClient.copyArea` + `WindowStoreTest.aWindowTakesACopyFromAPixmapIntoItsOwnPixels`, pinning the
+  caret's last request - a `CopyArea` out of a pixmap into a store window, which **nothing in the kit
+  had ever sent**. Verified by mutation, not by passing: giving the store target the absolute origin
+  fails it (and `aMovedWindowKeepsItsPixels`).
+- **E6 swept**: `A5old`/`B3old` were still `[ ]` while superseded, and §0's table had a duplicate
+  unticked `A6` row - both fixed. Remaining open items are unchanged: C5's drag-out, B1's layout by
+  name, E2's pipeline (the remote is **Gitee**, and `ci.sh` deliberately writes no blind YAML), B5's
+  Composite/Present/SYNC, E1 (the fork is not a git checkout), E6 (ongoing).
+- **The reference sweep is clean**: 13 identical, the 6 deliberate differences, no finding.
+- **Test-bed traps that cost time this round**: `tools/vm.sh` uses `ssh -n`, so **a piped stdin is
+  discarded** - a script pushed that way arrives as an empty file; put it on the command line as
+  `printf '%s' '<base64>' | base64 -d`. And **`pkill -f <pattern>` still kills the remote shell when
+  the pattern (or a nearby `echo`) is anywhere on its own command line** - `pkill -9 -f mount_EasySh`
+  did it again; use `tools/xvfb.sh stop` and bracketed patterns.
+- **The caret measurement needs no PIL and no new tooling**: the VM's `xwd` output is refused by PIL,
+  but its header is fixed (25 CARD32, then `header_size + ncolors*12` to the pixels), so a 15-line
+  pure-Python reader hashes a region per frame. `tools/kit.sh Xwd diff` is the other route.
+
+**2026-09-27 (third round, same day): C8 was built a second time and then DECLINED by the owner.**
+
+- **The requirement, in the owner's words (2026-09-27)**: "我不需要每个窗口都对应宿主机的一个窗口，而是
+  一个窗口渲染一个应用即可" - **one host window renders one application**. An application is one window on
+  the host's desktop, whatever it opens inside itself; a dialog belongs inside that window. They used the
+  per-window build and found it wrong. **This is a product decision, not a technical blocker: do not
+  build C8 a third time.** It is recorded in `docs/backlog.md` C8 as declined.
+- **What was built and reverted the same day** (`6cccef6`, `6cb04e6`, then reverted by `d1b1b2a`): a host
+  window per mapped top level, each showing its window's own **subtree composite** (`draw/WindowSubtree`)
+  built from B5's stores - the pixel problem that had it reverted on 2026-09-26 was gone by then, and it
+  worked: `mvn test` 361/361 and live on .147 the settings dialog opened in its own host window while the
+  parent's stayed its own size. All of that is **out of the tree**; the tree is back to one host window
+  per screen with the union viewport (`contentBounds`), which is the behaviour the owner wants.
+- **What was seen while it was up, in case a future session is tempted**: the frames get the platform's
+  default position, so a dialog's host window opened exactly on top of its parent's (both at `95,174`);
+  and every window an application maps starts its own arrangement (position, title, raise, idle) from
+  scratch.
+- **Live-driving a per-client-mode server needs the platform's own input** (XTEST is scoped to the
+  sender's screen): `tools/host-windows.c` (clang + ApplicationServices) lists on-screen macOS windows
+  with title and bounds, and a 6-line `CGEventCreateMouseEvent` click tool drives the host window. The
+  mapping that worked for EasyShell was global = client + (95, 169) with the window at (95,174).
+- **Test doubles implementing `DisplayBackend`**: the interface's `start`/`present` take a `Screen`, so a
+  double whose signature drifts compiles as an unused overload and the test reads as "the backend's
+  input is null" - ten of them were caught by that when C8's `Surface` was in and out again.
+
+**2026-09-27 (fourth round, same day): the reference sweep is now one command, and the server came out
+clean.** `tools/sweep.sh` runs every probe against Xvfb and against this server and diffs the two;
+**13 of the 18 are identical**, and the five that differ are deliberate and listed in
+`tools/README.md` under "What the sweep is expected to differ on" (`ChangeCursorProbe`, `XiProbe`,
+`RandrProbe`, `XineramaProbe`, `ScreenSaverProbe`). A sixth difference is a finding. `mvn test` 357/357.
+
+- **Two things had to be fixed before the sweep could be read**: `probe-diff.py` normalised only `win=`
+  ids (so `drawable=`/`damage=`/prose ids counted as differences), and `ChangeCursorProbe` *died* on
+  this server's `BadImplementation` for `ChangeCursorByName` - a refused request is answered with an
+  error before the reply to the round trip that follows, so the probe now prints the refusal and
+  consumes the queued reply.
+- **Two ways a run lies**: the reference must be clean (`tools/xvfb.sh stop`/`start` - a client killed
+  with windows mapped leaves them on Xvfb, and `MenuProbe` then differs in its first crossing's detail
+  for that reason alone), and this server has to be started `--no-clipboard --no-tray` (the clipboard
+  bridge taking `CLIPBOARD` reads as an extra `SelectionNotify`).
+- **The pixel comparison was checked too**, termora against Xvfb through `xwd` on the VM: the windows
+  are visually identical, and every counted difference is one of the three documented ones - the root
+  colour (#E8E8E8 against black, which is most of them by count), 1-unit blend rounding along the
+  window's top and bottom edges ("ours rounds, Xorg truncates"), and a few hundred antialiased glyph
+  pixels in the logo (deltas to 53, invisible).
+- **Remaining backlog after this**: B6 (GLX, XL), B5's Composite/Present/SYNC (each needs its own
+  session, and their payoff is not in either client), E1 (blocked on the protocol fork's ownership),
+  E2 (the CI pipeline is the repository host's). The docs' own assessment is that none of them is a
+  session's work, which is why this round went to the kit.
+
+**2026-09-27 (fifth round): B6 (GLX) reconnaissance - the item is much cheaper than it looked, and
+nothing was advertised.** `mvn test` 357/357, one commit (`e2efbf0`).
+
+- **The finding**: tapping Xvfb while `glxgears` ran showed the client sends **no GL commands** - it
+  renders in-process with Mesa's software `drisw` path and blits frames as ordinary **`PutImage`**
+  (769 MB in 5.6 s, one `GetGeometry` per frame). The reference has no DRI3/Present either. So a server
+  needs **no GL implementation** for software clients, only GLX's query and context surface (nine
+  requests) - and then the frames arrive as requests this server already answers.
+- **`tools/GlxProbe`** is checked in and in `tools/sweep.sh` (where it is the one difference that is a
+  whole missing feature). GLX opcodes are Mesa's, from `/usr/include/GL/glxproto.h` on the VM: from 18
+  up they are QueryExtensionsString, QueryServerString, ClientInfo, GetFBConfigs (one apart from the
+  obvious reading); the two string requests carry **no string**; `MakeContextCurrent` has a leading
+  `oldContextTag`. `mesa-utils` and `libgl-dev` are now installed on the VM.
+- **The one trick**: a server must grant a **direct** context, or the client sends GL commands over the
+  wire instead of rendering locally.
+- **The first thing to measure next**: `GetVisualConfigs`' **40-int-per-visual** layout (the GLX 1.2
+  spec has 18, `__GLXvisualConfig` in `glxint.h` has 30, and neither is it) - pin it by correlating
+  Xvfb's reply with `glxinfo`'s visual list, never by guessing.
+- **Nothing is advertised**: the item's own trap (a client that sees GLX tries it instead of falling
+  back) and the client at risk is EasyShell, which renders correctly today through JavaFX's software
+  pipeline. The entry has the order the rest should be done in.
+
+**2026-09-27 (sixth round): B6 (GLX) is DONE.** `mvn test` 360/360, commits `20c040c` and `e17e11a`.
+
+- **`extension/GlxExtension`**: the handshake a software GL client needs. **A direct context is granted
+  and an indirect one is refused** - that is the whole design, because a client told "direct" renders
+  in its own process and pushes frames as `PutImage`, and one told "indirect" sends GL commands this
+  server cannot execute.
+- **Verified on .147** with the item's own tools (`mesa-utils` is installed there): `glxinfo` says
+  `direct rendering: Yes`, vendor `xserver`, 1.4; **`glxgears` runs at ~190 FPS and the gears are
+  drawn by OpenGL** (a `GetImage` shows them). **(Superseded below by the measurement that made it
+  opt-in: EasyShell is *not* unaffected - it creates a GL context before falling back.)** The item's
+  trap ("do not advertise before it works") is kept by advertising only the core.
+- **Wire traps, each recorded in the code and docs**: the decoder must skip `minor`+`length` before the
+  body (three bytes early is invisible when the body is ignored); the two string requests carry **no
+  string**; their reply's length **counts the NUL** (one short and `glxinfo` prints memory after the
+  string); `GetVisualConfigs` is **40 ints per visual** (18 fields + 11 token/value pairs), pinned by
+  correlating Xvfb's reply with `glxinfo`'s table - never guessed. `GlxTest` pins all of it and fails
+  without the fixes.
+- `tools/GlxProbe` is in the kit and the sweep; the sweep is 13/18 identical with the six differences
+  all deliberate.
+- **GLX is off unless `--glx` (2026-09-27, the same day).** The user ran the GLX build and reported two
+  things EasyShell animates no longer updating - a menu item with no hover colour and a caret that does
+  not blink, while clicks and typing worked. Measured: **the caret does blink here** (a whole-screen
+  capture 0.3 s apart differs by 40 pixels once the box is focused and settled) and neither symptom
+  reproduces deterministically from a script; both are the kind a toolkit **gates on the window being
+  active**. The one measured difference is the advertisement itself - with GLX the client takes a
+  different drawing path - which is why the default is now off (the pre-B6 behaviour) and `--glx` is
+  the user's switch. Recorded as **A17** with the numbers, the requests a caret blink makes
+  (`FillRectangles` RENDER 26 into a pixmap, then a whole-window `CopyArea`), and "focus first" as the
+  order to look in.
+- **The mechanism, in JavaFX's own words** (`JAVA_TOOL_OPTIONS=-Dprism.verbose=true` on the VM client -
+  the only way to see *why* a toolkit chooses a path): without GLX it stops at `ES2 Prism: Error - GLX
+  extension is not supported` and goes straight to its software pipeline; with GLX it initialises
+  `X11GLFactory`, **creates a context** (`CreateNewContext`/`IsDirect`/`GetDrawableAttributes` seen on
+  the wire) and only then reports `System GPU doesn't meet the es2 pipe requirement` - falling back to
+  **the same software pipeline**. So the extension buys JavaFX nothing and costs it a half-taken GL
+  path, and a toolkit's *animations* (a caret, a hover) are what notice.
+- **GLX here is compatibility, not speed**: a GL client with no GPU renders in software and ships every
+  frame as `PutImage` (769 MB in 5.6 s measured) where the reference shares a DRI buffer - `glxgears`
+  ~190 FPS against this server, 2832 FPS against Xvfb. Speed would need a GPU on the client with
+  DRI3/Present, or a real GL in the server with indirect GLX.
+
+**Trap that cost time this session**: `RawXClient.createWindow(..., backgroundPixel)` reads a
+**negative** int as "no background", and `0xFF0000FF` as a Java int literal *is* negative - a window
+background is a **visual** pixel (`0x0000FF`), not ARGB. Getting it wrong paints a grey window and
+reads exactly like a server bug.
+
+**Bed note**: `ci.sh` refuses to start when anything listens on 6010 or 6062-6099. The user's own IDE
+debug server (`XServerTest`, display :10 → port 6010, `--log-requests`) blocks the suite; on
+2026-09-27 it was theirs and it ended by itself, so check port 6010 before killing anything.
+
+
+**The user commits batches themselves, but on 2026-09-25 they said "你自己提交"** - so from that point
+commits are mine to make on branch `feat`, one per item, with the item id in the message. On 2026-09-26
+the user said **commit but do not push** - the branch `feat` is local and ahead of origin, and that is
+how they want it.
+
+**The afternoon of 2026-09-26 (a long session): `mvn test` 328/328, tree clean at `d86305b`.** What it
+left behind, each with the measurement in `docs/backlog.md`:
+
+- **C10 is done, and it was not a documentation item.** A client-side X input method needed three
+  font-path fixes: `ListFontsWithInfo` reported the alias instead of the font's own XLFD name; a font
+  loaded by that name (or by a pattern) missed the table and fell back to the Java approximation, which
+  has *no* `CHARSET_REGISTRY`/`CHARSET_ENCODING` properties - the two Xlib reads a charset from; and
+  the XLFD names were not in the font list, so the server named fonts it could not find. Verified end
+  to end: `ibus` composing through XIM into a forwarded `xterm` commits 中文.
+- **Three request decoders** (`ShapeRectangles`, `XFixesCreateRegion`, `XFixesSetRegion`) hand-written
+  because the generated readers size a trailing list from the request length in four byte units where
+  they mean a byte offset - a small list computes a negative capacity and the request is *refused*.
+  This is A2's long-open kit question; a sweep of every extension request with a trailing list is how
+  the other two were found, and `VariableLengthDecoders` documents the class.
+- RandR's questions are all answered now (`GetOutputProperty` → `BadName`, `GetProviders` → zero), and
+  the refusal log names the request it is about (it used to name the previous one).
+- XFixes' `HideCursor`/`ShowCursor` are honoured (counted per window, walked up the parent chain).
+- `tools/fontset-probe.py` and `tools/font-reply-proxy.py` are in the kit, and `tools/README.md`'s
+  display-number advice changed: the suite binds 63-99 and `XkbControlsTest` takes **:91**, so a
+  hand-started server goes on **:61**.
+- **Testing went on both machines**: EasyShell and termora each ran their menu gesture 6/6 (termora's
+  two captures byte-identical) from `.147`, and EasyShell again from `.150`.
+
+**Later the same day, 46 commits in, `mvn test` 335/335.** What the second half added, all
+measured against Xvfb first:
+
+- **A8 finished**: `ChangeCursor` (the destination is rewritten in place - shape and serial become the
+  source's, no notification), `GetCursorImage` answers the *displayed* cursor rather than the root's,
+  `HideCursor`/`ShowCursor` honoured. `ChangeCursorByName` stays refused **because the reference does
+  nothing at all for a name** (its cursor font has no glyph names) - a measured answer, not a guess.
+- **A3's other half**: a glyph cursor from any font is composed as X composes one (the *mask* glyph's
+  ink is the silhouette, the hotspot is the glyph's origin at the font's ascent), and the embedded
+  cursor-font table is used only for the cursor font - a collision at code 66 was giving the wrong
+  shape.
+- **A12's other half**: `bitGravity`, and **the default had to be fixed first** (`bitGravity` was
+  stored as 0 = Forget, which throws a window's contents away - every window would have lost its
+  pixels on its first resize). All eleven gravities identical to the reference.
+- **B5's first part**: DAMAGE, hooked into `DrawHandlers.afterDrawing` plus the server's own painting.
+- Smaller: RandR's timestamps were sequence numbers (now the event clock); a spurious `NoExpose` was
+  sent for every drawing request; the font path reports a font's own name as well as its alias and
+  resolves patterns, which is what let a font set be built at all (C10).
+- **`ci.sh` now refuses to start when a display the suite binds is in use** - a leftover bed or an
+  `ssh -L` tunnel to the reference failed four runs that day, each looking like a bug in the server.
+
+**D3 is done too** (`7f96b2f`): the standard X fonts (`fixed`, `6x13`, `7x13`, `9x15`, `10x20`,
+`12x24`) are now served from tables captured off the reference server by `tools/kit.sh GenBitmapFont`
+into `resource/BitmapFont.java` (172 KB of packed rows, checked in). `tools/FontProbe` - QueryFont
+field by field, QueryTextExtents, and the pixels a string draws - is identical to Xvfb for all six,
+and everything else still falls back to the Java approximation. The traps that cost the most are in
+the design notes' "The fonts a client asks for": text into a **one-bit pixmap** comes back as the
+font's *default character* for every code, a right bearing is measured **from the origin**, and a
+font's codes do not always start at zero (12x24 begins at one). And `mvn clean` deletes
+`target/tools-cp.txt`, which a hand-written `java -cp` needs.
+
+**A13 is done** (`c5bbfda`): X's grab states and the held queue, read off `include/inputstr.h` and
+`dix/events.c` and then measured. `AllowEventsProbe`'s five arrangements and `MenuProbe` are identical
+to Xvfb line for line; `input/AllowEventsTest` fails without the fix. Two things worth carrying
+forward: **a disconnecting client's passive grabs are now dropped with it** (they never were, and the
+stale arms made two runs of the same probe disagree), and **the button state outlives the client
+exactly as the pointer does** - a probe that ends with a button down makes the next run's press a
+duplicate the server drops, which cost an hour and produced a wrong model of the queue.
+
+**Small items since** (`1c40d0e`, `809df68`): the default font path now includes the machine's own
+font directories; the tray click's coordinates were **screen** coordinates being read as strip
+coordinates (found with a standalone probe, which also proved the platform delivers the click); and
+A13's last gap - `AllowEvents` ignores a request whose time is outside the grab, verified against
+Xvfb with the probe's new `staletime` arrangement. **A trap that bit again**: a server started by hand
+on `:91` makes `XkbControlsTest` fail with `Address already in use` - the suite binds 66-99, so
+`tools/README.md`'s ":91 is what the kit uses" is wrong about the suite's range; kill any hand-started
+server before `mvn test`.
+
+**C9 is done** (`165d9f2`): the server owns `_NET_SYSTEM_TRAY_S0` and is the tray host
+(`tray/TrayBridge`), the icons are shown in the host's menu bar through AWT's `SystemTray`
+(`display/AwtTrayIcon` - **no JNI**, which the item expected to need), and `--no-tray` turns it off.
+The XEmbed half is what a real Java client needed and found missing: `WindowHandlers.reparent` told
+only the *new parent* about a reparent, and Java's tray peer blocks five seconds for the
+`ReparentNotify` on its *own* window (it threw "TrayIcon couldn't be displayed" until that was
+fixed). Two things about the live check: the menu-bar icon really does appear (a screenshot of the
+Mac's menu bar shows the client's blue disc - my first two screenshots "proved" otherwise because the
+status area starts further left than I cropped), and the *click* was never verified live because the
+client kept exiting between finding the icon's coordinates and pressing it (the click path rests on
+`TrayBridgeTest`).
+
+**D3 is now complete** (`ec823be`): the second half - a font **file on a font path** - is in.
+`resource/PcfFont` reads PCF (plain or gzipped) into the same `BitmapFont.Font` the generated tables
+carry, `resource/FontPath` does `fonts.alias` → `fonts.dir` → file with `~/.xserver/fonts` on the
+default path, and `tools/FontProbe` against Xvfb for `8x13` (no built-in table, read from a file) is
+**identical line for line** - metrics, properties, extents and pixels. The format's traps are in the
+design notes; the sharpest is that **the encodings are section 32 and the accelerators 256** (swap
+them and everything decodes as nonsense), the header is in the *accelerators* section, the
+per-character metrics are the **ink** ones, and `fonts.dir`'s count line is the only line to skip (a
+font file's name usually starts with a digit).
+
+**C10's host half is verified live** (`ba638fb`) and the correction matters: `tools/host-type.c`
+*does* reach the window. The item said it "reaches nothing", which was a measurement failure - the
+first run was greped for strings the dispatcher never prints. With the host window in front and a
+client holding the X focus, typing 你好 produces a KeyPress, a **MappingNotify** and the synthetic
+keycode's press and release per character, and a client reading the keymap afterwards answers
+**keycode 255 carries U+597D**. `CGEventPostToPid` works too when the window cannot be brought
+forward. The client-side XIM half stays open (no dbus on the VM).
+
+**E6 was swept** (`ea1c5f9`): A4old and C11 are ticked, and **E1 is blocked on measurement** - the
+protocol fork at `~/IdeaProjects/other/x11` is not a git checkout, so fixing the generator there
+needs the owner's decision (version-control it, or replace the five `eventcopy` entries with full
+`event` entries and re-publish).
+
+**Later on 2026-09-26, `mvn test` 345/345, tree clean at `380856a`: B4 is DONE - XInput2 is
+advertised.** `1626616` is the implementation, `ff27ee5` the harness, `380856a` the documents.
+
+- **What is in**: version handshake, device list (two masters with classes), client pointer, event
+  selection, pointer query/warp, cursor, **device grabs**, the XI2 twin of every core input event
+  (with the emulated core event withheld from a client that selected the device one), plus XInput 1's
+  `ListInputDevices`/`OpenDevice`/`CloseDevice`/two mappings. Refused, not ignored: touch, tablets,
+  barriers, raw events, device properties.
+- **Why it had to be whole**: `libgdk-3.so` resolves `XIGrabDevice` where it exists, and GTK grabs
+  every menu through it - and **AWT segfaults** (`libawt_xawt.so getNumButtons`) on a refused
+  `ListInputDevices`. Both measured on the clients' own libraries.
+- **The trap that cost the most**: an XI2 device event's fixed part is **80 bytes**, not the 68 the
+  protocol XML's field list adds up to (120 total for a key, 136 for a 2-axis motion). Twelve bytes
+  short and GDK does not reject it - it reads the key code out of the middle and the application
+  stops producing characters, silently. Also: no 32 bit `full_sequence`; length = size/4 - 8;
+  `FP1616` is 4 bytes where `FP3232` is 8; `XIChangeCursor` has **no** reply (answering it made
+  EasyShell ask `XIQueryPointer` a million times in two minutes) while `XIGetFocus` **has** one.
+- **Verified live, both clients** (`--single-window`, XTEST-driven): EasyShell renders, its context
+  menu opens and **survives the out-and-back gesture 6/6**, typing in its search box produces the
+  character, and the session makes ~9 `XIQueryPointer` calls; termora renders with its menu 3/3.
+
+**Still on 2026-09-26 (third session), `mvn test` 350/350, tree clean at `b1e99da`: B5's per-window
+store is in FOR ALPHA WINDOWS, which is what C9's tray icon and C8 both waited on.**
+
+- **What is in** (`cf29f86`): a window whose visual has an alpha channel keeps a store of its own
+  (`XWindow.ownPixels`), draws into it in its own coordinates - the whole window, not only the part
+  that shows - and is composited onto the screen (`XServer.compositeOwnPixels`, `Compositor.
+  compositeOver`, called from `DrawHandlers.target`/`afterDrawing`). `GetImage` reads the store, the
+  background paints into it, and the reveal path composites it instead of exposing. **Real
+  translucency works now**, and `_NET_SYSTEM_TRAY_VISUAL` publishes the ARGB visual so an icon keeps
+  its shape.
+- **Two protocol rules had to change**, each of which had made an ARGB window impossible: **a child
+  need not share its parent's depth** (the ARGB window is depth 32 under a depth 24 root - Xvfb cannot
+  settle this, it advertises no depth 32 visual) and **a GC converts colours in the visual of the
+  drawable it was created on**, not the root's - otherwise a half-transparent foreground arrives
+  opaque.
+- **Tests**: `TranslucentWindowTest` (4) and `TrayBridgeTest.anIconWithAnAlphaVisualKeepsItsTransparent
+  Corners`; two of the four fail with the store taken out. EasyShell is unaffected (its windows have no
+  alpha) and was re-run live: menu 3/3, typing works.
+- **What is left of B5**: the **general** store - every window keeping its pixels - which is what C8
+  needs for a frame per top level, plus Composite/Present/SYNC.
+- **Live-tool trap, again**: the tray icon docks and is handed to the menu bar (the server logs "an
+  icon is in the menu bar now") and goes away with its client, but **a menu-bar screenshot could not
+  find it** - and neither could one taken with the old 24 bit visual, so it is the screenshotting, not
+  the change. C9's record already warns about exactly this ("the icon was there, outside both crops").
+
+**That session was preceded by: `mvn test` 345/345, tree clean at `76b3da2` - C8 was BUILT and
+REVERTED, and the reason is worth not re-deriving.**
+
+- **What it was**: one host window per X top level (a `HostWindow` with its own backend, viewport,
+  title, position and input sink; one frame per mapped non-override-redirect toplevel; a menu gets
+  none; the whole-screen frame keeps the largest-toplevel rule). It was green - 350/350 with five new
+  tests - **and it is reverted**.
+- **Why**: with one framebuffer per screen, a dialog's pixels are in its parent's *rectangle* too. A
+  screen capture of EasyShell's main-window area with its 工具 dialog open showed the **dialog's content
+  filling it**, sidebar and all - the dialog is shown twice and the window under it looks taken over.
+  That is the cost the design notes predicted; it is now measured. **C8 needs per-window pixels, which
+  is B5's per-window store, before it can be honest.**
+- **The five traps the prototype cost** (all in the backlog entry, all of them "quiet" failures): a
+  resize request belongs to a window and not a screen (`ScreenResizeTest` "the screen did not grow");
+  the whole-screen frame still needs the largest-toplevel rule (`WindowStateTest`); a reported position
+  must **not** be cleared as it is read or the settle never fires (`HostWindowPositionTest`); the
+  master window must be opened by `start()` and not by the first tick (`TrayBridgeTest` "the backend
+  never started"); a frame whose client window is destroyed goes with it (`PerClientWindowTest`).
+- **Debugging note for the next session**: surefire **swallows stdout/stderr** of a test JVM here -
+  `System.out`, `System.err` and a `-Dlogback.configurationFile` file all produced nothing - so a
+  print-based hunt inside a test run is a dead end. Reason about the behaviour and let the assertion
+  be the signal.
+
+**The reconnaissance that preceded that (same day), `mvn test` 339/339, tree clean at `5187cf3`.**
+`docs/backlog.md` is the record; what matters for picking the work up:
+
+- **E7 is done and ticked** (`4a94f8a`): E2's orphan - a server with no display logged "opened a window
+  for display :95 showing ..." one line under its own warning that nothing could be shown.
+  `DisplayBackend.isHeadless()` (which existed with **no caller**) now decides the wording.
+- **`tools/XiProbe` is new** (`91f6bf4`) and is B4's harness. It prints the XI2 version handshake, the
+  client pointer and the whole device list as fields *and* bytes, and its `select` mode subscribes,
+  warps the pointer in and drives a button through XTEST with the core masks selected too.
+- **B4 cannot be landed in halves, and that is measured, not guessed.** JavaFX's Linux backend is GTK:
+  `libglassgtk3.so` calls `gdk_device_grab`, and **`libgdk-3.so` resolves
+  `XIGrabDevice`/`XIUngrabDevice`** (checked with `strings` on the AppImage's own copies). GDK3's grab
+  *is* `XIGrabDevice` once the extension exists, so advertising XInput2 without the device-grab family
+  costs a forwarded GTK application its menus. The item's plan ("queries first, events later") is a
+  worse version of the item, not a smaller one. The wire facts (mask numbering, the 12 byte
+  GenericEvent header with **no full_sequence**, the 68 byte fixed part, `XIGetClientPointer`'s
+  `BadWindow` for the root, the press/release pairing rule) are all in the backlog's B4.
+- **C9's "publish a 32 bit ARGB visual" is disproved**: the screen framebuffer stores no alpha by
+  design, so the icon's transparency is gone before the tray reads it; it needs a per-window store,
+  i.e. B5.
+
+**What is left, and every one of them is days, not hours:** **B5** (Composite/Present/SYNC, needs a store per window - C9's leftover is
+part of it), **B6** (GLX, a project of its own), **C8** (one host window per client toplevel, L, no
+written plan), **C5** (the drag *out* needs a native drag source), **E1** (blocked: the fork at
+`~/IdeaProjects/other/x11` is not a git checkout, so the owner has to decide), **E2** (only the CI
+pipeline is left, and that is the repository host's), **E4** (its second half is declined with reasons
+in the entry). The next session should pick one of B4/B5/C8 knowingly and give it the days it needs -
+a session is not enough for any of them.
+
+**The test bed, as it is used**: the server runs on the Mac, EasyShell and termora on the VM at
+`192.168.22.147` against `192.168.22.1:<display>`; `Xvfb :98` on the VM is the reference. EasyShell is
+the primary client and termora the secondary (the user's own instruction). The launch recipes are
+still in `/tmp` (`es-start.sh`, `termora-start.sh`, `client-run.sh`), and `tools/bed.sh single` starts
+the server plus one client - but **a bed left on :95 makes `GrabCrossingTest` fail with "Address
+already in use"**, and `mvn clean` deletes `target/tools-cp.txt`, so `tools/kit.sh` has to regenerate
+it (it does by itself; a hand-written `java -cp` has to wait).
+
+**Traps this session cost time** (each is now in the backlog, the design notes or `tools/README.md`):
+the button state outliving the client (above); a stale passive grab arm doing the same; `pkill -f` on
+the VM killing the remote shell when the pattern is anywhere on its command line, a path as an
+argument included - `[m]ount_termor` is the spelling that works; `tools/vm.sh`'s `ssh -n`; and that
+`mvn test`'s incremental compile does **not** recompile a test when only a *main* class's signature
+changed (it shows up as `NoSuchMethodError` in a test that looks untouched), so a signature change
+wants `mvn clean test` once.
+
+**And the XInput2 traps, because each one reads as a server fault**: the XI2 *event mask bits* are not
+the core ones - `1<<4` is `ButtonPress` where `1<<3` selects nothing - and a wrong mask is **accepted**
+and changes nothing, which looks exactly like a server that cannot deliver a device event; an XI2
+event is a `GenericEvent` whose header is **twelve** bytes with no 32 bit `full_sequence` (assume one
+and the timestamp reads as 1 and the detail as the root window's id); it must be read **whole** or the
+next message decodes as garbage; and `XIGetClientPointer` is answered `BadWindow` for the *root* on a
+reference server, so a probe that asks about the root measures nothing.
