@@ -106,9 +106,9 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A28~~ | ~~**two pointers** over the window: the system arrow *and* the X sprite, until the window is clicked - and again while another application is being used in front of it~~ **fixed 2026-10-01**: the pointer belongs to the **active** application - a native probe watched `[NSCursor hide]` be undone the moment another application was activated, and JavaFX's own cache never retries - so the sprite is what gives way: it is drawn only while this process has a focused window. Measured: active = system pointer hidden + sprite drawn, in the background = system pointer visible + **no** sprite, both by screenshot | correctness | M |
 | ~~A29~~ | ~~a client could make the server allocate 17 GB: a window's own pixels were the one allocation with no budget~~ **fixed 2026-10-01**: a 12000x12000 window died with `OutOfMemoryError` in `Framebuffer.allocate` while it was being mapped (every other drawable already had a budget - a pixmap 16M pixels, an image 64M, a request 16 MB). `keepsOwnPixels` now requires the window to fit the largest screen (8192x8192) and a bigger one draws straight onto the screen, which is the root's own path: nothing is refused, and no window that fits on the display changes | robustness | M |
 | ~~A30~~ | ~~the ZRLE encoder looked every pixel up in a palette the tile could no longer use~~ **fixed 2026-10-01**: past sixteen colours a tile can only be plain RLE or raw, and neither reads the palette, so the search from the seventeenth colour on was pure work. Photo-like full frames encode in **57 ms instead of 79-100**; two-colour and text-like frames are unchanged (the numbers are in the review) | performance | S |
-| [ ] A31 | the VNC path sends **one rectangle per update**, so a change in two corners is encoded as one box spanning both; encoding the changed tiles (x11vnc's shape) would cut the bytes and the time | performance | M |
+| ~~A31~~ | ~~the VNC path sends **one rectangle per update**, so a change in two corners is encoded as one box spanning both~~ **fixed 2026-10-01**: the region is cut into 64x64 tiles, a changed tile merges with the changed tiles beside it, and each run is shrunk to the box of the pixels that really differ - A25's answer for one change, no box spanning the screen for two. The old behaviour sent `[5,5,285,185]` where the new one sends two 10x10 rectangles | performance | M |
 | [ ] A32 | no **Tight/JPEG**: photographic content goes as ZRLE-raw, 3.1 MB and 57 ms for one full frame (D2 has listed Tight since the beginning; this is the measurement behind it) | performance | L |
-| [ ] A33 | `XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first, and all eight call sites do today, but nothing enforces it | robustness | S |
+| ~~A33~~ | ~~`XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first~~ **fixed 2026-10-01**: all eight call sites were audited and do ask first, and `ownPixels()` now writes one warning per window naming it and the budget, so a future caller that gets it wrong leaves a breadcrumb instead of an unexplained `OutOfMemoryError` | robustness | S |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -3171,6 +3171,31 @@ at the limit (and the per-tile palette array is 17 ints instead of 128): **photo
 common case must not pay for the rare one. `ZrleEncoderTest` and `VncBackendTest` cover the four
 subencodings the encoder emits.
 
+### [x] A31. One rectangle per update became the tiles that changed. **M** - fixed 2026-10-01
+
+A25 made an update the **box** the differing pixels are in - right for one change, wrong for two: a
+status line and a spinner in opposite corners were one rectangle spanning the screen, and a
+full-screen ZRLE frame is 10 ms of one core in flat colours and 57 ms photographic (A30's table).
+`RfbSession` now builds an update the way `x11vnc` does: the region in 64x64 tiles, a changed tile
+merged with the changed tiles beside it into a run, and each run **shrunk to the box of the pixels that
+really differ** - so a small change is still the few pixels it is (A25's rule) and scattered changes are
+several small rectangles instead of one big one. A region that changed everywhere is still sent as one
+rectangle, which compresses better than a band's worth of them.
+
+`VncBackendTest.aChangeInTwoCornersIsSentAsSmallRectanglesAndNotOneBoxSpanningBoth` drives **one**
+`PolyFillRectangle` carrying two rectangles, so the damage cannot be split by the tick, and the test
+was checked against the old behaviour: it sends `[5, 5, 285, 185]` where the fix sends two 10x10
+rectangles. `RawXClient.fillRectangles` is the harness piece that was needed for it.
+
+### [x] A33. `XWindow.ownPixels()` had no breadcrumb for a window that keeps no pixels. **S** - fixed 2026-10-01
+
+A29's budget depends on every caller asking `keepsOwnPixels()` first. All eight call sites do (audited),
+and `ownPixels()` now writes **one warning per window** naming the window and the budget when it is
+called for one that keeps none - so a future caller that gets this wrong leaves a log line instead of
+an `OutOfMemoryError` with no explanation. The DBE path (`DbeExtension.swap`, the one direct caller
+that is not guarded) is unreachable for such a window because DBE buffers are pixmaps and are capped at
+16M pixels; it is recorded in the review rather than changed.
+
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 
 **The report.** "Click 片段, then right-click the host list: the context menu disappears at once. Without
@@ -3354,6 +3379,33 @@ messages - `MotionNotify`, `ButtonPress` with `detail = 1`, `ButtonRelease` with
 `xev` against this server prints `button 1, same_screen YES` for the same click. So the button AWT
 complains about is not in the stream as Xlib reads it, and the two servers' bytes have not been
 diffed field by field yet.
+
+**And now they have been** (2026-10-01, whole-project review). A raw client that selects
+`ButtonPress|ButtonRelease|MotionNotify` on its own window and prints every field was run against this
+server and against `Xvfb :98` on `.147`, with the same click driven by `tools/kit.sh Drive`:
+
+| field | ours | Xvfb |
+|---|---|---|
+| type / detail | 4 / 1, then 5 / 1 | 4 / 1, then 5 / 1 |
+| root / event / child | 0x2 / the window / 0 | 0x1ff / the window / 0 |
+| rootX, rootY, eventX, eventY | 100, 100, 100, 100 | 100, 100, 100, 100 |
+| state | 0x0 press, **0x100** release (Button1Mask) | the same |
+| same_screen | 1 | 1 |
+| time | wall-clock ms (`System.currentTimeMillis`) | Xvfb's uptime ms |
+
+**Every semantic field is identical**, and the only differences are the ids a server picks for itself
+and the clock base - which is a *documented* deviation (this server's clock is wall-clock
+milliseconds, a reference's is its uptime) and one Xlib is built to absorb. So the `button 16` AWT
+reports is not in our bytes at all; its own dump (`button = 18`, `state = 1093`, `x` a 32 bit
+garbage value, the rest the *previous* event's fields) is a struct read out of a **stale buffer**, and
+that is a client-side desynchronisation.
+
+**What is left to test.** The next experiment is the one that fits that shape: a **raw byte** probe
+(not `RawXClient`, which parses the same length fields the client does, and so cannot see a desync) in
+front of this server *while termora is the client*, checking the `length` field of every **XI2
+GenericEvent** against the bytes actually sent - termora selects XI2, and a generic event whose length
+field and payload disagree is exactly how a stream loses its footing while a tap (which logs chunks,
+not messages) still looks well-framed and `xev` still reads the core events after it correctly.
 
 **Not a regression from the focus fix of the same day.** The pre-fix build throws the same exception
 with the same garbage struct (measured: the fix's source was reverted, rebuilt and the click repeated
