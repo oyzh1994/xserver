@@ -96,7 +96,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | ~~A19~~ | ~~EasyShell's process dies when it copies~~ **fixed 2026-09-30**: the clipboard bridge asked a client for its data through a window of the **master screen**, which in the default mode is a root no client's setup reply names - GDK wraps the requestor of a `SelectionRequest` and dies in `XScreenNumberOfScreen`. Every earlier attempt had run `--single-window`, where that window *is* on the client's screen | correctness | M |
-| [ ] A23 | a forwarded application's context menu opens and then ignores the mouse: its items do nothing, while the same item activated from the keyboard works - the press reaches the menu's own window, so what a toolkit reads the click from is not what it should be | correctness | M |
+| ~~A23~~ | ~~a forwarded application's context menu opens and then ignores the mouse~~ **fixed 2026-09-30**: `--focus-on-click` gave the input focus to the **menu itself** - an override-redirect window the window manager never focuses - so the window the menu belonged to was told `FocusOut` and the toolkit unmapped its own popup; 5 of 5 presses destroyed the menu before the fix and 5 of 5 survive after, in both modes | correctness | M |
 | ~~A22~~ | ~~a forwarded application's input fields ignore their context menu and every Control shortcut~~ **fixed 2026-09-30**: two causes - the toolkit's connection was killed by a **BadMatch on a cursor whose hotspot is outside its 1x1 placeholder pixmap**, and the **XI2 key event left the word at 72 nought**, which is where GDK reads the modifier state from | correctness | M |
 | ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
@@ -2668,50 +2668,64 @@ test really pins, and the mutation that shows it bites). It is a small thing, bu
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
 
-### [ ] A23. An application's context menu opens and then ignores the mouse. **M** - open, found 2026-09-30
+### [x] A23. An application's context menu opens and then ignores the mouse. **M** - fixed 2026-09-30
 
 **The report.** "The input box's context menu does nothing - 复制, 粘贴, 全选 are all dead", in the default
 mode. On `main` they work.
 
-**What is measured, in the default mode with a server that has A19's fix.**
+**The cause: `--focus-on-click` moved the input focus onto the menu itself, so the application tore its
+own popup down.** A menu is an **override-redirect** window, this server's default asks a click to give
+the toplevel it lands in the focus - and the toplevel a click *in a popup* lands in is the popup. The
+window the menu belonged to was therefore told `FocusOut` on the press, and a toolkit hides a popup
+whose owner it believes unfocused: the app unmapped the menu three milliseconds later, so the release
+that followed was reported against the window underneath and the item never activated. A window manager
+never gives the input focus to an override-redirect window - that half of the rule was missing - and it
+is also why the bug is not on `main`, which has no `--focus-on-click` at all.
 
-- **The keyboard is fine.** Ctrl+A selects the field's whole text and Ctrl+C puts it on the Mac's
-  clipboard (`pbpaste` before `aaaaaac`, after `aaaaaac` when the box held `aaaaaac`), and the *menu
-  item itself* works from the keyboard: with the menu open, Down then Return takes the box's `aa` onto
-  the clipboard, where `复制` clicked with the mouse does not.
-- **The menu opens, and the item under the pointer is right.** A capture of the host window shows the
-  `复制` row highlighted with the pointer sprite drawn over it, so the pointer is where the click is
-  aimed; the click lands, the menu **stays open**, the item does not act, and no
-  `SetSelectionOwner` reaches the server.
-- **The press is delivered to the menu's own window** - `InputState: button 1 down at (219,186) ->
-  0x400035 (grab on 0x400002, ownerEvents=true)`, and the app is sent `Xi2Event[evtype=4 device=2]`
-  and `[evtype=5]`. So this is not "the press goes to the wrong window"; it is what the toolkit
-  *reads* out of the event.
-- **A GTK3 client's menu item does activate here** - `menu-probe3.py` (right-click an entry, one item
-  that prints on activate) both activates on a mouse click and opens its menu three times in a row,
-  here and on Xvfb. So popups are not generally click-deaf on this server.
-- **The app's own popup is created and then thrown away on the second open**: the server log shows
-  `CreateWindow`, `MapWindow`, `ConfigureWindow`, `GrabDevice (status 0)`, `GetInputFocus`, then
-  `UnmapWindow` + `DestroyWindow` three milliseconds later, with the *previous* popup's pointer grab
-  still standing (glass never sent `XIUngrabDevice` for it). The first open of a menu in a session
-  stays. The crossing events for the popup are also inconsistent: the log has both
-  `EnterNotify for 0x400029 withheld: the grab on 0x400002 does not cover it` and, in the other run,
-  a delivered `LeaveNotify` + `EnterNotify` pair.
+**The A/B, in both modes, is the measurement** - one build, the flag the only difference, the same
+gesture (right-click the search box, press the second item of the menu that opens; in `--single-window`
+headless the XTEST driver is `tools/kit.sh Drive`, and in the default mode the host window is driven
+with the platform's own input, `tools/hostinput`):
 
-**What has been ruled out by measurement**, so the next session does not repeat it: `--focus-on-click`
-(the same miss with `--no-focus-on-click`), the grab status (`XIGrabDevice` is answered `status 0` every
-time), and the XI2 button mask - making it the buttons held *during* the event rather than the core
-state's "before" did not fix the click and was reverted, because `buttons(state)` is what the verified
-title-bar drag (b6424b4) stands on. The window ids are live (0x400035 was created by the same
-connection at 13:50:51, not a dead client's id).
+| mode | `--focus-on-click` on (the default) | off | with the fix |
+|---|---|---|---|
+| `--single-window`, headless, XTEST | the popup is **destroyed** after the press, 5 of 5 | survives, 5 of 5 | survives, **5 of 5** |
+| per-client (the default), host window | release reported against the owning window | - | press **and** release both reported against the popup |
 
-**The next step is the byte comparison `tools/README.md` prescribes for exactly this shape**: point the
-same client at `tools/tap.py` in front of this server and at a second tap in front of a reference, drive
-the same gesture (right-click the box, click the item), and diff the XI2 button event. The instrument
-is ready: `tools/XiProbe.java`'s dump now prints `buttons 0x...` (the mask at offset 80) beside the
-`mods` word at 60, and `clipboard-owner.py` / `menu-probe3.py` are the two clients that make the
-gesture cheap - the first one crashes when the server names a window the client cannot place, which is
-A19's shape and was the fastest signal found in this round.
+The signal to read is the window the button is *reported against*: `InputState: button 1 down at
+(234,160) -> 0x40001e` is the popup, and the pre-fix `button 1 up at (234,160) -> 0x400002` is the
+window underneath - the menu had already gone. With the focus left alone both land in the popup and the
+item acts (`CreateWindow`/`MapWindow` for its dialog 40 ms later, and the dialog is in the host-window
+capture).
+
+**`main` is normal, and it is the same rule seen from the other side**: `main` has no
+`--focus-on-click` at all, so nothing moves a focus on a click and the menu works there. The same
+gesture against the `main` worktree (`--single-window --backend headless`) gives
+`button 1 down at (234,160) -> 0x40001c` **and** `button 1 up at (234,160) -> 0x40001c` - both in the
+popup - and the item's dialog is created 40 ms later. The fix keeps the window-manager half this server
+added on purpose and takes away the half that was wrong.
+
+**The fix** is three lines in `InputState.focusOnClick`: a toplevel that is override-redirect is not
+focused. `InputFocusTest.aClickInsideAnOverrideRedirectWindowLeavesTheFocusOnItsOwner` pins it, and it
+was checked by mutation - put `false` in place of the test and it fails
+(`expected window(0x400001) but was window(0x400003)`).
+
+**The previous round recorded `--focus-on-click` as ruled out, and that measurement is now
+contradicted.** Whatever it ran, the flag is the whole difference here when **both the server and the
+client are fresh for the run** - every row of the table above restarted both, which is the control the
+earlier attempt did not have (the app's own state drifts across scripted gestures, and a stale server is
+this project's oldest false A/B). The lesson is the same one A22 recorded, applied to a gesture rather
+than to a request: **a focus question is answered by a fresh server and a fresh client per run**.
+
+**What stays ruled out**: the grab status (`XIGrabDevice` is answered `status 0` every time), and the
+XI2 button mask - making it the buttons held *during* the event rather than the core state's "before"
+did not fix the click and was reverted, because `buttons(state)` is what the verified title-bar drag
+(b6424b4) stands on. And the previous round's reading of the gesture was right about this much: the
+press **is** delivered to the menu's own window, so the hunt for a wrong window was a dead end.
+
+**One correction for whoever reads the old notes**: the search box's own context menu in EasyShell is
+the host list's (添加连接/添加目录/导出数据/…), not a text menu. The 复制/粘贴/全选 of the report belong to
+a text field elsewhere - a dialog's, or an SSH tab's - but the defect and the gesture are the same.
 
 **Traps this cost.** Aiming a click at a menu row off a screenshot needs the capture's own geometry:
 `screencapture -l <window>` pads the window by **56 points on every side** (a 1280x728 window comes out

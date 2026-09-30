@@ -41,7 +41,7 @@ Options:
 | `--single-window` | render every client into one shared window (default: one window per client) |
 | `--no-clipboard` | do not bridge the host's clipboard to the X `CLIPBOARD` selection |
 | `--no-tray` | do not serve the notification area (the tray a client's icon docks in) |
-| `--focus-on-click` / `--no-focus-on-click` | a click moves the input focus to the window it lands in - **on by default**, because this server is the window manager for what it forwards and an application whose page leaves the focus on the root window cannot get it back otherwise (its menus stop opening). `--no-focus-on-click` is the comparison switch: a reference does not focus a window on a click |
+| `--focus-on-click` / `--no-focus-on-click` | a click moves the input focus to the window it lands in - **on by default**, because this server is the window manager for what it forwards and an application whose page leaves the focus on the root window cannot get it back otherwise (its menus stop opening). An **override-redirect** window (a menu) is never focused: a window manager does not, and focusing one takes the focus off the window the menu belongs to, so the application unmaps its own popup. `--no-focus-on-click` is the comparison switch: a reference does not focus a window on a click |
 | `--glx` / `--no-glx` | GLX is advertised (so a software OpenGL client - `glxgears`, a browser, anything with a GL surface - can render); `--no-glx` turns it off, which is what comparing two builds wants |
 | `--max-screen WxH` | the largest the screen may be grown to when a window is dragged past it (default 8192x8192) |
 | `--drop-mount H=C` | where the host's path prefix `H` is on the client's filesystem, for a file dragged onto a forwarded application (see below) |

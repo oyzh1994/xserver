@@ -167,8 +167,11 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
 - **No window-manager semantics**: no decorations, no `_NET_*` beyond C3, no activation protocol -
   **except that a click moves the input focus** (`--focus-on-click`, on by default), which is what a
   forwarded application whose page leaves the focus on the root window needs to get its menus back.
-  **`--no-focus-on-click` is the comparison switch**: a reference server does not focus a window on a
-  click, so a sweep or an A/B whose gesture presses a button wants it off.
+  It moves it to the toplevel the click landed in **unless that toplevel is override-redirect** - a
+  window manager never focuses a menu, and focusing one takes the focus off the window the menu
+  belongs to, which is what makes the application unmap its own popup (A23, §6). **`--no-focus-on-click`
+  is the comparison switch**: a reference server does not focus a window on a click, so a sweep or an
+  A/B whose gesture presses a button wants it off.
 - **The crossing pair a grab implies** (`NotifyGrab`/`NotifyUngrab`) is not delivered - measured 3/3:
   EasyShell tears its menus down within a millisecond of receiving it.
 - **A window appearing under a stationary pointer** is reported as entered at the map (the *pair*
@@ -433,6 +436,15 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    toplevel it lands in with `revert_to = PointerRoot`. With it on the menu opens after the page closes
    (77999 / 6003) and the rest of the session is unchanged; `--no-focus-on-click` is the comparison
    switch, since with it off nothing moves a focus on a click, which is what a reference does.
+
+   **And the same rule has a second half (2026-09-30, A23)**: the click that lands **in the menu** must
+   not move the focus either. A menu is an override-redirect window, so without that exception the
+   press gave the focus to the menu, the window that owned it was told `FocusOut`, and the toolkit
+   unmapped the popup three milliseconds later - every item dead to the mouse while the keyboard still
+   activated them. To check it: right-click an input box, press a menu item, and read the window the
+   press **and** the release are reported against in the server log - both must be the popup's. Do it in
+   both modes, with a fresh server and a **fresh client per run**: the app's state drifts across
+   scripted gestures, and a stale server is a false A/B.
 
 7. **The pointer sprite flickers with a client that repaints continuously** (2026-09-29, reported as "the
    cursor keeps flickering and the page is very laggy with the SSH tab open; `main` is normal").

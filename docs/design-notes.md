@@ -1054,6 +1054,18 @@ probe reads the status first and the events after it.
   nothing - whether it is the focused window itself or one holding it. A toolkit that unmaps a dialog
   instead of putting the focus back itself is relying on exactly this, and keyboard events aimed at a
   window nobody can see are keyboard events nobody handles. Destroying a window does the same thing.
+- **A click moves the focus to the toplevel it lands in, unless that toplevel is override-redirect**
+  (`--focus-on-click`, on by default). This is the one piece of window-manager behaviour in this
+  server that a reference does not have, and it is here for an application that never asks for the
+  focus itself and is left with it on the root window - a toolkit hides the popup of an owner it
+  believes unfocused, so the application's own context menus stop opening. **The exception is the
+  other half of the same rule and is not a detail**: a menu *is* an override-redirect window, so
+  moving the focus onto it takes the focus off the window the menu belongs to, and the application
+  unmaps its own popup. Measured on EasyShell: the input box's context menu opened, took the focus on
+  the press, and was gone three milliseconds later - every item dead to the mouse while the keyboard
+  still activated them (A23, 2026-09-30; 5 of 5 presses destroyed the menu with the rule missing and
+  5 of 5 survive with it, in `--single-window` and in the default per-client mode alike).
+  `--no-focus-on-click` is the comparison switch for a run that has to look like a reference's.
 - **`FocusOutEvent` is one of the five event classes the protocol generator numbers wrongly**, and
   `ClientOutput` already rewrites it to 10. Focus events therefore have to go out through the ordinary
   send path, not around it, or the client reads a `FocusOut` as something else entirely.
