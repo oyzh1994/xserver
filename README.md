@@ -560,6 +560,10 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   server is free to satisfy always, and it does: a window's contents are kept while it is covered and
   come back with no `Expose`, whatever the attribute says. The area a window *gains* (a map, a resize,
   a restack) is painted with its background and exposed, because that part has never been drawn.
+  **A window too large to keep pixels for draws straight onto the screen instead** (the path the root
+  takes): a store is the window's own size, so it is bounded by the largest screen this server can be
+  asked for (`--max-screen`, 8192x8192 by default) - a client that creates something bigger is not
+  refused and simply does not keep what a window on top of it covers (A29).
   `save_under` is **not** implemented - measured, and the reference does not implement it either.
 - **The VNC backend sends raw frames, and nothing else yet.** `--backend vnc` serves the whole
   screen (and so implies `--single-window`) to any VNC client as uncompressed damage rectangles, with

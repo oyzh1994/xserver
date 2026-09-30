@@ -492,6 +492,13 @@ because the screen has no alpha to keep (see "The screen is opaque"), and that e
 the window) and is composited onto the screen from them. The root is the exception because it *is* the
 screen: its pixels are the framebuffer's, which is what the display backends read.
 
+**And so is a window larger than the largest screen this server can be asked for** (A29, 2026-10-01).
+A store is the window's own size, which made it the one allocation here with no budget: measured, a
+12000x12000 window reached `OutOfMemoryError` inside `Framebuffer.allocate` while it was being mapped.
+Such a window is not refused - it draws straight onto the screen, exactly as the root does, so it
+simply does not keep what a window on top of it covers. Every window that fits on the display keeps
+its pixels exactly as before.
+
 **Where it draws.** `DrawHandlers.target` is the one place a drawing request is pointed at a surface,
 so that is where the choice is made: a window draws into its own store, in the window's own
 coordinates, and clipped to what it **owns** (`XWindow.ownRegion` - its rectangle with its own and its

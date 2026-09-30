@@ -104,6 +104,11 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A26~~ | ~~`java.lang.IllegalArgumentException: Destination region ... must fit within texture content bounds`, sometimes, and the window never appears~~ **fixed 2026-09-30**: the frame's repaint rectangle covered the pointer sprite's own box, which reaches past the screen when the pointer sits on the last pixel - and JavaFX does not clip a `drawImage` destination region. Reproduced on the real backend (21 throws with the pointer at the right edge), 0 after clipping the union and the sprite; the canvas is in logical pixels | correctness | M |
 | ~~A27~~ | ~~the dock's **Quit** did not quit: the window closed and the clients were released, but the process stayed for ever (and an app with no window heard the Quit not at all)~~ **fixed 2026-10-01**: on macOS a JavaFX app's Quit is `GlassStage.requestClosingAllWindows()` - a close on every window, never `System.exit` - and the toolkit's `JavaFX-KeepAlive` thread is not a daemon and outlives `Platform.exit()`. `XServer.startEventLoop` now returns the display thread and `Main` waits for it, then exits the process: EasyShell released at **+1s**, the server gone at **+3s**, both modes | correctness | S |
 | ~~A28~~ | ~~**two pointers** over the window: the system arrow *and* the X sprite, until the window is clicked - and again while another application is being used in front of it~~ **fixed 2026-10-01**: the pointer belongs to the **active** application - a native probe watched `[NSCursor hide]` be undone the moment another application was activated, and JavaFX's own cache never retries - so the sprite is what gives way: it is drawn only while this process has a focused window. Measured: active = system pointer hidden + sprite drawn, in the background = system pointer visible + **no** sprite, both by screenshot | correctness | M |
+| ~~A29~~ | ~~a client could make the server allocate 17 GB: a window's own pixels were the one allocation with no budget~~ **fixed 2026-10-01**: a 12000x12000 window died with `OutOfMemoryError` in `Framebuffer.allocate` while it was being mapped (every other drawable already had a budget - a pixmap 16M pixels, an image 64M, a request 16 MB). `keepsOwnPixels` now requires the window to fit the largest screen (8192x8192) and a bigger one draws straight onto the screen, which is the root's own path: nothing is refused, and no window that fits on the display changes | robustness | M |
+| ~~A30~~ | ~~the ZRLE encoder looked every pixel up in a palette the tile could no longer use~~ **fixed 2026-10-01**: past sixteen colours a tile can only be plain RLE or raw, and neither reads the palette, so the search from the seventeenth colour on was pure work. Photo-like full frames encode in **57 ms instead of 79-100**; two-colour and text-like frames are unchanged (the numbers are in the review) | performance | S |
+| [ ] A31 | the VNC path sends **one rectangle per update**, so a change in two corners is encoded as one box spanning both; encoding the changed tiles (x11vnc's shape) would cut the bytes and the time | performance | M |
+| [ ] A32 | no **Tight/JPEG**: photographic content goes as ZRLE-raw, 3.1 MB and 57 ms for one full frame (D2 has listed Tight since the beginning; this is the measurement behind it) | performance | L |
+| [ ] A33 | `XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first, and all eight call sites do today, but nothing enforces it | robustness | S |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -3132,6 +3137,39 @@ the system pointer, plus `CGCursorIsVisible` for the other one):
 On the build before the fix the same three states read `hidden/394`, **`visible/402`**, `hidden/394` -
 the middle row is the reported two pointers. `JavaFxBackendTest`'s cursor test now pins all three
 decisions, and the suite is **466 tests, green**.
+
+### [x] A29. A window's own pixels had no budget. **M** - fixed 2026-10-01
+
+Every window keeps its pixels (B5), and its store is the window's own size - the one allocation in this
+server with no bound. Reproduced on a server started with `-Xmx256m`: a client that creates a
+12000x12000 window and draws one rectangle into it (which is what allocates the store) hit
+`OutOfMemoryError` in `Framebuffer.allocate` inside `MapWindow`, which dropped that connection and left
+the server one allocation from the same end - 65535x65535 is 17 GB of store. Every other drawable had a
+budget already (a pixmap 16M pixels, an image decode 64M, a BIG-REQUESTS request 16 MB, a WebSocket
+message 16 MB, a clipboard 16 MB, the screen `--max-screen`); the window store was the gap.
+
+`XWindow.keepsOwnPixels()` now also requires the window to fit `MAX_STORE_PIXELS` (8192x8192, the
+largest screen this server can be asked for). Nothing about the window is refused: it draws straight
+onto the screen, the path the root already takes, and every caller already had a branch for it. **No
+window that fits on the display is affected.** After the fix the same client maps and draws
+(`CreateWindow, MapWindow, CreateGC, PolyFillRectangle`, no OOM, clean disconnect);
+`WindowTreeTest.aWindowTooLargeToKeepPixelsKeepsNone` pins the rule without allocating anything. The
+whole-project review that found it is `docs/review-2026-10-01.md`.
+
+### [x] A30. The ZRLE palette search ran past the point of being useful. **S** - fixed 2026-10-01
+
+A24 and A25 made an unchanging screen free, so what is left of the VNC path's cost is encoding what
+changes. Measured in the encoder's own package (min of 36 full 1300x800 frames per content type):
+**two colours 9.8-10.1 ms, text-like 13.5 ms, photo-like 79-100 ms** per frame - at 60 frames a second,
+60% to 500% of a core before the socket, which is the number behind A31 and A32.
+
+The encoder looked every pixel up in a palette of up to 128 colours, but past **sixteen** colours a
+tile can only be plain RLE or raw, and neither reads the palette - so from the seventeenth colour on
+the search was pure work, and a photo-like tile spends most of its pixels there. The search now stops
+at the limit (and the per-tile palette array is 17 ints instead of 128): **photo-like frames encode in
+57 ms instead of 79-100**, with two-colour and text-like frames unchanged, which is the point - the
+common case must not pay for the rare one. `ZrleEncoderTest` and `VncBackendTest` cover the four
+subencodings the encoder emits.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

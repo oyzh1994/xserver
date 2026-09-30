@@ -11,6 +11,30 @@ metadata:
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
 
+**2026-10-01, ninth session (branch `bugfix`): the whole-project review** - `docs/review-2026-10-01.md`
+is the record, and it is the document to read before picking anything up from it. Two defects were
+reproduced and fixed (**A29**, **A30**), the rest are written down as A31-A33 and in the review's own
+list.
+
+- **A29: a window's own pixels had no budget.** Every window keeps its pixels (B5) and the store is the
+  window's own size - the one allocation here with no bound. Reproduced with `-Xmx256m`: a client that
+  maps a 12000x12000 window hit `OutOfMemoryError` inside `Framebuffer.allocate` and was dropped;
+  65535x65535 would be 17 GB. `keepsOwnPixels()` now requires the window to fit the largest screen
+  (8192x8192) and a bigger one draws straight onto the screen (the root's path) - nothing is refused,
+  and no window that fits on the display changes. Live A/B: before, `OOM during MapWindow`; after, the
+  same client maps and draws with no OOM.
+- **A30: the ZRLE palette search ran past the point of being useful.** Past sixteen colours a tile can
+  only be RLE or raw and neither reads the palette. A/B by content (min of 36 full 1300x800 frames,
+  harness in the encoder's package): photo-like **79-100 ms -> 57 ms**, two-colour 10 ms and text-like
+  13.5 ms **unchanged** - the common case must not pay for the rare one.
+- **The numbers that matter for what is left**: a full-screen ZRLE update costs 10 ms flat-colour to
+  57 ms photographic of one core, so the VNC path's remaining wins are tile-level updates (A31) and
+  Tight/JPEG for photos (A32). The wire already skips unchanged screens entirely (A25).
+- **Checked and sound** (so the next review does not redo it): every client-controlled allocation has a
+  budget now; every thread is a daemon or is closed by `stop()`; `clients`/`sessions` are COW and the
+  rest is under the server lock by convention (the clipboard bridge takes it itself); an unimplemented
+  request throws `BadImplementation` rather than doing nothing.
+
 **2026-10-01, eighth session (branch `bugfix`): A28 - two pointers over the window, fixed by making
 the *sprite* give way.** Reported: moving the mouse over the server's window showed the system arrow
 *and* the X sprite until the window was clicked, and dragging another application's window over it
