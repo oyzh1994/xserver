@@ -26,6 +26,7 @@ import java.nio.IntBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -94,6 +95,17 @@ public final class JavaFxBackend implements DisplayBackend {
      * True while no client is connected, so the window has no pointer of its own to show.
      */
     private boolean idle;
+    /**
+     * Whether this window is counted in {@link #FOCUSED_WINDOWS}. Touched on the FX thread only, and
+     * kept so a window cannot be counted twice or lost from the count when it closes.
+     */
+    private boolean countedFocused;
+    /**
+     * The last sprite the server handed this window, so the canvas can be repainted around it when
+     * the focus changes and it stops or starts being drawn. {@code pendingCursor} cannot answer that:
+     * a flush clears it, and most flushes carry no sprite because the sprite did not change.
+     */
+    private volatile CursorSprite lastCursorSprite;
     /**
      * True while the backend is resizing the window itself, so the size listener does not report
      * the change back as a resize the user made.
@@ -194,6 +206,7 @@ public final class JavaFxBackend implements DisplayBackend {
         if (closed || damage == null) {
             return;
         }
+        lastCursorSprite = cursor;                   // read on the FX thread by repaintCursorArea
         // The pixels live in the buffer the framebuffer draws into, so nothing has to be copied
         // here: only the union of the damage since the last flush is handed to the FX thread.
         synchronized (damageLock) {
@@ -438,6 +451,7 @@ public final class JavaFxBackend implements DisplayBackend {
         }
         try {
             runOnFxThreadAndWait(() -> {
+                setWindowFocused(false);
                 releaseHostCursor();
                 if (stage != null) {
                     stage.close();
@@ -676,11 +690,16 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.sizeToScene();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
+            setWindowFocused(focused);
             input.focusChanged(focused);
             applyHostCursor();
+            // The sprite starts or stops being drawn with the focus, and no client has to draw
+            // anything for the canvas to be wrong: repaint its own box.
+            repaintCursorArea();
         });
         stage.setOnCloseRequest(event -> {
             closed = true;
+            setWindowFocused(false);
             // The window is going away with the pointer possibly hidden; the platform would keep it
             // hidden for the whole process, and a server whose display loop has exited may live on.
             releaseHostCursor();
@@ -712,8 +731,47 @@ public final class JavaFxBackend implements DisplayBackend {
      * true of a fully opaque image as much as a transparent one, so no choice of pixels fixes it:
      * an opaque red 32x32 cursor was measured drawing the standard arrow.
      */
-    static Cursor hostCursor(boolean pointerOverWindow) {
-        return pointerOverWindow ? Cursor.NONE : Cursor.DEFAULT;
+    static Cursor hostCursor(boolean pointerOverWindow, boolean applicationActive) {
+        return pointerOverWindow && applicationActive ? Cursor.NONE : Cursor.DEFAULT;
+    }
+
+    /**
+     * How many of this process's windows are focused - with none, the application is in the
+     * background, and the platform will not let it keep the pointer hidden.
+     */
+    private static final AtomicInteger FOCUSED_WINDOWS = new AtomicInteger();
+
+    /**
+     * Whether the pointer can be hidden at all: it belongs to the **active** application.
+     *
+     * <p>Measured on macOS, 2026-10-01, and it is the whole reason {@link #hostCursor} takes a second
+     * argument. A native probe that called {@code [NSCursor hide]} and then watched
+     * {@code CGCursorIsVisible} saw it go 0 -> 1 the moment another application was activated, and it
+     * never went back: the platform re-shows the cursor for whoever is in front, and a background
+     * application's hide is gone (JavaFX's own record of it is stale, so it does not even try again).
+     * For this server that means the sprite cannot be the only pointer while the application is in the
+     * background - so it stays **off the canvas** then, and the user keeps exactly one pointer: the
+     * platform's, which is the one that belongs to whatever they are actually using.
+     *
+     * <p>Which is what two reported bugs were: moving the mouse over an unfocused window showed the
+     * sprite *and* the system cursor, and dragging another application's window over this one brought
+     * the system cursor back while the sprite stayed.
+     */
+    static boolean applicationActive() {
+        return FOCUSED_WINDOWS.get() > 0;
+    }
+
+    /** Records this window's focus, for {@link #applicationActive}. Runs on the FX thread. */
+    private void setWindowFocused(boolean focused) {
+        if (focused == countedFocused) {
+            return;
+        }
+        countedFocused = focused;
+        if (focused) {
+            FOCUSED_WINDOWS.incrementAndGet();
+        } else {
+            FOCUSED_WINDOWS.decrementAndGet();
+        }
     }
 
     /**
@@ -731,7 +789,7 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene == null || stage == null) {
             return;
         }
-        boolean wantHidden = !idle && hostCursor(pointerOverWindow) == Cursor.NONE;
+        boolean wantHidden = !idle && hostCursor(pointerOverWindow, applicationActive()) == Cursor.NONE;
         if (wantHidden) {
             CURSOR_OWNER.set(this);
         }
@@ -945,6 +1003,12 @@ public final class JavaFxBackend implements DisplayBackend {
         if (sprite == null || graphics == null) {
             return;
         }
+        if (!applicationActive()) {
+            // This process is in the background, so the platform is drawing the pointer (and will not
+            // let it be hidden - see applicationActive). Drawing the sprite too is exactly the
+            // "two cursors" the user reported.
+            return;
+        }
         if (sprite.pixels() != cursorPixels) {
             // The cursor was replaced by a client: build the image once for the new one. Its pixels
             // are cached per cursor, so a moving pointer keeps the same array.
@@ -966,6 +1030,33 @@ public final class JavaFxBackend implements DisplayBackend {
                 visible.width, visible.height,
                 logical(visible.x - viewport.x), logical(visible.y - viewport.y),
                 logical(visible.width), logical(visible.height));
+    }
+
+    /**
+     * Schedules a repaint of the sprite's own box, because the focus changed and with it whether the
+     * sprite is drawn at all.
+     *
+     * <p>The server damages what a <em>client</em> draws, and nothing a client does changes when the
+     * host window is focused - so without this the canvas keeps the sprite after the application goes
+     * to the background, and keeps not having it after it comes back. Runs on the FX thread.
+     */
+    private void repaintCursorArea() {
+        CursorSprite sprite = lastCursorSprite;
+        if (sprite == null) {
+            return;
+        }
+        synchronized (damageLock) {
+            Rectangle box = new Rectangle(sprite.x(), sprite.y(), sprite.width(), sprite.height());
+            pendingDamage = pendingDamage == null ? box : pendingDamage.union(box);
+            // The flush needs the sprite itself: it clears `pendingCursor`, and a focus change is not
+            // a frame the server sent one with.
+            pendingCursor = sprite;
+            if (flushScheduled) {
+                return;
+            }
+            flushScheduled = true;
+        }
+        flushDamage();
     }
 
     /**

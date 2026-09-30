@@ -142,10 +142,16 @@ class JavaFxBackendTest {
     void hostCursorHidesThePlatformPointerWheneverItIsOverTheWindow() {
         skipWithoutJavaFx();
 
-        assertSame(Cursor.NONE, JavaFxBackend.hostCursor(true),
+        assertSame(Cursor.NONE, JavaFxBackend.hostCursor(true, true),
                 "the sprite the server draws is the only pointer over the window");
-        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(false),
+        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(false, true),
                 "the pointer outside the window belongs to the platform");
+        // And the platform will not let a background application hide the pointer at all: activating
+        // another application puts the system cursor back (measured with a native probe, 2026-10-01),
+        // and JavaFX does not even try again. The sprite is what gives way then - see
+        // JavaFxBackend.applicationActive - so the pair is one pointer either way.
+        assertSame(Cursor.DEFAULT, JavaFxBackend.hostCursor(true, false),
+                "an application in the background cannot hide the pointer, and must not try");
     }
 
     /**
