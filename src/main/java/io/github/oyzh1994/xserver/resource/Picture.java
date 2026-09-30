@@ -5,6 +5,7 @@ import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.draw.PixelStore;
 
 import java.awt.Rectangle;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -636,6 +637,75 @@ public final class Picture extends XResource {
                 windowDrawnY0 = y;
                 windowDrawnX1 = x + 1;
                 windowDrawnY1 = y + 1;
+            }
+        }
+    }
+
+    /**
+     * Fills a rectangle of this picture with one opaque colour, a row at a time.
+     *
+     * <p>{@code FillRectangles} with a {@code Src}/{@code Over} opaque colour is what a toolkit
+     * paints its panels and text backgrounds with, and doing it through {@link #writePixel} paid a
+     * point-in-shape test and an interface call for each of a window's pixels - the server's top
+     * frame with EasyShell's SSH tab open. The writable region is the picture box intersected with
+     * the window's own region and the picture's clip, which is exactly the list of rectangles
+     * {@link #isWritable} tests point by point, so filling those rectangles is the same pixels; a
+     * clip mask (which is not a rectangle list) and a picture with no store fall back to the pixel
+     * loop.
+     */
+    public void fillArgb(int x, int y, int w, int h, int argb) {
+        Rectangle box = new Rectangle(x, y, w, h).intersection(new Rectangle(0, 0, width(), height()));
+        if (box.isEmpty()) {
+            return;
+        }
+        List<Rectangle> parts = new ArrayList<>();
+        parts.add(box);
+        if (window != null) {
+            if (windowOwn == null) {
+                refreshClip();
+            }
+            if (windowOwn == null || clipMask != null) {
+                // The root window (writable only where it shows, not a rectangle list) or a clip
+                // mask: fall back to the pixel loop, which knows both.
+                for (int py = box.y; py < box.y + box.height; py++) {
+                    for (int px = box.x; px < box.x + box.width; px++) {
+                        writePixel(px, py, argb);
+                    }
+                }
+                return;
+            }
+            parts = ShapeState.intersect(parts, windowOwn);
+        } else if (clipMask != null) {
+            for (int py = box.y; py < box.y + box.height; py++) {
+                for (int px = box.x; px < box.x + box.width; px++) {
+                    writePixel(px, py, argb);
+                }
+            }
+            return;
+        }
+        if (clipByRectangles) {
+            List<Rectangle> clip = new ArrayList<>(clipRectangles.size());
+            for (Rectangle r : clipRectangles) {
+                clip.add(new Rectangle(r.x + clipXOrigin, r.y + clipYOrigin, r.width, r.height));
+            }
+            parts = ShapeState.intersect(parts, clip);
+        }
+        int stored = storedForm(argb);
+        for (Rectangle part : parts) {
+            store.fillRect(drawableX + part.x, drawableY + part.y, part.width, part.height, stored);
+            if (window != null && window.keepsOwnPixels()) {
+                if (windowDrew) {
+                    windowDrawnX0 = Math.min(windowDrawnX0, part.x);
+                    windowDrawnY0 = Math.min(windowDrawnY0, part.y);
+                    windowDrawnX1 = Math.max(windowDrawnX1, part.x + part.width);
+                    windowDrawnY1 = Math.max(windowDrawnY1, part.y + part.height);
+                } else {
+                    windowDrew = true;
+                    windowDrawnX0 = part.x;
+                    windowDrawnY0 = part.y;
+                    windowDrawnX1 = part.x + part.width;
+                    windowDrawnY1 = part.y + part.height;
+                }
             }
         }
     }

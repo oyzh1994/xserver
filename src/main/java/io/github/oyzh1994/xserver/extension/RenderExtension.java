@@ -1128,7 +1128,7 @@ public final class RenderExtension implements Extension {
             throw ProtocolException.badLength();
         }
         byte[] data = request.getData().toArray();
-        log.info("RENDER AddGlyphs: {} glyphs, {} data bytes, format depth {}",
+        log.debug("RENDER AddGlyphs: {} glyphs, {} data bytes, format depth {}",
                 infos.size(), data.length, format.depth());
         int offset = 0;
         for (int i = 0; i < infos.size(); i++) {
@@ -1247,7 +1247,8 @@ public final class RenderExtension implements Extension {
         GlyphSet set = requireGlyphSet(glyphSetId);
         boolean componentAlpha = set.isComponentAlpha();
 
-        log.info("RENDER CompositeGlyphs: {} command bytes, glyphSize {}, set size {}, src 0x{} dst 0x{}",
+        log.debug("RENDER CompositeGlyphs: {} command bytes, glyphSize {}, set size {}, src 0x{}"
+                        + " dst 0x{}",
                 commands.length, glyphSize, set.size(), Integer.toHexString(srcId),
                 Integer.toHexString(dstId));
         // Everything in the command stream but the glyph set ids is in the connection's byte

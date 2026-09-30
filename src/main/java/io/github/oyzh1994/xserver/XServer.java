@@ -2137,7 +2137,7 @@ public final class XServer {
      * replies; the connection survives them, exactly as clients expect.
      */
     public void executeRequest(ClientConnection client, byte opcode, byte minorOpcode, X11Input in,
-                               int requestBytes) {
+                               int requestBytes, byte[] request) {
         serverLock.lock();
         try {
             if (client.isShuttingDown()) {
@@ -2149,7 +2149,7 @@ public final class XServer {
             if (options.logRequests()) {
                 log.debug("{} opcode {} minor {}", client, opcode & 0xFF, minorOpcode & 0xFF);
             }
-            dispatcher.dispatch(client, opcode, minorOpcode, in, requestBytes);
+            dispatcher.dispatch(client, opcode, minorOpcode, in, requestBytes, request);
         } catch (ProtocolException e) {
             log.info("{}: {} rejected the request (error {}): {}", client,
                     dispatcher.currentRequest(), e.errorCode(), e.getMessage());

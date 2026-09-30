@@ -53,6 +53,18 @@ public final class ClientConnection implements Runnable {
     private final int resourceIdBase;
 
     private X11Input in;
+    /**
+     * The byte stream the request bytes actually arrive on, kept so a request body can be read in
+     * one call rather than a byte at a time.
+     *
+     * <p>The generated {@link X11Input} has no bulk read: its {@code readByte()} reads a single
+     * byte from this stream, and the request loop used to copy a body through it one byte per call.
+     * For a forwarded application that is fatal - a JavaFX or GTK client uploads every frame with
+     * {@code PutImage}, so a 1300x800 frame meant four million {@code read()} calls (measured:
+     * about 16 ms per frame just to read the bytes, against 0.5 ms in bulk). Nothing here buffers
+     * ahead, so reading the body straight from this stream is the same bytes the decoder would see.
+     */
+    private InputStream rawIn;
     private OutputStream rawOut;
     private ClientOutput output;
 
@@ -332,6 +344,7 @@ public final class ClientConnection implements Runnable {
         pushback.unread(firstByte);
         // 'B' selects big endian; anything else means little endian ('l' from Xlib).
         bigEndian = firstByte == 'B';
+        rawIn = pushback;
         in = bigEndian ? new X11BigEndianInputStream(pushback)
                 : new X11LittleEndianInputStream(pushback);
         // The RECORD listener is attached *after* the setup reply, in ConnectionSetup.sendSetup:
@@ -376,10 +389,10 @@ public final class ClientConnection implements Runnable {
                 sendError(ProtocolException.LENGTH, 0);
                 return;
             }
+            // Read the whole body in one call. Going through `in.readByte()` per byte is the same
+            // bytes but millions of calls for an image upload - see `rawIn`.
             byte[] body = new byte[bodyBytes];
-            for (int i = 0; i < bodyBytes; i++) {
-                body[i] = in.readByte();
-            }
+            readFully(body, 0, bodyBytes);
 
             sequenceNumber++;
             currentOpcode = (byte) opcode;
@@ -426,7 +439,26 @@ public final class ClientConnection implements Runnable {
         // suggests - its header is eight bytes rather than four - and the difference has to be taken
         // out here, or a decoder sizing a trailing list from it overshoots by exactly those bytes.
         server.executeRequest(this, (byte) opcode, (byte) data, requestIn,
-                parserBytes.length + 1);
+                parserBytes.length + 1, parserBytes);
+    }
+
+    /**
+     * Reads exactly {@code length} bytes into {@code target}, the way the request loop needs them.
+     *
+     * <p>A socket read can return fewer bytes than asked for, so this loops; a read of {@code -1}
+     * before the body is complete means the client went away mid-request, which is an
+     * {@link EOFException} and not a request to decode.
+     */
+    private void readFully(byte[] target, int offset, int length) throws IOException {
+        int read = 0;
+        while (read < length) {
+            int count = rawIn.read(target, offset + read, length - read);
+            if (count < 0) {
+                throw new EOFException("client closed with " + (length - read)
+                        + " request byte(s) still to come");
+            }
+            read += count;
+        }
     }
 
     /** One request as it arrived, header and body: what a recorder is given. */

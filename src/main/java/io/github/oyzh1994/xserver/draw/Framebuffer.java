@@ -213,8 +213,47 @@ public final class Framebuffer implements PixelStore {
         // every pixel written over the one the next read wanted, and the result a run of the first
         // pixel. Found by A12's bit gravity, which is the first caller to copy pixels sideways on the
         // same surface (backing-store saves copy between surfaces or downwards).
-        boolean backwardsX = sameSurface && dstX > srcX;
         boolean backwardsY = sameSurface && dstY > srcY;
+        // **The common copies are one row at a time, and that is what makes a forwarded client
+        // usable.** The per-pixel loop below is the general answer, but every drawing request that
+        // lands in a window ends by compositing the window's own pixels onto the screen, and a
+        // single-threaded pixel-at-a-time copy of a 1300x700 window costs more than everything the
+        // request drew - it was the top of the server's profile while EasyShell's SSH tab was open.
+        //
+        // A row-wise {@code System.arraycopy} is the same pixels whenever the value needs no
+        // conversion on the way in: this destination is a window store (it keeps alpha) or the
+        // source is a non-alpha store (so every value it holds already has an opaque top byte, and
+        // {@link #opaque} would leave it alone). Anything else - an alpha source onto a screen, a
+        // source that has never been allocated - keeps the pixel loop, which is where the
+        // conversion and the background read live.
+        boolean verbatim = alpha
+                || (src instanceof Framebuffer source && !source.keepsAlpha() && source.allocated());
+        if (verbatim) {
+            int[] dst = allocate();
+            int[] from = src.pixels();
+            int srcStride = src.stride();
+            int dstStride = stride();
+            int startRow = backwardsY ? dy1 - 1 : dy0;
+            int endRow = backwardsY ? dy0 - 1 : dy1;
+            int rowStep = backwardsY ? -1 : 1;
+            for (int dy = startRow; dy != endRow; dy += rowStep) {
+                int sy = srcY + (dy - dstY);
+                if (sy < 0 || sy >= src.height()) {
+                    continue;
+                }
+                // The horizontal span that is inside both the destination and the source.
+                int dxStart = Math.max(dx0, dstX - srcX);
+                int dxEnd = Math.min(dx1, dstX - srcX + src.width());
+                if (dxStart >= dxEnd) {
+                    continue;
+                }
+                System.arraycopy(from, sy * srcStride + (srcX + dxStart - dstX), dst,
+                        dy * dstStride + dxStart, dxEnd - dxStart);
+            }
+            markDirty(dx0, dy0, dx1, dy1);
+            return;
+        }
+        boolean backwardsX = sameSurface && dstX > srcX;
         int startRow = backwardsY ? dy1 - 1 : dy0;
         int endRow = backwardsY ? dy0 - 1 : dy1;
         int rowStep = backwardsY ? -1 : 1;

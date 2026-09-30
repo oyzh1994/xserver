@@ -106,6 +106,27 @@ public final class ImageCodec {
         int bytesPerPixel = (bpp + 7) / 8;
         int scanline = scanlineBytes(width, bpp);
         long rowBytes = ((long) colEnd * bpp + 7) / 8;
+        // **The common case - one pixel to four bytes, which is every 24/32 bit screen - is a row at
+        // a time.** Building the row and handing it to the rasterizer's bulk write skips the
+        // per-pixel clip test and the per-pixel drawn-region bookkeeping that made a forwarded
+        // client's image upload the server's hottest frame; other formats keep the pixel loop, which
+        // is still the definition of what a put means.
+        if (bytesPerPixel == 4) {
+            int span = colEnd - colStart;
+            int[] row = new int[span];
+            for (int r = rowStart; r < rowEnd; r++) {
+                long base = (long) offset + (long) r * scanline;
+                if (base + rowBytes > data.length) {
+                    return;
+                }
+                int at = (int) base + colStart * 4;
+                for (int i = 0; i < span; i++) {
+                    row[i] = argb(readPixel(data, at + i * 4, 4, bigEndian), depth, visual);
+                }
+                out.writeRun(x + colStart, y + r, row, 0, span);
+            }
+            return;
+        }
         for (int row = rowStart; row < rowEnd; row++) {
             long base = (long) offset + (long) row * scanline;
             if (base + rowBytes > data.length) {

@@ -141,6 +141,14 @@ public final class Rasterizer {
      */
     private final boolean fastFill;
 
+    /**
+     * True when the effective clip is exactly the clip box, even if that box arrived as one
+     * rectangle list. A toolkit's clip is usually a single rectangle that is not the whole
+     * drawable, which makes {@link #simpleClip} false for a reason that has no effect on a copy
+     * inside the box - so this is the condition the copy and image fast paths ask instead.
+     */
+    private final boolean boxIsClip;
+
     public Rasterizer(PixelStore store, XGC gc) {
         this(store, gc, null);
     }
@@ -289,6 +297,8 @@ public final class Rasterizer {
         this.simpleClip = regionRects == null && rects == null && mask == null;
         this.solidCopy = directCopy && fillStyle == XGC.FILL_SOLID;
         this.fastFill = solidCopy && simpleClip;
+        this.boxIsClip = regionRects == null && mask == null
+                && (rects == null || coversBox(rects, clipX0, clipY0, clipX1, clipY1));
     }
 
     /** True when a single rectangle of the region spans the whole clip box. */
@@ -381,6 +391,50 @@ public final class Rasterizer {
         int old = store.pixel(x, y);
         int value = applyFunction(old, src, function);
         store.setPixel(x, y, (value & planeMask) | (old & ~planeMask));
+    }
+
+    /**
+     * Writes a whole horizontal run of ARGB pixels in the drawable's storage form, one row at a
+     * time.
+     *
+     * <p>This is the fast path a {@code PutImage} takes: a forwarded JavaFX or GTK client uploads
+     * every frame this way and a per-pixel {@link #writePixel} - a clip test, the drawn-region
+     * bookkeeping and a store write through an interface call for each of a window's pixels - was
+     * the top of the server's profile with EasyShell's SSH tab open. When the GC is a plain copy,
+     * the clip is just this box, and the destination is a framebuffer, a row can be written
+     * straight into its array; anything else falls back to the pixel loop, which stays the
+     * reference for what a run means.
+     *
+     * @param x    the drawable coordinate of the first pixel
+     * @param y    the row
+     * @param src  the run, as 0xAARRGGBB values, starting at {@code offset}
+     * @param len  how many pixels
+     */
+    public void writeRun(int x, int y, int[] src, int offset, int len) {
+        int x0 = Math.max(x, clipX0);
+        int x1 = Math.min(x + len, clipX1);
+        if (x1 <= x0 || y < clipY0 || y >= clipY1) {
+            return;
+        }
+        if (directCopy && boxIsClip && store instanceof Framebuffer framebuffer) {
+            int[] dst = framebuffer.pixels();
+            int base = y * framebuffer.stride();
+            boolean opaque = !framebuffer.keepsAlpha();
+            int at = offset + (x0 - x);
+            if (opaque) {
+                for (int px = x0; px < x1; px++, at++) {
+                    dst[base + px] = 0xFF000000 | (src[at] & 0x00FFFFFF);
+                }
+            } else {
+                System.arraycopy(src, at, dst, base + x0, x1 - x0);
+            }
+            markDrawn(x0, y, x1 - 1, y);
+            framebuffer.markDirty(x0, y, x1, y + 1);
+            return;
+        }
+        for (int px = x0; px < x1; px++) {
+            writePixel(px, y, src[offset + (px - x)]);
+        }
     }
 
     /** True when the pixel survives the clip region: bounds, then rectangles, then mask. */
@@ -1301,6 +1355,52 @@ public final class Rasterizer {
         boolean sameSurface = src == store;
         boolean down = sameSurface && dstY > srcY;
         boolean right = sameSurface && dstX > srcX;
+        // **A plain copy is one row at a time.** This is the terminal's scroll: a client copies a
+        // window's own pixels over themselves, and the per-pixel loop below pays a clip test and a
+        // method call for every one of ~900k pixels - it was one of the top frames in the server's
+        // profile with EasyShell's SSH tab open. When the GC is a plain copy with no planes masked,
+        // the clip is exactly this box (so nothing is clipped away), and the whole source rectangle
+        // is inside the source, a row-wise {@code System.arraycopy} is the same pixels; the row
+        // order still follows the overlap, and the copy itself handles a horizontal overlap.
+        Framebuffer fastDst = store instanceof Framebuffer f ? f : null;
+        // The source may be a pixmap (an off-screen buffer a toolkit blits from) as well as another
+        // framebuffer, so ask it for its own storage rather than requiring a Framebuffer.
+        boolean srcReady = src != null && (!(src instanceof Framebuffer f) || f.allocated());
+        boolean srcOpaque = src instanceof Framebuffer f ? !f.keepsAlpha()
+                : src instanceof io.github.oyzh1994.xserver.resource.XPixmap px && px.depth() < 32;
+        boolean dstOpaque = fastDst != null && !fastDst.keepsAlpha();
+        if (plane < 0 && directCopy && boxIsClip && fastDst != null && srcReady
+                && (!dstOpaque || srcOpaque)
+                && srcX + colStart >= 0 && srcX + colEnd <= src.width()
+                && srcY + rowStart >= 0 && srcY + rowEnd <= src.height()) {
+            int[] dst = fastDst.pixels();
+            int[] from = src.pixels();
+            int dstStride = fastDst.stride();
+            int srcStride = src.stride();
+            int span = colEnd - colStart;
+            int startRow = down ? rowEnd - 1 : rowStart;
+            int endRow = down ? rowStart - 1 : rowEnd;
+            int rowStep = down ? -1 : 1;
+            for (int row = startRow; row != endRow; row += rowStep) {
+                int srcBase = (srcY + row) * srcStride + srcX + colStart;
+                int dstBase = (dstY + row) * dstStride + dstX + colStart;
+                if (dstOpaque) {
+                    // The destination is a screen, which has no alpha: the write forces the top byte,
+                    // exactly as PixelStore.setPixel does. A tight loop, not arraycopy, but still no
+                    // clip test or drawn-region update per pixel.
+                    for (int i = 0; i < span; i++) {
+                        dst[dstBase + i] = 0xFF000000 | (from[srcBase + i] & 0x00FFFFFF);
+                    }
+                } else {
+                    System.arraycopy(from, srcBase, dst, dstBase, span);
+                }
+            }
+            markDrawn(dstX + colStart, dstY + rowStart, dstX + colEnd - 1, dstY + rowEnd - 1);
+            // And the store's own damage, which the pixel loop would have set through setPixel;
+            // without it a copied region is written but never presented (DamageTrackingTest).
+            fastDst.markDirty(dstX + colStart, dstY + rowStart, dstX + colEnd, dstY + rowEnd);
+            return;
+        }
         int rowStep = down ? -1 : 1;
         int colStep = right ? -1 : 1;
         int row = down ? rowEnd - 1 : rowStart;

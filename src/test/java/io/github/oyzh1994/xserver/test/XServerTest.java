@@ -12,6 +12,8 @@ public class XServerTest {
     static void main() {
         //        String[] args = new String[]{"--display", "10", "--geometry", "1300x800"};
         //                String[] args = new String[]{"--display", "10", "--geometry", "1300x800", "--log-requests"};
+        //        String[] args = new String[]{"--display", "10", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
+        //        String[] args = new String[]{"--display", "10","--single-window", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
         String[] args = new String[]{"--display", "10", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
         Main.main(args);
     }

@@ -61,7 +61,7 @@ public final class RequestDispatcher {
     }
 
     public void dispatch(ClientConnection client, byte opcode, byte minorOpcode, X11Input in,
-                         int requestBytes) {
+                         int requestBytes, byte[] request) {
         // Named before anything can throw, so a request that fails to *decode* is still reported
         // as itself rather than as whatever was handled before it.
         currentRequest = "opcode " + (opcode & 0xFF);
@@ -69,11 +69,11 @@ public final class RequestDispatcher {
             dispatchExtension(client, opcode, minorOpcode, in);
             return;
         }
-        XRequest request = decodeCore(client, opcode, minorOpcode, in, requestBytes);
+        XRequest decoded = decodeCore(client, opcode, minorOpcode, in, requestBytes, request);
         if (server.options().logRequests()) {
-            log.debug("{} -> {}", client, request.getClass().getSimpleName());
+            log.debug("{} -> {}", client, decoded.getClass().getSimpleName());
         }
-        route(client, request);
+        route(client, decoded);
     }
 
     /**
@@ -90,11 +90,11 @@ public final class RequestDispatcher {
     }
 
     private XRequest decodeCore(ClientConnection client, byte opcode, byte minorOpcode,
-                                X11Input in, int requestBytes) {
+                                X11Input in, int requestBytes, byte[] request) {
         try {
             // A handful of requests have to be decoded here; see VariableLengthDecoders for why.
             if (VariableLengthDecoders.handles(opcode & 0xFF)) {
-                return VariableLengthDecoders.decode(opcode & 0xFF, in, requestBytes);
+                return VariableLengthDecoders.decode(opcode & 0xFF, in, requestBytes, request);
             }
             return xproto.readRequest(opcode, minorOpcode, in);
         } catch (IOException e) {

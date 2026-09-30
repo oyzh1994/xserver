@@ -260,13 +260,28 @@ public final class Compositor {
      */
     public void fillRectangles(int op, Picture dst, int argb, List<Rectangle> rectangles) {
         prepare(dst);
+        // An opaque colour under Src or Over is the colour everywhere, so the whole rectangle can be
+        // filled a row at a time instead of compositing pixel by pixel with a mask the answer does
+        // not depend on. That is what a toolkit's panels and text backgrounds are, and it was the
+        // server's hottest frame with EasyShell's SSH tab open.
+        // Clear is the colour zero whatever the request's colour; an opaque colour under Src or Over
+        // is that colour. Both are a rectangle written a row at a time, which is what a toolkit's
+        // panel paint and its alpha clears are, and it was the server's hottest frame with
+        // EasyShell's SSH tab open.
+        boolean clear = op == 0;
+        boolean plain = clear || ((op == SRC || op == OVER) && (argb >>> 24) == 255);
         boolean drew = false;
         for (Rectangle rectangle : rectangles) {
             if (rectangle.width <= 0 || rectangle.height <= 0) {
                 continue;
             }
-            draw(op, new SolidSampler(argb), null, false, dst, rectangle.x, rectangle.y,
-                    rectangle.width, rectangle.height);
+            if (plain) {
+                dst.fillArgb(rectangle.x, rectangle.y, rectangle.width, rectangle.height,
+                        clear ? 0 : argb);
+            } else {
+                draw(op, new SolidSampler(argb), null, false, dst, rectangle.x, rectangle.y,
+                        rectangle.width, rectangle.height);
+            }
             drew = true;
         }
         if (drew) {

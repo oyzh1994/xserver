@@ -160,10 +160,14 @@ public final class DrawHandlers {
             throw ProtocolException.badMatch();
         }
         Target target = target(drawable, gc);
-        if (drawable instanceof XWindow) {
+        if (drawable instanceof XWindow && LOG.isDebugEnabled()) {
             // Drawing into a window is what puts something on the screen; a run in which it never
-            // happens says the client is rendering somewhere else and never presenting.
-            LOG.info("PutImage draws into WINDOW {} at ({},{}) {}x{}",
+            // happens says the client is rendering somewhere else and never presenting. Debug and
+            // not info: an application uploads every frame this way, so at info this wrote a line
+            // per frame to the console - which is where a forwarded JavaFX or GTK client's time
+            // went (measured: a synchronous formatted line per PutImage, thousands a second while
+            // scrolling).
+            LOG.debug("PutImage draws into WINDOW {} at ({},{}) {}x{}",
                     drawable, r.getDstX(), r.getDstY(), Short.toUnsignedInt(r.getWidth()),
                     Short.toUnsignedInt(r.getHeight()));
         }
