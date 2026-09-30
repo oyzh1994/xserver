@@ -468,3 +468,16 @@ well-framed messages with `detail = 1` on the press. A18 has the detail, the har
    byte-for-byte diff of the same gesture's XI2 event on both servers. Two traps are recorded in A22:
    **a stale server process is a false A/B**, and **a test's own request can be malformed in a way that
    makes it pass** - both of that test's bugs were found by making it prove it can fail.
+
+10. **A copy inside a forwarded application kills the application** (A19, fixed 2026-09-30). The
+   clipboard bridge is made once, at startup, so its window belongs to the **master** screen - and in
+   the default mode each connection has a screen of its own, whose setup reply names no other root. The
+   `requestor` of the bridge's `SelectionRequest` was therefore a window the client could not place,
+   and GDK wraps whatever window it is asked through: SIGSEGV in `XScreenNumberOfScreen`. The bridge
+   keeps one window per screen now and asks through the owner's. **The A/B is the server mode**: a
+   20-line GTK3 client that takes `CLIPBOARD` survives `--single-window` and segfaults in the default
+   mode, and the frames are the application's own `hs_err_pid*.log` frames. `ClipboardBridgeTest` pins
+   it without a toolkit, by asking the requestor's root (`RawClient.rootOf`) - and the whole class now
+   runs in the default mode, which is where the bug lived. The trap: **a bed that only ever runs
+   `--single-window` cannot see this class of bug at all** - a day of "not reproduced" was a day of
+   testing a mode where the window was already placeable.

@@ -549,6 +549,24 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   `setxkbmap`'s own `GetKbdByName` request was read. It still cannot proxy the VM-to-reference
   direction from this machine (compile it **on the VM** - `java` is there), and `tools/tap.py` is the
   byte-transparent fallback, at the price of logging chunks a reader has to frame themselves.
+- `clipboard-owner.py` - the smallest client that drives the clipboard bridge's **X to host** half: a
+  GTK3 window that takes `CLIPBOARD` (`Gtk.Clipboard.set_text`), at which point the bridge asks *it* for
+  the data. Twenty lines, and it is the reproduction A19 needed: the window the bridge asks through is
+  the one the toolkit wraps, so a bridge that names a window of another screen kills this client
+  outright (`EXIT=139` in the default mode, `EXIT=124` - killed by the timeout, alive - against
+  `--single-window`). `DISPLAY=<host>:<display> python3 tools/clipboard-owner.py`.
+- `gtk-menu-probe.py` - an entry whose context menu holds exactly one item, which prints when it is
+  activated, and which **prints its own screen geometry** (the menu's origin and the item's centre, from
+  the toolkit's allocations) when the menu opens. That readout is the point: a menu row is a few pixels
+  tall and a screenshot of a scaled host window is not precise enough to aim at one - A23 lost three
+  measurements to that before the probe printed the coordinates. `DISPLAY=... python3
+  tools/gtk-menu-probe.py`, then right-click the entry.
+- `host-input.c` - input as a **hand** makes it, for a client whose screen is a host window on this Mac
+  (the default mode, where XTEST from another client cannot reach it): `move`, `click <x> <y> [3]`,
+  `type <text>`, `ctrl <keycode>` (the Control key itself held across the letter - a flag-only event is
+  not what a server that tracks the modifier keys sees) and `key <keycode> [up]`. Coordinates are
+  CGEvent points, which is what `host-windows.c` prints. `clang -o /tmp/host-input tools/host-input.c
+  -framework ApplicationServices`. The same file also notes what aiming at a capture costs: see A23.
 - `tap.py` - the same idea, but **byte-transparent and it does not parse anything**, which is what
   makes it usable where `XProxy` is not (a client that objects to the parsing hangs - EasyShell does,
   after its first `QueryExtension`). `python3 tools/tap.py 6099 6098 /tmp/tap.log` listens on the

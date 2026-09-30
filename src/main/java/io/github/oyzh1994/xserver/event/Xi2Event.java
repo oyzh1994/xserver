@@ -441,7 +441,7 @@ public final class Xi2Event implements XEvent {
                 // (measured on the event for a Ctrl+A: 04 at 63 and 04 at 72), and this server wrote
                 // the first and left the second nought. GDK's own key event carries `state` from that
                 // word, so a forwarded application saw no Control at all: Ctrl+A, Ctrl+C and Ctrl+V
-                // were dead keys in every input field while ordinary typing worked (A23, 2026-09-30).
+                // were dead keys in every input field while ordinary typing worked (A22, 2026-09-30).
                 // The A/B is the measurement: with this word set, GDK reports `state=0x4 ctrl=True`
                 // for the same gesture that reported `state=0x0` without it.
                 card32(72, mods);

@@ -538,6 +538,11 @@ public final class XiProbe {
                 + " latched=" + (message[61] & 0xFF)
                 + " locked=" + (message[62] & 0xFF)
                 + " effective=" + (message[63] & 0xFF)
+                // The buttons the device is holding, which is what a click is read from: a device
+                // event keeps its button mask at 80 (its fixed part is eighty bytes), where the two
+                // shorter shapes have none. Which of the two halves of a click carries the button is
+                // what the two servers are being compared for.
+                + " buttons 0x" + Integer.toHexString(Wire.readInt(message, 80))
                 + " bytes " + message.length;
     }
 

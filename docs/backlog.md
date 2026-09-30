@@ -95,7 +95,8 @@ A prompt that starts a fresh session on this, verbatim:
 | [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
-| [ ] A19 | EasyShell's process dies when it copies (复制连接, or a text selection copied from a menu) - **reported, not reproduced**; the bed's own crash logs are Xlib's fatal I/O path, i.e. the server closed the connection | correctness | M |
+| ~~A19~~ | ~~EasyShell's process dies when it copies~~ **fixed 2026-09-30**: the clipboard bridge asked a client for its data through a window of the **master screen**, which in the default mode is a root no client's setup reply names - GDK wraps the requestor of a `SelectionRequest` and dies in `XScreenNumberOfScreen`. Every earlier attempt had run `--single-window`, where that window *is* on the client's screen | correctness | M |
+| [ ] A23 | a forwarded application's context menu opens and then ignores the mouse: its items do nothing, while the same item activated from the keyboard works - the press reaches the menu's own window, so what a toolkit reads the click from is not what it should be | correctness | M |
 | ~~A22~~ | ~~a forwarded application's input fields ignore their context menu and every Control shortcut~~ **fixed 2026-09-30**: two causes - the toolkit's connection was killed by a **BadMatch on a cursor whose hotspot is outside its 1x1 placeholder pixmap**, and the **XI2 key event left the word at 72 nought**, which is where GDK reads the modifier state from | correctness | M |
 | ~~A21~~ | ~~with the SSH tab open the **pointer sprite flickers**~~ **fixed 2026-09-29**: part-screen damage that misses the sprite leaves last frame's copy in the canvas, and `drawCursor` composites it twice - the sprite's box is unioned into the damage now, and `main` damaged the whole screen so it could not happen there | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
@@ -2667,6 +2668,59 @@ test really pins, and the mutation that shows it bites). It is a small thing, bu
 this item that survives: a caret that stops blinking because a copy did not land would now fail in
 `mvn test` instead of needing another afternoon of `xwd` captures.
 
+### [ ] A23. An application's context menu opens and then ignores the mouse. **M** - open, found 2026-09-30
+
+**The report.** "The input box's context menu does nothing - 复制, 粘贴, 全选 are all dead", in the default
+mode. On `main` they work.
+
+**What is measured, in the default mode with a server that has A19's fix.**
+
+- **The keyboard is fine.** Ctrl+A selects the field's whole text and Ctrl+C puts it on the Mac's
+  clipboard (`pbpaste` before `aaaaaac`, after `aaaaaac` when the box held `aaaaaac`), and the *menu
+  item itself* works from the keyboard: with the menu open, Down then Return takes the box's `aa` onto
+  the clipboard, where `复制` clicked with the mouse does not.
+- **The menu opens, and the item under the pointer is right.** A capture of the host window shows the
+  `复制` row highlighted with the pointer sprite drawn over it, so the pointer is where the click is
+  aimed; the click lands, the menu **stays open**, the item does not act, and no
+  `SetSelectionOwner` reaches the server.
+- **The press is delivered to the menu's own window** - `InputState: button 1 down at (219,186) ->
+  0x400035 (grab on 0x400002, ownerEvents=true)`, and the app is sent `Xi2Event[evtype=4 device=2]`
+  and `[evtype=5]`. So this is not "the press goes to the wrong window"; it is what the toolkit
+  *reads* out of the event.
+- **A GTK3 client's menu item does activate here** - `menu-probe3.py` (right-click an entry, one item
+  that prints on activate) both activates on a mouse click and opens its menu three times in a row,
+  here and on Xvfb. So popups are not generally click-deaf on this server.
+- **The app's own popup is created and then thrown away on the second open**: the server log shows
+  `CreateWindow`, `MapWindow`, `ConfigureWindow`, `GrabDevice (status 0)`, `GetInputFocus`, then
+  `UnmapWindow` + `DestroyWindow` three milliseconds later, with the *previous* popup's pointer grab
+  still standing (glass never sent `XIUngrabDevice` for it). The first open of a menu in a session
+  stays. The crossing events for the popup are also inconsistent: the log has both
+  `EnterNotify for 0x400029 withheld: the grab on 0x400002 does not cover it` and, in the other run,
+  a delivered `LeaveNotify` + `EnterNotify` pair.
+
+**What has been ruled out by measurement**, so the next session does not repeat it: `--focus-on-click`
+(the same miss with `--no-focus-on-click`), the grab status (`XIGrabDevice` is answered `status 0` every
+time), and the XI2 button mask - making it the buttons held *during* the event rather than the core
+state's "before" did not fix the click and was reverted, because `buttons(state)` is what the verified
+title-bar drag (b6424b4) stands on. The window ids are live (0x400035 was created by the same
+connection at 13:50:51, not a dead client's id).
+
+**The next step is the byte comparison `tools/README.md` prescribes for exactly this shape**: point the
+same client at `tools/tap.py` in front of this server and at a second tap in front of a reference, drive
+the same gesture (right-click the box, click the item), and diff the XI2 button event. The instrument
+is ready: `tools/XiProbe.java`'s dump now prints `buttons 0x...` (the mask at offset 80) beside the
+`mods` word at 60, and `clipboard-owner.py` / `menu-probe3.py` are the two clients that make the
+gesture cheap - the first one crashes when the server names a window the client cannot place, which is
+A19's shape and was the fastest signal found in this round.
+
+**Traps this cost.** Aiming a click at a menu row off a screenshot needs the capture's own geometry:
+`screencapture -l <window>` pads the window by **56 points on every side** (a 1280x728 window comes out
+1392x840), so `screen = window origin - 56 + 0.696 * displayed`. Three "the item is dead" measurements
+before that was noticed were misses, and the hover highlight is the cheap way to prove the pointer is on
+the row before believing a click. And `pkill -9 -f "[E]asyShell"` matches the launch line when both are
+in the same remote command, so it kills the shell that was about to start the app: send the two in
+separate `tools/vm.sh` calls.
+
 ### [x] A22. A forwarded application's input fields ignore their context menu and every Control shortcut. **M** - fixed 2026-09-30
 
 **The report.** "In EasyShell's home page the input box's native right-click menu does nothing - the
@@ -2825,7 +2879,35 @@ switch - a reference does not focus a window on a click, so a probe gesture that
 longer byte-identical to one with it on (measured with `MenuProbe`: the press arrives with a
 `FocusIn`).
 
-### [ ] A19. EasyShell's process dies when it copies - reported, not reproduced yet. **M** - open, 2026-09-29
+### [x] A19. EasyShell's process dies when it copies - the bridge asked through a window on the wrong screen. **M** - fixed 2026-09-30
+
+**What it was.** The clipboard bridge is made once, at startup, so its window is a child of the
+**master** screen's root. In the default mode every connection gets a screen of its own
+(`XServer.openClientScreen`), and its setup reply names *that* screen's root and no other - so when a
+client copies, the bridge's `SelectionRequest` names a `requestor` window whose root the client has
+never heard of. GDK wraps the window it is asked through (`gdk_x11_window_foreign_new_for_display`,
+which is how a toolkit finds out what it was asked about), and a window whose root is not among its
+screens is one it cannot place: GDK 3.24 dies in `XScreenNumberOfScreen`, called with the attributes
+struct a failed lookup left uninitialised. The bridge now keeps **one window per screen**
+(`ClipboardBridge.windowsByRoot`) and asks through the one on the owner's own screen.
+
+**The reproduction, and why every earlier attempt missed it.** Two `hs_err_pid*.log` files the user's
+copy left on the VM at 01:55 on 2026-09-30 (SIGSEGV in `XScreenNumberOfScreen`, called from
+`gdk_x11_window_foreign_new_for_display`, in the GTK main loop) are the crash; the 20-line GTK3 client
+`clipboard-owner.py` reproduces it exactly - it takes `CLIPBOARD`, and the bridge then asks it for the
+data. Against `--single-window` it survives (`EXIT=124`, the timeout killing it); against the default
+mode it segfaults (`EXIT=139`), and gdb gives the same three frames as the application's own log. The
+same app, driven through the host window: with the fix, Ctrl+A and Ctrl+C put the box's text on the
+Mac's clipboard and the process lives. **Every scripted attempt in the 2026-09-29 entry below was run
+with `--single-window`**, where the master screen *is* every client's screen and the bridge's window
+was already placeable - which is why the item read "not reproduced" for a day.
+
+`ClipboardBridgeTest` pins it in the server's own terms: the test server now runs in the default mode,
+and `theBridgeAsksFromAWindowOnTheOwnersScreen` asks the owner's window what root the requestor is on
+(`RawXClient.rootOf`) and fails without the fix ("the bridge asked through 0x8, which is not on the
+owner's own screen").
+
+**The history, kept because it is what the next report like this will have to work from.**
 
 **The report.** "Pick any connection and click 复制连接, or type something into the input box and
 select it and right-click to copy - EasyShell's process on the VM crashes." Reproduced by the user, not
@@ -2872,9 +2954,13 @@ and forth - which would fill the app's socket and end at the backpressure bound 
 clipboard payload that does not fit one property (the bridge's INCR branch), which no test here has
 ever driven.
 
-**The next session's first step is not a theory, it is a capture**: ask the user to reproduce it with
-the server's log kept, then read the disconnect line - it names the request or the bound that ended the
-connection, and the `hs_err_pid*.log` the app leaves says which side died first.
+**The capture was made, and neither theory was it.** The user reproduced it the next morning and the
+VM kept the two `hs_err_pid*.log` files: SIGSEGV, `XScreenNumberOfScreen` from
+`gdk_x11_window_foreign_new_for_display`, in the GTK main loop - which is the toolkit wrapping a window
+it cannot place, not the server closing the connection the bed's older crashes showed. The server's own
+log was clean at the moment of every crash (no disconnect line, no refusal), so "the copy is a request
+the server answers by dropping the client" was wrong on both counts; the two candidates above (a
+clipboard ping-pong, an `INCR` payload) were never involved.
 
 ### [ ] A18. A click on termora's 密钥管理器 button throws in AWT on this server and opens the dialog on the reference. **M** - open, found 2026-09-29
 
