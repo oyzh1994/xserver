@@ -8,12 +8,15 @@ import io.github.oyzh1994.xserver.extension.XFixesExtension;
 import io.github.oyzh1994.xserver.resource.XProperty;
 import io.github.oyzh1994.xserver.resource.XResource;
 import io.github.oyzh1994.xserver.resource.XWindow;
+import io.github.oyzh1994.xserver.display.Screen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -48,6 +51,12 @@ import java.util.Objects;
  * so that the two can never take them in opposite orders. The host clipboard is read and written
  * <em>outside</em> that lock, deliberately.
  *
+ * <p><b>One window per screen.</b> The bridge is a protocol participant rather than a client, so its
+ * windows are the server's own - and in the default mode each connection has a screen of its own, so
+ * a single window would be a window on a root that connection's setup reply never named. A toolkit
+ * wraps whatever window the server names to it, so the id it is asked through has to be on a screen
+ * it knows; {@link #windowsByRoot} has the measurement and {@link #window} what the exception is.
+ *
  * <p>Text only, and {@code CLIPBOARD} only. A host pasteboard is not a three-button X pointer, so
  * {@code PRIMARY} has nothing here to mirror; and this server has one screen with one mouse, so a
  * {@code PRIMARY} selection would be a second, invisible clipboard nobody could reach.
@@ -77,8 +86,40 @@ public final class ClipboardBridge {
     private final XServer server;
     private final HostClipboard host;
 
-    /** The bridge's own window, and the id the selection is owned by. */
+    /**
+     * The bridge's window on the master screen, which is the id the selection is owned by.
+     *
+     * <p>The one screen every client shares is where a selection's <em>owner</em> lives, so this is
+     * the window {@code GetSelectionOwner} answers with and the one a client is told about when the
+     * bridge takes the selection over. Nothing a client does with that id needs a window it can
+     * place - a client asks the owner for data through {@code ConvertSelection}, and the answer is
+     * written on the client's own window - which is why one window serves it for every screen: see
+     * {@link #windowFor} for the half that does have to be per screen.
+     */
     private final XWindow window;
+
+    /**
+     * The bridge's window on each screen, keyed by the screen's root window, made when one is first
+     * needed.
+     *
+     * <p><b>A client must never be handed a window that is not on one of its own screens.</b> A
+     * client's setup reply names the screens it may use, and a toolkit wraps whatever window this
+     * server names to it - GDK does that for the {@code requestor} of a {@code SelectionRequest}, in
+     * {@code gdk_x11_window_foreign_new_for_display}. A window whose root is not among those screens
+     * is one the client cannot place, and GDK 3.24 crashes on it instead of refusing it: measured
+     * 2026-09-30, a GTK3 client on a screen of its own died in {@code XScreenNumberOfScreen} - called
+     * with the attributes struct a failed lookup left uninitialised - inside its own event loop, and
+     * EasyShell died the same way every time a copy made this bridge ask it for the data.
+     *
+     * <p>That is the default mode's doing: every connection there gets a screen of its own (see
+     * {@code XServer.openClientScreen}), so the master screen's window - which is what a bridge made
+     * once at startup has - is on a root no client's setup reply mentions. In single-window mode
+     * every client is on the master screen and this map holds nothing.
+     */
+    private final Map<Integer, XWindow> windowsByRoot = new HashMap<>();
+
+    /** Every window above by id, which is how a requestor this bridge is asked about is recognised. */
+    private final Map<Integer, XWindow> windowsById = new HashMap<>();
 
     private final int clipboardAtom;
     private final int propertyAtom;
@@ -111,6 +152,12 @@ public final class ClipboardBridge {
 
     /** The fetch in flight: whose data was asked for, with which target, and how it is going. */
     private int fetchWindow;
+    /**
+     * The bridge's window the request went out through, which is the one the owner was asked to put
+     * the answer on - the owner's own screen's, see {@link #windowFor}. Kept because the answer
+     * arrives as an event addressed to it and is read out of its properties.
+     */
+    private XWindow fetchRequestor;
     private int fetchTarget;
     private int fetchAttempt;
     private long fetchStartedAt;
@@ -130,6 +177,8 @@ public final class ClipboardBridge {
         // (--no-clipboard, --no-tray) used to leave its window behind unregistered, and xwininfo's
         // own walk then printed "X Error: 3: Bad Window" - measured 2026-09-28 with a real client.
         server.resources().add(window);
+        windowsByRoot.put(server.screen().root().id(), window);
+        windowsById.put(window.id(), window);
         clipboardAtom = server.atoms().intern(CLIPBOARD);
         // Where a source client puts the data it hands over. Named after this server so a client
         // that lists properties on the window it was asked about sees something recognisable.
@@ -201,7 +250,27 @@ public final class ClipboardBridge {
      * Whether a window is the bridge's own, which is how a requestor that is not a client shows up.
      */
     public boolean ownsWindow(int windowId) {
-        return window.id() == windowId;
+        return windowsById.containsKey(windowId);
+    }
+
+    /**
+     * The bridge's window on {@code screen}, made the first time it is needed.
+     *
+     * <p>Called under the server lock, which the map is guarded by like the rest of this class's
+     * state. See {@link #windowsByRoot} for why this cannot be one window.
+     */
+    private XWindow windowFor(Screen screen) {
+        int root = screen.root().id();
+        XWindow existing = windowsByRoot.get(root);
+        if (existing != null) {
+            return existing;
+        }
+        XWindow made = new XWindow(server.nextServerResourceId(), null, screen, screen.root(),
+                screen.root().depth(), XWindow.INPUT_ONLY, screen.root().visual(), 0, 0, 1, 1, 0);
+        server.resources().add(made);
+        windowsByRoot.put(root, made);
+        windowsById.put(made.id(), made);
+        return made;
     }
 
     // ------------------------------------------------------------------
@@ -215,7 +284,7 @@ public final class ClipboardBridge {
      * working after the application that owned it has gone away.
      */
     public void selectionOwnerChanged(String name, int owner) {
-        if (!CLIPBOARD.equals(name) || owner == window.id()) {
+        if (!CLIPBOARD.equals(name) || ownsWindow(owner)) {
             return;
         }
         if (owner == 0) {
@@ -287,7 +356,7 @@ public final class ClipboardBridge {
             askOwner();
             return;
         }
-        XProperty value = window.properties().get(propertyAtom);
+        XProperty value = fetchRequestor.properties().get(propertyAtom);
         if (value == null) {
             clearFetch();
             return;
@@ -298,8 +367,8 @@ public final class ClipboardBridge {
             // poll reads and deletes each chunk as it arrives.
             fetchingIncr = true;
             fetched.reset();
-            window.properties().remove(propertyAtom);
-            server.atomHandlers().notifyProperty(window, propertyAtom,
+            fetchRequestor.properties().remove(propertyAtom);
+            server.atomHandlers().notifyProperty(fetchRequestor, propertyAtom,
                     io.github.oyzh1994.xserver.handler.AtomHandlers.DELETED);
             fetchProgressAt = System.currentTimeMillis();
             log.debug("the owner of {} is sending the data in chunks", CLIPBOARD);
@@ -410,7 +479,7 @@ public final class ClipboardBridge {
             }
             return;
         }
-        XProperty value = window.properties().get(propertyAtom);
+        XProperty value = fetchRequestor.properties().get(propertyAtom);
         if (value == null) {
             if (System.currentTimeMillis() - fetchProgressAt > FETCH_TIMEOUT_MILLIS) {
                 log.debug("{} transfer stalled after {} bytes", "INCR", fetched.size());
@@ -419,8 +488,8 @@ public final class ClipboardBridge {
             return;
         }
         byte[] chunk = value.data();
-        window.properties().remove(propertyAtom);
-        server.atomHandlers().notifyProperty(window, propertyAtom,
+        fetchRequestor.properties().remove(propertyAtom);
+        server.atomHandlers().notifyProperty(fetchRequestor, propertyAtom,
                 io.github.oyzh1994.xserver.handler.AtomHandlers.DELETED);
         if (chunk.length == 0) {
             finishIncr();
@@ -473,9 +542,13 @@ public final class ClipboardBridge {
             clearFetch();
             return;
         }
+        // The request is made through the bridge's window on the **owner's** screen, which is the
+        // whole reason there is more than one: this id is what the owner wraps before it answers, so
+        // it has to be a window the owner's setup reply put on a screen it knows (see windowsByRoot).
+        fetchRequestor = windowFor(source.screen());
         // Whatever a previous attempt left behind: the answer is read from this property, so it has
         // to be empty first or a refusal would look like data.
-        window.properties().remove(propertyAtom);
+        fetchRequestor.properties().remove(propertyAtom);
         ClientConnection owner = source.owner();
         server.events().send(owner, SelectionRequestEvent.builder()
                 .firstEventOffset((byte) 0)
@@ -483,7 +556,7 @@ public final class ClipboardBridge {
                 .sequenceNumber(owner.sequenceNumber())
                 .time(0)
                 .owner(fetchWindow)
-                .requestor(window.id())
+                .requestor(fetchRequestor.id())
                 .selection(clipboardAtom)
                 .target(fetchTarget)
                 .property(propertyAtom)
@@ -492,6 +565,7 @@ public final class ClipboardBridge {
 
     private void clearFetch() {
         fetchWindow = 0;
+        fetchRequestor = null;
         fetchAttempt = 0;
         fetchingIncr = false;
         fetched.reset();

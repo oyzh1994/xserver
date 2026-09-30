@@ -47,8 +47,11 @@ class ClipboardBridgeTest {
 
     @BeforeAll
     static void startServer() throws IOException {
+        // No --single-window: the default mode gives every connection a screen of its own, which is
+        // where the bridge's windows have to be per screen and where a client could not place the one
+        // window it used to have. See theBridgeAsksFromAWindowOnTheOwnersScreen.
         server = new XServer(ServerOptions.parse(new String[]{"--display", ":" + DISPLAY,
-                "--backend", "headless", "--single-window", "--no-unix"}));
+                "--backend", "headless", "--no-unix"}));
         server.start();
         host = new FakeClipboard();
         bridge = server.startClipboardBridge(HostClipboard.of(host));
@@ -203,6 +206,28 @@ class ClipboardBridgeTest {
     }
 
     @Test
+    void theBridgeAsksFromAWindowOnTheOwnersScreen() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 0, 0, 100, 100);
+            int requestor = copy(client, window, "asked through", false);
+
+            // The client wraps the window it is asked through before it answers, and a window whose
+            // root is not among the screens its setup reply named is one it cannot place: GDK 3.24
+            // crashes on one rather than refusing it (measured 2026-09-30 - EasyShell's toolkit died
+            // in gdk_x11_window_foreign_new_for_display, in XScreenNumberOfScreen, on every copy).
+            // The bridge is made before any client connects, so its own screen is the master one and
+            // every id it names has to be a window of *this* client's screen instead.
+            assertEquals(client.root(), client.rootOf(requestor),
+                    "the bridge asked through 0x" + Integer.toHexString(requestor)
+                            + ", which is not on the owner's own screen (root 0x"
+                            + Integer.toHexString(client.root()) + ")");
+            assertTrue(awaitText("asked through"),
+                    "and the answer still has to reach the host clipboard");
+        }
+    }
+
+    @Test
     void theHostWinsWhenSomebodyCopiesOnTheMac() throws IOException {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = client.allocateId();
@@ -243,8 +268,10 @@ class ClipboardBridgeTest {
     /**
      * Copies from inside the application: the client takes the selection, answers the bridge's
      * request for it, and - when asked for a chunked transfer - feeds the data in pieces.
+     *
+     * @return the window the bridge asked through, which is the {@code requestor} of its request
      */
-    private static void copy(RawXClient client, int window, String text, boolean chunked)
+    private static int copy(RawXClient client, int window, String text, boolean chunked)
             throws IOException {
         int selection = clipboardAtom(client);
         client.setSelectionOwner(window, selection, 0);
@@ -261,7 +288,7 @@ class ClipboardBridgeTest {
             client.flush();
             client.sendSelectionNotify(requestor, 0, requestor, selection, target, property);
             client.flush();
-            return;
+            return requestor;
         }
 
         int incr = client.internAtom("INCR");
@@ -286,6 +313,7 @@ class ClipboardBridgeTest {
                 !hasProperty(client, requestor, property));
         client.setStringProperty(requestor, property, target, "");
         client.flush();
+        return requestor;
     }
 
     /** The bridge's request for the data, skipping anything else the server sent first. */
