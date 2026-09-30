@@ -102,6 +102,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A24~~ | ~~"much slower than Xvfb+x11vnc, especially EasyShell - every operation is very slow"~~ **fixed 2026-09-30**: the frame path's copies, fills and image uploads were per-pixel - now row-bulk; measured on the bed, the server's CPU for EasyShell's aliyun tab went **~90-100% -> ~20%** | performance | M |
 | ~~A25~~ | ~~A24's remaining half: the same screen still felt less smooth than Xvfb+x11vnc~~ **fixed 2026-09-30**: the session re-sent the whole damage rectangle even when the pixels equalled what the client had - **5.39 MB/s and 61 updates/s on a screen that was not changing**, against `x11vnc`'s nothing; now the update is the box the differencing pixels are in, and an unchanged one is not sent at all: **0.00 MB/s with the request held**, and pointer motion costs nothing | performance | M |
 | ~~A26~~ | ~~`java.lang.IllegalArgumentException: Destination region ... must fit within texture content bounds`, sometimes, and the window never appears~~ **fixed 2026-09-30**: the frame's repaint rectangle covered the pointer sprite's own box, which reaches past the screen when the pointer sits on the last pixel - and JavaFX does not clip a `drawImage` destination region. Reproduced on the real backend (21 throws with the pointer at the right edge), 0 after clipping the union and the sprite; the canvas is in logical pixels | correctness | M |
+| ~~A27~~ | ~~the dock's **Quit** did not quit: the window closed and the clients were released, but the process stayed for ever (and an app with no window heard the Quit not at all)~~ **fixed 2026-10-01**: on macOS a JavaFX app's Quit is `GlassStage.requestClosingAllWindows()` - a close on every window, never `System.exit` - and the toolkit's `JavaFX-KeepAlive` thread is not a daemon and outlives `Platform.exit()`. `XServer.startEventLoop` now returns the display thread and `Main` waits for it, then exits the process: EasyShell released at **+1s**, the server gone at **+3s**, both modes | correctness | S |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -3011,6 +3012,51 @@ the framebuffer is not; this is a *paint-time* failure, so it surfaces far from 
 the op (a stack that names `openWindow` is telling you where the canvas was first painted, not where the
 rectangle was built); and a sprite at the edge is not an error to be avoided, it is the normal state of
 a pointer on the last pixel.
+
+### [x] A27. The dock's Quit did not quit: the process stayed, and an app with no window never heard it. **S** - fixed 2026-10-01
+
+**The report.** "Right-click `xserver` in the dock, press Quit - and the EasyShell process on the remote
+`.147` is not released."
+
+**What a Quit actually is on macOS, which is the whole of it.** The dock's Quit is an
+`NSApplicationTerminate` request. For a **JavaFX** application Glass takes it and calls
+`GlassStage.requestClosingAllWindows()` - decompiled from OpenJFX 25, `QuantumToolkit$2.handleQuitAction`
+is exactly that one call - i.e. **a close request on every window, and never `System.exit`**. Measured
+with a minimal JavaFX application on this machine: the toolkit stays alive, the process stays alive, and
+an AppleScript `quit` cancels (-128). With **AWT alone** (no JavaFX), the default strategy *is*
+`System.exit(0)`, which is why `--backend vnc` and `--backend headless` already quit properly: that was
+measured too, before touching anything.
+
+**So the server's behaviour was**: the window closed (that is the tick's own path - `onWindowClosed`
+asks the client `WM_DELETE_WINDOW` and cuts it off once the grace is up), and the client **was**
+released - EasyShell exits within a second of the window closing, five runs out of five, verified with
+the real application on `.147` in both `--single-window` and per-client mode. What stayed was the
+**process**: `jstack` of it twelve seconds after the Quit showed no `xserver-*` thread at all and only
+`JavaFX-KeepAlive` (non-daemon, and it outlives `Platform.exit()`) plus `DestroyJavaVM` holding the JVM.
+`Main` returned from `main` and nothing ever ended the process, so the dock icon stayed and a second
+Quit did nothing.
+
+**The fix.** `XServer.startEventLoop()` returns the display thread and `Main` joins it, then calls
+`System.exit(0)`: the display loop is the server's life, and the process follows it. Nothing about *what
+ends the server* changed.
+
+**Verification, live, with the real application.** `--backend javafx` on the Mac, EasyShell on `.147`,
+then the dock's own Quit (`NSRunningApplication -terminate`, a two-line helper, which is the same request
+the dock makes):
+
+| | before | after |
+|---|---|---|
+| EasyShell on `.147` | released in ~1 s (it quits politely) | released in ~1 s |
+| the xserver process | **still alive after 12 s** (`JavaFX-KeepAlive`) | **gone at +3 s** (single-window) / **+1 s** (per-client) |
+
+New `XServerShutdownTest.theDisplayLoopEndsWhenTheServerDoes` pins the property `Main` now relies on.
+Suite: **465 tests, green**.
+
+**Traps.** The dock's Quit is *not* `System.exit` on this platform when JavaFX is up, and it cannot be
+told apart from closing the window - both are a `WINDOW_CLOSE_REQUEST` - so "quit the app" and "close the
+window" mean the same thing here: end the session that window belonged to. `--detach-on-close` is the
+opposite intent and keeps the client. And a windowless JavaFX app hears nothing at all, which is why the
+measurement above used the no-JavaFX backends to establish what the *platform* does.
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

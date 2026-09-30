@@ -200,6 +200,13 @@ Two consequences worth keeping:
 - **`Platform.exit()` is called once, at the very end** (`releaseToolkit`), never by the first window
   that closes: it is one-way, and would take every other client's window with it and stop the toolkit
   starting again.
+- **The display loop is the process's life.** `Main` waits for that thread and then ends the process
+  (`System.exit(0)`), because returning from `main` is not enough: the JavaFX toolkit's
+  `JavaFX-KeepAlive` thread is **not** a daemon and outlives `Platform.exit()`, so a process whose
+  server had finished - the window closed, every client released - sat in the dock for ever with no
+  server thread left in it at all (measured 2026-10-01, A27). What ends the server is unchanged: the
+  session ending in single-window mode, `stop()` from the control port or a shutdown hook, or a
+  signal - this is only about the process following it.
 - **A window that cannot be opened is a failure the server acts on, not one it sits in** (C11).
   `JavaFxBackend.startupToolkit` starts the toolkit on a daemon thread and waits ten seconds for the
   FX thread to run the startup's runnable: where there is no display `QuantumToolkit.startup` parks on

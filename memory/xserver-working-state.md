@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-09-30 (branch `bugfix`) the day's reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 464 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 465 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,31 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-10-01, seventh session (branch `bugfix`): A27 - the dock's Quit did not end the process.** The
+report was "right-click xserver in the dock, press Quit, and the EasyShell process on `.147` is not
+released". What the Quit *is* turned out to be the whole answer:
+
+- **On macOS a JavaFX app's Quit is `GlassStage.requestClosingAllWindows()`** - a close request on every
+  window, and never `System.exit` (decompiled from OpenJFX 25: `QuantumToolkit$2.handleQuitAction` is
+  that one call). A minimal JavaFX app ignores the request entirely and stays alive; with **AWT alone**
+  the default strategy is `System.exit(0)`, which is why `--backend vnc`/`headless` already quit fine.
+- **The clients *were* released**: the window close asks each client `WM_DELETE_WINDOW` and cuts it off
+  after the grace, and EasyShell on `.147` exits within a second of that - 5 runs of 5, in both modes.
+  What stayed was the **process**: `jstack` twelve seconds after the Quit showed no `xserver-*` thread
+  at all, only `JavaFX-KeepAlive` (non-daemon, outlives `Platform.exit()`) and `DestroyJavaVM`.
+- **The fix:** `XServer.startEventLoop()` returns the display thread and `Main` **joins it and then
+  `System.exit(0)`** - the loop is the server's life, and the process follows it. Live A/B with the real
+  EasyShell: before, alive 12 s later; after, EasyShell gone at +1 s and the server at +3 s
+  (`--single-window`) / +1 s (per-client). New test `XServerShutdownTest.theDisplayLoopEndsWhenTheServerDoes`;
+  **465 tests green**.
+- **The recipe for the next time** (a real dock Quit, aimed at one pid - `osascript quit app` cannot
+  target the right `java`): a two-line Objective-C tool calling
+  `[[NSRunningApplication runningApplicationWithProcessIdentifier:pid] terminate]`
+  (`clang -fobjc-arc -o appquit appquit.m -framework AppKit`). It is the same request the dock makes, and
+  it is refused or ignored exactly as the dock's is. Watching a *client* on `.147` means running it from a
+  background local `ssh` that stays up (`setsid nohup` inside a one-shot `tools/vm.sh` command does not
+  survive), and counting with `pgrep -c -f "EasyShell/bin"`.
 
 **2026-09-30, sixth session (branch `bugfix`): A26 - the JavaFX backend threw
 `IllegalArgumentException: Destination region ... must fit within texture content bounds` and the window

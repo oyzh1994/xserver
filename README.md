@@ -86,6 +86,12 @@ application that repaints identical content (EasyShell's aliyun tab does it ~300
 nothing, as it does with `x11vnc`. `Tight` and `CoRRE` are the encodings still on the list in
 [docs/backlog.md](docs/backlog.md) (D2).
 
+**Stopping it**: `Ctrl-C`, or the dock's **Quit** on macOS. A Quit closes the host window, which the
+server answers the way it answers the window's own close button - the clients are asked to quit
+(`WM_DELETE_WINDOW`) and cut off once the grace period is up, which is what releases a forwarded
+application on the far machine - and the process ends with the server. `--detach-on-close` is the
+opposite: the clients keep running with no window and the control port can put one back.
+
 ## Architecture
 
 Why the code looks the way it does - the decisions behind the per-client screens, the display tick,
