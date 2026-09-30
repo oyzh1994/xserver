@@ -22,9 +22,10 @@ import java.util.List;
  * <p>This is the protocol half of backlog D2, so that the framebuffer this server already has can be
  * watched and driven from another machine with software that is already on it - anything that speaks
  * VNC, which is every desktop and every phone. It is deliberately the *smallest honest* version the
- * item describes: **raw and ZRLE** (no Tight, no CoRRE, no JPEG - every client can decode raw, so a
- * client that offers nothing else still works, and ZRLE is used when the client lists it), **true
- * colour only**, and one rectangle per update.
+ * item describes: **raw and ZRLE**, plus **Tight's JPEG method** for photographic rectangles when the
+ * client offers it (A32 - every client can decode raw, so a client that offers nothing else still
+ * works; ZRLE is used when the client lists it, and Tight's zlib path and CoRRE are not implemented),
+ * **true colour only**, and an update that carries each tile whose pixels differ (A25, A31).
  *
  * <p><b>The shape of the thing is the client's, not ours.</b> RFB is request-driven: a client asks
  * for an update and the server answers when the area it asked about has changed. So nothing here

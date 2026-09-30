@@ -4703,7 +4703,7 @@ that narrow looks like. One line, and the file's own helper was already there.
 
 ---
 
-### [x] D2. Built-in remote transport. **L-XL** - done 2026-09-26: RFB over TCP and over a WebSocket, raw and ZRLE frames, the Cursor pseudo-encoding, a password or open, and the clipboard both ways. `Tight`/`CoRRE` are optimisations left undone
+### [x] D2. Built-in remote transport. **L-XL** - done 2026-09-26: RFB over TCP and over a WebSocket, raw and ZRLE frames, the Cursor pseudo-encoding, a password or open, and the clipboard both ways. Tight's JPEG method was added on 2026-10-01 (A32); Tight's zlib path and `CoRRE` are optimisations left undone
 
 **Current.** The framebuffer is presented by three backends: JavaFX and Swing windows on the machine
 the server runs on, and a headless one that presents nothing. To watch a screen from elsewhere the
@@ -4822,9 +4822,10 @@ protocol requires every client to decode.
   exactly four output buffers - invisible in every test whose frame fitted in one buffer, and a
   client that closes the connection on a real desktop. There is a test now with a frame whose
   compressed output spans many buffers, and it fails against the old loop.
-- **Not emitted**: palette RLE (129..255) and `Tight`/`CoRRE`. A client only has to decode what it is
-  sent, so those are optimisations rather than gaps - and the palette/RLE/solid/raw set is what a
-  screen of windows actually needs.
+- **Not emitted**: palette RLE (129..255), Tight's zlib path and `CoRRE`. A client only has to decode
+  what it is sent, so those are optimisations rather than gaps - and the palette/RLE/solid/raw set is
+  what a screen of windows actually needs. Tight *is* emitted as its JPEG method for photographic
+  rectangles (A32), which is the one place where the palette set is the wrong tool.
 
 **The Cursor pseudo-encoding, done 2026-09-26.** A viewer that lists it (-239) is sent the pointer's
 image, so it draws the X session's pointer - an I-beam over a text field, a resize handle on a border

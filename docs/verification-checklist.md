@@ -107,7 +107,7 @@ first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for th
 | 5.1 | TCP | a client on the VM at `192.168.22.1:61` | it connects and works |
 | 5.2 | a unix socket and `--no-tcp`/`--no-unix`/`--local` | a client on this machine | the transports restrict exactly as asked |
 | 5.3 | `--auth` and the no-credentials case | `AuthProbe` | a client with no credentials is refused; with the cookie it connects |
-| 5.4 | VNC: raw and ZRLE frames, the cursor pseudo-encoding, a password, the clipboard | `--backend vnc`, a VNC viewer, `ZrleEncoderTest` | the screen appears, the pointer is drawn, the clipboard crosses - the recipe is below |
+| 5.4 | VNC: raw, ZRLE and (A32) Tight's JPEG method for photographic rectangles, the cursor pseudo-encoding, a password, the clipboard | `--backend vnc`, a VNC viewer, `ZrleEncoderTest`, `TightEncoderTest` | the screen appears, the pointer is drawn, the clipboard crosses - the recipe is below |
 | 5.5 | VNC over WebSocket, in a browser | `--vnc-ws-port`, noVNC | the screen appears with no bridge process |
 
 **The VNC recipe, as one command.** This is the mode where the server opens no window at all and the
@@ -138,9 +138,10 @@ python3 -c "import socket; print(socket.create_connection(('127.0.0.1', <N>)).re
 display), so this and the JavaFX window are two modes rather than two features at once - **and it
 implies `--single-window`**, every client sharing the one screen, which is what a VNC-served X display
 has always looked like. X clients connect exactly as they otherwise do (`DISPLAY=<host>:<N>`); VNC is
-only how a person watches and drives it. **Encodings**: raw, and ZRLE when the client lists it; `Tight`
-and `CoRRE` are not implemented, and raw is mandatory for every client, so any viewer works - it is
-bandwidth on a slow link that suffers, not compatibility.
+only how a person watches and drives it. **Encodings**: raw, and ZRLE when the client lists it, and
+**Tight's JPEG method** for a rectangle whose content is photographic when the client has offered both
+Tight and a JPEG quality (A32) - never Tight's zlib path, and no `CoRRE`. Raw is mandatory for every
+client, so any viewer works - it is bandwidth on a slow link that suffers, not compatibility.
 | 5.6 | session persistence | `--detach-on-close --control-port N` | clients survive the window, `attach`/`detach`/`status` answer |
 
 ## 6. Engineering
@@ -200,7 +201,8 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
   property *reads* are answered "nothing".
 - **MIT-SHM is not done** (deliberate, with reasons).
 - **`ChangeCursorByName` is refused** - a reference does nothing at all for a name.
-- **VNC carries raw and ZRLE only**; `Tight`/`CoRRE` are not implemented.
+- **VNC carries raw, ZRLE, and Tight only as its JPEG method** (A32): a client that lists Tight but no
+  JPEG quality is served ZRLE, and `CoRRE` is not implemented.
 - **A server restart is out** (D1 detaches the *window*, not the process).
 - **The `eventcopy` rewrite in `ClientOutput` is the design**, not a workaround to remove (E1, closed).
 - **A drag out of an application is not finished** (C5: the trigger was reverted; the owner has

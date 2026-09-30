@@ -1702,10 +1702,12 @@ presented - so a viewer that connects to an idle screen has no frame to ride alo
 otherwise draw its own pointer for ever. `presentCursor` is told every frame, whether or not anything
 drew, and the backend decides whether it is news.
 
-**What is not there** (the item keeps the list): `Tight`/`CoRRE`, palette RLE, the noVNC page itself
-(the WebSocket carries RFB; the page comes from wherever the user keeps it), and any colour-depth
-reduction. Raw frames are what this sends, and a viewer
-on the same machine or a LAN is what that is for.
+**What is not there** (the item keeps the list): Tight's zlib path and `CoRRE`, palette RLE, the noVNC
+page itself (the WebSocket carries RFB; the page comes from wherever the user keeps it), and any
+colour-depth reduction. **Tight's JPEG method is there** (A32): a rectangle whose content looks
+photographic goes as encoding 7 with the JPEG control byte when the client has offered both Tight and a
+JPEG quality, which is 3.12 MB -> 0.70 MB for a full-screen change of such content; text and flat panels
+stay on ZRLE, which is lossless.
 
 ## The fonts a client asks for
 

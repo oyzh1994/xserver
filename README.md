@@ -579,8 +579,9 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   in, and an unchanged screen is sent nothing** - the session holds what each client has been given and
   compares against it, so a viewer watching an application that repaints the same pixels costs no
   bandwidth and no decoding at all (measured: 5.39 MB/s and 61 updates a second before that comparison,
-  against `x11vnc`'s nothing - A25 in [docs/backlog.md](docs/backlog.md)). Not there: `Tight`/`CoRRE`
-  (optimisations on top of ZRLE).
+  against `x11vnc`'s nothing - A25 in [docs/backlog.md](docs/backlog.md)). **An update carries every
+  tile that changed** (A31), and a rectangle whose content is photographic goes as **Tight's JPEG
+  method** when the client offers it (A32). Not there: Tight's zlib path and `CoRRE`.
 - **A tray icon is shown in the menu bar and stays where the client drew it.** The docked window is
   a window of the X screen like any other - this server has one surface, so a window off it would
   have no pixels to read - and its image is copied into the menu bar on top of that. A client's own
