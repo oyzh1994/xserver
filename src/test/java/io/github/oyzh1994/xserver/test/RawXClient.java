@@ -1125,6 +1125,29 @@ public final class RawXClient implements AutoCloseable {
     }
 
     /**
+     * {@code PolyFillRectangle} with several rectangles in <b>one request</b>: one damage rectangle
+     * over several areas, which is what a test needs to see how an update splits them.
+     *
+     * <p>Each argument is {@code x, y, width, height}.
+     */
+    public void fillRectangles(int window, int gc, int[]... rectangles) throws IOException {
+        byte[] request = new byte[12 + 8 * rectangles.length];
+        request[0] = 70;                            // PolyFillRectangle
+        request[2] = (byte) (request.length / 4);
+        writeInt(request, 4, window);
+        writeInt(request, 8, gc);
+        int at = 12;
+        for (int[] rectangle : rectangles) {
+            writeShort(request, at, rectangle[0]);
+            writeShort(request, at + 2, rectangle[1]);
+            writeShort(request, at + 4, rectangle[2]);
+            writeShort(request, at + 6, rectangle[3]);
+            at += 8;
+        }
+        send(request);
+    }
+
+    /**
      * FillPoly, the request every filled shape a toolkit draws reduces to: a closed path, filled by
      * the GC's fill rule (which is where even-odd and winding are chosen - the request's own
      * {@code shape} field is only a hint to the server).

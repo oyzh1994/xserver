@@ -12,6 +12,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * One remote framebuffer (RFB, "VNC") connection: the handshake, the client's own messages, and the
@@ -119,6 +121,12 @@ final class RfbSession implements Runnable {
     private static final int ENCODING_ZRLE = 16;
     private static final int ENCODING_CURSOR = -239;
     private static final int ENCODING_DESKTOP_SIZE = -223;
+
+    /**
+     * The side of the tile used to decide what changed: ZRLE's own tile, so a rectangle this session
+     * builds is a whole number of the tiles the encoder will make of it.
+     */
+    private static final int TILE = 64;
 
     /**
      * The pixel format a client asked for, in the values the protocol sends.
@@ -844,85 +852,90 @@ final class RfbSession implements Runnable {
     }
 
     /**
-     * One raw rectangle: the header, then every pixel in the client's own format.
+     * One update: a header, then one rectangle per part of {@code region} that differs.
      *
      * <p>Raw is <em>w * h * (bits per pixel / 8)</em> bytes with no compression, which is why the
      * updates are damage-shaped rather than screen-shaped: a full 1300x800 frame is 4 MB, and a
      * keystroke in a terminal is a few hundred bytes.
      *
      * <p>{@code compare} asks for the pixels to be held up against what this client already has
-     * before anything is written: the rectangle that goes out is the box the differences are in (see
-     * {@link #changedBox}), and false means there was no difference at all - nothing went out, and
-     * the caller waits for the next damage instead of answering the request. A full request passes
-     * false: a client that asks for the pixels is given them, whatever it already holds.
+     * before anything is written: what goes out is what {@link #changedRuns} makes of it, and false
+     * means there was no difference at all - nothing went out, and the caller waits for the next
+     * damage instead of answering the request. A full request passes false: a client that asks for
+     * the pixels is given them, whatever it already holds, as one rectangle.
      */
     private boolean sendUpdate(Rectangle region, boolean compare) throws IOException {
-        if (compare) {
-            region = changedBox(region);
-            if (region == null) {
-                return false;
-            }
+        List<Rectangle> rectangles = compare ? changedRuns(region) : List.of(region);
+        if (rectangles.isEmpty()) {
+            return false;
         }
-        int width = region.width;
-        int height = region.height;
-        int[] argb = regionPixels(region, width, height);
-
         out.write(0);                                // FramebufferUpdate
         out.write(0);                                // padding
-        writeU16(1);                                 // one rectangle
-        writeU16(region.x);
-        writeU16(region.y);
-        writeU16(width);
-        writeU16(height);
-        if (zrleWanted) {
-            int cpxel = compressedPixelBytes();
-            if (tileScratch == null) {
-                tileScratch = new int[64 * 64];
+        writeU16(rectangles.size());
+        for (Rectangle rectangle : rectangles) {
+            int width = rectangle.width;
+            int height = rectangle.height;
+            int[] argb = regionPixels(rectangle, width, height);
+            writeU16(rectangle.x);
+            writeU16(rectangle.y);
+            writeU16(width);
+            writeU16(height);
+            if (zrleWanted) {
+                int cpxel = compressedPixelBytes();
+                if (tileScratch == null) {
+                    tileScratch = new int[TILE * TILE];
+                }
+                byte[] zrle = ZrleEncoder.encode(argb, width, height, this::packedPixel, cpxel,
+                        deflater, tileScratch);
+                writeInt(ENCODING_ZRLE);
+                // The length of the compressed data, which ZRLE carries in the rectangle itself
+                // rather than in the message header - a reader that took it for pixels would lose
+                // the frame.
+                writeInt(zrle.length);
+                out.write(zrle);
+            } else {
+                int bytesPerPixel = Math.max(1, format.bitsPerPixel / 8);
+                int needed = width * height * bytesPerPixel;
+                if (pixels.length < needed) {
+                    // One buffer per session, reused and grown to the largest rectangle yet: an update
+                    // that reallocated 4 MB each time would put the alliance of the collector and the
+                    // socket in the way of every frame.
+                    pixels = new byte[needed];
+                }
+                int at = 0;
+                // `width * height` and not `argb.length`: the region buffer is reused and may be
+                // longer than this rectangle, and a stale tail would be sent as pixels.
+                for (int i = 0; i < width * height; i++) {
+                    at = store(pixels, packedPixel(argb[i]), at, bytesPerPixel);
+                }
+                writeInt(ENCODING_RAW);
+                out.write(pixels, 0, needed);
             }
-            byte[] zrle = ZrleEncoder.encode(argb, width, height, this::packedPixel, cpxel,
-                    deflater, tileScratch);
-            writeInt(ENCODING_ZRLE);
-            // The length of the compressed data, which ZRLE carries in the rectangle itself rather
-            // than in the message header - a reader that took it for pixels would lose the frame.
-            writeInt(zrle.length);
-            out.write(zrle);
-        } else {
-            int bytesPerPixel = Math.max(1, format.bitsPerPixel / 8);
-            int needed = width * height * bytesPerPixel;
-            if (pixels.length != needed) {
-                // One buffer per session, reused: an update that reallocated 4 MB each time would put
-                // the alliance of the collector and the socket in the way of every frame.
-                pixels = new byte[needed];
-            }
-            int at = 0;
-            // `width * height` and not `argb.length`: the region buffer is reused and may be longer
-            // than this update, and a stale tail would be sent as pixels.
-            for (int i = 0; i < width * height; i++) {
-                at = store(pixels, packedPixel(argb[i]), at, bytesPerPixel);
-            }
-            writeInt(ENCODING_RAW);
-            out.write(pixels);
+            rememberSent(rectangle, argb, width, height);
         }
         out.flush();
-        rememberSent(region, argb, width, height);
         return true;
     }
 
     /**
-     * The part of {@code region} this client has not been sent, or null when it has all of it.
+     * The parts of {@code region} this client has not been sent, or an empty list when it has all of
+     * it.
      *
      * <p>The comparison is against the framebuffer directly and not against a copy, and it is the
      * reason a viewer watching an application that redraws identical content costs no bandwidth: the
      * drawing still marks damage, so the display tick still wakes this session up, and this answers
      * "the viewer has those pixels already", so no update is built at all.
      *
-     * <p>The answer is the <b>bounding box of the pixels that really differ</b> and not the damage
-     * rectangle. An application that repaints a whole window to blink a text cursor damages the whole
-     * window, and sending that is ~100 KB of ZRLE for two cells of pixels - measured on the bed, as
-     * twice a second with the aliyun tab sitting still (down from 61 times a second before the
-     * comparison existed at all, which is what the "less smooth than x11vnc" report was). `x11vnc`
-     * answers the same way at 64x64 tile granularity; a rectangle of any size is a legal update, so
-     * this is that idea without the tiles.
+     * <p>The answer is built the way `x11vnc` builds its updates: the region in <b>64x64 tiles</b>, a
+     * changed tile merged with the changed tiles beside it into one run, and each run shrunk to the
+     * box of the pixels that really differ. That gives A25's answer - an unchanged screen costs
+     * nothing, and a blinking cursor costs the few pixels it is rather than the window around it -
+     * without its one blind spot: a change in two opposite corners used to be sent as **one
+     * rectangle spanning both**, which is the size of the screen in ZRLE for two small updates
+     * (measured 2026-10-01: a full-screen ZRLE frame is 10 ms of one core in flat colours and 57 ms
+     * photographic, so a box is not a cheap way to say "two corners"). A rectangle of any size is a
+     * legal update, and one update may carry as many of them as it likes, so this needs nothing from
+     * the client.
      *
      * <p>Comparing ARGB rather than the client's packed pixel is deliberately the stricter test: two
      * colours that pack to the same 16 bit value are still a difference here, which sends an update
@@ -930,49 +943,107 @@ final class RfbSession implements Runnable {
      * wrong screen. (Which is also why a row that differs has its extent found pixel by pixel while a
      * row that does not is one vectorised comparison.)
      */
-    private Rectangle changedBox(Rectangle region) {
+    private List<Rectangle> changedRuns(Rectangle region) {
         int[] sent = sentPixels;
         if (sent == null) {
-            return region;
+            return List.of(region);
         }
         io.github.oyzh1994.xserver.draw.Framebuffer framebuffer = screen.framebuffer();
         if (!framebuffer.allocated()) {
-            return region;
+            return List.of(region);
         }
         int screenWidth = screen.width();
         if (sent.length < screenWidth * screen.height()) {
-            return region;
+            return List.of(region);
         }
         int[] source = framebuffer.pixels();
         int stride = framebuffer.stride();
+        int bottom = region.y + region.height;
+        int right = region.x + region.width;
+        List<Rectangle> runs = new ArrayList<>();
+        for (int bandY = region.y; bandY < bottom; bandY += TILE) {
+            int bandHeight = Math.min(TILE, bottom - bandY);
+            int runStart = -1;
+            for (int tileX = region.x; tileX < right; tileX += TILE) {
+                int tileWidth = Math.min(TILE, right - tileX);
+                boolean differs = differs(sent, source, stride, screenWidth, tileX, bandY,
+                        tileWidth, bandHeight);
+                if (differs && runStart < 0) {
+                    runStart = tileX;
+                }
+                boolean lastTile = tileX + TILE >= right;
+                if (runStart >= 0 && (!differs || lastTile)) {
+                    int runEnd = differs ? tileX + tileWidth : tileX;
+                    runs.add(shrinkToDifference(sent, source, stride, screenWidth, runStart, bandY,
+                            runEnd - runStart, bandHeight));
+                    runStart = -1;
+                }
+            }
+        }
+        if (runs.isEmpty()) {
+            return List.of();
+        }
+        // Everything changed: one rectangle for the whole region, which compresses better than a
+        // band's worth of them and is what a first frame, a resize and a full repaint are.
+        long covered = 0;
+        for (Rectangle run : runs) {
+            covered += (long) run.width * run.height;
+        }
+        if (covered == (long) region.width * region.height) {
+            return List.of(region);
+        }
+        return runs;
+    }
+
+    /** Whether any pixel of this tile is not the one this client was sent. */
+    private static boolean differs(int[] sent, int[] source, int stride, int screenWidth,
+                                   int tileX, int tileY, int width, int height) {
+        for (int y = 0; y < height; y++) {
+            int row = (tileY + y) * stride + tileX;
+            int base = (tileY + y) * screenWidth + tileX;
+            if (!java.util.Arrays.equals(sent, base, base + width, source, row, row + width)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The box the pixels that differ are in, inside a run of changed tiles.
+     *
+     * <p>The tiles decide *what* to send; this decides how much of it, so a change that fits in one
+     * tile is still the few pixels it really is (A25's rule) rather than the 64x64 tile around it.
+     */
+    private static Rectangle shrinkToDifference(int[] sent, int[] source, int stride, int screenWidth,
+                                                int x, int y, int width, int height) {
         int left = Integer.MAX_VALUE;
         int right = -1;
         int top = -1;
         int bottom = -1;
-        for (int y = 0; y < region.height; y++) {
-            int row = (region.y + y) * stride + region.x;
-            int base = (region.y + y) * screenWidth + region.x;
-            if (java.util.Arrays.equals(sent, base, base + region.width,
-                    source, row, row + region.width)) {
+        for (int row = 0; row < height; row++) {
+            int sourceRow = (y + row) * stride + x;
+            int base = (y + row) * screenWidth + x;
+            if (java.util.Arrays.equals(sent, base, base + width, source, sourceRow,
+                    sourceRow + width)) {
                 continue;
             }
             int first = 0;
-            int last = region.width - 1;
-            while (first < region.width && sent[base + first] == source[row + first]) {
+            int last = width - 1;
+            while (first < width && sent[base + first] == source[sourceRow + first]) {
                 first++;
             }
-            while (last > first && sent[base + last] == source[row + last]) {
+            while (last > first && sent[base + last] == source[sourceRow + last]) {
                 last--;
             }
-            left = Math.min(left, region.x + first);
-            right = Math.max(right, region.x + last);
+            left = Math.min(left, x + first);
+            right = Math.max(right, x + last);
             if (top < 0) {
-                top = region.y + y;
+                top = y + row;
             }
-            bottom = region.y + y;
+            bottom = y + row;
         }
         if (right < 0) {
-            return null;
+            return new Rectangle(x, y, width, height);      // cannot happen: the tile differed
         }
         return new Rectangle(left, top, right - left + 1, bottom - top + 1);
     }

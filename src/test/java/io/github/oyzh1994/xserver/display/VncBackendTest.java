@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -104,6 +105,57 @@ class VncBackendTest {
                 assertTrue(frame.width <= 200 && frame.height <= 100,
                         "the update is the damage, not the whole screen: " + frame.width + "x"
                                 + frame.height);
+            }
+        }
+    }
+
+    @Test
+    void aChangeInTwoCornersIsSentAsSmallRectanglesAndNotOneBoxSpanningBoth() throws Exception {
+        // A25 made an update the box the difference is in; A31 cuts that box into the 64x64 tiles
+        // that really changed and merges the changed ones beside each other. Without it, two small
+        // changes in opposite corners are one rectangle the size of the screen - and a full-screen
+        // ZRLE frame measured 10 ms of one core in flat colours and 57 ms photographic, so a box is
+        // not a cheap way to say "two corners".
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 300, 200, 0xFFFFFF);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestFullFrame();
+                viewer.readFrame();
+
+                int gc = client.allocateId();
+                client.createGC(gc, client.root(), RED);
+                // One request, so the damage really is one rectangle: the tick cannot have taken
+                // half of it, which is what makes this test tell the old behaviour from the new.
+                client.fillRectangles(window, gc, new int[] {5, 5, 10, 10},
+                        new int[] {280, 180, 10, 10});
+                client.flush();
+                Thread.sleep(200);
+
+                java.util.List<int[]> seen = new java.util.ArrayList<>();
+                viewer.readTimeout(300);
+                viewer.requestIncrementalFrame();
+                for (Frame frame = viewer.readFrameOrNull(); frame != null;
+                        frame = viewer.readFrameOrNull()) {
+                    seen.addAll(viewer.lastRectangles);
+                }
+                assertFalse(seen.isEmpty(), "the two changes were never sent");
+                for (int[] rectangle : seen) {
+                    assertTrue(rectangle[2] <= 64 && rectangle[3] <= 64,
+                            "each update is its own tile, not a box spanning the screen: "
+                                    + java.util.Arrays.toString(rectangle));
+                }
+
+                // And both corners really arrived: a full frame carries the window as one rectangle.
+                viewer.readTimeout(2000);
+                viewer.requestFullFrame();
+                Frame whole = viewer.readFrame();
+                assertEquals(RED, whole.pixel(10, 10), "the first corner");
+                assertEquals(RED, whole.pixel(285, 185), "and the far one");
             }
         }
     }
@@ -696,6 +748,8 @@ class VncBackendTest {
         private final java.util.zip.Inflater zrleInflater = new java.util.zip.Inflater();
         /** The last cursor the server sent, for the Cursor pseudo-encoding test. */
         private CursorRect lastCursor;
+        /** The geometry of every rectangle of the update just read, in the order they arrived. */
+        final java.util.List<int[]> lastRectangles = new java.util.ArrayList<>();
 
         CursorRect lastCursor() {
             return lastCursor;
@@ -890,12 +944,14 @@ class VncBackendTest {
             assertEquals(0, type, "FramebufferUpdate");
             in.read();
             int rectangles = readU16();
+            lastRectangles.clear();
             Frame last = null;
             for (int i = 0; i < rectangles; i++) {
                 int x = readU16();
                 int y = readU16();
                 int width = readU16();
                 int height = readU16();
+                lastRectangles.add(new int[] {x, y, width, height});
                 int encoding = readInt();
                 if (encoding == -223) {                     // DesktopSize: no pixels follow it
                     continue;

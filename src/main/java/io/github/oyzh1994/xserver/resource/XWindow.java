@@ -5,6 +5,8 @@ import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.display.Screen;
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.display.VisualInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.awt.Rectangle;
 import java.util.ArrayList;
@@ -20,6 +22,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * of walking the list.
  */
 public final class XWindow extends XResource {
+
+    private static final Logger log = LoggerFactory.getLogger(XWindow.class);
 
     // window classes
     public static final int COPY_FROM_PARENT = 0;
@@ -61,6 +65,8 @@ public final class XWindow extends XResource {
 
     /** This window's own pixels, for a window whose visual has an alpha channel - see keepsOwnPixels. */
     private Framebuffer ownPixels;
+    /** Whether the "this window is too large to keep pixels" warning has been written once. */
+    private boolean warnedAboutStore;
 
     /** Composite's redirection: the window keeps drawing, but somebody else composites it. */
     private boolean redirected;
@@ -367,6 +373,15 @@ public final class XWindow extends XResource {
      * on the way into the gravity, which is the bug the default gravity was fixed for.
      */
     public Framebuffer ownPixels() {
+        if (!isRoot() && !keepsStore() && !warnedAboutStore) {
+            // Not reachable from this server's own code - every caller asks keepsOwnPixels first -
+            // but this is where the 17 GB allocation of A29 would come from, and a warning in the
+            // log is worth more than an OutOfMemoryError with no explanation.
+            warnedAboutStore = true;
+            log.warn("0x{} is {}x{} and keeps no pixels of its own (over the {} pixel budget), so"
+                            + " this allocation is unbounded - see A29 in docs/backlog.md",
+                    Integer.toHexString(id()), width(), height(), MAX_STORE_PIXELS);
+        }
         if (ownPixels == null) {
             ownPixels = new Framebuffer(Math.max(1, width()), Math.max(1, height()),
                     backgroundPixel, visual != null && visual.hasAlpha());
