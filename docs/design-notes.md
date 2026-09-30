@@ -207,6 +207,12 @@ Two consequences worth keeping:
   server thread left in it at all (measured 2026-10-01, A27). What ends the server is unchanged: the
   session ending in single-window mode, `stop()` from the control port or a shutdown hook, or a
   signal - this is only about the process following it.
+- **A stop asks before it cuts.** The window-close path sends `WM_DELETE_WINDOW` and gives the client
+  the grace period; a stop (Ctrl-C, a signal, the control port) used to send nothing and close the
+  socket, which leaves an application whose toolkit was never told to quit running with a dead display.
+  `XServer.stop()` asks first - through `clients` and `screenOf(client)`, because in single-window mode
+  the master session has no client of its own - and waits, bounded by `--close-grace-ms`, only for the
+  clients it actually asked.
 - **A window that cannot be opened is a failure the server acts on, not one it sits in** (C11).
   `JavaFxBackend.startupToolkit` starts the toolkit on a daemon thread and waits ten seconds for the
   FX thread to run the startup's runnable: where there is no display `QuantumToolkit.startup` parks on

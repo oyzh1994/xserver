@@ -35,6 +35,17 @@ released". What the Quit *is* turned out to be the whole answer:
   it is refused or ignored exactly as the dock's is. Watching a *client* on `.147` means running it from a
   background local `ssh` that stays up (`setsid nohup` inside a one-shot `tools/vm.sh` command does not
   survive), and counting with `pgrep -c -f "EasyShell/bin"`.
+- **The other half, with the user's own patch (same day)**: the window-close path *asks*
+  (`WM_DELETE_WINDOW`) and then cuts, but the **stop** path - Ctrl-C, a signal, the control port, any
+  backend with no window - only cut, which is what leaves a program whose toolkit was never told to quit
+  running with a dead display. `XServer.stop()` now asks first (`askClientsToCloseForStop`) and waits for
+  the ones it asked (bounded by `--close-grace-ms`) before closing anything. Three things to keep:
+  **iterate `clients` with `screenOf(client)`, not `sessions`** (in single-window mode - which
+  `--backend vnc` implies - the master session has no client, so a `session.client()` loop asks **0**;
+  measured 0 before, 4 after with EasyShell); **the wait goes after the asks**, not as a sleep per window
+  inside the send loop (that loop also runs on the display tick, and an interrupt thrown out of it
+  abandons the shutdown); and **an ask must be readable** - closing with unread input is a reset, which is
+  the case the new test reproduces by reading while the stop is running. **466 tests green.**
 
 **2026-09-30, sixth session (branch `bugfix`): A26 - the JavaFX backend threw
 `IllegalArgumentException: Destination region ... must fit within texture content bounds` and the window

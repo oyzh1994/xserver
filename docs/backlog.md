@@ -3058,6 +3058,32 @@ window" mean the same thing here: end the session that window belonged to. `--de
 opposite intent and keeps the client. And a windowless JavaFX app hears nothing at all, which is why the
 measurement above used the no-JavaFX backends to establish what the *platform* does.
 
+**The other half: a *stop* owes the clients the ask too** (2026-10-01, same day, with the user's own
+patch, corrected here). The window-close path asks `WM_DELETE_WINDOW` and cuts off after the grace; the
+stop path - `Ctrl-C`, a signal, the control port, any backend with no window - only **cut** the
+connections. An application whose toolkit is never told to quit can sit on the far machine with a dead
+display, which is the difference the user was looking at. `XServer.stop()` now asks every client first
+(`askClientsToCloseForStop`) and gives the ones that were asked the grace period to go before anything is
+closed. Three traps, each measured or paid for:
+
+- **Through `clients` and `screenOf(client)`, never through `sessions`.** In single-window mode - which
+  `--backend vnc` implies - every client's windows are on the master screen and the master session has no
+  client of its own, so a loop over `session.client()` asks **nobody**: with `--backend vnc` and EasyShell
+  connected the log had **0** asks. After the fix: **4** (its four toplevel windows), same scenario.
+- **The wait belongs after the asks, not inside the send loop.** Sleeping 100 ms per window inside
+  `closeClientWindows` also runs on the **display tick** (the window-close path calls it), where a client
+  with N windows stalls every frame for 100 ms × N; and wrapping `InterruptedException` in a
+  `RuntimeException` in a shutdown hook abandons the rest of `stop()` - clients not closed, toolkit not
+  released - which turns a quit into a hang. The ask loop now sends everything, then waits (bounded by
+  `--close-grace-ms`, and only if somebody was actually asked) for the clients to go.
+- **An ask has to be readable to count.** Closing a connection with unread input is a **reset**, and a
+  reset discards what the peer had not read: a stop that blocks the reader and then closes has thrown the
+  `WM_DELETE_WINDOW` away. That is why the new test reads *while* the stop is running, and why a real
+  toolkit - which reacts by quitting, closing the connection first - is the case the wait is for.
+
+New `XServerShutdownTest.stoppingTheServerAsksTheClientsToCloseBeforeItCutsThemOff`. Suite: **466 tests,
+green**.
+
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 
 **The report.** "Click 片段, then right-click the host list: the context menu disappears at once. Without
