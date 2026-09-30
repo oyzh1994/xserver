@@ -118,9 +118,19 @@ final class RfbSession implements Runnable {
 
     /** The encodings this server sends, and the pseudo-encoding a resize is told with. */
     private static final int ENCODING_RAW = 0;
+    private static final int ENCODING_TIGHT = 7;
     private static final int ENCODING_ZRLE = 16;
     private static final int ENCODING_CURSOR = -239;
     private static final int ENCODING_DESKTOP_SIZE = -223;
+
+    /** The JPEG quality pseudo-encodings, which is how a client says it can decode JPEG at all. */
+    private static final int ENCODING_JPEG_HIGHEST = -23;
+    private static final int ENCODING_JPEG_LOWEST = -32;
+
+    /**
+     * The widest rectangle a Tight-encoded update may carry, from the specification's Tight section.
+     */
+    private static final int MAX_TIGHT_WIDTH = 2048;
 
     /**
      * The side of the tile used to decide what changed: ZRLE's own tile, so a rectangle this session
@@ -186,6 +196,18 @@ final class RfbSession implements Runnable {
      * which the protocol requires every client to understand.
      */
     private volatile boolean zrleWanted;
+
+    /**
+     * True when the client listed Tight (7), and the JPEG quality it is willing to see - higher is
+     * better, and {@code -1} means it never advertised one, so JPEG is not used at all.
+     *
+     * <p>The quality is a level 0..9 the client named with the pseudo-encodings {@code -23}
+     * (the <em>highest</em> quality) to {@code -32} (the lowest). What the client is really saying is "I
+     * can decode JPEG"; the level is only a hint, and this session takes the best one it was offered so
+     * that the picture stays close to the screen.
+     */
+    private volatile boolean tightWanted;
+    private volatile int jpegQuality = -1;
 
     /**
      * True when the client listed the Cursor pseudo-encoding (-239), which is how it is told what
@@ -596,6 +618,14 @@ final class RfbSession implements Runnable {
             if (encoding == ENCODING_ZRLE) {
                 zrleWanted = true;
             }
+            if (encoding == ENCODING_TIGHT) {
+                tightWanted = true;
+            }
+            if (encoding <= ENCODING_JPEG_HIGHEST && encoding >= ENCODING_JPEG_LOWEST) {
+                // -23 is the best quality the client will accept and -32 the worst, so the level is
+                // the distance from the bottom of that range.
+                jpegQuality = Math.max(jpegQuality, encoding - ENCODING_JPEG_LOWEST);
+            }
             if (encoding == ENCODING_CURSOR) {
                 // A client that has just asked for the cursor is owed the one that is on the screen
                 // now, not the next one to change.
@@ -869,6 +899,10 @@ final class RfbSession implements Runnable {
         if (rectangles.isEmpty()) {
             return false;
         }
+        if (tightWanted && jpegQuality >= 0) {
+            // A Tight rectangle may not be wider than 2048 pixels, and JPEG is sent as Tight.
+            rectangles = splitForTight(rectangles);
+        }
         out.write(0);                                // FramebufferUpdate
         out.write(0);                                // padding
         writeU16(rectangles.size());
@@ -880,7 +914,17 @@ final class RfbSession implements Runnable {
             writeU16(rectangle.y);
             writeU16(width);
             writeU16(height);
-            if (zrleWanted) {
+            if (jpegEligible(rectangle, argb)) {
+                // A photograph, sent as Tight's JPEG method: encoding 7, the JPEG control byte, the
+                // length of the JFIF stream and then the stream. Measured on a 1300x800 frame of
+                // photographic content, where ZRLE's raw subencoding is 3.1 MB and 57 ms of one core
+                // and this is a few hundred kilobytes and a library call (see docs/backlog.md A32).
+                byte[] jpeg = TightEncoder.jpeg(argb, width, height, jpegQuality / 9f * 0.55f + 0.25f);
+                writeInt(ENCODING_TIGHT);
+                out.write(TightEncoder.CONTROL_JPEG);
+                TightEncoder.writeCompactLength(out, jpeg.length);
+                out.write(jpeg);
+            } else if (zrleWanted) {
                 int cpxel = compressedPixelBytes();
                 if (tileScratch == null) {
                     tileScratch = new int[TILE * TILE];
@@ -1059,6 +1103,38 @@ final class RfbSession implements Runnable {
         for (int y = 0; y < height; y++) {
             System.arraycopy(argb, y * width, sent, (region.y + y) * screenWidth + region.x, width);
         }
+    }
+
+    /**
+     * Whether a rectangle should go as JPEG: only when the client offered both Tight and a JPEG
+     * quality, the rectangle fits the Tight width limit, and its content is photographic.
+     *
+     * <p>A rectangle that is not clearly photographic stays on ZRLE, which is lossless - so text, flat
+     * panels and icons are never blurred by a lossy encoder they did not need.
+     */
+    private boolean jpegEligible(Rectangle rectangle, int[] argb) {
+        return tightWanted && jpegQuality >= 0 && rectangle.width <= MAX_TIGHT_WIDTH
+                && rectangle.height > 0
+                && TightEncoder.looksPhotographic(argb, rectangle.width, rectangle.height);
+    }
+
+    /** Splits rectangles wider than the Tight limit, so none of them breaks the encoding's rule. */
+    private static List<Rectangle> splitForTight(List<Rectangle> rectangles) {
+        boolean wide = false;
+        for (Rectangle rectangle : rectangles) {
+            wide |= rectangle.width > MAX_TIGHT_WIDTH;
+        }
+        if (!wide) {
+            return rectangles;
+        }
+        List<Rectangle> split = new ArrayList<>();
+        for (Rectangle rectangle : rectangles) {
+            for (int x = rectangle.x; x < rectangle.x + rectangle.width; x += MAX_TIGHT_WIDTH) {
+                int width = Math.min(MAX_TIGHT_WIDTH, rectangle.x + rectangle.width - x);
+                split.add(new Rectangle(x, rectangle.y, width, rectangle.height));
+            }
+        }
+        return split;
     }
 
     /**

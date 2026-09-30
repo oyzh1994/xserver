@@ -110,6 +110,78 @@ class VncBackendTest {
     }
 
     @Test
+    void aPhotographicRectangleGoesAsTightJpegAndAFlatOneDoesNot() throws Exception {
+        // ZRLE is a palette-and-run encoding: for content where almost every pixel differs from its
+        // neighbour it falls through to raw - 3.1 MB and 57 ms of one core for a 1300x800 frame
+        // (measured, A30). JPEG is the encoding for that content, and Tight is what carries it. The
+        // other half of the test matters as much: a flat rectangle must stay on ZRLE, which is
+        // lossless, so text and panels are never blurred by an encoder they did not need.
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 150, 0xFFFFFF);
+                client.mapWindow(window);
+                int gc = client.allocateId();
+                client.createGC(gc, client.root(), 0);
+                byte[] photo = new byte[200 * 150 * 4];
+                java.util.Random random = new java.util.Random(7);
+                for (int i = 0; i < 200 * 150; i++) {
+                    photo[i * 4] = (byte) random.nextInt(256);          // blue
+                    photo[i * 4 + 1] = (byte) random.nextInt(256);      // green
+                    photo[i * 4 + 2] = (byte) random.nextInt(256);      // red
+                    photo[i * 4 + 3] = (byte) 0xFF;
+                }
+                client.putImage(window, gc, 0, 0, 200, 150, photo);
+                client.flush();
+                Thread.sleep(150);
+
+                // Tight and the JPEG quality pseudo-encodings: -23 is the highest the client accepts.
+                viewer.setEncodings(7, 16, 0, -23, -32);
+                viewer.requestFullFrame();
+                Frame frame = viewer.readFrame();
+                assertTrue(viewer.lastWasJpeg(),
+                        "a photographic rectangle has to go as Tight's JPEG method");
+                // Lossy, so close rather than equal: the mean channel difference of a quality-8 JPEG
+                // of noise is large per pixel but the picture is the same one.
+                assertTrue(jpegIsCloseTo(photo, frame, 200, 150),
+                        "the JPEG has to look like the pixels that were drawn");
+
+                // And a flat rectangle stays lossless even when the client would accept JPEG.
+                int flat = client.allocateId();
+                client.createGC(flat, client.root(), 0x3366CC);
+                client.fillRectangle(window, flat, 0, 0, 200, 150);
+                client.flush();
+                Thread.sleep(200);
+                viewer.requestIncrementalFrame();
+                Frame flatFrame = viewer.readFrame();
+                assertFalse(viewer.lastWasJpeg(), "a flat rectangle stays on the lossless encoding");
+                assertEquals(0x3366CC, flatFrame.pixel(100, 100), "and it arrives exactly");
+            }
+        }
+    }
+
+    /** Whether a JPEG rectangle is recognisably the picture that was drawn: mean channel error. */
+    private static boolean jpegIsCloseTo(byte[] photo, Frame frame, int width, int height) {
+        long error = 0;
+        long counted = 0;
+        for (int y = 0; y < height; y += 3) {
+            for (int x = 0; x < width; x += 3) {
+                int at = (y * width + x) * 4;
+                int drawn = ((photo[at + 2] & 0xFF) << 16) | ((photo[at + 1] & 0xFF) << 8)
+                        | (photo[at] & 0xFF);
+                int received = frame.pixel(x, y) & 0xFFFFFF;
+                error += Math.abs(((drawn >> 16) & 0xFF) - ((received >> 16) & 0xFF));
+                error += Math.abs(((drawn >> 8) & 0xFF) - ((received >> 8) & 0xFF));
+                error += Math.abs((drawn & 0xFF) - (received & 0xFF));
+                counted += 3;
+            }
+        }
+        double mean = (double) error / counted;
+        return mean < 60;                            // noise at quality 8 measures about 20-30
+    }
+
+    @Test
     void aChangeInTwoCornersIsSentAsSmallRectanglesAndNotOneBoxSpanningBoth() throws Exception {
         // A25 made an update the box the difference is in; A31 cuts that box into the 64x64 tiles
         // that really changed and merges the changed ones beside each other. Without it, two small
@@ -750,6 +822,12 @@ class VncBackendTest {
         private CursorRect lastCursor;
         /** The geometry of every rectangle of the update just read, in the order they arrived. */
         final java.util.List<int[]> lastRectangles = new java.util.ArrayList<>();
+        /** Whether the update just read carried a Tight-JPEG rectangle (A32). */
+        private boolean lastWasJpeg;
+
+        boolean lastWasJpeg() {
+            return lastWasJpeg;
+        }
 
         CursorRect lastCursor() {
             return lastCursor;
@@ -945,6 +1023,7 @@ class VncBackendTest {
             in.read();
             int rectangles = readU16();
             lastRectangles.clear();
+            lastWasJpeg = false;
             Frame last = null;
             for (int i = 0; i < rectangles; i++) {
                 int x = readU16();
@@ -968,7 +1047,15 @@ class VncBackendTest {
                     continue;
                 }
                 byte[] data;
-                if (encoding == 16) {                       // ZRLE: a length, then compressed tiles
+                if (encoding == 7) {                        // Tight, which this server sends as JPEG
+                    int control = in.read();
+                    assertEquals(0x90, control, "Tight from this server is JPEG with nothing to reset");
+                    int length = readCompactLength();
+                    byte[] jpeg = readBytes(length);
+                    lastFrameBytes = jpeg.length;
+                    lastWasJpeg = true;
+                    data = decodeJpeg(jpeg, width, height);
+                } else if (encoding == 16) {                 // ZRLE: a length, then compressed tiles
                     int compressed = readInt();
                     byte[] zrle = readBytes(compressed);
                     lastFrameBytes = compressed;
@@ -982,6 +1069,56 @@ class VncBackendTest {
                 last = new Frame(x, y, width, height, bytesPerPixel, bigEndian, lastFrameBytes, data);
             }
             return last;
+        }
+
+        /**
+         * The length of a Tight rectangle's JPEG data: one, two or three bytes, seven bits at a time,
+         * with the top bit of each byte saying "another one follows".
+         */
+        private int readCompactLength() throws IOException {
+            int first = in.read();
+            if (first < 0) {
+                throw new EOFException("the connection closed inside a Tight rectangle");
+            }
+            if ((first & 0x80) == 0) {
+                return first;
+            }
+            int second = in.read();
+            if (second < 0) {
+                throw new EOFException("the connection closed inside a Tight length");
+            }
+            if ((second & 0x80) == 0) {
+                return (first & 0x7F) | second << 7;
+            }
+            int third = in.read();
+            if (third < 0) {
+                throw new EOFException("the connection closed inside a Tight length");
+            }
+            return (first & 0x7F) | (second & 0x7F) << 7 | third << 14;
+        }
+
+        /** One JPEG rectangle, decoded into the client's own pixel format as {@link Frame} reads it. */
+        private byte[] decodeJpeg(byte[] jpeg, int width, int height) throws IOException {
+            java.awt.image.BufferedImage image = javax.imageio.ImageIO.read(
+                    new java.io.ByteArrayInputStream(jpeg));
+            assertNotNull(image, "the JPEG rectangle is not a JPEG");
+            assertEquals(width, image.getWidth(), "the JPEG's width");
+            assertEquals(height, image.getHeight(), "the JPEG's height");
+            byte[] data = new byte[width * height * bytesPerPixel];
+            int at = 0;
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int argb = image.getRGB(x, y);
+                    // Little endian, red at 16 in the 32 bit format this client asked for.
+                    data[at++] = (byte) (argb & 0xFF);
+                    data[at++] = (byte) ((argb >> 8) & 0xFF);
+                    data[at++] = (byte) ((argb >> 16) & 0xFF);
+                    for (int rest = 3; rest < bytesPerPixel; rest++) {
+                        data[at++] = 0;
+                    }
+                }
+            }
+            return data;
         }
 
         /**

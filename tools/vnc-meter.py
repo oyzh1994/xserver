@@ -37,7 +37,7 @@ import sys
 import time
 import zlib
 
-ZRLE, RAW, COPYRECT, DESKTOP_SIZE, CURSOR = 16, 0, 1, -223, -239
+TIGHT, ZRLE, RAW, COPYRECT, DESKTOP_SIZE, CURSOR = 7, 16, 0, 1, -223, -239
 
 
 class Zrle:
@@ -137,6 +137,7 @@ class Client:
         self.encodings = encodings
         self.last_rect = (0, 0, 0, 0)
         self.view = None
+        self.jpgs = 0
         self.handshake()
 
     def recv(self, n):
@@ -212,7 +213,17 @@ class Client:
             raise SystemExit("unexpected server message %d" % kind)
 
     def skip_payload(self, enc, x, y, w, h):
-        if enc == ZRLE:
+        if enc == TIGHT:
+            # This server sends Tight only as its JPEG method (control byte 0x90): a compact
+            # one-to-three byte length and then the JFIF stream.
+            control = self.recv(1)[0]
+            if control != 0x90:
+                raise SystemExit("Tight control 0x%02x is not the JPEG method this server sends"
+                                 % control)
+            length = self.compact_length()
+            self.skip(length)
+            self.jpgs += 1
+        elif enc == ZRLE:
             length = struct.unpack(">I", self.recv(4))[0]
             data = self.recv(length)
             if self.view is not None:
@@ -232,6 +243,17 @@ class Client:
             self.skip(w * h * 4 + ((w + 7) // 8) * h)
         else:
             raise SystemExit("server sent encoding %d, which this meter cannot measure" % enc)
+
+    def compact_length(self):
+        """Tight's length in one, two or three bytes, seven bits at a time."""
+        first = self.recv(1)[0]
+        if first & 0x80 == 0:
+            return first
+        second = self.recv(1)[0]
+        if second & 0x80 == 0:
+            return (first & 0x7F) | second << 7
+        third = self.recv(1)[0]
+        return (first & 0x7F) | (second & 0x7F) << 7 | third << 14
 
 
 def main():
@@ -289,9 +311,11 @@ def main():
         print("wrote %s (%d bytes decoded)" % (dump, len(client.view.pixels)))
     elapsed = max(1e-6, time.time() - start)
     total = client.read - mark_bytes
-    print("%s: %.2f MB in %.1fs = %.2f MB/s, %d updates (%.1f/s), %.1fs with a request held"
+    print("%s: %.2f MB in %.1fs = %.2f MB/s, %d updates (%.1f/s), %d JPEG rectangles, %.1fs with a"
+          " request held"
           % (label, total / 1e6, elapsed, total / elapsed / 1e6,
-             client.updates - mark_updates, (client.updates - mark_updates) / elapsed, held))
+             client.updates - mark_updates, (client.updates - mark_updates) / elapsed, client.jpgs,
+             held))
 
 
 main()
