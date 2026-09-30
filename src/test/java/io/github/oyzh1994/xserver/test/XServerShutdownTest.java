@@ -66,6 +66,25 @@ class XServerShutdownTest {
     }
 
     @Test
+    void theDisplayLoopEndsWhenTheServerDoes() throws Exception {
+        // `Main` waits for this thread and then ends the process - which is what the macOS Quit
+        // needed: the JavaFX toolkit's keep-alive thread is not a daemon and outlives
+        // `Platform.exit()`, so a process whose server had finished (the dock's Quit closed the
+        // window and released every client) was still in the dock twelve seconds later with no
+        // server thread left in it. A display loop that never ended would be a process that never
+        // does.
+        TestServer server = new TestServer(89);
+        try {
+            assertTrue(server.loop.isAlive(), "the loop runs while the server does");
+            server.stop();
+            server.loop.join(2000);
+            assertFalse(server.loop.isAlive(), "the loop has to end when the server does");
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test
     void aClientThatDoesNotWantToBeToldIsJustDisconnected() throws Exception {
         TestServer server = new TestServer(94);
         try (RawXClient client = RawXClient.connect(server.display)) {
@@ -122,6 +141,8 @@ class XServerShutdownTest {
         final int display;
         final XServer xserver;
         final TestBackend backend = new TestBackend();
+        /** The display loop, which is what an entry point that quits the process waits for. */
+        final Thread loop;
 
         TestServer(int display) throws Exception {
             this.display = display;
@@ -132,7 +153,7 @@ class XServerShutdownTest {
                     "--close-grace-ms", String.valueOf(GRACE_MILLIS)}));
             xserver.setBackend(backend);
             xserver.start();
-            xserver.startEventLoop();
+            this.loop = xserver.startEventLoop();
         }
 
         void stop() {

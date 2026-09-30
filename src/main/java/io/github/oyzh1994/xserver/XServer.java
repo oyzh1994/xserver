@@ -1058,16 +1058,23 @@ public final class XServer {
     }
 
     /**
-     * Starts the display loop on its own thread and returns.
+     * Starts the display loop on its own thread and returns that thread.
      *
      * <p>The loop must not run on the main thread: on macOS the platform's own event loop needs it,
      * and blocking it stops the JavaFX window from ever appearing. The thread is deliberately not a
      * daemon so the server keeps the process alive after {@code main} returns.
+     *
+     * <p><b>The thread is also the server's life</b>: it ends when the session is over (single-window
+     * mode) or when {@link #stop()} is called, and an entry point that means to end the process has to
+     * wait for it rather than return from {@code main} - see {@code Main}, where returning from
+     * {@code main} was not enough because the JavaFX toolkit's own keep-alive thread outlives
+     * {@code Platform.exit()} and is not a daemon.
      */
-    public void startEventLoop() {
+    public Thread startEventLoop() {
         Thread loop = new Thread(this::eventLoop, "xserver-display");
         loop.setDaemon(false);
         loop.start();
+        return loop;
     }
 
     private void eventLoop() {
