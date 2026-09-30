@@ -92,7 +92,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~C8~~ | ~~one host window per client toplevel~~ **declined 2026-09-27**: built twice (the second time on B5's store, and it worked), then rejected - the requirement is **one host window per application** | host window | L |
 | ~~E1~~ | ~~the `eventcopy` generator fix~~ **closed 2026-09-27**: the library is not forked, built or republished (the owner's decision, and no Lombok), so the rewrite in `ClientOutput` **is** the fix - the seventh of the library's defects worked around here - pinned by `EventTypeByteTest` | engineering | S |
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
-| [x] D2 | built-in remote transport: **VNC** - raw and ZRLE frames, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
+| [x] D2 | built-in remote transport: **VNC** - raw, ZRLE and (since A32) Tight's JPEG method for photographic rectangles, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
 | [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - the wire is clean, AWT's own reading of the event is not | correctness | M |
 | ~~A19~~ | ~~EasyShell's process dies when it copies~~ **fixed 2026-09-30**: the clipboard bridge asked a client for its data through a window of the **master screen**, which in the default mode is a root no client's setup reply names - GDK wraps the requestor of a `SelectionRequest` and dies in `XScreenNumberOfScreen`. Every earlier attempt had run `--single-window`, where that window *is* on the client's screen | correctness | M |
@@ -107,7 +107,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A29~~ | ~~a client could make the server allocate 17 GB: a window's own pixels were the one allocation with no budget~~ **fixed 2026-10-01**: a 12000x12000 window died with `OutOfMemoryError` in `Framebuffer.allocate` while it was being mapped (every other drawable already had a budget - a pixmap 16M pixels, an image 64M, a request 16 MB). `keepsOwnPixels` now requires the window to fit the largest screen (8192x8192) and a bigger one draws straight onto the screen, which is the root's own path: nothing is refused, and no window that fits on the display changes | robustness | M |
 | ~~A30~~ | ~~the ZRLE encoder looked every pixel up in a palette the tile could no longer use~~ **fixed 2026-10-01**: past sixteen colours a tile can only be plain RLE or raw, and neither reads the palette, so the search from the seventeenth colour on was pure work. Photo-like full frames encode in **57 ms instead of 79-100**; two-colour and text-like frames are unchanged (the numbers are in the review) | performance | S |
 | ~~A31~~ | ~~the VNC path sends **one rectangle per update**, so a change in two corners is encoded as one box spanning both~~ **fixed 2026-10-01**: the region is cut into 64x64 tiles, a changed tile merges with the changed tiles beside it, and each run is shrunk to the box of the pixels that really differ - A25's answer for one change, no box spanning the screen for two. The old behaviour sent `[5,5,285,185]` where the new one sends two 10x10 rectangles | performance | M |
-| [ ] A32 | no **Tight/JPEG**: photographic content goes as ZRLE-raw, 3.1 MB and 57 ms for one full frame (D2 has listed Tight since the beginning; this is the measurement behind it) | performance | L |
+| ~~A32~~ | ~~no **Tight/JPEG**: photographic content goes as ZRLE-raw, 3.1 MB and 57 ms for one full frame~~ **fixed 2026-10-01**: a rectangle whose sampled colours say "photograph" goes as **Tight's JPEG method** (encoding 7, control byte 0x90, the compact length, a JFIF stream) when the client offered both Tight and a JPEG quality - measured on the wire: **3.12 MB -> 0.70 MB** for the same full-screen change, and 56 ms -> 31 ms of encoding. Flat panels and text stay on ZRLE, which is lossless, so nothing is blurred that did not need it | performance | L |
 | ~~A33~~ | ~~`XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first~~ **fixed 2026-10-01**: all eight call sites were audited and do ask first, and `ownPixels()` now writes one warning per window naming it and the budget, so a future caller that gets it wrong leaves a breadcrumb instead of an unexplained `OutOfMemoryError` | robustness | S |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
@@ -3195,6 +3195,44 @@ called for one that keeps none - so a future caller that gets this wrong leaves 
 an `OutOfMemoryError` with no explanation. The DBE path (`DbeExtension.swap`, the one direct caller
 that is not guarded) is unreachable for such a window because DBE buffers are pixmaps and are capped at
 16M pixels; it is recorded in the review rather than changed.
+
+### [x] A32. Tight's JPEG method for photographic rectangles. **L** - fixed 2026-10-01
+
+The last of the frame-path costs was content ZRLE is the wrong tool for: a rectangle where nearly every
+pixel differs from its neighbour falls through to ZRLE's raw subencoding, which is **3.1 MB and 57 ms**
+of one core for a full 1300x800 frame (A30's table, before A30's palette fix it was 83-100 ms). The
+protocol's answer has existed since TightVNC and D2 has listed it since the beginning.
+
+**What was built.** `TightEncoder` carries the JPEG half of Tight: a sampled-colour rule for what is a
+photograph (`looksPhotographic`), a real JFIF stream at the quality the client's pseudo-encodings allow,
+and the protocol's compact 1-3 byte length. `RfbSession` records Tight (7) and the JPEG quality
+pseudo-encodings (`-23` is the **highest** quality and `-32` the lowest, which the specification says
+explicitly and the numbering does not suggest), splits rectangles wider than the Tight limit of 2048,
+and sends a rectangle the rule calls photographic as **encoding 7 with control byte 0x90** - JPEG is a
+Tight *compression method*, not an encoding of its own.
+
+**Measured, encoder and wire.** One full 1300x800 frame, min of ten, our own build:
+
+| content | ZRLE | Tight-JPEG |
+|---|---|---|
+| flat UI | **2.2 ms, 1.5 KB** | (not chosen; 138 KB if it were) |
+| text | **13.3 ms, 255 KB** | (not chosen; 304 KB) |
+| photograph | 56.3 ms, 3121 KB | **30.6 ms, 697 KB** |
+| photograph inside a UI | 34.7 ms, 1682 KB | **23.4 ms, 424 KB** |
+
+and on the wire, a client painting a full-screen photograph while `tools/vnc-meter.py` watched: **3.12 MB
+with ZRLE advertised, 0.70 MB with Tight and the JPEG qualities advertised**, same change, same two
+updates. The rule's other half is the table's first two rows: text and flat panels are **not** sent as
+JPEG, so they keep their losslessness (and would have been ninety times larger as JPEG). New tests:
+`TightEncoderTest` (the rule, the compact length with the specification's own `10000 = 90 4E`, and a
+stream this JVM's decoder reads back) and
+`VncBackendTest.aPhotographicRectangleGoesAsTightJpegAndAFlatOneDoesNot`, which decodes the JPEG the way
+a client does and checks both halves.
+
+**What is left of the idea.** ImageIO's JPEG writer is not fast - 30 ms for a large frame - so a
+hand-written or native encoder would shrink the encoding time further; and noVNC does not decode
+Tight-JPEG, so a browser viewer still gets ZRLE (which is why the ZRLE path had to stay good, and it
+did).
 
 ### [ ] A20. "The context menu vanishes after the 片段 page has been opened" - not reproduced; measured identical to the reference. **M** - open, 2026-09-29
 

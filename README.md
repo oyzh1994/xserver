@@ -83,7 +83,10 @@ this server, only the RFB inside the WebSocket). What is sent is the part of the
 which every VNC client does and which is what makes a desktop of text or flat colour cheap. An
 unchanged screen costs nothing at all: the comparison is against what the viewer was last sent, so an
 application that repaints identical content (EasyShell's aliyun tab does it ~300 times a second) sends
-nothing, as it does with `x11vnc`. `Tight` and `CoRRE` are the encodings still on the list in
+nothing, as it does with `x11vnc`. **A photographic rectangle goes as Tight's JPEG method** when the
+client offers it (a few hundred kilobytes instead of the three megabytes ZRLE has to send for content
+where no pixel matches its neighbour, measured 2026-10-01), while text and flat panels stay on ZRLE,
+which is lossless. `CoRRE` is the only encoding still on the list in
 [docs/backlog.md](docs/backlog.md) (D2).
 
 **Stopping it**: `Ctrl-C`, or the dock's **Quit** on macOS. A Quit closes the host window, which the

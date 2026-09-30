@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 465 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 472 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,31 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-10-01, tenth session (branch `bugfix`): A32 - Tight's JPEG method for photographic content.**
+The last item the review left open, and the one the review's own numbers pointed at: ZRLE is a
+palette-and-run encoding, so a rectangle where nearly every pixel differs from its neighbour falls
+through to raw - 3.1 MB and 56 ms of one core for a full 1300x800 frame.
+
+- **The protocol, from the community RFB specification (fetched, not remembered)**: JPEG is a *Tight
+  compression method* - encoding **7** with control byte **0x90** - carrying a compact 1-3 byte length
+  and a JFIF stream; the **JPEG quality pseudo-encodings are the client's capability**, and `-23` is
+  the **highest** quality with `-32` the lowest (the opposite of what the numbering suggests); a Tight
+  rectangle may not be wider than **2048**, so `RfbSession.splitForTight` keeps its rectangles inside
+  that. `tools/vnc-meter.py` learned to skip a Tight rectangle's JPEG so a measurement can be taken
+  from a real socket.
+- **The rule**: `TightEncoder.looksPhotographic` samples the rectangle and asks for more than 64
+  colours. A photograph inside flat panels counts as one (JPEG renders the flat parts faithfully and
+  ZRLE is the wrong tool for the whole rectangle), while text and panels - a handful of antialiasing
+  greys - stay on ZRLE, which is lossless. That second half is what the tests pin hardest.
+- **Measured**: encoder, one 1300x800 frame - flat UI 2.2 ms/1.5 KB and text 13.3 ms/255 KB (both stay
+  ZRLE) against photograph 56.3 ms/3121 KB -> **30.6 ms/697 KB**; on the wire, a client painting a
+  full-screen photograph with the meter watching - **3.12 MB with ZRLE advertised, 0.70 MB with Tight
+  and the JPEG qualities advertised**, same change. Tests: `TightEncoderTest` and the JPEG half of
+  `VncBackendTest`, which decodes the stream the way a client does.
+- **Left**: ImageIO's JPEG writer costs 30 ms for a large frame (a hand-written encoder would shrink
+  that), and noVNC does not decode Tight-JPEG - a browser viewer still gets ZRLE, which is why the ZRLE
+  path had to stay good. **468 tests green.**
 
 **2026-10-01, ninth session (branch `bugfix`): the whole-project review** - `docs/review-2026-10-01.md`
 is the record, and it is the document to read before picking anything up from it. Two defects were
