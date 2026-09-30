@@ -304,9 +304,42 @@ public final class XWindow extends XResource {
      *
      * <p>The root is the exception - it <em>is</em> the screen - and so is an input-only window,
      * which has no pixels at all.
+     *
+     * <p><b>And so is a window too large to keep pixels for</b> ({@link #MAX_STORE_PIXELS}): a store
+     * is the window's own size, so a client that creates a very large window and draws into it asks
+     * the server for the same amount of memory - measured 2026-10-01: a 12000x12000 window reached
+     * {@code OutOfMemoryError} inside {@code Framebuffer.allocate} while the window was being mapped,
+     * which killed that connection and left the whole server one allocation away from the same fate.
+     * Every other drawable already has a budget like this one (a pixmap is 16M pixels, an image
+     * decode 64M); a window's own store was the one that did not.
+     *
+     * <p>The window is not refused and nothing about its protocol behaviour changes: it draws onto the
+     * screen directly, exactly as the root does, so it simply does not keep what a window on top of
+     * it covers. The limit is the largest screen this server can be asked for, so <em>no window that
+     * fits on the display is affected at all</em>.
      */
     public boolean keepsOwnPixels() {
-        return visual != null && !isInputOnly() && !isRoot();
+        return visual != null && !isInputOnly() && !isRoot() && keepsStore();
+    }
+
+    /**
+     * The most pixels a window's own store may hold: the screen at its largest ({@code --max-screen},
+     * 8192x8192 by default). A window bigger than the display cannot show more than the display, and
+     * a store for it is the one allocation in this server that had no bound.
+     */
+    public static final long MAX_STORE_PIXELS = 8192L * 8192;
+
+    /** Whether this window is small enough to keep its own pixels. */
+    private boolean keepsStore() {
+        return keepsStore(width(), height());
+    }
+
+    /**
+     * Whether a window of this size is small enough to keep its own pixels. Static so the rule can be
+     * pinned without allocating a window of the size that used to break the server.
+     */
+    static boolean keepsStore(int width, int height) {
+        return (long) Math.max(1, width) * Math.max(1, height) <= MAX_STORE_PIXELS;
     }
 
     /**

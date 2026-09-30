@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -61,6 +62,24 @@ class WindowTreeTest {
      * could not resolve. Both bridges are made here and deliberately **not** started, which is what
      * such a server looks like.
      */
+    @Test
+    void aWindowTooLargeToKeepPixelsKeepsNone() {
+        // A store is the window's own size, and it was the one allocation in this server with no
+        // budget: a pixmap is capped at 16M pixels and an image decode at 64M, but a client that
+        // created a window and drew into it could ask for 65535x65535x4 bytes - 17 GB. Measured
+        // 2026-10-01: a 12000x12000 window reached OutOfMemoryError inside Framebuffer.allocate
+        // while it was being mapped, which killed that connection. The window now draws straight
+        // onto the screen instead - the root's own path - so nothing about it is refused, and no
+        // window that fits on the display is affected.
+        assertTrue(XWindow.keepsStore(1300, 800), "an ordinary window");
+        assertTrue(XWindow.keepsStore(8192, 8192), "the largest screen this server can be asked for:"
+                + " a window that fits on the display always keeps its pixels");
+        assertTrue(XWindow.keepsStore(65000, 1024), "a wide strip costs what it holds, not what it is");
+        assertFalse(XWindow.keepsStore(8193, 8192), "one pixel over the budget is over");
+        assertFalse(XWindow.keepsStore(12000, 12000), "the size that was measured to blow up");
+        assertFalse(XWindow.keepsStore(65535, 65535), "and the largest a window can be asked for");
+    }
+
     @Test
     void aBridgeThatNeverStartsStillRegistersItsWindow() throws Exception {
         io.github.oyzh1994.xserver.tray.TrayBridge tray =

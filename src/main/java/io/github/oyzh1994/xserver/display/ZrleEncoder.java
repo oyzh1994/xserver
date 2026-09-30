@@ -37,6 +37,19 @@ final class ZrleEncoder {
     /** ZRLE's tile, from the spec: 64 pixels square, and smaller at the right and bottom edges. */
     private static final int TILE = 64;
 
+    /**
+     * The most colours a packed-palette tile can carry, from the spec's subencoding range.
+     *
+     * <p>The palette search stops here, and that is the whole point of the number: past sixteen
+     * colours the tile can only be plain RLE or raw, and neither of those looks at the palette - so
+     * looking each following pixel up in it is pure work. Measured on full 1300x800 frames (min of 36
+     * runs each, 2026-10-01): a photo-like frame, where nearly every tile has more than sixteen
+     * colours, went from **79-100 ms to 57 ms**; a two-colour frame (10 ms) and a text-like one
+     * (13.5 ms) did not move, which is the half of the measurement that matters - the common case must
+     * not pay for the rare one. The numbers and the harness are in `docs/review-2026-10-01.md`.
+     */
+    private static final int PALETTE_LIMIT = 16;
+
     private ZrleEncoder() {
     }
 
@@ -101,8 +114,10 @@ final class ZrleEncoder {
                                    int tileY, int width, int height,
                                    java.util.function.IntUnaryOperator packer, int cpxel,
                                    int[] tile) {
-        // The palette first: up to 127 colours, and the first repeat settles whether RLE is the way.
-        int[] palette = new int[128];
+        // The palette first, up to the seventeen it takes to know the tile is not a palette tile:
+        // `colours == 1` is the solid case, up to PALETTE_LIMIT settles the packed-palette case, and
+        // one colour past the limit is what tells this code to stop looking pixels up in it.
+        int[] palette = new int[PALETTE_LIMIT + 1];
         int colours = 0;
         int pixels = width * height;
         int at = 0;
@@ -111,6 +126,9 @@ final class ZrleEncoder {
             for (int x = 0; x < width; x++) {
                 int packed = packer.applyAsInt(argb[row + x]);
                 tile[at++] = packed;
+                if (colours > PALETTE_LIMIT) {
+                    continue;                       // a palette tile is out of the question now
+                }
                 int found = -1;
                 for (int i = 0; i < colours; i++) {
                     if (palette[i] == packed) {
@@ -118,7 +136,7 @@ final class ZrleEncoder {
                         break;
                     }
                 }
-                if (found < 0 && colours < 128) {
+                if (found < 0) {
                     palette[colours++] = packed;
                 }
             }
