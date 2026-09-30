@@ -2204,6 +2204,19 @@ public final class InputState implements DisplayBackend.InputSink {
         while (target.parent() != null && !target.parent().isRoot()) {
             target = target.parent();
         }
+        // **An override-redirect toplevel is not focused** - a menu, a tooltip or any other popup an
+        // application puts up for itself, and a window manager leaves the focus where it is for those
+        // (one that needs the keyboard grabs it, which is what a menu bar or a launcher does). It is
+        // not a nicety: the focus belongs to the window such a popup was opened *from*, so moving it
+        // there takes the focus away from that window, and a toolkit hides a popup whose owner it
+        // believes unfocused. Measured on EasyShell: the press went to the popup, the owner was told
+        // `FocusOut`, and the menu was unmapped three milliseconds later - so every item of an input
+        // box's context menu was dead to the mouse while the same item worked from the keyboard
+        // (A23, 2026-09-30). With the focus left alone the press and the release both stay in the
+        // popup and the item activates.
+        if (target.isOverrideRedirect()) {
+            return;
+        }
         // A focus that is already on an ordinary window the click landed inside is left alone. The
         // root window and None are *not*: those are exactly the states a client cannot get out of by
         // itself - a click in a window while the focus sits on the root is what has to move it - and

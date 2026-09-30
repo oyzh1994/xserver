@@ -73,6 +73,14 @@ public final class ServerOptions {
      * behaviour, and this is the switch that gives it what a desktop would). With it on, the click
      * that lands in the application's window focuses it again.
      *
+     * <p>**A click in an override-redirect window is left alone**, which is the other half of the same
+     * rule and not a detail: a window manager never gives the input focus to a menu or a tooltip, and
+     * moving it there takes the focus away from the window the popup was opened from. A toolkit hides
+     * a popup whose owner it believes unfocused, so the click that was meant to activate an item
+     * instead tore the menu down - measured on EasyShell, whose input box context menu opened, took
+     * the focus on the press, and was unmapped three milliseconds later, every item dead to the mouse
+     * while the keyboard still worked (A23, 2026-09-30).
+     *
      * <p>**`--no-focus-on-click` is the comparison switch**, the way `--no-glx` is: a reference server
      * does not focus a window on a click, so a measurement that has to be byte-identical to one wants
      * this off - the sweep of probes and any A/B whose gesture presses a button.
@@ -316,11 +324,13 @@ public final class ServerOptions {
                   --local               only listen on loopback
                   --log-requests        log every request
                   --focus-on-click      a click moves the input focus to the window it lands in, the
-                                        way a window manager does it. **On by default**, because this
-                                        server is the window manager for what it forwards and it is
-                                        what an application whose page leaves the focus nowhere needs
-                                        for its menus to open; --no-focus-on-click is the comparison
-                                        switch, since a reference does not do it
+                                        way a window manager does it - an override-redirect window
+                                        (a menu) excepted, since focusing one tears the menu down.
+                                        **On by default**, because this server is the window manager
+                                        for what it forwards and it is what an application whose page
+                                        leaves the focus nowhere needs for its menus to open;
+                                        --no-focus-on-click is the comparison switch, since a
+                                        reference does not do it
                   --glx / --no-glx      advertise GLX, which it does by default: a GL client needs
                                         it, and a toolkit that does not use it only pays one
                                         abandoned context (--no-glx is the comparison switch)

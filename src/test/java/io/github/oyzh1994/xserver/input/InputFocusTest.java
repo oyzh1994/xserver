@@ -165,6 +165,34 @@ public class InputFocusTest {
                 "with it off nothing moves the focus on a click - which is what a reference does");
     }
 
+    /**
+     * A click in an override-redirect window leaves the focus alone, so the window a popup belongs to
+     * keeps it - which is what keeps the popup itself on screen and its items clickable.
+     *
+     * <p>A window manager never gives the input focus to an override-redirect window, and the cost of
+     * doing it is measured: EasyShell's input box context menu opened, the press on an item moved the
+     * focus from the window that owned the menu to the menu's own window, that owner was told
+     * {@code FocusOut}, and the toolkit unmapped the popup three milliseconds later. Every item was
+     * then dead to the mouse while the keyboard still activated them (A23, 2026-09-30).
+     */
+    @Test
+    void aClickInsideAnOverrideRedirectWindowLeavesTheFocusOnItsOwner() {
+        XServer server = serverWithTwoWindows();
+        XWindow outer = (XWindow) server.resources().get(0x400001);
+        // The popup: an override-redirect child of the root, which is what a menu is.
+        XWindow menu = window(server.screen(), server.rootWindow(), 0x400003, 200, 200, 40, 40);
+        menu.setOverrideRedirect(true);
+        server.resources().add(menu);
+        menu.setMapped(true);
+        server.input().setInputFocus(outer, InputState.REVERT_TO_PARENT);
+        server.input().pointerMoved(210, 210);
+
+        server.input().buttonChanged(1, true, 210, 210);
+
+        assertEquals(outer, server.input().inputFocus(),
+                "the focus stays on the window the popup belongs to");
+    }
+
     @Test
     void aFocusOfNoneSendsKeysNowhere() {
         XServer server = serverWithTwoWindows();
