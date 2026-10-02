@@ -111,6 +111,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A33~~ | ~~`XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first~~ **fixed 2026-10-01**: all eight call sites were audited and do ask first, and `ownPixels()` now writes one warning per window naming it and the budget, so a future caller that gets it wrong leaves a breadcrumb instead of an unexplained `OutOfMemoryError` | robustness | S |
 | ~~A34~~ | ~~a rectangle that "looks photographic" went out as Tight's JPEG method even when the client never listed Tight or a JPEG quality~~ **fixed 2026-10-03**: the eligibility test was the whole condition, so a viewer that asked for ZRLE alone (a scripted client, some VNC clients) could be handed an encoding it cannot decode - which reads as a rectangle that never updates. JPEG now needs `tightWanted && jpegQuality >= 0` **and** eligibility, and the session logs the viewer's whole encoding list on connect (the first thing to read when a picture looks wrong) | correctness | S |
 | ~~A35~~ | ~~"compared with Xvfb+x11vnc seen in the Finder, what this server renders looks less clear"~~ **answered 2026-10-03, and it is the display, not the renderer**: at the default `--scale 1` the client draws 1x and the host window on a Retina panel draws each framebuffer pixel as a 2x2 **block** - measured on a capture of the window: **95.6% of 2x2 blocks are one colour**, i.e. magnification with no added detail - where the Finder's view of a 1x remote screen is 1:1. Our own VNC path is lossless for text (measured: a full frame and scrolling text, with Tight and a JPEG quality in the client's list, produced **0 JPEG rectangles**). The levers are `--scale 2`/`--scale auto` (real 2x detail for clients that follow `Xft.dpi`, which GTK/Qt do and the JVM in termora did **not** - its block ratio stayed ~95% under both `--scale 2` and `-Dsun.java2d.uiScale=2`), or watching the server over VNC so the same viewer presents the same picture | clarity | M |
+| ~~A36~~ | ~~"what is still missing against Xvfb"~~ **re-measured 2026-10-03**: the extension set is unchanged (23 each, DPMS here against MIT-SHM there) and every version a client is told matches **except XInputExtension - a reference answers 2.4 where this server answers 2.0**, which is the one capability a modern client can still reach for (AWT logs it, GDK asks for 2.4 and falls back). §9 now carries the re-measurement, and E0's sweep re-run says 17 of 28 probes identical with the two new differences explained | capability | M |
+| ~~A37~~ | ~~**XTS (`xts` 5.1.5) against the `Xproto` set**: 121 of 122 purposes failed~~ **two root causes fixed 2026-10-03**: (1) a **BIG-REQUESTS request longer than the maximum got `BadLength` and then the connection was closed** - a reference replies and *discards* the request, so the client's next request is answered; XTS's `TOO_LONG` case (which sends `bigreq_size + 1` and then all sixteen megabytes) went from `UNRESOLVED`+`SIGPIPE` to **PASS**, and (2) **`AllocColorCells`/`AllocColorPlanes` handed out writable cells on a read-only visual** (TrueColor and the statics), where the protocol says `BadAlloc`. Down to **1 case per purpose (120 of 122)**, all of them the same missing piece: **per-request length validation** (a request whose length is one unit more or less than its type defines must be `BadLength`), which needs a table of exact-vs-at-least sizes - see the entry | correctness | L |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6154,3 +6156,74 @@ to serve - D2's VNC is the remote path, and it is done); `MIT-SHM` (B8); `Xevie`
 belongs in `tools/` beside the others and in `tools/sweep.sh`, so its answers are compared against the
 reference line for line - that is the standard every other extension here met, and the reason the
 sweep exists.
+
+### [x] A37. The X Test Suite against the `Xproto` set - two root causes fixed, one class left. **L** - 2026-10-03
+
+**What was run, and how to run it again.** The X Test Suite (the revamped `xts` from
+`gitlab.freedesktop.org/xorg/test/xts`, 5.1.5) is not packaged for Ubuntu, so it is built on the bed:
+
+```sh
+# once, on the bed VM. Needs build-essential autoconf automake libtool pkg-config xutils-dev
+# libx11-dev libxext-dev libxi-dev libxt-dev libxtst-dev libxmu-dev libxaw7-dev x11-utils
+# x11-xserver-utils xfonts-utils - installed with Acquire::ForceIPv4=true, because DNS answers with
+# IPv6 first here and the VM has no IPv6 route (curl is not installed either; python3 is).
+python3 -c "import urllib.request; urllib.request.urlretrieve('https://gitlab.freedesktop.org/xorg/test/xts/-/archive/master/xts-master.tar.gz','/root/xts-master.tar.gz')"
+cd /root && tar xzf xts-master.tar.gz && mv xts-master xts && cd xts
+NOCONFIGURE=1 ./autogen.sh && ./configure --prefix=/opt/xts && make -j6 && make install
+
+# the scenario: xts5/tet_scen defines scenarios by name, so a subset is a section that includes one
+# of xts5/scenarios/<set>_scen. The Xproto set is 122 purposes and takes about eight minutes a server.
+printf 'min\n\t"VSW5TESTSUITE SECTION Xproto 122 389 0 0"\n\t:include:/scenarios/Xproto_scen\n' >> xts5/tet_scen
+
+cd /root/xts                       # the *build* tree: the installed one has no test binaries
+DISPLAY=:98 TET_ROOT=/root/xts /opt/xts/bin/xts-run -o /root/xts-xvfb min
+DISPLAY=192.168.22.1:61 TET_ROOT=/root/xts /opt/xts/bin/xts-run -o /root/xts-ours min
+/opt/xts/bin/xts-report -f <results-dir>/journal -d 3
+```
+
+**The reference first, because XTS's own README says a failure is not automatically a bug.** Xvfb
+(1300x800x24, the bed's reference) answers **`Xproto` 92 cases / 294 test cases: 281 PASS, 13
+UNTESTED, 0 FAIL** - "All 122 tests passed, 21 tests were not run". The 13 untested ones are the
+BAD_LENGTH sub-cases, which a BIG-REQUESTS server cannot test at all (a zero length *is* the
+big-request escape) and XTS says so in the journal itself.
+
+**This server, before the fixes: 121 of 122 purposes failed.** Two root causes, both real protocol
+behaviour rather than test pedantry:
+
+1. **An over-long BIG-REQUESTS request closed the connection.** `ClientConnection.requestLoop` sent
+   `BadLength` and then returned, which ends the connection. Tapped while XTS ran: the client sends a
+   big request whose extended length is `bigreq_size + 1` (4 194 304 units, sixteen megabytes) and
+   writes all of it; a reference answers **one** `BadLength`, *discards the whole request*, and the
+   next request on that connection is answered normally. The fix is to discard the declared bytes -
+   in 64 KB chunks - and carry on. XTS's own `TOO_LONG` case went from `UNRESOLVED` (`child process
+   was terminated by signal 13 (SIGPIPE)`) to **PASS**, and with it the third case of every purpose
+   in the set.
+2. **`AllocColorCells` and `AllocColorPlanes` gave out writable cells on a read-only visual.**
+   TrueColor, StaticColor and StaticGray colormaps have no writable entries; the protocol says both
+   requests answer `BadAlloc` there, and XTS says it in words ("If the default visual class ... is
+   DirectColor, PseudoColor, or GrayScale ... otherwise ... BadAlloc"). This server answered with a
+   reply and pixels `0..n-1`. `AllocColor` is a different request and still works - looking up an RGB
+   value on TrueColor is the normal case - and `XColormap.requireWritableCells` now refuses only the
+   two cell requests.
+
+**What is left, and it is one thing.** After both fixes **120 of 122 purposes still fail, and every
+one of them is the same case** - `PURPOSE 2`, whose assertions are "a request whose length field is
+one unit **less** than the request type's minimum gets `BadLength`" and "one unit **more** gets
+`BadLength`". This server executes those requests as though they were well formed (the journal says
+`Expect: wanted ERROR - BadLength, got REPLY` / `got NOTHING` / `got BadRequest`). It needs a
+**per-request notion of the length a request type must have**: exact for the fixed-length requests,
+"at least" for the variable ones - exactly the distinction Xorg encodes as `REQUEST_SIZE_MATCH`
+against `REQUEST_AT_LEAST_SIZE` in every `Proc<Name>`. **A generic attempt was made and reverted
+within the hour**: comparing the decoded request's `getSize()` with the declared length looks like it
+should work, but the generated classes' `getSize()` is not the wire size for many requests
+(`GetProperty` among them) and the check failed three hundred of this repository's own tests. That is
+written into `RequestDispatcher.decodeCore`'s comment so the next attempt starts from the table
+rather than from `getSize()`. The table is the work: 120-odd entries, each exact or at-least, and XTS
+is the oracle that says which - the reference passes all of them.
+
+**What this bought.** Xproto's *first* case of every purpose - the well-formed behaviour of each core
+request - passes here, which is the broadest conformance statement this project has: 281 of the
+reference's 294 assertions are green on both servers. And the two fixes are behaviour a *client* can
+see: the connection no longer dies on a request the client mis-sized (a failure that reads as "the
+application hung" rather than as an error), and a toolkit that asks for writable colour cells on a
+TrueColor visual is now told no the way it expects, instead of being handed cells it cannot use.

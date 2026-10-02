@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 475 tests. **A18 is FIXED (2026-10-03)**: the XInput extension advertised `first_event = 0`, and an event base is where a client library installs its wire-to-event converter, so libXi's device converter sat on core `ButtonPress` and AWT read every click's root y as the button number, which is exactly the "Nonexistent button 16" - see [the event-base trap](x11-extension-event-base-hijack.md). **A34** fixed the JPEG gate (a Tight/JPEG rectangle could go to a viewer that never listed Tight), and **A35** answered the "less clear than x11vnc in the Finder" report: a 1x framebuffer magnified 2x by the Retina window (measured 95.6% one-colour 2x2 blocks), not the renderer or the encoder - use `--scale 2` or watch it over VNC. **Open: the reference motion shape.** **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 475 tests. **A18 is FIXED (2026-10-03)**: the XInput extension advertised `first_event = 0`, and an event base is where a client library installs its wire-to-event converter, so libXi's device converter sat on core `ButtonPress` and AWT read every click's root y as the button number, which is exactly the "Nonexistent button 16" - see [the event-base trap](x11-extension-event-base-hijack.md). **A34** fixed the JPEG gate (a Tight/JPEG rectangle could go to a viewer that never listed Tight), **A35** answered the "less clear than x11vnc in the Finder" report a 1x framebuffer magnified 2x by the Retina window (measured 95.6% one-colour 2x2 blocks), not the renderer or the encoder - use `--scale 2` or watch it over VNC), **A36** re-measured the gap against Xvfb (one: XInput 2.0 against 2.4) and **A37** ran the X Test Suite: two protocol bugs fixed (an over-long BIG-REQUESTS request closed the connection; colour cells were handed out on a read-only visual) and one class left (per-request length validation). **Open: the reference motion shape, and A37's per-request length table.** **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -13,6 +13,34 @@ This memory is only for picking the work up; when they disagree, the repository 
 
 **2026-10-03 (later in the same session): "the picture is less clear than Xvfb+x11vnc seen in the
 Finder" is the display, not the renderer (A35), and the JPEG gate was wrong (A34).**
+
+**2026-10-03 (the end of the same session, bed at `.152`): the capability re-measurement (A36) and
+the X Test Suite (A37).**
+
+- **A36.** Xvfb and this server advertise the same 23 extensions (we have DPMS, they have MIT-SHM -
+  unchanged) and **every version matches except XInputExtension: reference 2.4, here 2.0** - the one
+  capability a modern client can still reach for (AWT logs it, GDK asks 2.4 and falls back). E0's
+  sweep re-run is 17 of 28 identical; the two new differences are `SelectionProbe` (a fresh
+  connection per section gets whatever resource-id base the server's reaping timing allows) and
+  `MenuProbe` (the `FocusIn` a click produces, because `--focus-on-click` is on by default where
+  Xvfb has no WM) - both now in `tools/README.md`.
+- **A37, XTS.** Built `xts` 5.1.5 on the VM (`/root/xts`, installed to `/opt/xts`; the full recipe is
+  in the backlog entry) and ran its `Xproto` set against both servers. Reference: **281 PASS /
+  13 UNTESTED / 0 FAIL** ("All 122 tests passed, 21 not run"). Ours went from **121 of 122 purposes
+  failing** to **120**, with the third case of every purpose now passing, after two real fixes:
+  **an over-long BIG-REQUESTS request now gets `BadLength` and is discarded** (it used to close the
+  connection, which the client sees as `SIGPIPE` and a hung application) and **`AllocColorCells` /
+  `AllocColorPlanes` now answer `BadAlloc` on a read-only visual class** (they used to hand out cells
+  that do not exist on TrueColor). The one class left is **per-request length validation**: every
+  purpose's second case sends a request with a length one unit over or under its type's requirement
+  and expects `BadLength`; that needs a table of exact-vs-at-least sizes, because the generated
+  classes' `getSize()` is not the wire size (a generic attempt broke 300 of our own tests and was
+  reverted the same hour - the comment in `RequestDispatcher.decodeCore` says so).
+- **Bed notes**: the VM's IP is `.152` now (`tools/vm.sh` and every doc updated); it has **no
+  IPv6 route**, so `apt` wants `Acquire::ForceIPv4=true` and there is no `curl` (use `python3`); the
+  X server on `:61` (single-window, `--no-clipboard --no-tray`) is what XTS and the sweep run
+  against, and it must be started as a *foreground session* - a `( … & )` inside a one-shot command
+  is killed when that command returns. **Do not start the VMs yourself** (asked 2026-10-03).
 
 - **Measured, not argued.** With the VNC backend and a viewer that lists Tight **and** a JPEG quality
   (the meter's `--enc 16,0,-223,7,-23`), a full frame and a scrolling terminal produced **0 JPEG

@@ -134,6 +134,28 @@ public final class XColormap extends XResource {
     }
 
     /**
+     * Refuses to hand out writable cells on a visual that has none.
+     *
+     * <p>{@code AllocColorCells} and {@code AllocColorPlanes} ask for <em>writable</em> entries, and
+     * only {@code DirectColor}, {@code PseudoColor} and {@code GrayScale} have them: a
+     * {@code TrueColor}, {@code StaticColor} or {@code StaticGray} colormap is read-only, and the
+     * protocol says both requests answer {@code BadAlloc} there. **Measured with XTS `Xproto`**
+     * (2026-10-03): every one of its cases for the two requests failed here and passed on Xvfb with
+     * "wanted ERROR - BadAlloc, got REPLY", because this server handed out pixels 0..n-1 as though a
+     * TrueColor map were writable. {@code AllocColor} is a different request and still works - a
+     * toolkit looking up an RGB value on TrueColor is the normal case.
+     */
+    private void requireWritableCells() {
+        byte visualClass = visual.visualClass();
+        boolean writable = visualClass == VisualInfo.DIRECT_COLOR
+                || visualClass == VisualInfo.PSEUDO_COLOR
+                || visualClass == VisualInfo.GRAY_SCALE;
+        if (!writable) {
+            throw ProtocolException.badAlloc();
+        }
+    }
+
+    /**
      * Allocates {@code count} writable colour cells. On a TrueColor visual the "cells" are the
      * packed pixel values themselves, which is what X does as well; on indexed visuals they are
      * colormap indices.
@@ -143,6 +165,7 @@ public final class XColormap extends XResource {
      * @param planes     number of planes the client wants to write, or 0 to skip the check
      */
     public int[] allocColorCells(boolean contiguous, int count, int planes) {
+        requireWritableCells();
         if (visual.isTrueColor()) {
             if (planes > 0 && (1 << planes) > colors.length) {
                 throw ProtocolException.badValue(planes);
@@ -196,6 +219,7 @@ public final class XColormap extends XResource {
 
     /** Allocates colour planes, returning the pixel base and one mask per plane. */
     public PlaneAllocation allocColorPlanes(int count, int planes) {
+        requireWritableCells();
         if (planes < 1 || planes > 4) {
             throw ProtocolException.badValue(planes);
         }

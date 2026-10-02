@@ -96,6 +96,16 @@ public final class RequestDispatcher {
             if (VariableLengthDecoders.handles(opcode & 0xFF)) {
                 return VariableLengthDecoders.decode(opcode & 0xFF, in, requestBytes, request);
             }
+            // **A per-request length check is what XTS's `Xproto` set still wants here** (A37): every
+            // one of its 122 purposes has a case that sends a request whose length field is one unit
+            // more (and another, one unit less) than the request type defines and expects
+            // `BadLength`. An attempt to do this generically by comparing the *decoded* request's
+            // `getSize()` with the declared length was made and **reverted the same hour**: the
+            // generated classes' `getSize()` is not the wire size for many requests (GetProperty and
+            // the whole extension surface failed the suite), so the check has to come from a table
+            // of per-request sizes - exact for the fixed-length requests, "at least" for the rest,
+            // which is the distinction Xorg encodes in `REQUEST_SIZE_MATCH` against
+            // `REQUEST_AT_LEAST_SIZE`. Not done yet; see the backlog entry for the measurement.
             return xproto.readRequest(opcode, minorOpcode, in);
         } catch (IOException e) {
             // The request was already buffered, so a decode failure cannot desynchronise the

@@ -370,6 +370,7 @@ public final class ClientConnection implements Runnable {
             if (lengthUnits == 0) {
                 if (!bigRequestsEnabled) {
                     // A zero length is only meaningful once BIG-REQUESTS has been enabled.
+                    sequenceNumber++;
                     sendError(ProtocolException.LENGTH, 0);
                     return;
                 }
@@ -377,8 +378,19 @@ public final class ClientConnection implements Runnable {
                 // both 4 byte header words.
                 long bigLength = Integer.toUnsignedLong(in.readInt32());
                 if (bigLength > MAX_BIG_REQUEST_UNITS) {
+                    // **Too long, and the connection survives it.** A reference answers BadLength
+                    // and then *discards* the whole request the client has already committed to
+                    // sending - measured on a tap while XTS's `Xproto` set ran: a client sends a
+                    // big request whose length is `bigreq_size + 1` and then all sixteen megabytes
+                    // of it, gets one BadLength, and the next request on that connection is
+                    // answered normally. Closing instead (which is what this did) leaves the client
+                    // writing into a closed socket: XTS reported the case as `UNRESOLVED` with
+                    // `SIGPIPE`, and every later test case on that connection failed with it. See
+                    // A37 in docs/backlog.md.
+                    sequenceNumber++;
                     sendError(ProtocolException.LENGTH, 0);
-                    return;
+                    discard(bigLength * 4 - 8);
+                    continue;
                 }
                 lengthUnits = (int) bigLength;
                 headerBytes = 8;
@@ -386,8 +398,9 @@ public final class ClientConnection implements Runnable {
 
             int bodyBytes = lengthUnits * 4 - headerBytes;
             if (bodyBytes < 0) {
+                sequenceNumber++;
                 sendError(ProtocolException.LENGTH, 0);
-                return;
+                continue;
             }
             // Read the whole body in one call. Going through `in.readByte()` per byte is the same
             // bytes but millions of calls for an image upload - see `rawIn`.
@@ -458,6 +471,27 @@ public final class ClientConnection implements Runnable {
                         + " request byte(s) still to come");
             }
             read += count;
+        }
+    }
+
+    /**
+     * Reads and throws away {@code length} bytes of a request that was refused for its size.
+     *
+     * <p>A client that has sent a request header has usually already written the whole request, so
+     * the bytes are on their way whether or not this server wants them; skipping them is what keeps
+     * the <em>next</em> request's header where the client put it. Read in chunks: the request that
+     * triggers this is, by definition, as large as a client can ask for - sixteen megabytes for the
+     * biggest BIG-REQUESTS request - and this allocation is not worth making.
+     */
+    private void discard(long length) throws IOException {
+        byte[] scratch = new byte[Math.min(1 << 16, (int) Math.max(1, Math.min(length, 1 << 16)))];
+        for (long left = length; left > 0; ) {
+            int count = rawIn.read(scratch, 0, (int) Math.min(left, scratch.length));
+            if (count < 0) {
+                throw new EOFException("client closed with " + left
+                        + " request byte(s) still to discard");
+            }
+            left -= count;
         }
     }
 
