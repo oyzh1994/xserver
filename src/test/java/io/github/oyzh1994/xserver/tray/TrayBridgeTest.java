@@ -119,6 +119,37 @@ class TrayBridgeTest {
 
     /** A click on the menu-bar icon arrives at the client's window, as a press and a release. */
     @Test
+    void anIconDrawnByAChildWindowReachesTheMenuBarToo() throws Exception {
+        // This is how a real toolkit does it, and it is why the tray "looked wrong" for every Java
+        // application: measured with `java.awt.SystemTray` on the test host (2026-10-02), the docked
+        // window is "Content window" and the image is drawn into its child, a
+        // `sun-awt-X11-XCanvasPeer`. Reading the icon window's own pixels only handed the menu bar
+        // that window's empty background - a blank square.
+        RecordingWindow backend = awaitBackend();
+        int icon = client.allocateId();
+        client.createWindow(icon, client.root(), ICON_X, ICON_Y, ICON, ICON, GREEN);
+        client.mapWindow(icon);
+        client.queryInputFocus();
+        dock(icon);
+
+        // Drawn after the dock, because docking reparents the window - which unmaps and maps it and
+        // paints the background again, as it does on a reference server.
+        int canvas = client.allocateId();
+        client.createWindow(canvas, icon, 0, 0, ICON, ICON, 0);
+        client.mapWindow(canvas);
+        int gc = client.createGC(client.allocateId(), canvas, RED);
+        client.fillRectangle(canvas, gc, 0, 0, ICON, ICON);
+        client.queryInputFocus();
+        server.tray().pollOnce();
+
+        BufferedImage shown = backend.icon;
+        assertNotNull(shown, "the menu bar was given no icon");
+        assertEquals(RED, shown.getRGB(ICON / 2, ICON / 2) & 0xFFFFFF,
+                "the icon shows what the client drew in its child, not the window's own background");
+    }
+
+    /** A click on the menu-bar icon arrives at the client's window, as a press and a release. */
+    @Test
     void aClickOnTheMenuBarIconReachesTheIconWindow() throws Exception {
         int icon = anIconWindow();
         dock(icon);

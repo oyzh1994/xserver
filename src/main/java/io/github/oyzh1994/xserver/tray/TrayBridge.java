@@ -514,21 +514,31 @@ public final class TrayBridge {
         // transparent corners stay transparent so the menu bar shows a shape rather than a square. A
         // window with no store - a client that ignored the published visual - is read out of the
         // screen instead, which is what this always did, and reads as what is over it.
+        //
+        // **And the children count**: a real toolkit does not draw into the window it docked, it
+        // docks a window of its own and paints the image into a child of it. Measured with
+        // `java.awt.SystemTray` on the test host (2026-10-02): the docked window is "Content window"
+        // and the image is drawn by its child, `sun-awt-X11-XCanvasPeer`. Reading only the window's
+        // own pixels handed the menu bar that window's empty background - a blank square, which is
+        // what "the tray icon is not right" turned out to be. `pixelFromInferiors` is the same read
+        // `IncludeInferiors` gives a client: the deepest window that covers the point, in its own
+        // alpha, which is exactly what the icon looks like.
         int[] pixels = new int[width * height];
-        if (window.keepsOwnPixels()) {
-            Framebuffer own = window.ownPixels();
-            int originX = window.absoluteX();
-            int originY = window.absoluteY();
-            for (int row = 0; row < height; row++) {
-                for (int column = 0; column < width; column++) {
-                    pixels[row * width + column] = own.pixel(x0 + column - originX,
-                            y0 + row - originY);
-                }
-            }
-        } else {
-            Framebuffer framebuffer = screen.framebuffer();
-            for (int row = 0; row < height; row++) {
-                for (int column = 0; column < width; column++) {
+        boolean keepsPixels = window.keepsOwnPixels();
+        Framebuffer own = keepsPixels ? window.ownPixels() : null;
+        Framebuffer framebuffer = keepsPixels ? null : screen.framebuffer();
+        int originX = window.absoluteX();
+        int originY = window.absoluteY();
+        for (int row = 0; row < height; row++) {
+            for (int column = 0; column < width; column++) {
+                int localX = x0 + column - originX;
+                int localY = y0 + row - originY;
+                int fromChild = window.pixelFromInferiors(localX, localY);
+                if (fromChild != XWindow.NO_CHILD_PIXEL) {
+                    pixels[row * width + column] = fromChild;
+                } else if (keepsPixels) {
+                    pixels[row * width + column] = own.pixel(localX, localY);
+                } else {
                     pixels[row * width + column] = framebuffer.pixel(x0 + column, y0 + row)
                             | 0xFF000000;
                 }
