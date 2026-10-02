@@ -611,8 +611,10 @@ final class RfbSession implements Runnable {
     private void setEncodings() throws IOException {
         in.read();                                   // padding
         int count = readU16();
+        StringBuilder offered = new StringBuilder();
         for (int i = 0; i < count; i++) {
             int encoding = readInt();
+            offered.append(i == 0 ? "" : ",").append(encoding);
             if (encoding == ENCODING_DESKTOP_SIZE) {
                 desktopSizeWanted = true;
             }
@@ -633,6 +635,12 @@ final class RfbSession implements Runnable {
                 cursorWanted = true;
             }
         }
+        // **What the viewer said it can decode, in one line.** A rectangle may only be sent in an
+        // encoding the client listed, and this list is what decides between lossless ZRLE and Tight's
+        // JPEG method - which is the difference a user sees as "blurrier than x11vnc". A negative
+        // number is one of the JPEG quality pseudo-encodings: -23 is the best a client can ask for.
+        log.debug("VNC client {} offers [{}]: zrle={} tight={} jpegQuality={} cursor={} desktopSize={}",
+                peer(), offered, zrleWanted, tightWanted, jpegQuality, cursorWanted, desktopSizeWanted);
         synchronized (lock) {
             queueCursor();
         }
@@ -915,12 +923,24 @@ final class RfbSession implements Runnable {
             writeU16(rectangle.y);
             writeU16(width);
             writeU16(height);
-            if (jpegEligible(rectangle, argb)) {
+            // **Only a client that offered Tight *and* a JPEG quality may be sent JPEG.** The
+            // eligibility test used to be the whole condition, and that sends Tight to a viewer that
+            // never listed it - a libvncclient or a scripted client that asked for ZRLE alone would
+            // be handed an encoding it cannot decode, which reads to the user as a rectangle that
+            // never updates rather than as an error. The list in SetEncodings is what a client *can*
+            // decode, so it is a floor as well as a ceiling.
+            if (tightWanted && jpegQuality >= 0 && jpegEligible(rectangle, argb)) {
                 // A photograph, sent as Tight's JPEG method: encoding 7, the JPEG control byte, the
                 // length of the JFIF stream and then the stream. Measured on a 1300x800 frame of
                 // photographic content, where ZRLE's raw subencoding is 3.1 MB and 57 ms of one core
                 // and this is a few hundred kilobytes and a library call (see docs/backlog.md A32).
                 byte[] jpeg = TightEncoder.jpeg(argb, width, height, jpegQuality / 9f * 0.55f + 0.25f);
+                // Worth a line: a lossy rectangle is the one thing in this encoder a user can see,
+                // and "why is the picture soft" is answered by how many of these went out.
+                log.debug("VNC client {}: {}x{}+{}+{} as Tight/JPEG quality {} ({}/9), {} bytes",
+                        peer(), width, height, rectangle.x, rectangle.y,
+                        String.format("%.2f", jpegQuality / 9f * 0.55f + 0.25f), jpegQuality,
+                        jpeg.length);
                 writeInt(ENCODING_TIGHT);
                 out.write(TightEncoder.CONTROL_JPEG);
                 TightEncoder.writeCompactLength(out, jpeg.length);

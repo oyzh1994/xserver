@@ -109,6 +109,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A31~~ | ~~the VNC path sends **one rectangle per update**, so a change in two corners is encoded as one box spanning both~~ **fixed 2026-10-01**: the region is cut into 64x64 tiles, a changed tile merges with the changed tiles beside it, and each run is shrunk to the box of the pixels that really differ - A25's answer for one change, no box spanning the screen for two. The old behaviour sent `[5,5,285,185]` where the new one sends two 10x10 rectangles | performance | M |
 | ~~A32~~ | ~~no **Tight/JPEG**: photographic content goes as ZRLE-raw, 3.1 MB and 57 ms for one full frame~~ **fixed 2026-10-01**: a rectangle whose sampled colours say "photograph" goes as **Tight's JPEG method** (encoding 7, control byte 0x90, the compact length, a JFIF stream) when the client offered both Tight and a JPEG quality - measured on the wire: **3.12 MB -> 0.70 MB** for the same full-screen change, and 56 ms -> 31 ms of encoding. Flat panels and text stay on ZRLE, which is lossless, so nothing is blurred that did not need it | performance | L |
 | ~~A33~~ | ~~`XWindow.ownPixels()` can still be called for a window that keeps no pixels - A29's budget depends on callers asking `keepsOwnPixels()` first~~ **fixed 2026-10-01**: all eight call sites were audited and do ask first, and `ownPixels()` now writes one warning per window naming it and the budget, so a future caller that gets it wrong leaves a breadcrumb instead of an unexplained `OutOfMemoryError` | robustness | S |
+| ~~A34~~ | ~~a rectangle that "looks photographic" went out as Tight's JPEG method even when the client never listed Tight or a JPEG quality~~ **fixed 2026-10-03**: the eligibility test was the whole condition, so a viewer that asked for ZRLE alone (a scripted client, some VNC clients) could be handed an encoding it cannot decode - which reads as a rectangle that never updates. JPEG now needs `tightWanted && jpegQuality >= 0` **and** eligibility, and the session logs the viewer's whole encoding list on connect (the first thing to read when a picture looks wrong) | correctness | S |
+| ~~A35~~ | ~~"compared with Xvfb+x11vnc seen in the Finder, what this server renders looks less clear"~~ **answered 2026-10-03, and it is the display, not the renderer**: at the default `--scale 1` the client draws 1x and the host window on a Retina panel draws each framebuffer pixel as a 2x2 **block** - measured on a capture of the window: **95.6% of 2x2 blocks are one colour**, i.e. magnification with no added detail - where the Finder's view of a 1x remote screen is 1:1. Our own VNC path is lossless for text (measured: a full frame and scrolling text, with Tight and a JPEG quality in the client's list, produced **0 JPEG rectangles**). The levers are `--scale 2`/`--scale auto` (real 2x detail for clients that follow `Xft.dpi`, which GTK/Qt do and the JVM in termora did **not** - its block ratio stayed ~95% under both `--scale 2` and `-Dsun.java2d.uiScale=2`), or watching the server over VNC so the same viewer presents the same picture | clarity | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -3197,6 +3199,16 @@ that is not guarded) is unreachable for such a window because DBE buffers are pi
 16M pixels; it is recorded in the review rather than changed.
 
 ### [x] A32. Tight's JPEG method for photographic rectangles. **L** - fixed 2026-10-01
+
+**What A34 changed about it (2026-10-03).** The method is unchanged and still only fires for a
+rectangle whose sampled colours say "photograph" - but it now *also* requires the client to have
+listed Tight **and** a JPEG quality. Those two facts used to gate only the rectangle splitting, not
+the encoding choice, so an eligible rectangle went out as Tight to any viewer, including one that
+had asked for ZRLE alone and could not decode it. And because "is this a photograph" is a colour
+count over a sample, this is exactly the kind of question a user asks as "is my picture being
+blurred?" - so the session now logs `offers [16,0,-223,7,-23]: zrle=… tight=… jpegQuality=…` on
+connect, and one line per JPEG rectangle with its size, position and quality. A VNC client that
+lists neither Tight nor a JPEG quality can no longer see one, and the log says which it was.
 
 The last of the frame-path costs was content ZRLE is the wrong tool for: a rectangle where nearly every
 pixel differs from its neighbour falls through to ZRLE's raw subencoding, which is **3.1 MB and 57 ms**

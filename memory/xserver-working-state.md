@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 475 tests. **A18 is FIXED (2026-10-03)**: the XInput extension advertised `first_event = 0`, and an event base is where a client library installs its wire-to-event converter, so libXi's device converter sat on core `ButtonPress` and AWT read every click's root y as the button number, which is exactly the "Nonexistent button 16" - see [the event-base trap](x11-extension-event-base-hijack.md). **Open: the reference motion shape.** **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 475 tests. **A18 is FIXED (2026-10-03)**: the XInput extension advertised `first_event = 0`, and an event base is where a client library installs its wire-to-event converter, so libXi's device converter sat on core `ButtonPress` and AWT read every click's root y as the button number, which is exactly the "Nonexistent button 16" - see [the event-base trap](x11-extension-event-base-hijack.md). **A34** fixed the JPEG gate (a Tight/JPEG rectangle could go to a viewer that never listed Tight), and **A35** answered the "less clear than x11vnc in the Finder" report: a 1x framebuffer magnified 2x by the Retina window (measured 95.6% one-colour 2x2 blocks), not the renderer or the encoder - use `--scale 2` or watch it over VNC. **Open: the reference motion shape.** **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,28 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-10-03 (later in the same session): "the picture is less clear than Xvfb+x11vnc seen in the
+Finder" is the display, not the renderer (A35), and the JPEG gate was wrong (A34).**
+
+- **Measured, not argued.** With the VNC backend and a viewer that lists Tight **and** a JPEG quality
+  (the meter's `--enc 16,0,-223,7,-23`), a full frame and a scrolling terminal produced **0 JPEG
+  rectangles** - the wire is ZRLE, i.e. the client's picture is the framebuffer bit for bit, so
+  nothing on our side softens text. What differs is presentation: at the default `--scale 1` the
+  client draws 1x, and the host window on a Retina panel magnifies it - a capture of the window at
+  device resolution is **95.6% one-colour 2x2 blocks** (nearest, not bilinear: mean |host - nearest2x|
+  3.27 against |host - bilinear2x| 3.49), i.e. one framebuffer pixel drawn as a 2x2 block. A Finder
+  view of a 1x remote screen is 1:1, so the same picture looks crisper there.
+- **The levers**: `--scale 2`/`--scale auto` (framebuffer 2600x1600, `Xft.dpi` 192, window maps 1:1 -
+  real 2x detail for clients that follow the DPI), or watch the server over VNC so the same viewer
+  presents the same picture. **The JVM does not follow `Xft.dpi`**: termora's block ratio stayed
+  ~95% (i.e. still 1x) under `--scale 2` *and* under `-Dsun.java2d.uiScale=2`, so a Java client needs
+  its own HiDPI handling before this window can be genuinely sharp.
+- **A34, found while looking**: `RfbSession.sendUpdate` chose Tight/JPEG on the *eligibility test
+  alone*, so a rectangle that looked photographic went to a client that never listed Tight or a JPEG
+  quality - undecodable, and it reads as a rectangle that never updates. Now gated on
+  `tightWanted && jpegQuality >= 0 && jpegEligible(...)`, and the session logs the viewer's whole
+  encoding list on connect plus one line per JPEG rectangle. 475 tests green.
 
 **2026-10-03, fourteenth session (branch `bugfix`): A18 is fixed, and it was the event base the
 XInput extension advertised.** Reported as "you broke something - termora now errors on every click:
