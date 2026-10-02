@@ -11,6 +11,37 @@ metadata:
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
 
+**2026-10-02, eleventh session (branch `bugfix`): the tray icon was a blank square, and the Chinese
+input question is answered.** Reported as "EasyShell's and termora's Chinese input (switching the Mac's
+input method) and termora's tray still look wrong, and Xvfb+x11vnc is the same".
+
+- **The tray was a real bug of ours, and it is fixed.** A real toolkit does not draw into the window it
+  docks: `java.awt.SystemTray` docks a window named "Content window" and draws the image in its **child**
+  (`sun-awt-X11-XCanvasPeer`) - read off this server's own window tree while the client ran. The tray
+  captured the docked window's *own* pixels, which per B5 hold its pixels and not its children's, so
+  what reached the menu bar was an empty background: a white square, for every Java application.
+  `TrayBridge.capture` now reads with `XWindow.pixelFromInferiors` (the `IncludeInferiors` read, alpha
+  preserved). Verified live (menu bar: white square -> the icon's white background with its red disc)
+  and pinned by `TrayBridgeTest.anIconDrawnByAChildWindowReachesTheMenuBarToo`, which reads the icon
+  window's background (green) before the fix and the child's drawing (red) after. **473 tests green.**
+- **Xvfb+x11vnc "the same" is expected and is a different cause**: Xvfb owns no tray at all and x11vnc
+  provides none, so a dock request finds nobody and the icon never appears - no bug there.
+- **Chinese through the Mac's input method**: over VNC it can never arrive (RFB's key events are
+  keysyms, not composed text) - which is why the reference looks the same. This server *does* bridge the
+  host's composing (C10: a claimed keycode + `MappingNotify`, verified at the wire level), but whether a
+  toolkit honours that mapping change is the toolkit's business. **The path that works in every client
+  is an input method on the client machine**: `dbus-launch --exit-with-session`,
+  `XMODIFIERS=@im=ibus ibus-daemon -drx`, a Chinese engine (`ibus-chewing` is on the VM;
+  `ibus-libpinyin` is what pinyin wants), the application started with `XMODIFIERS=@im=ibus` (and
+  `GTK_IM_MODULE=ibus` for GTK/JavaFX) - **against a `--single-window` server**, because an input
+  method's candidate window is a window of its own and in the default mode it lands on that client's own
+  screen instead of over the application (measured; `PerClientWindowTest` says so). The project's own
+  verification is ibus composing `nihao` and committing 你好 into a forwarded `xterm`.
+- **What a scripted session cannot do** (and why this session's host-IME re-check was inconclusive):
+  injecting a *composition* into the Mac's input method needs a hand on the keyboard - `hostinput type`
+  posts `CGEventKeyboardSetUnicodeString`, which bypasses the IME entirely, and plain key posts into the
+  server's window did not produce a composition in this session. The recipe above does not depend on it.
+
 **2026-10-01, tenth session (branch `bugfix`): A32 - Tight's JPEG method for photographic content.**
 The last item the review left open, and the one the review's own numbers pointed at: ZRLE is a
 palette-and-run encoding, so a rectangle where nearly every pixel differs from its neighbour falls

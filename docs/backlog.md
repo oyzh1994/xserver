@@ -4308,6 +4308,35 @@ places itself, and no tray host on this architecture can move it).
   `ReparentNotify` fix the same client threw `TrayIcon couldn't be displayed`.
 - `mvn test` 312/312.
 
+**Every Java application's icon was a blank square, and that is the second real bug the tray had
+(2026-10-02).** Reported as "termora's tray icon is not right". Measured with the window tree of a
+running `java.awt.SystemTray` client on the VM against a server on this machine:
+
+```
+0x800021 "Content window" (TrayApp)                 24x24+0+0     <- the window the client docked
+  1 child:
+  0x800029 "sun-awt-X11-XCanvasPeer" (TrayApp)      24x24+0+0     <- the image is drawn here
+```
+
+A real toolkit does not draw into the window it docks - it paints the image into a **child** of it.
+`TrayBridge.capture` read the icon window's *own* pixels only, which is what B5 says a window's store
+holds (its own pixels, not its children's), so what reached the menu bar was that window's empty
+background: a white square where the icon should be, for every Java application. The capture now uses
+`XWindow.pixelFromInferiors` - the same read `IncludeInferiors` gives a client, the deepest window
+covering the point in its own alpha, which is what the icon looks like - and keeps the two earlier
+fallbacks (the icon window's store, and the screen for a client that ignored the published visual).
+
+**Verified live, the same way the icon was found**: a minimal `SystemTray` client on the VM, a server
+on this machine, and a screenshot of the menu bar - before, a plain white square; after, the icon's
+white background with its red disc. `TrayBridgeTest.anIconDrawnByAChildWindowReachesTheMenuBarToo`
+is the same thing without a display: an icon with a green background and a child that draws red -
+without the fix it reads the green background (measured: `expected: <16711680> but was: <65280>`).
+
+**And this is why "it is the same with Xvfb + x11vnc" is not the same thing**: **Xvfb owns no tray at
+all**, and `x11vnc` does not provide one either, so a client's dock request finds nobody and its icon
+never appears there - expected, and a different failure from this one. This server *is* the tray host
+(C9), which is why the bug was ours and worth fixing.
+
 **The click, measured again 2026-09-26, and it found a real bug in the bridge.** Two things were
 established and one is still open:
 
@@ -4573,6 +4602,44 @@ documentation item" was written from a probe that could not distinguish "the IME
 font set is not". It was not a documentation item - three real bugs sat between a client-side input
 method and a working one, and all three were invisible to every test written from this server's own
 side, because the server agreed with itself in each case.
+
+**The two ways to type Chinese, and which one a given setup can use (2026-10-02).** Reported as
+"EasyShell and termora do not accept Chinese when the Mac's input method is switched on, and the same
+happens with Xvfb + x11vnc + Finder". The *same symptom* there is expected and has a different cause on
+each side:
+
+- **The host's input method cannot reach a forwarded X client through VNC at all.** macOS composes
+  the text for the application that has the *Mac's* focus - the Screen Sharing window - and RFB's key
+  events carry keysyms, not composed text, so nothing arrives at the remote application. Xvfb+x11vnc
+  behaving "the same" is therefore the reference confirming the mechanism, not a second bug.
+- **This server does bridge the host's composing** (`InputState.keyTyped`): the composed character
+  becomes a keycode the server claims for it, with a `MappingNotify` so clients re-read the mapping -
+  verified live by typing 你好 with `tools/host-type.c` and reading the mapping back (keycode 255 =
+  U+597D). A *toolkit* has to honour that mapping change for the character to appear; whether JavaFX
+  and AWT do is a property of those toolkits and is not something this server can force.
+- **The path that works in every client is an input method on the client machine**, and it needs four
+  things, none of which is a server bug:
+
+  ```sh
+  # on the client machine, against this server's display
+  dbus-launch --exit-with-session &      # ibus needs a session bus (the VM has one now)
+  XMODIFIERS=@im=ibus ibus-daemon -drx & # -x is the XIM bridge, -r replaces, -d daemonises
+  ibus engine <engine>                   # a Chinese engine: ibus-chewing is installed, ibus-libpinyin
+                                         # is what pinyin wants (apt-get install ibus-libpinyin)
+  DISPLAY=<server> XMODIFIERS=@im=ibus <application>   # GTK/JavaFX: GTK_IM_MODULE=ibus as well
+  ```
+
+  **and the server must run `--single-window`.** An input method draws its pre-edit text and candidate
+  list in a window of its own placed over the application's caret; in the default mode every client
+  gets a screen of its own, so that window is drawn in the *input method's* host window instead of
+  over the application - measured, and `PerClientWindowTest.aClientThatIsNotAnApplicationGetsAWindowOfItsOwnToo`
+  is what says so. With those four in place the project's own verification is ibus composing `nihao`
+  and committing **你好 into a forwarded `xterm`** (above), and that was this server, not a reference.
+
+The next session that has a hand on the keyboard can close the last gap in one line: run
+`--single-window`, start EasyShell or termora with `XMODIFIERS=@im=ibus` and a pinyin engine, and type -
+if the candidate list appears over the application and commits, the recipe above is confirmed for the
+two applications the author actually forwards.
 
 ---
 

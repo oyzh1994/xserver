@@ -668,7 +668,11 @@ item with a plan and a way to verify each one, is [docs/backlog.md](docs/backlog
   the only thing an X client can be sent: the server claims a keycode for the character and tells the
   clients the mapping changed. What is *not* bridged is the input method's own window - the candidate
   list is the platform's, and a client-side input method (fcitx, ibus) needs `--single-window` for the
-  reason below.
+  reason below. **A VNC viewer cannot carry this at all** - RFB's key events are keysyms, not composed
+  text - so typing Chinese through a VNC client needs the input method on the *client* machine instead:
+  run `ibus-daemon -drx` with a Chinese engine there and start the application with
+  `XMODIFIERS=@im=ibus` (plus `GTK_IM_MODULE=ibus` for a GTK/JavaFX client), against a
+  `--single-window` server so the candidate window lands over the application.
 - **Each client gets a screen of its own, which anything that is not an application notices.** An X
   input method, a window manager or a clipboard manager draws windows positioned over somebody else's
   window - an input method's candidate list being the clearest case - and in the default mode that
