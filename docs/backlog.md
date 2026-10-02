@@ -246,9 +246,13 @@ The kit, and what each piece is for:
 
 The test bed (as of 2026-09-24):
 
-- The **server runs on the Mac**; clients run on the **Linux VM** at `192.168.22.147` and connect over
+- **The addresses changed on 2026-10-03**: the bed VM is now `192.168.22.152` (was `.147`) and the
+  user's own PC is now `192.168.22.151` (was `.150`). The password is still `user@147` - the string
+  is historical, not the address. Everything below, and every tool default, says the new numbers.
+  **The VMs are the user's to start** - do not boot them from here (asked 2026-10-03).
+- The **server runs on the Mac**; clients run on the **Linux VM** at `192.168.22.152` and connect over
   TCP to `192.168.22.1:<display>` - or, for the reference, to the VM's own `Xvfb :98`.
-- `ssh root@192.168.22.147`, password `user@147`. **`expect` hangs on the password prompt in this
+- `ssh root@192.168.22.152`, password `user@147`. **`expect` hangs on the password prompt in this
   environment; use `SSH_ASKPASS`**:
   `SSH_ASKPASS=<script printing the password> SSH_ASKPASS_REQUIRE=force ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no …`
 - Long-running commands must be detached (`setsid nohup … < /dev/null &`) or `ssh` kills them when the
@@ -256,7 +260,7 @@ The test bed (as of 2026-09-24):
 - The VM has `xdotool` (**which segfaults against this server** - see A4), `xwd`, `xwininfo`,
   `x11vnc`, python3+PIL, and no X server of its own except the `Xvfb :98` that stays running.
 - `Xvfb :98` (1300x800x24) plus `x11vnc -display :98 -forever -rfbport 5900 -listen 0.0.0.0 -shared`
-  is the **reference**: connect from macOS with `vnc://192.168.22.147` and a human can compare, or
+  is the **reference**: connect from macOS with `vnc://192.168.22.152` and a human can compare, or
   drive it with `xdotool` and capture it with `xwd -root` (both work there).
 - The forwarded applications used so far: **termora** (`/root/termora-2.0.0-beta.16-linux-aarch64.AppImage`,
   a Swing/AWT terminal, allows one instance at a time) and **EasyShell** (JavaFX, from a previous
@@ -1500,7 +1504,7 @@ difference between two servers, and the reference has the answer.
 **The measurement that found it: a byte-transparent tap in front of Xvfb.** `XProxy` parses, and
 EasyShell hangs through it, so the reference stream came from a plain TCP relay on the VM
 (`python3 /tmp/tap.py 6099 6098 /tmp/tap.log`, logging both directions while a toggle file exists) with
-the client pointed at `DISPLAY=192.168.22.147:99`. Decoding that stream by request gives the reference's
+the client pointed at `DISPLAY=192.168.22.152:99`. Decoding that stream by request gives the reference's
 answer, and its shape is the whole item:
 
 ```
@@ -1586,7 +1590,7 @@ types - which is all this keymap uses - is exactly what the first version had, a
 was byte-for-byte identical to Xvfb's first three. The wire layout misleads twice more: the reply's
 fixed part is **forty** bytes, not thirty-two, and each keycode's keysyms follow its own descriptor
 **inline** rather than living in one pool at the end. Read the layout off a captured reference reply
-(`XkbProbe 192.168.22.147 6098 7 dump <file>`) rather than from a header. And the keypad's digit is
+(`XkbProbe 192.168.22.152 6098 7 dump <file>`) rather than from a header. And the keypad's digit is
 what **Num Lock** selects, not Shift: giving the keypad type a Shift entry makes Shift+KC79 type `KP_7`
 where the reference leaves it `KP_Home`.
 

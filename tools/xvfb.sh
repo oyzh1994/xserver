@@ -26,7 +26,7 @@ set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ACTION="${1:-start}"
 GEOMETRY="${2:-1300x800x24}"
-VM_HOST="${XSERVER_VM_HOST:-192.168.22.147}"
+VM_HOST="${XSERVER_VM_HOST:-192.168.22.152}"
 # The cookie the access-controlled reference on :97 is started with; fixed so the probes and the
 # documentation can name it (see `secure` below).
 SECURE_COOKIE="${SECURE_COOKIE:-deadbeefcafebabe0123456789abcdef}"
@@ -53,7 +53,7 @@ case "$ACTION" in
         # is fixed so a probe can be pointed at this display without reading it back:
         #
         #   tools/xvfb.sh secure
-        #   tools/kit.sh SecurityProbe 192.168.22.147 6097 MIT-MAGIC-COOKIE-1 deadbeefcafebabe0123456789abcdef
+        #   tools/kit.sh SecurityProbe 192.168.22.152 6097 MIT-MAGIC-COOKIE-1 deadbeefcafebabe0123456789abcdef
         # The display lock has to go with the server: Xvfb refuses to start on a display whose lock
         # file is still there ("already active"), which is exactly what a killed one leaves behind.
         "$HERE/tools/vm.sh" 'pkill -f "Xvfb :9[7]" ; rm -f /tmp/.X97-lock /tmp/x97.auth; true' \

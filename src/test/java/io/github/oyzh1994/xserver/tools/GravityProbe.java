@@ -15,7 +15,7 @@ import java.util.List;
  *
  * <pre>
  *   GravityProbe &lt;host&gt; &lt;port&gt; [winGravity] [bitGravity] [dw] [dh]
- *   GravityProbe 192.168.22.147 6098 6 1        # EastGravity on the child, NorthWest on the parent
+ *   GravityProbe 192.168.22.152 6098 6 1        # EastGravity on the child, NorthWest on the parent
  * </pre>
  *
  * <p>What it prints: the child's geometry before and after the parent grows, whether the child moved

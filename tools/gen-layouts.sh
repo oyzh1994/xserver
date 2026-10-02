@@ -15,7 +15,7 @@
 # in one initialiser is well past it.
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-VM="${XSERVER_VM_HOST:-192.168.22.147}"
+VM="${XSERVER_VM_HOST:-192.168.22.152}"
 VM_REFERENCE_PORT="${VM_REFERENCE_PORT:-6098}"
 OUT="$HERE/src/main/java/io/github/oyzh1994/xserver/input/Layouts.java"
 LAYOUTS="${LAYOUTS:-us gb de fr es ru cn}"

@@ -16,7 +16,7 @@
  * token means nothing (an `-ac` server trusts everybody):
  *
  *   tools/xvfb.sh secure         Xvfb :97 with access control, cookie deadbeef...abcdef
- *   XAUTHORITY=/tmp/xsec.auth DISPLAY=192.168.22.147:97 /tmp/xsecurity-client
+ *   XAUTHORITY=/tmp/xsec.auth DISPLAY=192.168.22.152:97 /tmp/xsecurity-client
  *   DISPLAY=192.168.22.1:63 /tmp/xsecurity-client          this server, started with --auth
  *
  * Exit status is 0 when every expectation held; each step prints what it found.

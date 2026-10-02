@@ -21,7 +21,7 @@ not changed, which is how `x11vnc` behaves and what this server was not doing.
 `--trace` prints every update's rectangle and `--dump` writes the client's own decoded picture as an
 XWD, so it can be diffed against a capture of the server's framebuffer with the kit's own tool:
 
-    tools/vnc-meter.py 192.168.22.147 5995 10 --dump /tmp/client.xwd &
+    tools/vnc-meter.py 192.168.22.152 5995 10 --dump /tmp/client.xwd &
     tools/vm.sh 'DISPLAY=:95 xwd -root -silent > /tmp/server.xwd'   # and pull it back
     tools/kit.sh Xwd diff /tmp/server.xwd /tmp/client.xwd
 

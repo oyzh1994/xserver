@@ -43,7 +43,7 @@ set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MVN="${MVN:-/Users/oyzh/Documents/Tools/apache-maven-3.9.11/bin/mvn}"
 DISPLAY_NUMBER="${DISPLAY_NUMBER:-61}"
-VM="${VM:-192.168.22.147}"
+VM="${VM:-192.168.22.152}"
 VM_REFERENCE_PORT="${VM_REFERENCE_PORT:-6098}"          # the VM's Xvfb :98
 OUT="${OUT:-/tmp/xs-sweep}"
 

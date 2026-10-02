@@ -7,7 +7,7 @@
 # repository. `expect` hangs on the password prompt in this environment, so the password goes through
 # SSH_ASKPASS, which needs both the helper script and SSH_ASKPASS_REQUIRE=force.
 set -e
-: "${XSERVER_VM_HOST:=192.168.22.147}"
+: "${XSERVER_VM_HOST:=192.168.22.152}"
 : "${XSERVER_VM_USER:=root}"
 
 PASSWORD="${XSSH_PASSWORD:-}"

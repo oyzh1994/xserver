@@ -28,7 +28,7 @@
 #   NAME=run1                           labels the files under /tmp/xs-compare/
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-VM="192.168.22.147"
+VM="192.168.22.152"
 VM_DISPLAY_PORT=6098                        # the VM's Xvfb :98
 DISPLAY_NUMBER="${DISPLAY_NUMBER:-95}"
 HOST_IP="$(ipconfig getifaddr bridge101 2>/dev/null || echo 192.168.22.1)"

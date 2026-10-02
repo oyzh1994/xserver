@@ -1,4 +1,4 @@
-- [xserver test bed](xserver-testbed.md) — server on the Mac; clients on 192.168.22.147 (full kit) or 192.168.22.150 (the user's PC, both apps, no Xvfb); the H2 lock and DISPLAY traps
+- [xserver test bed](xserver-testbed.md) — server on the Mac; clients on 192.168.22.152 (full kit) or 192.168.22.151 (the user's PC, both apps, no Xvfb); the H2 lock and DISPLAY traps
 - [MINA SSHD client-side X11](mina-sshd-client-x11.md) — MINA ships no released client half; JSch/sshj do, the community PR was buggy
 - [Open xserver rendering bugs](xserver-open-bugs.md) — what was fixed (Expose coordinates) and what is still open (no obscuring tracking, stale cursor restore)
 - [Deferred xserver features](xserver-deferred-features.md) — screen auto-size, raise-on-show and close-notification were designed then reverted; design decisions recorded here

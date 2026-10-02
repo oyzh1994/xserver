@@ -26,7 +26,7 @@ Tick as you go. A line that fails is worth a `docs/backlog.md` entry of its own;
 
 `tools/kit.sh <Tool> <args>` is the launcher with the classpath filled in; run `mvn -o test-compile`
 first if `tools/` has changed. Probes take `host port` - `127.0.0.1 6061` for the server above,
-`192.168.22.147 6098` for the reference.
+`192.168.22.152 6098` for the reference.
 
 ## 1. The protocol's core, and drawing
 

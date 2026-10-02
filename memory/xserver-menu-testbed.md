@@ -28,7 +28,7 @@ did not depend on a screen, a permission, or the user's hand on the mouse. What 
   driven with XTEST against Xvfb gives the event stream a real server produces;
   `/tmp/Probe.java` and `/tmp/MenuProbe.java` (raw protocol, no Xlib) print it: which window each
   crossing is reported against, its detail and mode, and what happens across grab start/ungrab.
-  `java -cp /tmp/driveclasses Probe 192.168.22.147 6098 B 0` is the "grab on the submenu, move into
+  `java -cp /tmp/driveclasses Probe 192.168.22.152 6098 B 0` is the "grab on the submenu, move into
   it" case that the whole fix turns on.
 - **`/tmp/XProxy.java` is a byte-level X11 proxy** (listen, forward to Xvfb, log both directions) for
   reading a real client's own stream off a server that cannot log it. It works for Xlib clients

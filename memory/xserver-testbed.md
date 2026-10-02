@@ -9,17 +9,22 @@ metadata:
 ---
 
 **Two client machines as of 2026-09-26** (`tools/vm.sh` takes the host from `$XSERVER_VM_HOST` and the
-password from `$XSSH_PASSWORD`, or from `~/.xserver-vm-pass` for the default host):
+password from `$XSSH_PASSWORD`, or from `~/.xserver-vm-pass` for the default host). **The addresses
+changed on 2026-10-03, and every document in the repository was updated with them**: the bed VM was
+`192.168.22.147` and is now **`192.168.22.152`**, and the user's own PC was `192.168.22.150` and is now
+**`192.168.22.151`**. The password did *not* change (`user@147` - the string is historical, not the
+address). The VM is the user's to start: **do not start it yourself** (asked 2026-10-03 after `vmrun
+start` was tried on a machine the user was using).
 
 | host | user / password | what it has |
 |------|-----------------|-------------|
-| `192.168.22.147` | `root` / `user@147` (in `~/.xserver-vm-pass`) | the original bed: Xvfb `:98`, x11vnc, xterm, ibus + `dbus-x11`, xwd/xwininfo, apt with network (2026-09-26), both AppImages |
-| `192.168.22.150` | `root` / `123456` | the user's own PC (`oyzh-PC`, aarch64, `zh_CN.UTF-8`): **both AppImages** (`/root/EasyShell_v1.2.2_linux_arm64_build.AppImage`, `/root/termora-2.0.0-beta.16-linux-aarch64.AppImage`) and `dbus-launch`; **no** Xvfb, xterm, ibus, xwd or x11vnc |
+| `192.168.22.152` | `root` / `user@147` (in `~/.xserver-vm-pass`) | the original bed: Xvfb `:98`, x11vnc, xterm, ibus + `dbus-x11`, xwd/xwininfo, apt with network (2026-09-26), both AppImages |
+| `192.168.22.151` | `root` / `123456` | the user's own PC (`oyzh-PC`, aarch64, `zh_CN.UTF-8`): **both AppImages** (`/root/EasyShell_v1.2.2_linux_arm64_build.AppImage`, `/root/termora-2.0.0-beta.16-linux-aarch64.AppImage`) and `dbus-launch`; **no** Xvfb, xterm, ibus, xwd or x11vnc |
 
-`.150` is the machine to run a client on when `.147` is unavailable or being restarted (it was
+`.151` is the machine to run a client on when `.152` is unavailable or being restarted (it was
 restarted under me on 2026-09-26 and came back on a new address-less boot: the whole bed - Xvfb, the
 apps - is gone until it is started again). Anything needing a *reference display* or an X input method
-still has to be `.147`, which has Xvfb and (since 2026-09-26) xterm/ibus. Use `.150` for
+still has to be `.152`, which has Xvfb and (since 2026-09-26) xterm/ibus. Use `.151` for
 `DISPLAY=192.168.22.1:<port>` client runs with our server, which needs nothing installed on the client
 side.
 
@@ -71,7 +76,7 @@ DISPLAY=192.168.22.1:<display> /root/termora-2.0.0-beta.16-linux-aarch64.AppImag
   A depth-8 mask that arrives quantised to 0x00/0x55/0xaa/0xff is the server reading coverage as a
   3-3-2 colour, not the client rasterising badly.
 
-The VM login (the user has had to repeat this three times, so it goes here): `ssh root@192.168.22.147`,
+The VM login (the user has had to repeat this three times, so it goes here): `ssh root@192.168.22.152`,
 password `user@147`. There is no key auth. **`expect` hangs on the password prompt in this environment
 (2026-09-23) - use `SSH_ASKPASS`, which works**: 
 
@@ -79,7 +84,7 @@ password `user@147`. There is no key auth. **`expect` hangs on the password prom
 printf '#!/bin/sh\necho "user@147"\n' > /tmp/askpass.sh && chmod +x /tmp/askpass.sh
 SSH_ASKPASS=/tmp/askpass.sh SSH_ASKPASS_REQUIRE=force ssh -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-  root@192.168.22.147 'COMMAND'
+  root@192.168.22.152 'COMMAND'
 ```
 
 Long jobs must be detached (`setsid nohup ... < /dev/null &`) or ssh kills them when the session ends.
@@ -97,7 +102,7 @@ The older form, for reference:
 
 ```
 expect -c 'set timeout 90; spawn ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  root@192.168.22.147 "REMOTE COMMAND"; expect { -re "assword:" { send "user@147\r"; exp_continue } eof }'
+  root@192.168.22.152 "REMOTE COMMAND"; expect { -re "assword:" { send "user@147\r"; exp_continue } eof }'
 ```
 
 The VM is a **client-only** host - `xclock`, `xeyes`, `xcalc`, `xev`, `xwininfo`, `xdpyinfo`, `xmodmap`,
@@ -107,7 +112,7 @@ The VM is a **client-only** host - `xclock`, `xeyes`, `xcalc`, `xev`, `xwininfo`
 Test bed used to reproduce EasyShell (JavaFX client) against this xserver:
 
 - X server runs **locally on the Mac** (JavaFX backend). The Mac has `bridge101 = 192.168.22.1`, same subnet as the VM, so a client can also connect straight to `192.168.22.1:<display>` over TCP, no tunnel.
-- Client runs on the Linux VM `192.168.22.147` (root) — `./EasyShell/bin/EasyShell` or the AppImage in `/root` (same app). The VM also has `xeyes/xclock/xdpyinfo/xev/xwininfo` and an Xvfb on `:99`.
+- Client runs on the Linux VM `192.168.22.152` (root) — `./EasyShell/bin/EasyShell` or the AppImage in `/root` (same app). The VM also has `xeyes/xclock/xdpyinfo/xev/xwininfo` and an Xvfb on `:99`.
 - ssh X forwarding works from the Mac only with `DISPLAY=<xserver display> ssh -Y root@…`; macOS GUI terminals inherit `launchctl getenv DISPLAY` = `/private/tmp/com.apple.launchd.*/org.xquartz:0`, so a plain `ssh -Y` sends the traffic to a dead XQuartz socket, **not** to the xserver. `ssh -X` (untrusted) needs a working local `xauth` (installed via `brew install xauth`).
 
 Two failures that look like server bugs but are not:

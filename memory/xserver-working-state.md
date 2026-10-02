@@ -1458,7 +1458,7 @@ in the entry). The next session should pick one of B4/B5/C8 knowingly and give i
 a session is not enough for any of them.
 
 **The test bed, as it is used**: the server runs on the Mac, EasyShell and termora on the VM at
-`192.168.22.147` against `192.168.22.1:<display>`; `Xvfb :98` on the VM is the reference. EasyShell is
+`192.168.22.152` against `192.168.22.1:<display>`; `Xvfb :98` on the VM is the reference. EasyShell is
 the primary client and termora the secondary (the user's own instruction). The launch recipes are
 still in `/tmp` (`es-start.sh`, `termora-start.sh`, `client-run.sh`), and `tools/bed.sh single` starts
 the server plus one client - but **a bed left on :95 makes `GrabCrossingTest` fail with "Address

@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * makes as it starts:
  *
  * <pre>
- * client[2 /192.168.22.147:49496]: InternAtom rejected the request (error 17): not implemented:
+ * client[2 /192.168.22.152:49496]: InternAtom rejected the request (error 17): not implemented:
  *     RANDR GetOutputProperty: this server's screen is the host window
  * </pre>
  *

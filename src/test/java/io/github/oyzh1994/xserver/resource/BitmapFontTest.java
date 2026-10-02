@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>A font a client asks for by name is now served from a table captured off a reference server, so
  * the metrics it reads through {@code QueryFont} and {@code QueryTextExtents} and the glyphs it draws
  * are that server's. The numbers below are the reference's own, read off it with
- * {@code tools/kit.sh FontProbe 192.168.22.147 6098 fixed}, and they are what fails if the table is
+ * {@code tools/kit.sh FontProbe 192.168.22.152 6098 fixed}, and they are what fails if the table is
  * ignored: a Java font chosen by the name answers with entirely different ones (its own ascent, its
  * own bearings, and a glyph it rasterizes itself), which is what this class used to do and what the
  * README still calls an approximation for names that have no table.
