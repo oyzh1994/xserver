@@ -5649,6 +5649,38 @@ phase touches their code; none of them is worth a branch of its own.
 
 ## 9. What this server does not have, as an X server, measured 2026-09-27
 
+### Re-measured 2026-10-03 (the same walk, after A18/A34 and the bed's move to `.152`)
+
+Nothing here changed the answer, and two things are worth writing down because they are the only
+places this server is still *behind* a reference rather than deliberately different:
+
+- **Extension set: unchanged.** Both advertise 23; the only two that differ are the ones above -
+  this server has **DPMS** (B7) where this Xvfb build has none, and the reference has **MIT-SHM**
+  where this server declines it by decision (B8).
+- **Versions: one gap, and it is XInput.** Every version a client is told matches except
+  **XInputExtension: a reference answers 2.4, this server answers 2.0** (`xinput --version`,
+  `xdpyinfo -ext XInputExtension`). Measured equal on both: RandR **1.6**, XVideo **2.2** with no
+  adaptors, XFIXES **4.0** (the probe prints it), XKEYBOARD **1.0**, XTEST **2.2**, RENDER **0.11**,
+  SHAPE **1.1**, XINERAMA **1.1**, SYNC **3.1**, Composite **0.4**, DOUBLE-BUFFER **1.0**, RECORD
+  **1.13**, and the OpenGL version string a client prints, because the client renders in process
+  (B6). **What 2.0 costs**: AWT's own log says `Desired version is 2.2, server version is 2.0` and
+  GDK asks for 2.4, both then fall back - measured, and harmless in this bed, but a client that
+  needs touch, barriers or the 2.1+ device-event surface would find them missing. The request
+  surface here is XI2 2.0 plus `XIGetSelectedEvents` (a 2.1 request, answered); **claiming 2.2+
+  would need each added surface measured against Xvfb first**, which is not attempted - it is the
+  one capability on this page a *modern* client could still reach for.
+- **The holes inside extensions are unchanged**: `ShapeGetRectangles`, `XFixesGetCursorImageAndName`
+  and `XFixesChangeSaveSet`, XI1 past `ListInputDevices`, pointer acceleration (`ChangePointerControl`
+  accepts and ignores) and host access control (`ChangeHosts`/`SetAccessControl` as no-ops).
+- **E0's sweep, re-run: 17 of 28 probes identical, 11 different** - the nine documented ones plus
+  two that were identical on 2026-09-28 and are understood rather than new bugs: `SelectionProbe`
+  names one window with a different role because the probe opens a **fresh connection per section**
+  and the resource-id base a new connection gets depends on when the server reaps the previous one
+  (a race, and the ids are the server's to choose); `MenuProbe` reports a `FocusIn` for the click
+  and `focus=yes` on the crossings after it, which is `--focus-on-click` doing its job where Xvfb
+  has no window manager to set a focus at all. Both are now in `tools/README.md`'s
+  expected-difference list, with the measurement behind them.
+
 Not items that were worked and left: **capabilities a client could ask for and this server does not
 have at all.** The inventory was taken the only way that means anything - against a reference server -
 by comparing `xdpyinfo`'s extension list on both sides and then walking the *core* protocol's requests

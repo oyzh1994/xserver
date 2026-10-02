@@ -600,6 +600,12 @@ exception, and had been there since the request was first tried.
 each server assigns for itself). **Full run 2026-09-28, after F6: 19 of the 28 probes identical.** The
 nine that differ are all deliberate, and each is measured rather than assumed - a run that reports one
 of these is a run that agrees with the reference, and a run that reports a *tenth* one is a finding.
+
+**Full run 2026-10-03 (the bed at `.152`, after A18/A34): 17 of 28 identical**, and the eleven are the
+nine below plus `SelectionProbe` and `MenuProbe`, both of which are measured and explained at the end
+of this list - a resource-id base the probe's own timing decides, and the focus `--focus-on-click`
+puts where the reference has none. So the list to read a future run against is **eleven**, and a
+*twelfth* difference is the finding.
 `RecordProbe`, `SecurityProbe` and `XvProbe` are the three of this round that came out identical, and
 `DbeProbe` is the one that differs by a line: RECORD as this server streams it is byte-for-byte what
 the reference streams for the same gesture (F2), SECURITY agrees request for request on both the
@@ -672,6 +678,20 @@ a reference with no video hardware does (F6).
   does not, so our run has a `DPMS version 1.2 / capable = no / timeouts` section that its run has no
   line for. The one field that differs inside `QueryInfo` is `window`, which is `None` here and a
   leftover id there.
+
+- **`SelectionProbe`** - one role name, sometimes. The probe opens a **fresh connection for each
+  section** ("the same window takes the selection twice" is a section of its own), and which
+  resource-id base that connection gets is the *server's* choice: a reference reuses the slot of the
+  connection that just closed, this server may hand out the next one because it has not reaped the
+  old one yet. `probe-diff.py` maps ids by the order they first appear, so a base that is new where
+  the reference reused one lands in a new role (`owner=R3` against `owner=R1`) with the *sequence*
+  of events otherwise identical. Measured 2026-10-03; it is a race in the probe's own timing, not a
+  difference in what the selection does - and the ids are the server's to assign.
+- **`MenuProbe`** - the focus. This server reports a `FocusIn` for the press and `focus=yes` on the
+  crossings that follow, because **`--focus-on-click` is on by default** (A19/A23's fix) and this
+  server therefore *has* a focus window where Xvfb, with no window manager and nothing setting a
+  focus, has none. That is the same feature the menu tests in A23 exist to protect; the fix for a
+  sweep that wants the old shape is `--no-focus-on-click`, not a change to the crossing code.
 
 **Two things make a run lie, both measured on 2026-09-27.** The reference must be **clean** (`tools/xvfb.sh
 stop` and start again): a client killed while its windows were mapped can leave them behind on Xvfb,
