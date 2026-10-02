@@ -94,7 +94,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~D1~~ | ~~session persistence and re-attach~~ **done 2026-09-25** (`--detach-on-close` and a control port; a server *restart* is still out, as the item says it is) | large | L-XL |
 | [x] D2 | built-in remote transport: **VNC** - raw, ZRLE and (since A32) Tight's JPEG method for photographic rectangles, the Cursor pseudo-encoding, password or not, clipboard both ways, and a browser path with no bridge | large | L-XL |
 | ~~A17~~ | ~~a frame JavaFX draws on a timer never reaches the screen - the caret does not blink~~ **closed 2026-09-27**: the caret blinks on both builds, and the hover issues no drawing request at all | correctness | M |
-| [ ] A18 | a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference - **the wire is clean, proven field by field against Xvfb (2026-10-01)**: every semantic field of our ButtonPress matches, so what is left is AWT's own reading and the XI2-length experiment written up in the entry | correctness | M |
+| ~~A18~~ | ~~a click on termora's 密钥管理器 button throws `Nonexistent button 16` in AWT here and opens the dialog on the reference~~ **fixed 2026-10-03**: the wire and the XI2 framing were clean all along - **the `first_event` this server reported for the XInput extension was 0**, and a base is where a client library hooks its wire-to-event converter, so libXi's *device* converter landed on core `ButtonPress` and AWT read every click's root **y** as the button number. A reference answers 66 (and 85 for XKEYBOARD, the same trap under libX11, also fixed); both ranges are reserved now, and `ExtensionEventBaseTest` pins it | correctness | M |
 | ~~A19~~ | ~~EasyShell's process dies when it copies~~ **fixed 2026-09-30**: the clipboard bridge asked a client for its data through a window of the **master screen**, which in the default mode is a root no client's setup reply names - GDK wraps the requestor of a `SelectionRequest` and dies in `XScreenNumberOfScreen`. Every earlier attempt had run `--single-window`, where that window *is* on the client's screen | correctness | M |
 | ~~A23~~ | ~~a forwarded application's context menu opens and then ignores the mouse~~ **fixed 2026-09-30**: `--focus-on-click` gave the input focus to the **menu itself** - an override-redirect window the window manager never focuses - so the window the menu belonged to was told `FocusOut` and the toolkit unmapped its own popup; 5 of 5 presses destroyed the menu before the fix and 5 of 5 survive after, in both modes | correctness | M |
 | ~~A22~~ | ~~a forwarded application's input fields ignore their context menu and every Control shortcut~~ **fixed 2026-09-30**: two causes - the toolkit's connection was killed by a **BadMatch on a cursor whose hotspot is outside its 1x1 placeholder pixmap**, and the **XI2 key event left the word at 72 nought**, which is where GDK reads the modifier state from | correctness | M |
@@ -3371,7 +3371,7 @@ log was clean at the moment of every crash (no disconnect line, no refusal), so 
 the server answers by dropping the client" was wrong on both counts; the two candidates above (a
 clipboard ping-pong, an `INCR` payload) were never involved.
 
-### [ ] A18. A click on termora's 密钥管理器 button throws in AWT on this server and opens the dialog on the reference. **M** - open, found 2026-09-29
+### [x] A18. A click on termora's 密钥管理器 button throws in AWT on this server and opens the dialog on the reference. **M** - **fixed 2026-10-03**; found 2026-09-29
 
 **What it is.** termora (Swing/AWT, 2.0.0-beta.16, the AppImage's own **Java 25.0.2** runtime) started
 against a `--single-window` server on the Mac: a click on the toolbar's 密钥管理器 (key manager)
@@ -3457,6 +3457,68 @@ on the **root** and on its icon window but not on the content window that was cl
 for XI2 2.2 where this server answers 2.0 (`Desired version is 2.2, server version is 2.0`, in the
 same log) - a toolkit that half-enables XI2 is the kind of client whose event reading is worth
 distrusting, and the reference answers 2.2.
+
+**It was not the wire, and it was not the XI2 length field either: it was the event base
+`QueryExtension` reports for the XInput extension** (2026-10-03). The XI2-length experiment was run
+first and came back clean - every generic event this server sent to a real client was framed
+correctly - so the client's reading was instrumented instead, and it turned out to be a *client-side
+misreading by design*, which is why the bytes had to be right.
+
+**The instrument that ended it, and it is worth keeping.** AWT lets a class register itself as an
+`XEventDispatcher` for a window (`sun.awt.X11.XToolkit.addEventDispatcher`, package-private) and
+hands it the **same `XEvent`** the toolkit is about to dispatch, so the ninety six bytes that
+produced the exception can be read back:
+
+```java
+// --add-exports java.desktop/sun.awt.X11=ALL-UNNAMED --add-opens java.desktop/sun.awt.X11=ALL-UNNAMED
+XToolkit.addEventDispatcher(contentWindow, e -> {
+    MemorySegment seg = MemorySegment.ofAddress(e.getPData()).reinterpret(96);
+    ... hex dump, and e.get_xbutton().get_*() ...
+});
+```
+
+With that, one host-mouse click on a forwarded window printed both the struct AWT had and, off a tap
+at the same moment, the bytes the server sent. **The struct was the device layout**: `serial` right
+at 8, `window` right at 32, and then `root` at **48** instead of 40, `child` at 40 instead of 48,
+`time` at **64** instead of 56, `x` at **72** instead of 64, `state` at **80** instead of 72 - every
+field from `window` on one eight byte slot further along. `button` was therefore the click's root
+**y**, which is exactly A18's first report: a click at y = 18 read as button 18, AWT's extra-button
+mapping subtracted two, and `MouseEvent` threw `Nonexistent button 16`. Two clicks at different
+places produced the same shift, which is what ruled out a stale buffer and pointed at a conversion.
+
+**Why a client would do that, and why the wire could not show it.** The event base in a
+`QueryExtension` reply is not a description of what a server sends; it is where a client library
+installs its wire-to-event converter. `XESetWireToEvent(dpy, first_event + i, handler)` writes
+straight into Xlib's conversion table - the same table the core events use - and libXi calls it for
+its whole range the first time a client touches XInput. AWT, GDK and every other toolkit do that at
+startup through `XListInputDevices`. **This server answered `first_event = 0` for XInput** (the
+registry reports zero for an extension that defines no events *here*, and XI2 sends generic events
+at core event 35, so nothing of ours lives in the range), which put libXi's `XDeviceButtonEvent`
+converter on top of core `ButtonPress`. A reference answers **66**; Xvfb advertises base 66 and
+libX11's XKB support base 85, and neither hijacks anything. `xev`, and a raw Xlib connection that
+never called into libXi, read the same button press correctly all along - which is the trap the
+entry above kept falling into: **two clients of the same server can disagree about the same bytes
+when one of them has hooked the event numbers.**
+
+**The fix.** `XInputExtension` is registered with **16 event codes** (XInput 1.x's own count) and
+`XkbExtension` with **12** (XKB 1.0's), so both advertise a base outside the core events and the
+range is reserved against every other extension. Nothing this server sends moves: XI2's events are
+generic events at 35, XKB sends none, and the *other* extensions' bases shift upward, which their
+clients read from the handshake. `ExtensionRegistry`'s "no events, so report zero" rule now carries
+the exception in the comment, and a new test (`ExtensionEventBaseTest`) pins both: the two
+handshakes report a base ≥ 64, and so does every extension that puts a real event on the wire.
+
+**Verified on the bed** (2026-10-03, per-client mode, `--glx`, the user's own launcher):
+`xev`-style raw reads, the toolkit dump above and termora itself all agree - the same click that
+threw reads `x = 294, y = 191, x_root = 304, y_root = 191, state = 0, button = 1,
+same_screen = true`, `grep -c Nonexistent` over the running application's AWT log is **0** with a
+dozen clicks in the toolbar, the terminal and the message list, and the full suite is 475 green.
+**AWT is the one measured doing it** (its toolkit connection calls `XListInputDevices` - minor
+opcode 2 - at startup, where the GDK connection beside it went straight to XI2's `XIQueryDevice`),
+and libX11's XKB support is the same trap with a different library: **any client whose library hooks
+the range it was given reads its buttons with that library's layout**. That is the likeliest
+explanation for "the click landed somewhere else" reports that no scripted test could reproduce,
+because a scripted driver connects, selects and reads without the toolkit's startup path.
 
 ### [x] B6. GLX / OpenGL. **XL** - done 2026-09-27, and it needed no renderer: a software GL client renders itself and blits
 

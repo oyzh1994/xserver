@@ -1,6 +1,6 @@
 ---
 name: xserver-working-state
-description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 472 tests. **Open: A18** (AWT's reading of a button event) and the reference motion shape. **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
+description: "Where the xserver work stands: the backlog is the record; as of 2026-10-01 (branch `bugfix`) the reported bugs are fixed - **A19** (a copy inside a forwarded app killed it), **A23** (an application's context menu opened and then ignored the mouse: `--focus-on-click` gave the input focus to the menu, which is override-redirect, so the app unmapped its own popup), **A26** (JavaFX threw \"Destination region ... must fit within texture content bounds\" and the window never appeared, because the repaint covered the pointer sprite's box past the edge of the canvas), **A27** (the dock's Quit did not end the process: on macOS a JavaFX Quit is \"close every window\", never System.exit, and the toolkit's keep-alive thread is not a daemon), and **both halves of \"much slower than Xvfb+x11vnc\"**: **A24** the frame path's per-pixel copies/fills/uploads (now row-bulk, ~90-100% -> ~20% of a core) and **A25** the wire (an unchanged screen was re-sent 61 times a second, 5.39 MB/s, where `x11vnc` sends nothing - now the update is the box that differs, or nothing: see [xserver-frame-path-byte-at-a-time](xserver-frame-path-byte-at-a-time.md)). 475 tests. **A18 is FIXED (2026-10-03)**: the XInput extension advertised `first_event = 0`, and an event base is where a client library installs its wire-to-event converter, so libXi's device converter sat on core `ButtonPress` and AWT read every click's root y as the button number, which is exactly the "Nonexistent button 16" - see [the event-base trap](x11-extension-event-base-hijack.md). **Open: the reference motion shape.** **All seven §9 capability candidates are DONE (F1-F7)** on `feat`, so both servers advertise 23 extensions, 22 the same; GLX is on by default (--no-glx). E1 CLOSED by decision (no fork/republish of the x11 library, no Lombok); E2 parked (GitHub Actions once the mirror exists); E6 ongoing; docs/verification-checklist.md is the whole-server tour."
 metadata: 
   node_type: memory
   type: project
@@ -10,6 +10,41 @@ metadata:
 
 **The record that travels with the code is `docs/backlog.md`, `docs/design-notes.md` and `README.md`.**
 This memory is only for picking the work up; when they disagree, the repository is right.
+
+**2026-10-03, fourteenth session (branch `bugfix`): A18 is fixed, and it was the event base the
+XInput extension advertised.** Reported as "you broke something - termora now errors on every click:
+`java.lang.IllegalArgumentException: Nonexistent button 18` (and 16)". It was not a regression: it is
+A18, open since 2026-09-29, and the deeper reason it survived a month of looking is that **the wire
+really was correct and `xev` really did read it correctly** - the client that read it wrongly was the
+one that had called into libXi first.
+
+- **What it was.** `QueryExtension` answers a `first_event`, and that number is where a client
+  library installs its wire-to-event converter: `XESetWireToEvent(dpy, first_event + i, handler)`
+  writes into Xlib's own conversion table. libXi does that for its whole range the first time a
+  client touches XInput 1.x (`XListInputDevices`) - AWT's toolkit connection does it at startup, measured; the GDK connection beside it went straight to XI2's `XIQueryDevice`. This
+  server answered **`first_event = 0`** for XInput (the registry reports zero for an extension that
+  defines no events *here*, and XI2's events are generic events at 35), so libXi's
+  `XDeviceButtonEvent` converter landed on core `ButtonPress`: every click was unpacked with the
+  device layout, which shifts everything from `root` on by one eight byte slot, and AWT read the
+  click's root **y** as the button - y = 18 read as button 18, AWT's extra-button mapping subtracted
+  two, and `MouseEvent` threw `Nonexistent button 16`. Xvfb answers base 66 for XInput and 85 for
+  XKEYBOARD; ours were 0 and 0. **XKEYBOARD is the same trap under libX11**, so both ranges are
+  reserved now (16 and 12 codes) and `ExtensionEventBaseTest` pins it. 475 tests green.
+- **The instrument.** `sun.awt.X11.XToolkit.addEventDispatcher(window, dispatcher)` hands a
+  registered `XEventDispatcher` the *same* `XEvent` the toolkit is about to dispatch, so the ninety
+  six bytes that produced the exception can be hex-dumped with
+  `MemorySegment.ofAddress(e.getPData()).reinterpret(96)` - next to the same click's bytes off
+  `tools/tap.py`. That is what turned "stale buffer" into arithmetic: right at 8 and 32, wrong from
+  40 on, the same shift on every click. The class lives on the VM as `/root/DispProbe.java`
+  (`javac --add-exports java.desktop/sun.awt.X11=ALL-UNNAMED`) and needs
+  `--add-opens java.desktop/java.awt=ALL-UNNAMED` plus `sun.awt.AWTAccessor` to get the content
+  window id. See [the event-base trap](x11-extension-event-base-hijack.md).
+- **Verified live** with the user's own launcher (per-client, `--glx`, `--geometry 1300x800`):
+  termora's own AWT log prints correct fields (`x = 294, y = 191, x_root = 304, y_root = 191,
+  state = 0, button = 1, same_screen = true`) for a dozen clicks in the toolbar, the terminal and
+  the message list, and `grep -c Nonexistent` is 0.
+- **Trap for next time**: the live server binds `:95` and `GrabCrossingTest` binds 95 too - stop the
+  test server before `mvn test` (the same note is in the 2026-09-28 block below, and it bit again).
 
 **2026-10-02, eleventh session (branch `bugfix`): the tray icon was a blank square, and the Chinese
 input question is answered.** Reported as "EasyShell's and termora's Chinese input (switching the Mac's
@@ -465,6 +500,9 @@ the *root window* when the focus was left on it, so EasyShell could not type aft
   well-framed messages with `detail = 1`. The recipe - `tools/tap.py` plus
   `JAVA_TOOL_OPTIONS=-Djava.util.logging.config.file=…` with `sun.awt.X11.event.level=FINE` - is in
   `tools/README.md`.
+  **RESOLVED 2026-10-03**: "every other field holds the *next* field's value" is libXi's device
+  layout, because XInput advertised `first_event = 0` - see the session note at the top of this
+  file and [the event-base trap](x11-extension-event-base-hijack.md).
 - **Bed notes this round**: a `--single-window` server on `:95` plus `tools/kit.sh Drive/Shot/Keys`
   drives EasyShell exactly (the window lands at `+0+33`, so click at window coordinates **+33 in y** -
   clicking the visual position in the *screen* screenshot hits the root); `pkill -f '[m]ount_EasySh'`

@@ -290,11 +290,18 @@ public final class XServer {
         // One screen is Xinerama's whole answer here, and it is an answer a client needs rather than
         // an extension it uses: xdotool segfaults in its own startup without it.
         extensions.register(new io.github.oyzh1994.xserver.extension.XineramaExtension(), 0, 1);
-        // XKEYBOARD defines one error (the keyboard error) and many events this server never sends,
-        // so none are reserved. It is here for the same reason Xinerama is: xdotool asks the
-        // keyboard for its keymap through XKB and dereferences a null pointer when told there is no
-        // such extension - see the class comment, and A4.
-        extensions.register(new io.github.oyzh1994.xserver.extension.XkbExtension(), 0, 1);
+        // XKEYBOARD defines one error (the keyboard error) and events this server never sends - but
+        // **its event range is still reserved, and reserving it is not bookkeeping**: a client
+        // library installs its wire-to-event converter over the whole range a server advertises
+        // (`XESetWireToEvent`), and a base of zero would install it over the *core* events instead.
+        // libX11's XKB support is inside Xlib itself and every toolkit that asks for a keymap goes
+        // through it, so a base of zero is a loaded gun pointed at KeyPress. It is here for the same
+        // reason Xinerama is: xdotool asks the keyboard for its keymap through XKB and dereferences
+        // a null pointer when told there is no such extension - see the class comment, and A4. A
+        // reference answers base 85 (measured 2026-10-03, `xdpyinfo -ext XKEYBOARD` on both
+        // servers); the exact number is the server's to choose, and only "outside the core event
+        // numbers" matters. **The twelve event codes XKB 1.0 defines**, so nothing hands them out.
+        extensions.register(new io.github.oyzh1994.xserver.extension.XkbExtension(), 12, 1);
         // MIT-SCREEN-SAVER defines one event - the state-change notification - and no errors; DPMS
         // is requests and replies only. The screen saver extension is kept by name because the core
         // ForceScreenSaver is what raises its notification.
@@ -307,12 +314,37 @@ public final class XServer {
         // kept by name because the screen-growth path is what raises its notification.
         this.randrExtension = extensions.register(
                 new io.github.oyzh1994.xserver.extension.RandRExtension(), 2, 4);
-        // XInput2 defines one error (the device error) and no events of its own: what it sends are
-        // generic events, which live at core event 35 and not in an extension's range. It is kept by
-        // name because the event delivery asks it, for every event, whether a client wants the
-        // device version instead.
+        // XInput2 defines one error (the device error) and no events of its own - what it sends are
+        // generic events, which live at core event 35 and not in an extension's range - **and it
+        // still has to reserve a range, which is the whole of A18**.
+        //
+        // <p>The range a server advertises is not a description of what it will send. It is where a
+        // client library puts its wire-to-event converter: `XESetWireToEvent(dpy, first_event + i,
+        // ...)` writes straight into Xlib's conversion table, one slot per event code, and it is
+        // called the moment the library is first used on that connection. libXi installs its
+        // **device** converters that way, and AWT's toolkit connection calls `XListInputDevices`
+        // (minor opcode 2) as its second XInput request at startup - measured on the bed, in a
+        // server log where the GDK connection beside it went straight to XI2's `XIQueryDevice`.
+        // Answering `first_event = 0`, as this did, therefore put
+        // libXi's `XDeviceButtonEvent` converter on top of core `ButtonPress`: Xlib then unpacked
+        // every click with the device layout, which carries an extra `deviceid` word the core layout
+        // spends on nothing, so every field from `root` on sat eight bytes away from where the
+        // reader looked for it. AWT read the click's root **y** as the button number - "Nonexistent
+        // button 18" for a click at y = 20, "16" at y = 18, which is A18's original report - and
+        // ignored the click, since the button was neither 1 nor 2 nor 3.
+        //
+        // <p>**Measured 2026-10-03**, by dumping the struct AWT was handed (a
+        // `sun.awt.X11.XEventDispatcher` under the frame's content window, reading the raw ninety six
+        // bytes with a `MemorySegment`) beside the same click's bytes off a tap: `window` at 32 and
+        // `serial` at 8 right, then root at **48** instead of 40, time at **64** instead of 56, x at
+        // **72** instead of 64 - the device layout, field for field, on two different clicks. A
+        // reference answers 66 here, and `xev` and a fresh Xlib connection (which never touched
+        // libXi) read the same button press correctly, which is why the wire looked clean for
+        // months. **Sixteen event codes**, XInput 1.x's own count, so nothing else can be handed
+        // them. It is kept by name because the event delivery asks it, for every event, whether a
+        // client wants the device version instead.
         this.xinputExtension = extensions.register(
-                new io.github.oyzh1994.xserver.extension.XInputExtension(), 0, 1);
+                new io.github.oyzh1994.xserver.extension.XInputExtension(), 16, 1);
         // GLX answers the handshake a software OpenGL client needs, and nothing that would need a
         // renderer: a client granted a direct context renders itself and blits (B6). Off unless
         // `--glx` asks for it, because advertising it changes what JavaFX does with its own drawing

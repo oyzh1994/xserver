@@ -69,6 +69,12 @@ import java.util.List;
  * <p>The request bodies are decoded with the generated classes, which are correct for every request
  * here (they are fixed size and read positionally); the <em>replies</em> are written as bytes,
  * because XKB's replies carry arrays whose shapes the generated writer does not reproduce.
+ *
+ * <p><b>Its event range is reserved even though this server sends no XKB event</b> (see
+ * {@code XServer.registerExtensions}): libX11 installs its XKB wire-to-event converter over the
+ * whole range a server advertises, and a base of zero would put it on top of the core events that
+ * every client reads. A reference answers base 85; measured 2026-10-03 while fixing A18, which is
+ * the same trap under libXi and XInput.
  */
 public final class XkbExtension implements Extension {
 

@@ -45,6 +45,15 @@ public final class ExtensionRegistry {
         // event, no errors) answers 64/0. Reporting the registry's counter instead is invisible to a
         // client that only ever looks at the ranges it needs, which is why it went unnoticed until
         // an extension with neither range was added.
+        //
+        // **"Defines no events of its own" is a statement about this server, not about the
+        // protocol, and the two are not interchangeable when a client library hooks the range.**
+        // XInput and XKEYBOARD have real event numbers in a reference (66 and 85) and a client
+        // library that installs a wire-to-event converter for every advertised code - libXi and
+        // libX11's own XKB support - so a zero here lands those converters on the *core* event
+        // numbers. That is A18, and it is why both are registered with their own event counts even
+        // though this server never sends an event in either range: see the registration site in
+        // XServer.registerExtensions, which says what the corruption looked like.
         byte firstEvent = eventCount == 0 ? 0 : nextEvent;
         byte firstError = errorCount == 0 ? 0 : nextError;
         nextEvent += eventCount;
