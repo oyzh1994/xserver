@@ -1178,12 +1178,19 @@ public final class XServer {
                     session.setRaisePending(true);
                 }
             }
-            // The master screen shows all of itself; a client's screen shows the part of it that
-            // client's windows occupy, which is what keeps a small application out of a full-screen
-            // window.
-            wanted = session.client() == null
-                    ? new Rectangle(0, 0, session.screen().width(), session.screen().height())
-                    : contentBounds(session.screen());
+            // **One rule for both modes: the window shows the part of the screen the clients' windows
+            // occupy.** `--single-window` used to show the whole screen at 1:1, which made the host
+            // window's size and the screen's size the same thing - and that is what left that mode
+            // with no usable restore or drag (A39: the platform's zoom and every resize gesture were
+            // fighting over one rectangle, and macOS undid a fill within a tenth of a second).
+            // With the viewport taken from the content instead, single-window mode's window is an
+            // ordinary frame around the client windows, exactly like a per-client window, and the
+            // maximize/restore path that works there applies to it unchanged.
+            //
+            // The trade-off, which is being tried rather than assumed: a window no longer shows the
+            // whole screen, so a client whose window is small gets a small window and a blank part of
+            // the screen is not shown at all. That is what the mode's user asked to see.
+            wanted = contentBounds(session.screen());
             boolean nowIdle = session.client() == null ? clients.isEmpty() : wanted == null;
             if (nowIdle != session.idle()) {
                 session.setIdle(nowIdle);
