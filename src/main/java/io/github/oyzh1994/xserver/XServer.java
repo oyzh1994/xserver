@@ -1504,10 +1504,10 @@ public final class XServer {
             return;
         }
         Screen screen = session.screen();
-        // Before anything is measured: the screen is made the size the gesture asked for - grown when
-        // a drag went past it, shrunk when it came back inside - so the extents below are worked out
-        // against the size there will be rather than the one there was.
-        sizeScreenTo(screen, requested);
+        // Before anything is measured: a drag that asked for more than the screen can show grows the
+        // screen to fit it, so the extents below are worked out against the size there will be rather
+        // than the one there was.
+        growScreenToFit(screen, requested);
         boolean resized = false;
         boolean capped = false;
         for (XWindow window : screen.root().children()) {
@@ -1561,16 +1561,9 @@ public final class XServer {
      *
      * @return true when the screen grew, in which case the backend has to rebuild what it holds
      */
-    private boolean sizeScreenTo(Screen screen, java.awt.Dimension requested) {
-        // **The screen follows the host window in both directions.** It used to only ever grow, on
-        // the argument that the screen is not something a gesture should be able to shrink - and that
-        // is what left single-window mode with no way back: there the window *is* the screen, so a
-        // restore that only resized the client's windows gave back a small page inside a window that
-        // stayed full-size (the report: "cancelling the maximize does not restore the window"). The
-        // floor is the size the server was launched with, so nothing shrinks below what the user
-        // asked for at start-up, and --max-screen still caps the growth.
-        int wantedWidth = Math.max(options.width(), requested.width);
-        int wantedHeight = Math.max(options.height(), requested.height);
+    private boolean growScreenToFit(Screen screen, java.awt.Dimension requested) {
+        int wantedWidth = screen.width();
+        int wantedHeight = screen.height();
         boolean anything = false;
         for (XWindow window : screen.root().children()) {
             if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
@@ -1595,8 +1588,7 @@ public final class XServer {
             }
             return false;
         }
-        log.info("{} the screen of display :{} to {}x{}: the host window was resized",
-                width > screen.width() || height > screen.height() ? "growing" : "shrinking",
+        log.info("growing the screen of display :{} to {}x{}: a client's window was dragged past it",
                 options.displayNumber(), width, height);
         screen.resize(width, height);
         tellClientsTheScreenChanged(screen);

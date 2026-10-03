@@ -384,7 +384,26 @@ public final class JavaFxBackend implements DisplayBackend {
             // (those are absorbed by the settle above), is the *second* double click or the green
             // button: un-maximize. Its own idea of the old geometry is the geometry the client had,
             // so the size to come back to is the one remembered when the fill happened.
-            restoreFilledWindow(System.currentTimeMillis());
+            filledByServer = false;
+            settlingMaximizeUntil = System.currentTimeMillis() + 700;
+            // And the platform's own state goes with it. It is the same flag this server has been
+            // filling *for*: left set, the next double click is a platform zoom the property does not
+            // change, so no fill is asked for and the window lands on the platform's own geometry -
+            // measured, a third double click gave 1289x886 after two good ones. Clearing it makes the
+            // next double click a `false -> true` again, i.e. the same gesture as the first.
+            adjustingWindow = true;
+            try {
+                stage.setMaximized(false);
+            } finally {
+                adjustingWindow = false;
+            }
+            if (restoreContentWidth > 0 && restoreContentHeight > 0) {
+                int restoredWidth = (int) Math.round(restoreContentWidth * scale);
+                int restoredHeight = (int) Math.round(restoreContentHeight * scale);
+                restoreContentWidth = 0;
+                restoreContentHeight = 0;
+                input.windowMaximized(false, restoredWidth, restoredHeight);
+            }
             return;
         }
         int width = (int) Math.round(scene.getWidth() * scale);
@@ -448,36 +467,6 @@ public final class JavaFxBackend implements DisplayBackend {
     /** The canvas a scene is drawing the screen into. */
     private static Canvas canvasOf(Scene scene) {
         return (Canvas) ((Pane) scene.getRoot()).getChildren().get(0);
-    }
-
-    /**
-     * Comes back from a fill: the remembered content size is asked for, and the platform's own
-     * maximized state is cleared so the next double click is a fresh {@code false -> true}.
-     *
-     * <p>Clearing it is not cosmetic: it is the same flag this server has been filling *for*, and
-     * left set, the next double click is a platform zoom the property does not change, so no fill is
-     * asked for and the window lands on the platform's own geometry (measured: a third double click
-     * gave 1289x886 after two good ones). Runs on the FX thread.
-     */
-    private void restoreFilledWindow(long now) {
-        filledByServer = false;
-        settlingMaximizeUntil = now + 700;
-        adjustingWindow = true;
-        try {
-            if (stage != null) {
-                stage.setMaximized(false);
-            }
-        } finally {
-            adjustingWindow = false;
-        }
-        if (restoreContentWidth > 0 && restoreContentHeight > 0) {
-            int restoredWidth = (int) Math.round(restoreContentWidth * scale);
-            int restoredHeight = (int) Math.round(restoreContentHeight * scale);
-            restoreContentWidth = 0;
-            restoreContentHeight = 0;
-            log.debug("restoring the window to {}x{}", restoredWidth, restoredHeight);
-            input.windowMaximized(false, restoredWidth, restoredHeight);
-        }
     }
 
     /**
@@ -787,27 +776,7 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.maximizedProperty().addListener((observable, was, is) -> {
             log.debug("host window maximized {} -> {} ({}x{})", was, is,
                     (int) Math.round(scene.getWidth()), (int) Math.round(scene.getHeight()));
-            if (!is) {
-                // The platform un-maximized on its own. In per-client mode the same gesture also
-                // arrives as a content resize, which {@link #clientAreaChanged} turns into the
-                // restore; in single-window mode the window *is* the screen, the platform's own
-                // restore changes no content size, and this is the only notice there is.
-                if (filledByServer) {
-                    restoreFilledWindow(System.currentTimeMillis());
-                }
-                return;
-            }
-            if (filledByServer) {
-                return;
-            }
-            if (System.currentTimeMillis() < settlingMaximizeUntil) {
-                // The platform's own flip-flop right behind a restore: macOS re-maximizes the window
-                // a moment after this server has cleared the state, and filling again would make the
-                // two of them a loop (measured in single-window mode: restore, then
-                // `false -> true` 200 ms later, for ever). The window the user is looking at stays
-                // where this server put it.
-                log.debug("ignoring a maximize {} ms into a restore's settle",
-                        System.currentTimeMillis() - (settlingMaximizeUntil - 700));
+            if (!is || filledByServer) {
                 return;
             }
             // **The gesture is the platform's; the geometry is this server's.** macOS works its
