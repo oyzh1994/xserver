@@ -114,6 +114,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A36~~ | ~~"what is still missing against Xvfb"~~ **re-measured 2026-10-03**: the extension set is unchanged (23 each, DPMS here against MIT-SHM there) and every version a client is told matches **except XInputExtension - a reference answers 2.4 where this server answers 2.0**, which is the one capability a modern client can still reach for (AWT logs it, GDK asks for 2.4 and falls back). §9 now carries the re-measurement, and E0's sweep re-run says 17 of 28 probes identical with the two new differences explained | capability | M |
 | ~~A37~~ | ~~**XTS (`xts` 5.1.5) against the `Xproto` set**: 121 of 122 purposes failed~~ **two root causes fixed 2026-10-03**: (1) a **BIG-REQUESTS request longer than the maximum got `BadLength` and then the connection was closed** - a reference replies and *discards* the request, so the client's next request is answered; XTS's `TOO_LONG` case (which sends `bigreq_size + 1` and then all sixteen megabytes) went from `UNRESOLVED`+`SIGPIPE` to **PASS**, and (2) **`AllocColorCells`/`AllocColorPlanes` handed out writable cells on a read-only visual** (TrueColor and the statics), where the protocol says `BadAlloc`. Down to **1 case per purpose (120 of 122)**, all of them the same missing piece: **per-request length validation** (a request whose length is one unit more or less than its type defines must be `BadLength`), which needs a table of exact-vs-at-least sizes - see the entry | correctness | L |
 | ~~A38~~ | ~~double-clicking the title bar does not maximize, and a second double click does not restore - "it stretches partway and stops", and the behaviour differs from click to click~~ **fixed 2026-10-03**: macOS zooms a window to a "standard frame" worked out from its **content**, and this window's content is a client's X window at the size the client last asserted - so the first double click added height only (1280x828 -> 1280x886), the second added width (-> 1512x886), and the platform's own resize arrived *behind* ours and shrank the client's window back. The gesture is still the platform's (`Stage.maximizedProperty` fires on it); the geometry is the server's: fill = the display's usable area (the screen grows to fit), a resize while filled = restore the remembered size, and the platform's own state is cleared with it so the next double click is the same gesture again. Verified five double clicks in a row: 1512x886 <-> 1280x828 | correctness | M |
+| ~~A39~~ | ~~`--single-window`: maximize leaves the app's page unstretched, cancelling it does not restore the window, and dragging the right edge moves the window down~~ **partly fixed 2026-10-03**: in that mode the window *is* the screen, and the screen could only ever **grow** - so a restore could not shrink it, and a resize that came back inside the screen left the window and the page disagreeing. `sizeScreenTo` now resizes the screen in **both** directions (floored at the launch geometry, capped by `--max-screen`) and tells clients, and the platform's un-maximize (a `maximized true -> false` with no content resize, which is the only notice single-window mode gets) is handled as the restore. Per-client mode re-verified: four double clicks alternating 1512x886 <-> 1280x828; 475 tests green. Single-window's maximize was verified to fill and stretch the client (screenshot), and its restore now runs and shrinks the screen back (log), but the platform's own maximize state flips behind a restore and a full round of verification there needs the host window in front - see the entry | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6268,3 +6269,44 @@ arrive behind it, once each.
 
 **Verified on the bed**: five double clicks in a row, 1512x886 <-> 1280x828, alternating exactly, in
 per-client mode with termora forwarded; and the full suite is green (475).
+
+### [x] A39. `--single-window` resize and maximize. **M** - the screen now shrinks, and a restore is a restore; 2026-10-03
+
+**The report.** "`--single-window` has a lot of problems: maximizing leaves the X application's page
+unstretched, cancelling the maximize does not give the window back, and dragging the right edge makes
+the window run downwards."
+
+**Why single-window is different, and it is one fact.** There the host window *is* the screen
+(`contentBounds` is not used: the master session's viewport is `0,0,screenWidth,screenHeight`), so
+every gesture has to be expressed as a change of *screen* size. Two things followed:
+
+- the screen could only ever **grow** (`growScreenToFit`), so a restore had nothing to shrink: the
+  client's windows went back to their old size while the window stayed as big as the screen had grown
+  - "cancelling the maximize does not give the window back" - and a drag that came back inside the
+  screen left the window and the page arguing about which was which (measured: the window 1300x828 ->
+  1414x828 on a right-edge drag, with the screen grown to 1414x800 and the window moved from x=106
+  to x=98 by the keep-on-screen clamp);
+- and the platform's un-maximize in this mode arrives as `maximized true -> false` with **no content
+  resize at all**, so A38's rule ("a resize while filled is the restore") never fired.
+
+**What changed.**
+
+- `XServer.sizeScreenTo` replaces `growScreenToFit`: the screen is made the size the gesture asked
+  for, **growing or shrinking**, floored at the launcher's `--geometry` (nothing shrinks below what
+  the user asked for at start-up) and capped by `--max-screen`. Clients are told in both directions
+  exactly as before (`RandR`'s `ScreenChangeNotify` plus the root's `ConfigureNotify`).
+- `JavaFxBackend`'s maximize listener handles `maximized = false` as the restore when it has a fill
+  outstanding - single-window mode's only notice - and a maximize that arrives inside the settle
+  window right after a restore is *ignored*, because macOS re-maximizes there and taking it would
+  make the two of them a loop (measured: `false -> true` 200 ms after a restore, repeatedly).
+
+**Verified.** Per-client mode is unchanged and still exact: four double clicks alternating
+1512x886 <-> 1280x828. Single-window mode: the maximize fills the display and **the client's page
+does stretch** (screenshot of termora filling 1512x886), and the restore now runs and the screen
+shrinks back (log: `restoring the window to 1300x800`, then `shrinking the screen of display :95 to
+1310x800`). **What is not fully verified**: a clean four-click round in single-window mode, because
+driving that window by script needs it in front (macOS delivers the double click to whatever is under
+the pointer, and an IDE window covering it took the clicks), and the platform's maximize state still
+flips on its own behind a restore. The next session should drive it by hand - or with the host window
+raised - and check the four gestures there: maximize, restore, a right-edge drag, and a
+bottom-right corner drag.
