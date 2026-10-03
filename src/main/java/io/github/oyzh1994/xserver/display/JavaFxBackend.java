@@ -237,6 +237,7 @@ public final class JavaFxBackend implements DisplayBackend {
             if (wanted.equals(viewport)) {
                 return;
             }
+            Rectangle previous = viewport;
             viewport = new Rectangle(wanted);
             Stage open = stage;
             if (open == null) {
@@ -244,6 +245,23 @@ public final class JavaFxBackend implements DisplayBackend {
                 return;
             }
             Canvas canvas = canvasOf(open.getScene());
+            if (userDragPending && System.currentTimeMillis() < userDragUntil) {
+                // **A drag in flight: the pixels move, the window's size does not.** While the user has
+                // the frame's edge under the pointer, the platform is the one computing the size from
+                // the cursor, and its reference for the next step is the window it just made. Sizing
+                // the window back to what the client's window is *now* (which is always one step
+                // behind) shifts that reference - and for a left or top edge, where the origin is part
+                // of the arithmetic, the two sides then fight: measured with xclock, dragging the left
+                // edge 40 px moved the window 40 px and shrank it by 5, and the requested sizes bounced
+                // 265 -> 298 -> 297 -> 295 instead of falling. Only the *canvas* follows here, so the
+                // app is drawn at the size it is becoming; the window is left to the drag.
+                canvas.setWidth(logical(viewport.width));
+                canvas.setHeight(logical(viewport.height));
+                graphics = canvas.getGraphicsContext2D();
+                drawViewport();
+                return;
+            }
+            userDragPending = false;
             // Sizing the window to the content is the backend's own doing, and the size listener
             // would otherwise read it as the user dragging the edge and ask for that size again.
             adjustingWindow = true;
@@ -258,6 +276,8 @@ public final class JavaFxBackend implements DisplayBackend {
                 // user reported. So until the platform reports the size this server set, its reports
                 // are ignored and the size is put back; the flag is cleared the moment the two agree.
                 viewportPending = true;
+                pendingFromWidth = previous.width;
+                pendingFromHeight = previous.height;
                 canvas.setWidth(logical(viewport.width));
                 canvas.setHeight(logical(viewport.height));
                 graphics = canvas.getGraphicsContext2D();
@@ -367,6 +387,18 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private boolean viewportPending;
 
+    /** The viewport size before the pending one, so the platform's half-applied step is recognisable. */
+    private int pendingFromWidth;
+    private int pendingFromHeight;
+
+    /**
+     * True from the moment a user resize is reported until the client's window has caught up with it:
+     * the platform is driving the window's size and this backend must not size it back. The deadline
+     * is a safety net for a client that never takes the size it was given.
+     */
+    private boolean userDragPending;
+    private long userDragUntil;
+
     /** Whether the window is currently filled by this server's own maximize, not the platform's. */
     private boolean filledByServer;
 
@@ -384,15 +416,21 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         if (viewportPending) {
-            // The size this server set is still on its way; see setViewport. Matching it means the
-            // platform has arrived and the window is the user's again.
-            if ((int) Math.round(scene.getWidth() * scale) == viewport.width
-                    && (int) Math.round(scene.getHeight() * scale) == viewport.height) {
-                viewportPending = false;
-            } else {
+            // **The platform applies a window size in two steps, and the step in between is a mixture
+            // of the old size and the new one.** Anything that is *only* such a mixture - each
+            // dimension either what this server just set or what it was before - is the platform's own
+            // half of the change, and reporting it as a drag is what made the window walk upwards two
+            // pixels at a time. Anything else is the user, and clears the mark: the guard must not be
+            // able to swallow a real drag.
+            int width = (int) Math.round(scene.getWidth() * scale);
+            int height = (int) Math.round(scene.getHeight() * scale);
+            boolean matchesOldOrNew = (width == viewport.width || width == pendingFromWidth)
+                    && (height == viewport.height || height == pendingFromHeight);
+            if (matchesOldOrNew) {
                 enforceWindowSize();
+                return;
             }
-            return;
+            viewportPending = false;
         }
         if (System.currentTimeMillis() < settlingMaximizeUntil) {
             // **The platform's own "maximized" frame arrives behind ours, and it is not the user.**
@@ -438,6 +476,10 @@ public final class JavaFxBackend implements DisplayBackend {
         if (!isUserResize(adjustingWindow, width, height, viewport)) {
             return;
         }
+        // The platform is resizing the frame from the pointer; setViewport must not size it back until
+        // the client's window has taken the size (or the deadline passes) - see setViewport.
+        userDragPending = true;
+        userDragUntil = System.currentTimeMillis() + 1000;
         input.windowResized(width, height);
     }
 

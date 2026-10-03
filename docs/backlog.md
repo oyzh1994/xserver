@@ -6371,3 +6371,41 @@ one-pixel accounting errors, each a feedback loop:
 two (500x428) and **stays** there (four samples over twelve seconds, identical); per-client with
 xclock - the maximize/restore toggle is **exact** (300x328 <-> 1511x885, three cycles, no drift);
 475 tests green.
+
+**The edge-drift, which the user narrowed down for us** (2026-10-04, same night): "dragging the right
+edge leftwards and the bottom edge upwards are fine; dragging the top edge downwards and the left edge
+rightwards drift". Reproduced with xclock in per-client mode: a left-edge drag of **40 px** moved the
+window 40 px and shrank it by **5** (300 -> 295), and the server's own log of the sizes it was asked
+for bounced instead of falling:
+
+```
+[dbg] request 265x300 viewport=(51,51,300,300)
+[dbg] request 298x300 viewport=(51,51,300,300)      <- up again
+[dbg] request 297x300
+[dbg] request 295x300
+```
+
+**Why the two edges differ, and it is one asymmetry.** A right or bottom edge drag is *size only*:
+the platform computes the new size from the pointer against the edge that stays put, our server
+resizes the client's window to it, and the two agree step for step. A left or top edge drag changes
+the window's **origin as well as its size**, and the platform's arithmetic for the next step is
+anchored on the window it just made. This server, meanwhile, was re-sizing the host window to the
+viewport on every tick - and the viewport is the client's window, which is always one step behind the
+pointer - so each of our corrections moved the platform's anchor and the drag lost ground (the bounce
+above; 40 px of drag produced 5 px of shrink).
+
+**The fix**: while a user resize is in flight, the backend moves the **pixels** and leaves the
+**window's size** alone (`JavaFxBackend.userDragPending`, set when a resize is reported and cleared
+when the client's window has taken the size, with a one-second safety net). The drag keeps its
+anchor, the client's window catches up, and the viewport then matches - so the two never correct each
+other mid-gesture. The guard that ignores the platform's half-applied size
+({@code viewportPending}) was narrowed at the same time to *only* the mixtures of the old and new
+sizes, because the first version of it ignored anything that did not match and would have swallowed a
+real drag for ever.
+
+**Verified**: 475 tests green; the growth and flicker with xclock/xeyes stay fixed (that is what the
+narrowed guard is for). **Not verified by script**: the four edge drags themselves - the synthetic
+drags could not reach the host window in this session (an IDE window covering it takes the events, and
+macOS delivers a drag to whatever is under the pointer), so this one is for the user to try by hand,
+with the numbers above as what "fixed" should look like: a 40 px left-edge drag must move the window
+40 px and shrink it 40 px.
