@@ -248,6 +248,16 @@ public final class JavaFxBackend implements DisplayBackend {
             // would otherwise read it as the user dragging the edge and ask for that size again.
             adjustingWindow = true;
             try {
+                // **The platform applies a window size in two steps, and the step in between is
+                // neither the old size nor the new one.** Measured with an X client that keeps its
+                // own window (xclock, single-window mode, 2026-10-04): the resize callback arrived
+                // with the *new width and the old height* (202x800 for a viewport of 202x202), the
+                // window was read as "the user dragged" and the client's window was resized to it,
+                // which moved the content bounds by the window's border - and the two of them then
+                // walked the window up two pixels at a time for ever, flickering, which is what the
+                // user reported. So until the platform reports the size this server set, its reports
+                // are ignored and the size is put back; the flag is cleared the moment the two agree.
+                viewportPending = true;
                 canvas.setWidth(logical(viewport.width));
                 canvas.setHeight(logical(viewport.height));
                 graphics = canvas.getGraphicsContext2D();
@@ -351,6 +361,12 @@ public final class JavaFxBackend implements DisplayBackend {
     /** Until this millisecond, a content resize is the platform's reaction to a maximize. */
     private long settlingMaximizeUntil;
 
+    /**
+     * True while a size this server set is still being applied by the platform. Its resize reports
+     * in that window are its own halves of the change, not the user's; see {@link #setViewport}.
+     */
+    private boolean viewportPending;
+
     /** Whether the window is currently filled by this server's own maximize, not the platform's. */
     private boolean filledByServer;
 
@@ -365,6 +381,17 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private void clientAreaChanged() {
         if (scene == null || input == null || stage == null) {
+            return;
+        }
+        if (viewportPending) {
+            // The size this server set is still on its way; see setViewport. Matching it means the
+            // platform has arrived and the window is the user's again.
+            if ((int) Math.round(scene.getWidth() * scale) == viewport.width
+                    && (int) Math.round(scene.getHeight() * scale) == viewport.height) {
+                viewportPending = false;
+            } else {
+                enforceWindowSize();
+            }
             return;
         }
         if (System.currentTimeMillis() < settlingMaximizeUntil) {

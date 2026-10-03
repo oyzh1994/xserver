@@ -1432,7 +1432,14 @@ public final class XServer {
             if (!child.isMapped() || child.isInputOnly()) {
                 continue;
             }
-            Rectangle bounds = child.absoluteBoundsWithBorder();
+            // **The window itself, not its border.** A window's border is the server's own one-pixel
+            // frame, and counting it here made the viewport one pixel larger than the window on each
+            // side - which is a feedback loop in both directions: a minimize/maximize cycle grew the
+            // window by two pixels every time (measured with xclock: 302 -> 304 -> 306 -> 308), and in
+            // single-window mode it walked the window up two pixels per frame until it filled the
+            // screen and flickered, which is the A39 report ("xclock and xeyes keep stretching the
+            // window"). The border is drawn by the host window's own frame instead.
+            Rectangle bounds = child.absoluteBounds();
             if (child.isOverrideRedirect()) {
                 popups = popups == null ? bounds : popups.union(bounds);
             } else {

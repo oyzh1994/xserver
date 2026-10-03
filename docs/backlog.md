@@ -6347,3 +6347,27 @@ a small window with the rest of the screen not shown at all; with several client
 of all of them. If that reads as "the window jumps around" rather than "the window fits the
 application", the alternative is (a) - keep the whole-screen view and take the title-bar double click
 itself - which is more work but changes nothing about what the window shows.
+
+**Its own bug, found the same night and fixed: the window grew for ever with xclock/xeyes.** Reported
+as "in single-window mode xclock and xeyes keep slowly stretching the window, and it flickers". Two
+one-pixel accounting errors, each a feedback loop:
+
+1. **The viewport counted the clients' window *borders*.** `contentBounds` used
+   `absoluteBoundsWithBorder`, so the viewport was one pixel larger than the window on each side. The
+   host window was sized to that, its resize was read as the user's, the client's window was resized
+   to the viewport, and the content bounds grew by the border again - **2 px per cycle, for ever**
+   (measured: 302 -> 304 -> 306 -> 308 on every maximize/restore cycle in per-client mode, and in
+   single-window mode 1242 -> 1244 -> ... -> 1250 and on, until the window filled the screen and
+   flickered). `contentBounds` now uses `absoluteBounds` - the window itself - and the host window's
+   own frame is what stands in for the border.
+2. **The platform applies a window size in two steps, and the step in between was read as a drag.**
+   The resize callback arrived with the *new width and the old height* (202x800 for a viewport of
+   202x202), which is neither size, so `isUserResize` said yes and the loop above ran even with the
+   borders fixed. `JavaFxBackend` now marks a viewport it has just set (`viewportPending`) and ignores
+   the platform's reports until they actually equal it, putting its own size back meanwhile; the flag
+   clears the moment the two agree, so a drag a frame later is not swallowed.
+
+**Verified after those two**: single-window with xclock *and* xeyes - the window is the union of the
+two (500x428) and **stays** there (four samples over twelve seconds, identical); per-client with
+xclock - the maximize/restore toggle is **exact** (300x328 <-> 1511x885, three cycles, no drift);
+475 tests green.
