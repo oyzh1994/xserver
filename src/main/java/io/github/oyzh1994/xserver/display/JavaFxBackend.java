@@ -245,7 +245,7 @@ public final class JavaFxBackend implements DisplayBackend {
                 return;
             }
             Canvas canvas = canvasOf(open.getScene());
-            if (dragInFlight()) {
+            if (platformOwnsFrame()) {
                 // **A drag in flight: the pixels move, the window's size does not.** While the user has
                 // the frame's edge under the pointer, the platform is the one computing the size from
                 // the cursor, and its reference for the next step is the window it just made. Sizing
@@ -254,7 +254,10 @@ public final class JavaFxBackend implements DisplayBackend {
                 // of the arithmetic, the two sides then fight: measured with xclock, dragging the left
                 // edge 40 px moved the window 40 px and shrank it by 5, and the requested sizes bounced
                 // 265 -> 298 -> 297 -> 295 instead of falling. Only the *canvas* follows here, so the
-                // app is drawn at the size it is becoming; the window is left to the drag.
+                // app is drawn at the size it is becoming; the window is left to the drag. A full
+                // screen window is the same rule for the same reason - see
+                // {@link #platformOwnsFrame} - and this is also the path that keeps a viewport set
+                // during one from being recorded as a size to put back later.
                 canvas.setWidth(logical(viewport.width));
                 canvas.setHeight(logical(viewport.height));
                 graphics = canvas.getGraphicsContext2D();
@@ -338,8 +341,14 @@ public final class JavaFxBackend implements DisplayBackend {
             if (stage == null || width <= 0 || height <= 0) {
                 return;
             }
-            stage.setMaxWidth(logical(width) + decorationWidth);
-            stage.setMaxHeight(logical(height) + decorationHeight);
+            // Remembered whether or not it can be applied now: a limit is a constraint on the frame,
+            // and putting one on a full screen window is a way to have the platform resize it - the
+            // same thing that takes the window out of its Space (see {@link #sizeFrameToContent}).
+            // The server only sends this when the number changes, so the one that arrives during
+            // full screen is applied on the way out instead.
+            maxClientAreaWidth = width;
+            maxClientAreaHeight = height;
+            applyMaxClientArea();
             if (log.isDebugEnabled()) {
                 // How far the window may be dragged is otherwise only visible by dragging it, and a
                 // limit that is somehow too small cannot be resized out of.
@@ -347,6 +356,22 @@ public final class JavaFxBackend implements DisplayBackend {
                         width, height, decorationWidth, decorationHeight);
             }
         });
+    }
+
+    /** The limit the server last asked for, until a moment when the window can take it. */
+    private int maxClientAreaWidth;
+    private int maxClientAreaHeight;
+
+    /**
+     * Applies the remembered limit, unless the window is full screen. Runs on the FX thread.
+     */
+    private void applyMaxClientArea() {
+        if (stage == null || maxClientAreaWidth <= 0 || maxClientAreaHeight <= 0
+                || stage.isFullScreen()) {
+            return;
+        }
+        stage.setMaxWidth(logical(maxClientAreaWidth) + decorationWidth);
+        stage.setMaxHeight(logical(maxClientAreaHeight) + decorationHeight);
     }
 
     /**
@@ -521,7 +546,11 @@ public final class JavaFxBackend implements DisplayBackend {
 
     /** The window was moved by the user, unless this backend was the one moving it. */
     private void windowMovedByUser() {
-        if (placingWindow || adjustingWindow || stage == null || input == null) {
+        if (placingWindow || adjustingWindow || stage == null || input == null
+                || stage.isFullScreen()) {
+            // A full screen window's move is the platform taking it into its Space and putting it at
+            // the top left of the display: not an arrangement the user made, and remembering it would
+            // reopen the window in the corner the next time the client is started.
             return;
         }
         // A move is the one change of the frame's geometry that is neither a drag of an edge nor this
@@ -588,7 +617,7 @@ public final class JavaFxBackend implements DisplayBackend {
      * Runs on the FX thread.
      */
     private void enforceWindowSize() {
-        if (stage == null) {
+        if (stage == null || stage.isFullScreen()) {
             return;
         }
         double wantedWidth = logical(viewport.width) + decorationWidth;
@@ -623,7 +652,7 @@ public final class JavaFxBackend implements DisplayBackend {
      * a window that grew past the bottom right corner needs.
      */
     private void keepOnScreen() {
-        if (stage == null) {
+        if (stage == null || stage.isFullScreen()) {
             return;
         }
         javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
@@ -631,6 +660,22 @@ public final class JavaFxBackend implements DisplayBackend {
         double y = Math.min(stage.getY(), usable.getMaxY() - stage.getHeight());
         stage.setX(Math.max(usable.getMinX(), x));
         stage.setY(Math.max(usable.getMinY(), y));
+    }
+
+    /**
+     * Whether the platform, rather than this backend, is the one that owns the frame's size at this
+     * moment.
+     *
+     * <p>Two situations say yes, and they are one rule: a drag of the frame's edge, where the platform
+     * is computing the size from the pointer, and a full screen window, whose frame belongs to the
+     * platform's Space. In both, sizing or moving the window takes the platform's own arithmetic away
+     * from it - for a drag that is the drift {@link #dragInFlight} describes, and for full screen it
+     * is a window that leaves its Space without giving it back (the menu bar and the Dock stay hidden
+     * until the session is locked and unlocked). The canvas still follows the viewport; the window
+     * does not.
+     */
+    private boolean platformOwnsFrame() {
+        return stage.isFullScreen() || dragInFlight();
     }
 
     /**
@@ -688,6 +733,15 @@ public final class JavaFxBackend implements DisplayBackend {
      * frame behave the same way.
      */
     private void sizeFrameToContent() {
+        if (stage.isFullScreen()) {
+            // **The one window this backend never sizes is a full screen one.** Its frame belongs to
+            // the platform's Space, and setting a size on it (or moving it) leaves the Space standing
+            // with no window in it - the picture jumps back to the old place, the front application
+            // becomes whoever was behind, and the Dock and menu bar do not come back until the
+            // session is locked and unlocked. The canvas still follows the viewport, which is what
+            // {@link #setViewport} does for a drag in flight as well.
+            return;
+        }
         double width = logical(viewport.width) + decorationWidth;
         double height = logical(viewport.height) + decorationHeight;
         double x = stage.getX();
@@ -953,13 +1007,21 @@ public final class JavaFxBackend implements DisplayBackend {
         stage = new Stage();
         stage.setTitle(title);
         stage.setScene(scene);
+        // **The key that leaves full screen is the platform's own, not Escape.** JavaFX's default is
+        // Escape, and it is consumed by JavaFX before the scene sees it: a forwarded application in a
+        // full screen window would never be given its own Escape key - which a terminal, an editor
+        // and an IDE all need - and pressing it would throw the window out of full screen instead.
+        // Control-Command-F is what macOS itself uses to leave full screen, so the window is still
+        // easy to leave the way every other application on the system is.
+        stage.setFullScreenExitKeyCombination(
+                javafx.scene.input.KeyCombination.valueOf("Ctrl+Meta+F"));
         // The window is the frame around the client's window, so pulling its edge is the gesture a
         // window manager's frame has always had: the client's window is resized to match. A scene
         // listener rather than a stage one, because the content area is the client's size and the
         // stage's includes the decoration the platform adds.
         stage.setResizable(true);
         dragSettle.setOnFinished(event -> {
-            if (stage != null && !dragInFlight()) {
+            if (stage != null && !platformOwnsFrame()) {
                 // The drag has stopped: the frame goes back to the size of what it shows, with the
                 // edge the user did not pull left where it was - see {@link #sizeFrameToContent}.
                 sizeFrameToContent();
@@ -981,6 +1043,15 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.maximizedProperty().addListener((observable, was, is) -> {
             log.debug("host window maximized {} -> {} ({}x{})", was, is,
                     (int) Math.round(scene.getWidth()), (int) Math.round(scene.getHeight()));
+            if (stage.isFullScreen()) {
+                // **macOS reports a full screen window as maximized too**, and acting on that is what
+                // broke full screen completely: the fill below resized a window that was in its own
+                // Space, and a full screen window whose frame is changed leaves that Space without
+                // giving it back - the menu bar and the Dock stay hidden until the session is locked
+                // and unlocked, which is the report. A full screen window's geometry is the
+                // platform's; nothing of ours sizes it (see {@link #sizeFrameToContent}).
+                return;
+            }
             if (!is || filledByServer) {
                 return;
             }
@@ -1005,8 +1076,18 @@ public final class JavaFxBackend implements DisplayBackend {
                 input.windowMaximized(true, filledWidth, filledHeight);
             }
         });
-        stage.fullScreenProperty().addListener((observable, was, is) ->
-                log.debug("host window fullScreen {} -> {}", was, is));
+        stage.fullScreenProperty().addListener((observable, was, is) -> {
+            log.debug("host window fullScreen {} -> {}", was, is);
+            // Whatever edge a drag pulled before the window went full screen, and wherever the window
+            // stood, has nothing to do with where it comes back to: the Space puts it at the top left
+            // of the display, and the platform's own frame is what it returns to.
+            dragJustEnded = false;
+            if (!is) {
+                // A limit that arrived while the window was full screen has been waiting for a
+                // moment the window could take it.
+                applyMaxClientArea();
+            }
+        });
         // Where the user drags the frame to is the one thing about the host window that no client
         // knows: it is remembered per client so the next session opens where this one was left.
         stage.xProperty().addListener((observable, was, is) -> windowMovedByUser());
@@ -1494,21 +1575,19 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private void fitWindowToViewport() {
         Stage open = stage;
-        if (open == null || adjustingWindow || viewport.isEmpty() || open.isFullScreen()) {
-            // Full screen is the one time the window is deliberately not the size of its content:
-            // the client asked to fill the display, and the platform is the one sizing the window.
+        if (open == null || adjustingWindow || viewport.isEmpty()) {
             return;
         }
-        if (dragInFlight()) {
-            // **A drag in flight: the platform owns the frame's geometry.** This runs on every
-            // flushed frame, and the viewport is the client's window - which during a drag is the
-            // size the client was *last* able to take, one round trip and one snap behind what the
-            // pointer is asking for. Sizing the frame to it here puts the platform's live resize back
-            // to a smaller frame on every frame, and the platform then works its next step out from
-            // that: measured 2026-10-04, a 40 pt pull of the left edge moved the window's origin by
-            // 40 pt but shrank it by 156 (784 -> 628) in steps of one character cell (13), because
-            // each frame the frame was pulled down to the client's snapped size and the drag was
-            // driving off it again. {@link #setViewport} refuses to size the window for the same
+        if (platformOwnsFrame()) {
+            // **The platform owns the frame's geometry - a drag in flight, or a full screen window.**
+            // This runs on every flushed frame, and the viewport is the client's window - which during
+            // a drag is the size the client was *last* able to take, one round trip and one snap behind
+            // what the pointer is asking for. Sizing the frame to it here puts the platform's live
+            // resize back to a smaller frame on every frame, and the platform then works its next step
+            // out from that: measured 2026-10-04, a 40 pt pull of the left edge moved the window's
+            // origin by 40 pt but shrank it by 156 (784 -> 628) in steps of one character cell (13),
+            // because each frame the frame was pulled down to the client's snapped size and the drag
+            // was driving off it again. {@link #setViewport} refuses to size the window for the same
             // reason; this is the other half of the same rule.
             return;
         }

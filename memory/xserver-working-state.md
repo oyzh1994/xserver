@@ -1566,3 +1566,40 @@ framebuffer pixels are 1:1 in these tests.
 **Also changed**: the pulse probe (`startPulseProbe`) is now started only at debug level - it is an
 `AnimationTimer`, and a running one asks the toolkit for a pulse every frame for the window's whole
 life (measured 120/s on a scene with nothing to redraw).
+
+**2026-10-04 (later): "单窗口模式全屏和退出全屏不符合预期" - one line of consequence, and it is A38's.**
+macOS reports a **full screen window as maximized as well**, so the maximize handling (A38: fill the
+window to the usable area) fired about a second after the Space was entered and **resized a window that
+was in its own Space** - and a full screen window whose frame is changed leaves the Space without
+giving it back, which is why the menu bar and the **Dock** stayed hidden until a lock and unlock, and
+why the front application became whoever was behind ("全屏焦点被桌面抢走"). It is also why the mode
+worked with no client window: nothing of ours sizes the frame when there is nothing to size it for.
+The same fill shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom
+flipped back to false, so the restore ran against the wrong remembered size - "经常恢复不了".
+
+**The fix is a rule rather than a patch**: `platformOwnsFrame()` answers yes for a drag of the frame's
+edge **or a full screen window**, and every path that sizes or moves the frame asks it (`setViewport`,
+`fitWindowToViewport`, `sizeFrameToContent`, `keepOnScreen`, `enforceWindowSize`, the drag settle
+timer). The maximized listener returns while full screen, `setMaxClientArea` defers its `setMaxWidth`
+until the window is out, `windowMovedByUser` ignores the Space's move to the top left, and a
+`fullScreenProperty` change clears `dragJustEnded`. The grow and the restore themselves needed no new
+code: the platform's full screen frame arrives as a scene resize, which the server already reads as
+"the client's window should be this size", and the platform's own frame on the way out is what the
+client's window is put back to. **⌃⌘F replaces Escape as the exit key** - JavaFX consumes Escape before
+the scene sees it, so a forwarded application in full screen would never be given its own Escape.
+
+**Verified by script in both modes** with `/tmp/fsprobe` (`FsProbe`/`FsProbe2`, a raw client that holds
+the state and prints its own geometry): 400x300 -> 1512x945 on entry, held 12 s; -> 400x300 within 1 s
+on exit; the host window back at exactly 106,81 400x328; a client that reconfigures *itself* while full
+screen still restores to the platform's own frame (400x300, not the 500x400 it had); the user's ⌃⌘F
+exit works; Escape no longer leaves full screen. 475 tests green. The maximize path itself is unchanged
+for a non-full-screen window (A/B against the pre-change backend agrees), and A40 is still open
+(un-maximize restores the size but puts the window at 40,38).
+
+**Traps, again**: a synthetic double click on a title bar did **not** zoom the host window in this
+session (on the pre-change build either) even with `AppleActionOnDoubleClick=Maximize`, while the same
+tool zoomed an xterm window earlier in the day - so the maximize itself is for the user to re-check by
+hand; and a host window that is behind the IDE takes none of the synthetic events, which is why every
+measurement here was taken with the window freshly opened (`raisePending`) or after
+`/tmp/xsn/activate <pid>`. `FsProbe` must be started in a session of its own: started with `&` its
+process group is killed when the command returns, which reads as the client disconnecting mid-test.

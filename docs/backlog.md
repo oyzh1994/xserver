@@ -116,6 +116,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A38~~ | ~~double-clicking the title bar does not maximize, and a second double click does not restore - "it stretches partway and stops", and the behaviour differs from click to click~~ **fixed 2026-10-03**: macOS zooms a window to a "standard frame" worked out from its **content**, and this window's content is a client's X window at the size the client last asserted - so the first double click added height only (1280x828 -> 1280x886), the second added width (-> 1512x886), and the platform's own resize arrived *behind* ours and shrank the client's window back. The gesture is still the platform's (`Stage.maximizedProperty` fires on it); the geometry is the server's: fill = the display's usable area (the screen grows to fit), a resize while filled = restore the remembered size, and the platform's own state is cleared with it so the next double click is the same gesture again. Verified five double clicks in a row: 1512x886 <-> 1280x828 | correctness | M |
 | [ ] A39 | `--single-window`: maximize stretches only partway and a second double click does not give the window back; a right-edge drag nudges the window sideways. **One attempt was made and reverted the same night** - sizing the screen on *every* gesture put a feedback loop under the drags (the viewport is derived from the screen and the window's size and position from the viewport), which showed as a window that drifted downwards a pixel per step in per-client mode and jumped up and down during a left/right drag in single-window mode, and it broke both modes' maximize. **Design (b) is in**: single-window mode takes its viewport from the clients' `contentBounds`, exactly like a per-client window, so its window is an ordinary frame around the client windows and the working maximize/restore path applies to it. **The edge drift is fixed 2026-10-04** (the entry has the measurements): the frame was being resized to the client's window on *every flushed frame*, dragging included, and the platform's live resize then took its next step from that smaller frame - a 40 pt pull of the left edge shrank the window 156 pt. The frame now leaves the drag alone while it is in flight and then puts back the edge the user was *not* pulling; all four edges measured exact, in both modes, with a snapping client and with a hint-constrained one. What is left is design (b)'s trade-off (the window shows the client windows, not the whole screen) for the user to judge | correctness | M |
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
+| ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6479,3 +6480,92 @@ may simply not be the same frame by the time the un-zoom is asked for. `JavaFxBa
 `restoreContentWidth/Height` for the size already; a `restoreX/Y` taken when the fill happens, applied
 with `sizeFrameToContent` when the restore comes back, is the shape of the fix - but it needs the
 same care as A38's settle, because the platform's own un-zoom arrives behind ours.
+
+### [x] A41. Full screen leaves nothing grown, often will not come back, and takes the Dock with it. **L** - fixed 2026-10-04
+
+**The report.** "单窗口模式全屏和退出全屏不符合预期，本来应该跟最大化和退出最大化一样，能变大和恢复，但是现在不会，经常恢复不了，有时候全屏焦点还会被桌面抢走，造成奇怪的问题，甚至导致dock栏消失，要锁定和解锁才能恢复dock栏，但是没有渲染x窗口的时候，全屏和退出全屏是正常的。"
+
+**What was measured** (single-window mode, a client that maps a window, asks for
+`_NET_WM_STATE_FULLSCREEN` and stays connected - `FsProbe`, which is the only way to hold the state
+while watching it):
+
+```
+02:19:28.953  host window fullScreen false -> true        <- the state arrived, the Space is entered
+02:19:29.672  window now shows (0,0,1512,945)             <- the client's window grew to the display
+02:19:30.086  host window maximized false -> true         <- and macOS calls a full screen window a zoom
+02:19:30.086  filling the window to 1512x922 (display 1512x950)   <- A38's fill, on a full screen window
+02:19:30.124  window sized to 1512.0x950.0 for content 1512x922
+02:19:30.848  host window fullScreen true -> false        <- out of the Space it goes
+02:19:30.853  host window maximized true -> false (1512x917)
+```
+
+**The cause, and it is one line of consequence.** macOS reports a **full screen window as maximized**
+as well, so `JavaFxBackend`'s maximize handling - A38, which fills the window to the display's usable
+area - fired about a second after the Space was entered and *resized a window that was in its own
+Space*. A full screen window whose frame is changed leaves the Space **without giving it back**: the
+picture jumps back to where it was, the front application becomes whoever was behind (the user's
+"焦点被桌面抢走"), and the menu bar and the Dock do not come back until the session is locked and
+unlocked - which is exactly what was reported, and it is why the mode worked with no client window:
+nothing of ours sizes the frame when there is nothing to size it for.
+
+Three more things fell out of the same reading, each of which the report names:
+
+- the fill **shrank** the client's window from the full screen area (1512x945 -> 1512x922), and the
+  zoom then flipped back to false, so the un-maximize path restored a size that was read from a scene
+  that was no longer the frame the platform had - "经常恢复不了";
+- the **Dock** is macOS's own reaction, above;
+- **and nothing ever grew the client.** A full screen window is only useful if the application gets
+  the bigger window, and by X's rules that is the window manager's job - a client that asks to be
+  full screen expects to be resized. It happened by accident here (the platform's own resize of the
+  frame arrives as a scene resize, which the server reads as "the client's window should be this
+  size"), and the same accident is what restored it on the way out.
+
+**The fix: the frame is the platform's for as long as the window is full screen, and nothing else
+about full screen is special.**
+
+- `platformOwnsFrame()` answers yes for a drag of the frame's edge *or* a full screen window, and every
+  path that sizes or moves the frame asks it: `setViewport` (the canvas still follows the viewport, as
+  it does for a drag), `fitWindowToViewport`, `sizeFrameToContent`, `keepOnScreen`,
+  `enforceWindowSize` and the drag-settle timer. This is the whole of the Dock fix.
+- The `maximizedProperty` listener returns while the window is full screen: **macOS's zoom report is
+  not the user's maximize**, and acting on it is what resized the Space's window in the first place.
+- `setMaxClientArea` remembers the limit and defers it while full screen (`applyMaxClientArea`, applied
+  when the window leaves), because a constraint put on a full screen window is another way to make the
+  platform resize it.
+- `windowMovedByUser` ignores a move while full screen - it is the Space putting the window at the top
+  left of the display, and remembering that would reopen the client's window in the corner.
+- A `fullScreenProperty` change clears `dragJustEnded`: which edge a drag pulled before the window went
+  full screen has nothing to do with where it comes back to.
+- **The key that leaves full screen is ⌃⌘F, not Escape.** JavaFX's default is Escape and JavaFX
+  consumes it before the scene sees it, so a forwarded application in a full screen window would never
+  be given its own Escape - which a terminal, an editor and an IDE all need - and pressing it would
+  throw the window out of full screen instead. `Ctrl+Meta+F` is macOS's own combination, so leaving
+  full screen still works the way every other application on the system does.
+
+**Verified by script** (`FsProbe`/`FsProbe2` from the Mac against the bed, per-client and
+single-window):
+
+| what | result |
+| --- | --- |
+| the client's window on entering full screen | 400x300 -> **1512x945**, held for 12 s sampled every 500 ms |
+| the client's window on leaving (`_NET_WM_STATE` removed) | back to **400x300** within 1 s |
+| the host window | back at **106,81 400x328** - exactly where it was before - and no `filling`/`maximized` line in the log at all |
+| a client that **reconfigures its own window while full screen** (500x400) | the restore still lands on **400x300**, the platform's own frame, not the size it had while full screen |
+| the user's own exit (**⌃⌘F**) | the client comes back to 400x300 and the window to 106,81 400x328 |
+| **Escape** while full screen | no longer leaves full screen (so the forwarded application gets its Escape) |
+| per-client mode | identical numbers |
+
+475 tests green. The maximize/restore path itself is untouched for a window that is not full screen
+(the A/B against the pre-change backend shows the same behaviour), and the per-client A38 measurements
+still hold.
+
+**Left undone, deliberately: the client is not told.** When the *user* leaves full screen through the
+platform (⌃⌘F, the green button), the client's own `_NET_WM_STATE` still carries
+`_NET_WM_STATE_FULLSCREEN` - a real window manager removes the atom and lets the client see it in a
+`PropertyNotify`, so an application that draws a full screen UI would keep drawing it until it
+toggles itself. Our server keeps the list exactly as the client set it (`AtomHandlers` writes it from
+the client's message), so this needs a sink call from the backend plus a property write on the server
+side. It is not done here because of the way that can fail: `AtomHandlers`' own comment says several
+clients ask again for ever when they are ignored, and an application that re-asserts the state it
+already has would bounce the window in and out of the Space - worth doing with a testbed client that
+re-asserts, not in the same change as the fix above.
