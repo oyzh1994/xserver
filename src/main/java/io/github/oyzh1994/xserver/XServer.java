@@ -1528,19 +1528,38 @@ public final class XServer {
             if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
                 continue;
             }
+            // **What the client says its window may be.** A frame drag is a *request* to the client,
+            // and a client whose hints forbid the size answers by resizing itself back - measured
+            // 2026-10-04: xclock sent 21 ConfigureWindow requests during one left-edge drag, and the
+            // frame ended up 40 px over and 25 px narrower because it had been asking for sizes the
+            // window's own aspect ratio does not allow (A39). Clamping here is what a window manager
+            // does, and it is what stops the two sides correcting each other.
+            SizeLimits limits = sizeLimits(window);
+            int wantedWidth = limits.clampWidth(requested.width);
+            int wantedHeight = limits.clampHeight(requested.height);
+            if (limits.aspectDriver() != 0) {
+                // A declared aspect ratio ties the two dimensions together, and a drag that moves one
+                // edge moves the other with it - which is what a window manager does and what xclock
+                // was correcting this server for. The dimension the drag changed drives the other.
+                if (wantedWidth != visibleExtent(window.x(), window.width(), screen.width())) {
+                    wantedHeight = limits.clampHeight(limits.heightForWidth(wantedWidth));
+                } else if (wantedHeight != visibleExtent(window.y(), window.height(), screen.height())) {
+                    wantedWidth = limits.clampWidth(limits.widthForHeight(wantedHeight));
+                }
+            }
             // A dimension the drag did not change is left alone rather than set to the same number
             // arrived at differently: a window that hangs off the left of the screen and one that
             // starts inside it need different widths to show the same amount, and rewriting the one
             // the user did not touch would resize the client's window for nothing - which its own
             // layout then reacts to.
             int width = visibleExtent(window.x(), window.width(), screen.width())
-                    == requested.width
+                    == wantedWidth
                     ? window.width()
-                    : windowExtent(requested.width, window.x(), screen.width());
+                    : windowExtent(wantedWidth, window.x(), screen.width());
             int height = visibleExtent(window.y(), window.height(), screen.height())
-                    == requested.height
+                    == wantedHeight
                     ? window.height()
-                    : windowExtent(requested.height, window.y(), screen.height());
+                    : windowExtent(wantedHeight, window.y(), screen.height());
             capped |= requested.width != visibleExtent(window.x(), width, screen.width())
                     || requested.height != visibleExtent(window.y(), height, screen.height());
             if (width == window.width() && height == window.height()) {
@@ -1640,6 +1659,104 @@ public final class XServer {
                         .aboveSibling(0)
                         .overrideRedirect(false)
                         .build());
+    }
+
+    /**
+     * The sizes a client's {@code WM_NORMAL_HINTS} allows its window to take: the minimum and maximum
+     * size, the resize increments (about a base size), and the aspect ratio.
+     *
+     * <p><b>This is what a frame drag has to respect, and not doing it is what made dragging the left
+     * or top edge drift.</b> Measured 2026-10-04 (A39): xclock sent **21 ConfigureWindow requests**
+     * during one left-edge drag, because the sizes this server asked it to take were not sizes its own
+     * aspect ratio allows - it put itself back, and since the platform had already moved the frame's
+     * origin by the pointer's delta, the window ended up 40 px over and only 25 px narrower. A window
+     * manager clamps the request to the hints first, so the client has nothing to correct.
+     *
+     * <p>Only the fields a frame drag can violate are read: {@code PMinSize}, {@code PMaxSize},
+     * {@code PResizeInc}/{@code PBaseSize} and {@code PAspect}. A window with no such property, or one
+     * whose format is not 32 bit words, allows anything.
+     */
+    private record SizeLimits(int minWidth, int minHeight, int maxWidth, int maxHeight,
+                              int widthInc, int heightInc, int baseWidth, int baseHeight,
+                              int aspectX, int aspectY, int aspectMaxX, int aspectMaxY) {
+
+        static final SizeLimits NONE =
+                new SizeLimits(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+
+        /** The width the client will accept, nearest to {@code width} and inside its increments. */
+        int clampWidth(int width) {
+            return snap(Math.max(minWidth, maxWidth > 0 ? Math.min(width, maxWidth) : width),
+                    widthInc, baseWidth);
+        }
+
+        /** The same for the height. */
+        int clampHeight(int height) {
+            return snap(Math.max(minHeight, maxHeight > 0 ? Math.min(height, maxHeight) : height),
+                    heightInc, baseHeight);
+        }
+
+        /** Which dimension drives the other when an aspect ratio is declared, or 0 for none. */
+        int aspectDriver() {
+            return aspectX > 0 && aspectY > 0 ? 1 : 0;
+        }
+
+        /** The height that keeps the declared aspect for {@code width}, when there is one. */
+        int heightForWidth(int width) {
+            return Math.max(minHeight, (int) Math.round((double) width * aspectY / aspectX));
+        }
+
+        /** The width that keeps the declared aspect for {@code height}, when there is one. */
+        int widthForHeight(int height) {
+            return Math.max(minWidth, (int) Math.round((double) height * aspectX / aspectY));
+        }
+
+        private static int snap(int size, int increment, int base) {
+            if (increment <= 1) {
+                return size;
+            }
+            int steps = Math.max(0, (size - base) / increment);
+            return Math.max(1, base + steps * increment);
+        }
+    }
+
+    /** The size limits a window's {@code WM_NORMAL_HINTS} declares, or {@link SizeLimits#NONE}. */
+    private SizeLimits sizeLimits(XWindow window) {
+        int atom = atoms.intern("WM_NORMAL_HINTS", true);
+        if (atom == 0) {
+            return SizeLimits.NONE;
+        }
+        XProperty property = window.properties().get(atom);
+        if (property == null || property.format() != XProperty.FORMAT_32) {
+            return SizeLimits.NONE;
+        }
+        byte[] data = property.data();
+        if (data.length < 18 * 4) {
+            return SizeLimits.NONE;
+        }
+        // Big endian: XProperty keeps every value in wire order whatever the writer's byte order was.
+        java.nio.IntBuffer words = java.nio.ByteBuffer.wrap(data)
+                .order(java.nio.ByteOrder.BIG_ENDIAN).asIntBuffer();
+        int flags = words.get(0);
+        int minWidth = (flags & 0x10) != 0 ? words.get(5) : 0;
+        int minHeight = (flags & 0x10) != 0 ? words.get(6) : 0;
+        int maxWidth = (flags & 0x20) != 0 ? words.get(7) : 0;
+        int maxHeight = (flags & 0x20) != 0 ? words.get(8) : 0;
+        int widthInc = (flags & 0x40) != 0 ? words.get(9) : 0;
+        int heightInc = (flags & 0x40) != 0 ? words.get(10) : 0;
+        int baseWidth = (flags & 0x100) != 0 ? words.get(15) : 0;
+        int baseHeight = (flags & 0x100) != 0 ? words.get(16) : 0;
+        int aspectX = 0;
+        int aspectY = 0;
+        int aspectMaxX = 0;
+        int aspectMaxY = 0;
+        if ((flags & 0x80) != 0) {
+            aspectX = words.get(11);
+            aspectY = words.get(12);
+            aspectMaxX = words.get(13);
+            aspectMaxY = words.get(14);
+        }
+        return new SizeLimits(minWidth, minHeight, maxWidth, maxHeight, widthInc, heightInc,
+                baseWidth, baseHeight, aspectX, aspectY, aspectMaxX, aspectMaxY);
     }
 
     /** How much of a window of {@code size} at {@code origin} lies on a screen of {@code screenSize}. */

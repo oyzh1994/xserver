@@ -1521,3 +1521,48 @@ event is a `GenericEvent` whose header is **twelve** bytes with no 32 bit `full_
 and the timestamp reads as 1 and the detail as the root window's id); it must be read **whole** or the
 next message decodes as garbage; and `XIGetClientPointer` is answered `BadWindow` for the *root* on a
 reference server, so a probe that asks about the root measures nothing.
+
+**2026-10-04: "实测还是会漂移" - the edge drag is fixed, and the leftover guard was only half of it.**
+The commit `69dc2a4` (`userDragPending`: the frame is not sized back under the pointer during a drag)
+did not stop it. Re-measured with scripted drags against `xterm` on the bed: a **40 pt pull of the left
+edge** moved the window's origin 40 pt and shrank it by **156** (784 -> 628), in steps of one character
+cell. **Two causes, both found by logging every change of the frame's size together with the frames of
+this package that asked for it** - the scene's listener cannot tell the platform's live resize from the
+backend's own `setWidth`, and telling them apart was the whole diagnosis:
+
+1. **`fitWindowToViewport` runs at the top of `flushDamage` - every flushed frame - and knew nothing
+   about a drag.** It pulled the frame down to the *client's* window (one round trip and one snap
+   behind the pointer) on every frame, and the platform then worked its next live-resize step out of
+   that smaller frame. Hence the asymmetry the user reported: a right/bottom drag recomputed from the
+   same numbers every step, while a left/top drag carried the origin at the platform's rate and the
+   size at the runaway's rate. It now refuses to size the frame while a drag is in flight, exactly as
+   `setViewport` does.
+2. **The snapped remainder.** A client with resize increments will not take the size the pointer asks
+   for (`xterm` snapped 744 to 732), so fitting the frame back to the content moved the *far* edge by
+   the snapped 12 pt - the same drift in miniature. `settledFrame*` (the frame's geometry as of the
+   last time no drag was in flight) now says which edge moved, and `sizeFrameToContent` puts that edge
+   back. The settle is a `PauseTransition` restarted on every resize report rather than the next
+   flushed frame: a client that has stopped drawing left the band of nothing in place for as long as it
+   felt like it (2.5 s measured).
+
+**Verified by script on all four edges, in both modes**: left/top drags keep the right/bottom edge
+*exactly* (xterm 1410 -> 1410, xclock 380 -> 380, single-window 406 -> 406), right/bottom drags keep
+the origin exactly, a drag that **pauses two seconds in the middle** still lands with the far edge
+exact, and xclock+xeyes in single-window mode stay at a fixed size. 475 tests green. `mvn -o test`.
+
+**Two things this session cost time, both worth remembering.** (1) `CGEvent` drags go to whatever is
+under the pointer, so a host window behind the IDE silently takes them - a drag that "does nothing" is
+usually this, and `activate <pid>` (AppKit, `/tmp/xsn/activate`) plus a check of the store's remembered
+position is what makes it reachable; the window's own remembered position moves between runs, so the
+grab point has to be read from `winlist` each time, not pasted. (2) `winlist` (CGWindowList) is in
+**points**, the same units as `CGEvent` - a JavaFX `Scene` of 384 pt is a *392 pt* window (392 + 0
+decoration wide, 28 pt of title bar), and reading the two as if one were pixels produced an hour of
+nonsense. `--geometry 1300x800` with `--scale` unset means `options.scale() == 1`, so scene points and
+framebuffer pixels are 1:1 in these tests.
+
+**Found on the way, not fixed (A40)**: un-maximizing restores the size exactly but puts the window at
+**40,38** instead of where it was; measured on the pre-change build too, so it is older than this work.
+
+**Also changed**: the pulse probe (`startPulseProbe`) is now started only at debug level - it is an
+`AnimationTimer`, and a running one asks the toolkit for a pulse every frame for the window's whole
+life (measured 120/s on a scene with nothing to redraw).

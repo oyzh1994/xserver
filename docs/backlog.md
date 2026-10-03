@@ -114,7 +114,8 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A36~~ | ~~"what is still missing against Xvfb"~~ **re-measured 2026-10-03**: the extension set is unchanged (23 each, DPMS here against MIT-SHM there) and every version a client is told matches **except XInputExtension - a reference answers 2.4 where this server answers 2.0**, which is the one capability a modern client can still reach for (AWT logs it, GDK asks for 2.4 and falls back). §9 now carries the re-measurement, and E0's sweep re-run says 17 of 28 probes identical with the two new differences explained | capability | M |
 | ~~A37~~ | ~~**XTS (`xts` 5.1.5) against the `Xproto` set**: 121 of 122 purposes failed~~ **two root causes fixed 2026-10-03**: (1) a **BIG-REQUESTS request longer than the maximum got `BadLength` and then the connection was closed** - a reference replies and *discards* the request, so the client's next request is answered; XTS's `TOO_LONG` case (which sends `bigreq_size + 1` and then all sixteen megabytes) went from `UNRESOLVED`+`SIGPIPE` to **PASS**, and (2) **`AllocColorCells`/`AllocColorPlanes` handed out writable cells on a read-only visual** (TrueColor and the statics), where the protocol says `BadAlloc`. Down to **1 case per purpose (120 of 122)**, all of them the same missing piece: **per-request length validation** (a request whose length is one unit more or less than its type defines must be `BadLength`), which needs a table of exact-vs-at-least sizes - see the entry | correctness | L |
 | ~~A38~~ | ~~double-clicking the title bar does not maximize, and a second double click does not restore - "it stretches partway and stops", and the behaviour differs from click to click~~ **fixed 2026-10-03**: macOS zooms a window to a "standard frame" worked out from its **content**, and this window's content is a client's X window at the size the client last asserted - so the first double click added height only (1280x828 -> 1280x886), the second added width (-> 1512x886), and the platform's own resize arrived *behind* ours and shrank the client's window back. The gesture is still the platform's (`Stage.maximizedProperty` fires on it); the geometry is the server's: fill = the display's usable area (the screen grows to fit), a resize while filled = restore the remembered size, and the platform's own state is cleared with it so the next double click is the same gesture again. Verified five double clicks in a row: 1512x886 <-> 1280x828 | correctness | M |
-| [ ] A39 | `--single-window`: maximize stretches only partway and a second double click does not give the window back; a right-edge drag nudges the window sideways. **One attempt was made and reverted the same night** - sizing the screen on *every* gesture put a feedback loop under the drags (the viewport is derived from the screen and the window's size and position from the viewport), which showed as a window that drifted downwards a pixel per step in per-client mode and jumped up and down during a left/right drag in single-window mode, and it broke both modes' maximize. **Now trying design (b)**: single-window mode takes its viewport from the clients' `contentBounds`, exactly like a per-client window, so its window is an ordinary frame around the client windows and the working maximize/restore path applies to it. Per-client re-verified (four double clicks alternating 1512x886 <-> 1280x828) and the suite is green; the trade-off to be looked at is that the window no longer shows the whole screen, and that the window follows the client windows as they move or change size | correctness | M |
+| [ ] A39 | `--single-window`: maximize stretches only partway and a second double click does not give the window back; a right-edge drag nudges the window sideways. **One attempt was made and reverted the same night** - sizing the screen on *every* gesture put a feedback loop under the drags (the viewport is derived from the screen and the window's size and position from the viewport), which showed as a window that drifted downwards a pixel per step in per-client mode and jumped up and down during a left/right drag in single-window mode, and it broke both modes' maximize. **Design (b) is in**: single-window mode takes its viewport from the clients' `contentBounds`, exactly like a per-client window, so its window is an ordinary frame around the client windows and the working maximize/restore path applies to it. **The edge drift is fixed 2026-10-04** (the entry has the measurements): the frame was being resized to the client's window on *every flushed frame*, dragging included, and the platform's live resize then took its next step from that smaller frame - a 40 pt pull of the left edge shrank the window 156 pt. The frame now leaves the drag alone while it is in flight and then puts back the edge the user was *not* pulling; all four edges measured exact, in both modes, with a snapping client and with a hint-constrained one. What is left is design (b)'s trade-off (the window shows the client windows, not the whole screen) for the user to judge | correctness | M |
+| [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6409,3 +6410,72 @@ drags could not reach the host window in this session (an IDE window covering it
 macOS delivers a drag to whatever is under the pointer), so this one is for the user to try by hand,
 with the numbers above as what "fixed" should look like: a 40 px left-edge drag must move the window
 40 px and shrink it 40 px.
+
+**The guard above was half the fix, and the user was right that it still drifted** (2026-10-04). With
+`userDragPending` in, a scripted left-edge pull of 40 pt on an xterm moved the window's origin **40 pt**
+and shrank it by **156** (784 -> 628), in steps of one character cell (13). The second half was found
+by logging every change of the frame's size with the frames of this package that asked for it - the
+scene's own listener cannot tell the platform's live resize from the backend's own `setWidth`, and
+telling them apart was the whole diagnosis:
+
+```
+frame width 784 -> 777 pt | ... lambda$openWindow$11      <- the platform, from the pointer
+frame width 777 -> 776 pt | ... lambda$openWindow$11
+frame width 776 -> 774 pt | ... lambda$openWindow$11
+frame width 744 -> 732 pt | ... sizeFrameToContent | fitWindowToViewport | flushDamage
+```
+
+**The root cause: `fitWindowToViewport` runs at the top of `flushDamage` - every flushed frame - and
+it knew nothing about a drag.** So while the user held an edge, the frame was pulled down to the
+*client's* window size, which is one round trip and one snap behind what the pointer is asking for,
+and the platform then worked its next live-resize step out of that smaller frame. That is why the two
+edges differed: a right- or bottom-edge drag recomputed from the same numbers every step, while a
+left- or top-edge drag carried the origin along at the platform's rate and the size at the runaway's
+rate - the window slid sideways. `fitWindowToViewport` now refuses to size the frame while a drag is in
+flight, exactly as `setViewport` does.
+
+**And then the snapped remainder, which is what makes all four edges behave alike.** A client with
+resize increments will not take the size the pointer asks for - xterm snapped 744 to 732 - so sizing
+the frame back to the content moves the *far* edge by the snapped 12 pt, which is the drift the user
+saw in miniature. `JavaFxBackend` now remembers the frame's geometry as of the last time no drag was
+in flight (`settledFrame*`), works out which edge moved when the drag ends (the left or top edge is
+the one that moves the window's origin), and puts that edge back where it was
+(`sizeFrameToContent`). The settle is driven by a `PauseTransition` restarted on every resize report
+rather than by the next flushed frame, because a client that has stopped drawing - which is what a
+window someone just finished resizing usually is - left the band of nothing in place for as long as it
+felt like it (measured: still there 2.5 s later).
+
+**Verified** (scripted drags, `/tmp/xsn/hostdrag`, on the bed at `.152`; the far edge named in
+brackets must not move):
+
+| drag | per-client, xterm (snapping) | per-client, xclock (hints) | single-window, xclock |
+| --- | --- | --- | --- |
+| left edge +40 | x 626->678, w 784->732, [right 1410] | x 80->120, w 300->260, [right 380] | x 106->146, w 300->260, [right 406] |
+| top edge +40 | y 386->409, h 372->304, [bottom 741] | y 38->78, h 328->288, [bottom 366] | y 81->121, h 328->288, [bottom 409] |
+| right edge -40 | w 771->719, **x 639 unchanged** | - | x 106 unchanged |
+| bottom edge -40 | h 355->304, **y 386 unchanged** | - | y 81 unchanged |
+
+(The left/top rows are the ones that drifted; both the 40 pt of pointer travel *and* the client's snap
+are visible in them, and the bracketed edge is the same number before and after every one.) A drag that
+**pauses for two seconds in the middle** - the case the one-second deadline exists for - also lands
+with the far edge exact (824 before, 824 after). Single-window mode with xclock+xeyes together stays
+where it is (four samples over twelve seconds) and 475 tests are green.
+
+### [ ] A40. Un-maximizing restores the size but not the position. **M**
+
+**The observation** (2026-10-04, while measuring A39's drags). An xterm's host window was moved by its
+title bar to **506,286**, double-clicked to maximize (**0,38 1511x882**), and double-clicked again: the
+size came back **exactly** (680x270) and the position did not - the window landed at **40,38**, and a
+second round from 440,286 landed at 40,38 again. It is not a regression from the drag work: the same
+sequence on the pre-change build (HEAD, with the drag fix reverted) gives 40,38 as well.
+
+**Why it is worth a look anyway.** "Double click to maximize and double click to restore" is what the
+report asked for, and a normal window comes back *where it was*; a fixed corner is the kind of thing
+that reads as "the behaviour differs from click to click". Nothing in this server sets that position -
+`keepOnScreen` can only clamp, `setWindowPosition` is called when a session opens - so the first thing
+to read is what the platform does with `stage.setMaximized(false)`: the fill is this server's own
+geometry (`filledByServer`, `enforceWindowSize`), so macOS's saved pre-zoom frame and our own resizes
+may simply not be the same frame by the time the un-zoom is asked for. `JavaFxBackend` keeps
+`restoreContentWidth/Height` for the size already; a `restoreX/Y` taken when the fill happens, applied
+with `sizeFrameToContent` when the restore comes back, is the shape of the fix - but it needs the
+same care as A38's settle, because the platform's own un-zoom arrives behind ours.

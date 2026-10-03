@@ -245,7 +245,7 @@ public final class JavaFxBackend implements DisplayBackend {
                 return;
             }
             Canvas canvas = canvasOf(open.getScene());
-            if (userDragPending && System.currentTimeMillis() < userDragUntil) {
+            if (dragInFlight()) {
                 // **A drag in flight: the pixels move, the window's size does not.** While the user has
                 // the frame's edge under the pointer, the platform is the one computing the size from
                 // the cursor, and its reference for the next step is the window it just made. Sizing
@@ -261,7 +261,6 @@ public final class JavaFxBackend implements DisplayBackend {
                 drawViewport();
                 return;
             }
-            userDragPending = false;
             // Sizing the window to the content is the backend's own doing, and the size listener
             // would otherwise read it as the user dragging the edge and ask for that size again.
             adjustingWindow = true;
@@ -294,8 +293,7 @@ public final class JavaFxBackend implements DisplayBackend {
                 // a title bar's worth - once per viewport change, which walks the window down a
                 // title bar at a time. It was measured when the window was opened, where it is known
                 // to fit its content, and it does not change while the window lives.
-                open.setWidth(canvas.getWidth() + decorationWidth);
-                open.setHeight(canvas.getHeight() + decorationHeight);
+                sizeFrameToContent();
                 if (log.isDebugEnabled()) {
                     log.debug("window sized to {}x{} for content {}x{}",
                             open.getWidth(), open.getHeight(), viewport.width, viewport.height);
@@ -392,12 +390,46 @@ public final class JavaFxBackend implements DisplayBackend {
     private int pendingFromHeight;
 
     /**
-     * True from the moment a user resize is reported until the client's window has caught up with it:
+     * True from the moment a user resize is reported, until a second has passed with no further one:
      * the platform is driving the window's size and this backend must not size it back. The deadline
-     * is a safety net for a client that never takes the size it was given.
+     * is refreshed by every report and read by {@link #dragInFlight}, so it means "the drag has
+     * stopped" - which is also a safety net for a client that never takes the size it was given, and
+     * the only end-of-drag signal there is (macOS's live resize delivers no mouse event to the
+     * window; see {@link #dragInFlight}).
      */
     private boolean userDragPending;
     private long userDragUntil;
+
+    /**
+     * Where the frame stood the last time no drag was in flight: its origin and its own size, in
+     * points - the window's, not the content's, because the far edge that has to be put back is the
+     * window's. The far edge of a gesture is worked out from this rather than from the frame as the
+     * platform has just left it, because the platform's own step has already moved the near edge.
+     */
+    private double settledFrameX;
+    private double settledFrameY;
+    private double settledFrameWidth;
+    private double settledFrameHeight;
+
+    /** Which edge the last drag pulled, and whether its far edge still has to be put back. */
+    private boolean draggedLeft;
+    private boolean draggedTop;
+    private boolean dragJustEnded;
+
+    /**
+     * Fires a little after the last resize the platform reported, and puts the frame back to the
+     * content then.
+     *
+     * <p>Waiting for the next flushed frame instead is not enough: {@link #fitWindowToViewport} only
+     * runs when there is something to present, and a client that has stopped drawing - which is what
+     * a window someone just finished resizing usually is - leaves the frame at the size the drag
+     * asked for and the client refused, with a band of nothing along one edge until it happens to
+     * repaint. Measured 2026-10-04: the band from one xterm drag was still there two and a half
+     * seconds later. Restarting it on every report is what makes the deadline mean "the drag has
+     * stopped", with the same margin {@link #dragInFlight} uses.
+     */
+    private final javafx.animation.PauseTransition dragSettle =
+            new javafx.animation.PauseTransition(javafx.util.Duration.millis(1100));
 
     /** Whether the window is currently filled by this server's own maximize, not the platform's. */
     private boolean filledByServer;
@@ -450,6 +482,9 @@ public final class JavaFxBackend implements DisplayBackend {
             // button: un-maximize. Its own idea of the old geometry is the geometry the client had,
             // so the size to come back to is the one remembered when the fill happened.
             filledByServer = false;
+            // A fill is not a drag, and whatever edge the last one pulled has nothing to do with
+            // where this window goes now.
+            dragJustEnded = false;
             settlingMaximizeUntil = System.currentTimeMillis() + 700;
             // And the platform's own state goes with it. It is the same flag this server has been
             // filling *for*: left set, the next double click is a platform zoom the property does not
@@ -480,6 +515,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // the client's window has taken the size (or the deadline passes) - see setViewport.
         userDragPending = true;
         userDragUntil = System.currentTimeMillis() + 1000;
+        dragSettle.playFromStart();
         input.windowResized(width, height);
     }
 
@@ -488,6 +524,10 @@ public final class JavaFxBackend implements DisplayBackend {
         if (placingWindow || adjustingWindow || stage == null || input == null) {
             return;
         }
+        // A move is the one change of the frame's geometry that is neither a drag of an edge nor this
+        // backend's own doing, and it moves both ends: what a later drag has to put back is where the
+        // window is *now*.
+        rememberSettledFrame();
         input.windowMoved((int) Math.round(stage.getX()), (int) Math.round(stage.getY()));
     }
 
@@ -514,6 +554,7 @@ public final class JavaFxBackend implements DisplayBackend {
             } finally {
                 placingWindow = false;
             }
+            rememberSettledFrame();
         });
     }
 
@@ -563,6 +604,7 @@ public final class JavaFxBackend implements DisplayBackend {
         } finally {
             adjustingWindow = false;
         }
+        rememberSettledFrame(stage.getX(), stage.getY(), wantedWidth, wantedHeight);
     }
 
     /**
@@ -589,6 +631,93 @@ public final class JavaFxBackend implements DisplayBackend {
         double y = Math.min(stage.getY(), usable.getMaxY() - stage.getHeight());
         stage.setX(Math.max(usable.getMinX(), x));
         stage.setY(Math.max(usable.getMinY(), y));
+    }
+
+    /**
+     * Whether the platform is still driving a drag of the frame's edge.
+     *
+     * <p>The deadline is refreshed by every resize the platform reports, so it means "no resize for a
+     * second" - the only end-of-drag signal there is. macOS's live resize does not deliver the mouse
+     * press or the release to the window's own event stream: measured 2026-10-04, a drag that took
+     * the window from 784 to 744 points wide produced no mouse event in JavaFX at all.
+     */
+    private boolean dragInFlight() {
+        if (!userDragPending) {
+            return false;
+        }
+        if (System.currentTimeMillis() < userDragUntil) {
+            return true;
+        }
+        userDragPending = false;
+        // Which edge moved decides which edge has to be put back. A drag of the left or the top edge
+        // is the one that moves the window's own origin, and so the one whose far edge the
+        // platform's arithmetic can carry away with it; a drag of the right or the bottom edge
+        // leaves the origin alone and needs no correction.
+        draggedLeft = Math.abs(stage.getX() - settledFrameX) > 1;
+        draggedTop = Math.abs(stage.getY() - settledFrameY) > 1;
+        dragJustEnded = draggedLeft || draggedTop;
+        return false;
+    }
+
+    /** Remembers the frame as it stands while no drag is in flight; see {@link #settledFrameX}. */
+    private void rememberSettledFrame() {
+        if (stage == null || scene == null || userDragPending) {
+            return;
+        }
+        rememberSettledFrame(stage.getX(), stage.getY(), stage.getWidth(), stage.getHeight());
+    }
+
+    /** The same, for a geometry this backend has just asked for and the platform has not shown yet. */
+    private void rememberSettledFrame(double x, double y, double frameWidth, double frameHeight) {
+        settledFrameX = x;
+        settledFrameY = y;
+        settledFrameWidth = frameWidth;
+        settledFrameHeight = frameHeight;
+    }
+
+    /**
+     * Sizes the frame to the viewport, and puts back the edge the user was not dragging when a drag
+     * has just ended.
+     *
+     * <p>A frame whose content is a client's window cannot always take the size the pointer asks
+     * for: a client with resize increments snaps to a whole number of them (measured with xterm,
+     * 2026-10-04: 744 asked for, 732 taken). Sizing the frame back to the content is what removes the
+     * band of nothing the snap leaves, and it is also what slid windows to the right while their
+     * left edge was pulled - the frame lost the snapped 12 points off its *right* end, which is the
+     * edge the user was holding still. Putting the far edge back is what makes all four edges of the
+     * frame behave the same way.
+     */
+    private void sizeFrameToContent() {
+        double width = logical(viewport.width) + decorationWidth;
+        double height = logical(viewport.height) + decorationHeight;
+        double x = stage.getX();
+        double y = stage.getY();
+        if (dragJustEnded) {
+            dragJustEnded = false;
+            if (draggedLeft) {
+                x = settledFrameX + settledFrameWidth - width;
+            }
+            if (draggedTop) {
+                y = settledFrameY + settledFrameHeight - height;
+            }
+        }
+        if (Math.abs(stage.getWidth() - width) < 1 && Math.abs(stage.getHeight() - height) < 1
+                && Math.abs(stage.getX() - x) < 1 && Math.abs(stage.getY() - y) < 1) {
+            return;
+        }
+        // The caller may already have claimed the flag for its own bookkeeping - the size listener
+        // must not read this change as the user dragging the edge either way.
+        boolean wasAdjusting = adjustingWindow;
+        adjustingWindow = true;
+        try {
+            stage.setWidth(width);
+            stage.setHeight(height);
+            stage.setX(x);
+            stage.setY(y);
+        } finally {
+            adjustingWindow = wasAdjusting;
+        }
+        rememberSettledFrame(x, y, width, height);
     }
 
     @Override
@@ -829,6 +958,13 @@ public final class JavaFxBackend implements DisplayBackend {
         // listener rather than a stage one, because the content area is the client's size and the
         // stage's includes the decoration the platform adds.
         stage.setResizable(true);
+        dragSettle.setOnFinished(event -> {
+            if (stage != null && !dragInFlight()) {
+                // The drag has stopped: the frame goes back to the size of what it shows, with the
+                // edge the user did not pull left where it was - see {@link #sizeFrameToContent}.
+                sizeFrameToContent();
+            }
+        });
         scene.widthProperty().addListener((observable, was, is) -> clientAreaChanged());
         scene.heightProperty().addListener((observable, was, is) -> clientAreaChanged());
         // **A double click on the title bar is the platform's gesture, and its own "standard frame"
@@ -858,6 +994,7 @@ public final class JavaFxBackend implements DisplayBackend {
             restoreContentWidth = (int) Math.round(scene.getWidth());
             restoreContentHeight = (int) Math.round(scene.getHeight());
             filledByServer = true;
+            dragJustEnded = false;
             settlingMaximizeUntil = System.currentTimeMillis() + 700;
             javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
             int filledWidth = (int) Math.round((usable.getWidth() - decorationWidth) * scale);
@@ -899,6 +1036,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // which will happily put a large window under the menu bar or off the edge of the display.
         placeOnScreen(width, height);
         applyHostCursor();
+        rememberSettledFrame();
     }
 
     /**
@@ -1019,8 +1157,17 @@ public final class JavaFxBackend implements DisplayBackend {
      * Reports how fast the toolkit is actually presenting and how long a pulse takes, at debug
      * level. Together with the flush counter this says whether a window that feels slow is missing
      * frames or spending too long on each one - and both are cheaper to read than to guess.
+     *
+     * <p><b>Only while debug logging is on.</b> An AnimationTimer that never stops is not free: a
+     * running one asks the toolkit for a pulse every frame for as long as the window lives, which
+     * measured 120 pulses a second on a scene with nothing to redraw - a laptop on battery paying
+     * for a diagnostic nobody is reading. The same rule keeps the counter honest for whoever is
+     * reading it: what it reports is the rate the window was being presented at anyway.
      */
     private void startPulseProbe() {
+        if (!log.isDebugEnabled()) {
+            return;
+        }
         long[] last = {System.nanoTime()};
         int[] count = {0};
         long[] total = {0};
@@ -1352,18 +1499,20 @@ public final class JavaFxBackend implements DisplayBackend {
             // the client asked to fill the display, and the platform is the one sizing the window.
             return;
         }
-        double width = logical(viewport.width) + decorationWidth;
-        double height = logical(viewport.height) + decorationHeight;
-        if (Math.abs(open.getWidth() - width) < 1 && Math.abs(open.getHeight() - height) < 1) {
+        if (dragInFlight()) {
+            // **A drag in flight: the platform owns the frame's geometry.** This runs on every
+            // flushed frame, and the viewport is the client's window - which during a drag is the
+            // size the client was *last* able to take, one round trip and one snap behind what the
+            // pointer is asking for. Sizing the frame to it here puts the platform's live resize back
+            // to a smaller frame on every frame, and the platform then works its next step out from
+            // that: measured 2026-10-04, a 40 pt pull of the left edge moved the window's origin by
+            // 40 pt but shrank it by 156 (784 -> 628) in steps of one character cell (13), because
+            // each frame the frame was pulled down to the client's snapped size and the drag was
+            // driving off it again. {@link #setViewport} refuses to size the window for the same
+            // reason; this is the other half of the same rule.
             return;
         }
-        adjustingWindow = true;
-        try {
-            open.setWidth(width);
-            open.setHeight(height);
-        } finally {
-            adjustingWindow = false;
-        }
+        sizeFrameToContent();
     }
 
     /**
