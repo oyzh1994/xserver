@@ -114,6 +114,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A36~~ | ~~"what is still missing against Xvfb"~~ **re-measured 2026-10-03**: the extension set is unchanged (23 each, DPMS here against MIT-SHM there) and every version a client is told matches **except XInputExtension - a reference answers 2.4 where this server answers 2.0**, which is the one capability a modern client can still reach for (AWT logs it, GDK asks for 2.4 and falls back). §9 now carries the re-measurement, and E0's sweep re-run says 17 of 28 probes identical with the two new differences explained | capability | M |
 | ~~A37~~ | ~~**XTS (`xts` 5.1.5) against the `Xproto` set**: 121 of 122 purposes failed~~ **two root causes fixed 2026-10-03**: (1) a **BIG-REQUESTS request longer than the maximum got `BadLength` and then the connection was closed** - a reference replies and *discards* the request, so the client's next request is answered; XTS's `TOO_LONG` case (which sends `bigreq_size + 1` and then all sixteen megabytes) went from `UNRESOLVED`+`SIGPIPE` to **PASS**, and (2) **`AllocColorCells`/`AllocColorPlanes` handed out writable cells on a read-only visual** (TrueColor and the statics), where the protocol says `BadAlloc`. Down to **1 case per purpose (120 of 122)**, all of them the same missing piece: **per-request length validation** (a request whose length is one unit more or less than its type defines must be `BadLength`), which needs a table of exact-vs-at-least sizes - see the entry | correctness | L |
 | ~~A38~~ | ~~double-clicking the title bar does not maximize, and a second double click does not restore - "it stretches partway and stops", and the behaviour differs from click to click~~ **fixed 2026-10-03**: macOS zooms a window to a "standard frame" worked out from its **content**, and this window's content is a client's X window at the size the client last asserted - so the first double click added height only (1280x828 -> 1280x886), the second added width (-> 1512x886), and the platform's own resize arrived *behind* ours and shrank the client's window back. The gesture is still the platform's (`Stage.maximizedProperty` fires on it); the geometry is the server's: fill = the display's usable area (the screen grows to fit), a resize while filled = restore the remembered size, and the platform's own state is cleared with it so the next double click is the same gesture again. Verified five double clicks in a row: 1512x886 <-> 1280x828 | correctness | M |
+| [ ] A39 | `--single-window`: maximize stretches only partway and a second double click does not give the window back; a right-edge drag nudges the window sideways. **One attempt was made and reverted the same night** - sizing the screen on *every* gesture put a feedback loop under the drags (the viewport is derived from the screen and the window's size and position from the viewport), which showed as a window that drifted downwards a pixel per step in per-client mode and jumped up and down during a left/right drag in single-window mode, and it broke both modes' maximize. Reverted; the diagnosis and what a next attempt must avoid are in the entry | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6268,3 +6269,61 @@ arrive behind it, once each.
 
 **Verified on the bed**: five double clicks in a row, 1512x886 <-> 1280x828, alternating exactly, in
 per-client mode with termora forwarded; and the full suite is green (475).
+
+### [ ] A39. `--single-window` maximize, restore and drags. **M** - one attempt reverted 2026-10-03; the diagnosis is what is left
+
+**The report.** "`--single-window` has a lot of problems: maximizing leaves the application's page
+unstretched, cancelling the maximize does not give the window back, and dragging the right edge makes
+the window run downwards. Various double clicks behave differently." Then, after the first attempt:
+"you have broken the maximize in **both** modes, and there are stretching problems: per-client, pulling
+downwards drifts the window down a little with every step; single-window is completely unusable, a
+left/right drag makes it jump up and down, and it snaps back on release."
+
+**What the attempt did, and why it was wrong.** `growScreenToFit` (the screen follows a drag, but may
+only *grow*) was replaced by a `sizeScreenTo` that made the screen the size each gesture asked for, in
+both directions, on **every** resize request - the theory being that single-window mode's window *is*
+the screen, so a restore had to be able to shrink it. The theory was right about the goal and wrong
+about the mechanism: the screen is upstream of everything this server does with a window -
+`contentBounds(screen)` is the viewport, the backend sizes and places the host window from the
+viewport - so changing it *during* a drag is a feedback loop, and the loop is the user's report
+exactly: per-client, each drag step moved the content bounds, which moved the window down a little and
+the next step moved it again; single-window, the same loop ran through the window's own size, so a
+left/right drag moved the window up and down and the release settled it back. Both modes' maximize
+broke with it, because the maximize path goes through the same function.
+
+**Reverted**, and with it the two smaller pieces that had been added for single-window: treating the
+platform's `maximized` dropping to false as the restore, and ignoring a maximize that arrives right
+behind a restore.
+
+**What was measured while it was in, because it is what a next attempt has to respect.** In
+single-window mode the platform fights this server for the same rectangle:
+
+```
+00:12:53.056 filling the window to 1512x858 (display 1512x886)
+00:12:53.064 growing the screen of display :95 to 1512x858
+00:12:53.090 host window maximized true -> false (1300x800)      <- the platform's own reaction
+00:12:53.090 restoring the window to 1300x800                    <- and the server read it as the user
+00:12:53.314 host window maximized false -> true (1510x858)      <- then maximized again
+```
+
+A fill is undone by macOS within a tenth of a second - and *with a size change*, so a discriminator
+that looks at the size (rather than at the moment) cannot tell that reaction from a user's second
+double click. Two attempts at a time-based discriminator (a 700 ms settle, then a 300 ms one) failed
+in opposite directions: the first let the reaction through and corrupted the remembered restore size
+(after which every restore restored *to the maximum*), the second swallowed the user's first click.
+
+**The state now.** `git revert` of the attempt, which is the A38 state: per-client mode verified
+again - four double clicks alternating 1512x886 <-> 1280x828, and a downward drag that grows the window
+without moving it (the drift is gone); single-window mode is back to what it was before all of this -
+drags grow the screen and leave the window anchored, the maximize is the platform's own zoom with the
+screen grown to fit (which stretches *partway*: the platform's standard frame is the client's width),
+and the second double click still does not give the window back. 475 tests green.
+
+**What a next attempt should do differently.** Do not read the platform's `maximized` state and do not
+resize the screen on the way *through* a gesture. Either (a) take the gesture itself - a double click
+on the title bar is a native event this backend could observe before Glass acts on it - and then set
+the geometry once, with the screen resized exactly once per gesture and never during a drag; or
+(b) give single-window mode a *content-bounds* viewport like per-client mode's, so the window stops
+being a 1:1 view of the whole screen and a restore is an ordinary window resize. (b) is the cleaner
+model - it is the same design per-client mode already uses - but it changes what the mode means
+(a window would no longer show the whole screen), so it is a decision for the user, not a bug fix.
