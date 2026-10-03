@@ -342,6 +342,19 @@ public final class JavaFxBackend implements DisplayBackend {
     private double decorationHeight;
 
     /**
+     * The content size to come back to when the window is un-maximized, in points, or zero when the
+     * window is not maximized - written and read on the FX thread only.
+     */
+    private int restoreContentWidth;
+    private int restoreContentHeight;
+
+    /** Until this millisecond, a content resize is the platform's reaction to a maximize. */
+    private long settlingMaximizeUntil;
+
+    /** Whether the window is currently filled by this server's own maximize, not the platform's. */
+    private boolean filledByServer;
+
+    /**
      * The window's content area changed size. Most such changes are the backend's own, sizing the
      * window to the client's window; {@link #isUserResize} tells the user's apart from those, and
      * only the user's are reported.
@@ -352,6 +365,45 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private void clientAreaChanged() {
         if (scene == null || input == null || stage == null) {
+            return;
+        }
+        if (System.currentTimeMillis() < settlingMaximizeUntil) {
+            // **The platform's own "maximized" frame arrives behind ours, and it is not the user.**
+            // macOS works its standard frame out from the window's content - which here is a
+            // client's X window at the size the client last asserted - so a double click on the
+            // title bar is followed by a resize to that size a moment *after* the size this server
+            // asked for, and reporting it as a drag would shrink the client window straight back
+            // (measured 2026-10-03: 1512x858 applied, then 1280x858 reported, and the window ended
+            // at the client's old width). So during the settle, the window is put back to the size
+            // the server has instead.
+            enforceWindowSize();
+            return;
+        }
+        if (filledByServer) {
+            // A resize while the window is filled by this server, and not one of the platform's own
+            // (those are absorbed by the settle above), is the *second* double click or the green
+            // button: un-maximize. Its own idea of the old geometry is the geometry the client had,
+            // so the size to come back to is the one remembered when the fill happened.
+            filledByServer = false;
+            settlingMaximizeUntil = System.currentTimeMillis() + 700;
+            // And the platform's own state goes with it. It is the same flag this server has been
+            // filling *for*: left set, the next double click is a platform zoom the property does not
+            // change, so no fill is asked for and the window lands on the platform's own geometry -
+            // measured, a third double click gave 1289x886 after two good ones. Clearing it makes the
+            // next double click a `false -> true` again, i.e. the same gesture as the first.
+            adjustingWindow = true;
+            try {
+                stage.setMaximized(false);
+            } finally {
+                adjustingWindow = false;
+            }
+            if (restoreContentWidth > 0 && restoreContentHeight > 0) {
+                int restoredWidth = (int) Math.round(restoreContentWidth * scale);
+                int restoredHeight = (int) Math.round(restoreContentHeight * scale);
+                restoreContentWidth = 0;
+                restoreContentHeight = 0;
+                input.windowMaximized(false, restoredWidth, restoredHeight);
+            }
             return;
         }
         int width = (int) Math.round(scene.getWidth() * scale);
@@ -415,6 +467,33 @@ public final class JavaFxBackend implements DisplayBackend {
     /** The canvas a scene is drawing the screen into. */
     private static Canvas canvasOf(Scene scene) {
         return (Canvas) ((Pane) scene.getRoot()).getChildren().get(0);
+    }
+
+    /**
+     * Puts the window back to the size of what it shows.
+     *
+     * <p>Called while a maximize or a restore is settling: the platform applies its own geometry for
+     * those gestures a moment after this server has applied its own, and macOS reports that as a
+     * content resize. Setting the size back is a no-op in every other case (the two sizes agree).
+     * Runs on the FX thread.
+     */
+    private void enforceWindowSize() {
+        if (stage == null) {
+            return;
+        }
+        double wantedWidth = logical(viewport.width) + decorationWidth;
+        double wantedHeight = logical(viewport.height) + decorationHeight;
+        if (Math.abs(stage.getWidth() - wantedWidth) <= 1.0
+                && Math.abs(stage.getHeight() - wantedHeight) <= 1.0) {
+            return;
+        }
+        adjustingWindow = true;
+        try {
+            stage.setWidth(wantedWidth);
+            stage.setHeight(wantedHeight);
+        } finally {
+            adjustingWindow = false;
+        }
     }
 
     /**
@@ -683,6 +762,45 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.setResizable(true);
         scene.widthProperty().addListener((observable, was, is) -> clientAreaChanged());
         scene.heightProperty().addListener((observable, was, is) -> clientAreaChanged());
+        // **A double click on the title bar is the platform's gesture, and its own "standard frame"
+        // is not what a forwarded window needs.** macOS zooms the window to a size it works out from
+        // the window's content - and this window's content *is* a client's X window, whose size the
+        // client reasserts as soon as it is resized. Measured 2026-10-03: the first double click
+        // took a 1280x828 window to 1280x886 (height only, the width left at the client's), the
+        // second to 1512x886, and a third did not restore anything - "it stretches partway and
+        // stops", in the report. So the platform's *decision* is taken and its *geometry* is
+        // replaced by ours: a maximized window is the display's usable area, and un-maximizing puts
+        // back the size the window had before. The client's window is what is resized (the screen
+        // grows to fit it), by the same path a drag takes, so the framebuffer and the frame never
+        // disagree.
+        stage.maximizedProperty().addListener((observable, was, is) -> {
+            log.debug("host window maximized {} -> {} ({}x{})", was, is,
+                    (int) Math.round(scene.getWidth()), (int) Math.round(scene.getHeight()));
+            if (!is || filledByServer) {
+                return;
+            }
+            // **The gesture is the platform's; the geometry is this server's.** macOS works its
+            // "maximized" size out from the window's content, and this window's content is a client's
+            // X window - so the zoom stops where the client's window does (measured 2026-10-03: a
+            // 1280x828 window went to 1280x886 on the first double click, to 1512x886 on the second,
+            // and a third restored nothing: "it stretches partway and stops"). Filling is the
+            // display's usable area here, and the platform's own resize, which arrives a moment
+            // later, is put back - see {@link #clientAreaChanged} and {@link #enforceWindowSize}.
+            restoreContentWidth = (int) Math.round(scene.getWidth());
+            restoreContentHeight = (int) Math.round(scene.getHeight());
+            filledByServer = true;
+            settlingMaximizeUntil = System.currentTimeMillis() + 700;
+            javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
+            int filledWidth = (int) Math.round((usable.getWidth() - decorationWidth) * scale);
+            int filledHeight = (int) Math.round((usable.getHeight() - decorationHeight) * scale);
+            if (filledWidth > 0 && filledHeight > 0) {
+                log.debug("filling the window to {}x{} (display {}x{})",
+                        filledWidth, filledHeight, (int) usable.getWidth(), (int) usable.getHeight());
+                input.windowMaximized(true, filledWidth, filledHeight);
+            }
+        });
+        stage.fullScreenProperty().addListener((observable, was, is) ->
+                log.debug("host window fullScreen {} -> {}", was, is));
         // Where the user drags the frame to is the one thing about the host window that no client
         // knows: it is remembered per client so the next session opens where this one was left.
         stage.xProperty().addListener((observable, was, is) -> windowMovedByUser());

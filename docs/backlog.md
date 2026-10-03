@@ -113,6 +113,7 @@ A prompt that starts a fresh session on this, verbatim:
 | ~~A35~~ | ~~"compared with Xvfb+x11vnc seen in the Finder, what this server renders looks less clear"~~ **answered 2026-10-03, and it is the display, not the renderer**: at the default `--scale 1` the client draws 1x and the host window on a Retina panel draws each framebuffer pixel as a 2x2 **block** - measured on a capture of the window: **95.6% of 2x2 blocks are one colour**, i.e. magnification with no added detail - where the Finder's view of a 1x remote screen is 1:1. Our own VNC path is lossless for text (measured: a full frame and scrolling text, with Tight and a JPEG quality in the client's list, produced **0 JPEG rectangles**). The levers are `--scale 2`/`--scale auto` (real 2x detail for clients that follow `Xft.dpi`, which GTK/Qt do and the JVM in termora did **not** - its block ratio stayed ~95% under both `--scale 2` and `-Dsun.java2d.uiScale=2`), or watching the server over VNC so the same viewer presents the same picture | clarity | M |
 | ~~A36~~ | ~~"what is still missing against Xvfb"~~ **re-measured 2026-10-03**: the extension set is unchanged (23 each, DPMS here against MIT-SHM there) and every version a client is told matches **except XInputExtension - a reference answers 2.4 where this server answers 2.0**, which is the one capability a modern client can still reach for (AWT logs it, GDK asks for 2.4 and falls back). §9 now carries the re-measurement, and E0's sweep re-run says 17 of 28 probes identical with the two new differences explained | capability | M |
 | ~~A37~~ | ~~**XTS (`xts` 5.1.5) against the `Xproto` set**: 121 of 122 purposes failed~~ **two root causes fixed 2026-10-03**: (1) a **BIG-REQUESTS request longer than the maximum got `BadLength` and then the connection was closed** - a reference replies and *discards* the request, so the client's next request is answered; XTS's `TOO_LONG` case (which sends `bigreq_size + 1` and then all sixteen megabytes) went from `UNRESOLVED`+`SIGPIPE` to **PASS**, and (2) **`AllocColorCells`/`AllocColorPlanes` handed out writable cells on a read-only visual** (TrueColor and the statics), where the protocol says `BadAlloc`. Down to **1 case per purpose (120 of 122)**, all of them the same missing piece: **per-request length validation** (a request whose length is one unit more or less than its type defines must be `BadLength`), which needs a table of exact-vs-at-least sizes - see the entry | correctness | L |
+| ~~A38~~ | ~~double-clicking the title bar does not maximize, and a second double click does not restore - "it stretches partway and stops", and the behaviour differs from click to click~~ **fixed 2026-10-03**: macOS zooms a window to a "standard frame" worked out from its **content**, and this window's content is a client's X window at the size the client last asserted - so the first double click added height only (1280x828 -> 1280x886), the second added width (-> 1512x886), and the platform's own resize arrived *behind* ours and shrank the client's window back. The gesture is still the platform's (`Stage.maximizedProperty` fires on it); the geometry is the server's: fill = the display's usable area (the screen grows to fit), a resize while filled = restore the remembered size, and the platform's own state is cleared with it so the next double click is the same gesture again. Verified five double clicks in a row: 1512x886 <-> 1280x828 | correctness | M |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6227,3 +6228,43 @@ reference's 294 assertions are green on both servers. And the two fixes are beha
 see: the connection no longer dies on a request the client mis-sized (a failure that reads as "the
 application hung" rather than as an error), and a toolkit that asks for writable colour cells on a
 TrueColor visual is now told no the way it expects, instead of being handed cells it cannot use.
+
+### [x] A38. A double click on the title bar maximizes, and the next one restores. **M** - fixed 2026-10-03
+
+**What it was.** "Double clicking the title bar should maximize, and a second double click should give
+back the old size, but on xserver it stretches partway and stops, and the clicks do not behave the
+same way twice." Both halves of that are the platform's *maximize* meeting a window whose content is
+not its own.
+
+**Measured** (per-client mode, `--glx --geometry 1300x800`, termora, host window 1280x828 on a
+1512x982 display): the first double click took it to **1280x886** - the height only, the width left
+where the client's window was - the second to **1512x886**, and a third restored nothing. The
+server's own log says why: macOS's zoom picks a "standard frame" from the window's *content*, and this
+window's content is a client's X window, whose size the client re-asserts as soon as it is resized.
+Two more things showed in the same log: the platform's resize arrives a moment *after* the size this
+server asks for, and reporting it as a user drag shrank the client's window straight back
+("window sized to 1280.0x886.0 for content 1280x858" right after a fill to 1512), and the platform's
+`maximized` state is set on the zoom *in* but not cleared on the zoom *out*, so the next double click
+was a platform-only resize with no event this server could see.
+
+**The fix, in `JavaFxBackend`.** The *gesture* stays the platform's - `Stage.maximizedProperty` fires
+on the double click, which is the only signal there is - and the *geometry* is this server's:
+
+- on `maximized = true`: remember the content size, then fill to the **display's usable area**
+  (`Screen.getPrimary().getVisualBounds()`, decoration taken off) through the same path a drag takes,
+  so the screen grows to fit (`growScreenToFit`, up to `--max-screen`) and the client's window is
+  resized with it;
+- a content resize **while the window is filled by the server** is the second double click: the
+  remembered size is put back, and the platform's own maximized state is cleared with it - without
+  that, the third double click is a zoom the property does not change, and the window lands on the
+  platform's geometry (measured: 1289x886 after two good clicks);
+- the platform's own version of either resize is absorbed by a short settle window (700 ms), during
+  which the window is put back to the size the server has - that is what stops the platform's
+  "standard frame" from winning the race.
+
+New sink method `DisplayBackend.InputSink.windowMaximized(boolean, int, int)` carries this separately
+from `windowResized`, and `InputState` applies it in preference to the ordinary resize requests that
+arrive behind it, once each.
+
+**Verified on the bed**: five double clicks in a row, 1512x886 <-> 1280x828, alternating exactly, in
+per-client mode with termora forwarded; and the full suite is green (475).

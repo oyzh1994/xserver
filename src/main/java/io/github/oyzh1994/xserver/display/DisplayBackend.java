@@ -67,6 +67,20 @@ public interface DisplayBackend {
         }
 
         /**
+         * The user maximized or restored the host window, and the client's window should take the
+         * size the backend worked out for it.
+         *
+         * <p>Separate from {@link #windowResized} because it is not the same kind of request: a drag
+         * is one size and the last one wins, while a maximize is a *state* whose size the platform
+         * also reports through the ordinary resize path - the platform's own idea of the maximized
+         * geometry (macOS's "standard frame", which for a forwarded window is the size the client's
+         * window already had) arrives behind this one and would overwrite it. The server applies
+         * this size in preference, once.
+         */
+        default void windowMaximized(boolean maximized, int width, int height) {
+        }
+
+        /**
          * The user moved the host window, in the platform's own screen coordinates.
          *
          * <p>Reported so that where a window was arranged can be remembered (see

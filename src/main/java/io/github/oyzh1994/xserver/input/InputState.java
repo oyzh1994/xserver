@@ -1272,6 +1272,9 @@ public final class InputState implements DisplayBackend.InputSink {
      * the same time. The tick picks it up and resizes the client's window itself.
      */
     private volatile java.awt.Dimension requestedSize;
+
+    /** The size a maximize or a restore asked for, which wins over {@link #requestedSize} once. */
+    private volatile java.awt.Dimension maximizedSize;
     /** Where the user last dragged the host window, reported by the backend. */
     private volatile java.awt.Point hostWindowPosition;
 
@@ -1282,8 +1285,35 @@ public final class InputState implements DisplayBackend.InputSink {
         }
     }
 
+    /**
+     * The host window was maximized or un-maximized, and this is the size the client's window should
+     * take - the display's usable area, or the size the window had before.
+     *
+     * <p><b>Kept apart from {@link #windowResized} on purpose.</b> The platform reports its own idea
+     * of the maximized geometry through the ordinary resize path as well - on macOS a forwarded
+     * window's "standard frame" is worked out from the content, so it is the size the client's window
+     * already had (measured 2026-10-03: a double click on the title bar produced a resize to
+     * 1280x886, the client's width, before the real target arrived) - and the last request written
+     * wins. This one wins over those instead, once, and a later drag is an ordinary resize again.
+     */
+    @Override
+    public void windowMaximized(boolean maximized, int width, int height) {
+        if (!maximized) {
+            maximizedSize = null;
+        }
+        if (width > 0 && height > 0) {
+            maximizedSize = new java.awt.Dimension(width, height);
+        }
+    }
+
     /** The size the user last dragged the host window to, clearing it. Null when there is none. */
     public java.awt.Dimension takeRequestedSize() {
+        java.awt.Dimension maximized = maximizedSize;
+        maximizedSize = null;
+        if (maximized != null) {
+            requestedSize = null;
+            return maximized;
+        }
         java.awt.Dimension requested = requestedSize;
         requestedSize = null;
         return requested;
