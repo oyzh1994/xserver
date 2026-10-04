@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A47~~ | ~~**the XInput implementation is four releases behind a reference** - the one version gap A36 left: Xvfb answers `XInputExtension` **2.4** where this server answered **2.0**~~ **fixed 2026-10-04**: the version is a reference's 2.4 and the surfaces behind it are measured and answered - **raw events (XI 2.1) are implemented and delivered** (a root selection, the reference's own shapes: a motion is 72 bytes, a button and a key 40, and a warp sends nothing), `XIBarrierReleasePointer` (2.3) answers the extension's own barrier error exactly as a reference answers it for a barrier that does not exist, and 2.2's touch has no device on either server to have content. `XIQueryVersion` now follows the reference's rule (the lower of the two, and **BadValue** for a major below 2) and both handshakes answer 2.4. What is left is measured rather than half-answered: barriers themselves need XFIXES 5.0, `XIChangeHierarchy` would need a device model that can change, and XI's passive grabs are still refused | capability | M |
 | ~~A46~~ | ~~**the dock's Quit does nothing in single-window mode** - "单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在per-client模式下正常"~~ **fixed 2026-10-04**: the platform's Quit is answered by whichever toolkit *claimed the application*, and the two answer differently - AWT ends the process (so the JVM's shutdown hook stops the server, asking the clients to close first), while a JavaFX (Glass) application only turns it into a close request on its **visible** windows, so an application with no window on the screen answers the platform with nothing at all. Per-client mode's clipboard, tray and scale code all touch AWT while the server starts, which is why that mode's Quit has always worked; single-window mode opened its window first, so JavaFX claimed the application and the Quit went nowhere whenever nothing was connected. `XServer.claimHostApplication` now claims the application for AWT before any window exists. Measured with the Dock's own request (`NSRunningApplication -terminate`): **nothing, for ever** before, **gone in 500 ms** after (3.5 s with a client attached, which is the ask-and-grace path A27 added) | correctness | S |
 | ~~A45~~ | ~~**the project is cross-platform and one thing in it was not** - the full screen exit key was macOS's Control-Command-F only~~ **fixed 2026-10-04, and the owner's rule is stricter than the table**: the *tools* may be platform-specific (they are written for whichever system the debugging happens on) but the **product** may not be - and nothing under `src/main` uses the tools or needs a platform. The audit records every place `src/main` touches the platform at all, which is one `os.name` read and one `Files.separatorChar` comparison, and fixes the two real violations: the audit is in the design notes' *Platforms* section (the inventory of everything platform-specific, in one table, and the four rules a change has to keep), and the one real violation is fixed - `F11` everywhere that is not macOS - along with the unix socket, which used to create `/tmp/.X11-unix` on a platform that cannot use it before failing. Nothing else in `src/main` requires a platform: the extended window is behind a capability check, the unix socket behind a fallback, JavaFX behind Swing behind headless, and the macOS quirks are handled in code that is inert elsewhere | correctness | M |
 | ~~A44~~ | ~~single-window mode's window with nothing to show - the question was whether it should be hidden with no clients connected and shown, raised and focused when one arrives~~ **changed 2026-10-04**: it was already not opened *before the first client*, and it used to be kept afterwards holding its last frame (a deliberate design, asserted by eight tests); it is now closed after a 1.5 s grace period with nothing to show - long enough that a toolkit which unmaps one window and maps another while starting up does not make it flicker - and the next client that maps a window opens it again, raised **and focused** (`raiseAndFocus`, new; the urgency hint still only raises). See the entry | correctness | S |
@@ -5668,18 +5669,18 @@ places this server is still *behind* a reference rather than deliberately differ
 - **Extension set: unchanged.** Both advertise 23; the only two that differ are the ones above -
   this server has **DPMS** (B7) where this Xvfb build has none, and the reference has **MIT-SHM**
   where this server declines it by decision (B8).
-- **Versions: one gap, and it is XInput.** Every version a client is told matches except
-  **XInputExtension: a reference answers 2.4, this server answers 2.0** (`xinput --version`,
-  `xdpyinfo -ext XInputExtension`). Measured equal on both: RandR **1.6**, XVideo **2.2** with no
-  adaptors, XFIXES **4.0** (the probe prints it), XKEYBOARD **1.0**, XTEST **2.2**, RENDER **0.11**,
+- **Versions: no gap left, since A47.** Every version a client is told now matches, including the
+  one that did not: **XInputExtension 2.4** (a reference's answer - `xinput --version`, `xdpyinfo
+  -ext XInputExtension`), because XI 2.1's raw events are implemented and delivered, 2.2's and
+  2.4's touch has no device on either server to have content, and 2.3's barrier release answers what
+  a reference answers for a barrier that does not exist. Measured equal on both: RandR **1.6**,
+  XVideo **2.2** with no adaptors, XFIXES **4.0** (the probe prints it, and **5.0 on the reference**
+  - that difference is a barrier item, see A47), XKEYBOARD **1.0**, XTEST **2.2**, RENDER **0.11**,
   SHAPE **1.1**, XINERAMA **1.1**, SYNC **3.1**, Composite **0.4**, DOUBLE-BUFFER **1.0**, RECORD
   **1.13**, and the OpenGL version string a client prints, because the client renders in process
-  (B6). **What 2.0 costs**: AWT's own log says `Desired version is 2.2, server version is 2.0` and
-  GDK asks for 2.4, both then fall back - measured, and harmless in this bed, but a client that
-  needs touch, barriers or the 2.1+ device-event surface would find them missing. The request
-  surface here is XI2 2.0 plus `XIGetSelectedEvents` (a 2.1 request, answered); **claiming 2.2+
-  would need each added surface measured against Xvfb first**, which is not attempted - it is the
-  one capability on this page a *modern* client could still reach for.
+  (B6). Still missing inside XInput, and measured rather than assumed: pointer barriers themselves
+  (they need XFIXES 5.0), a changeable device hierarchy (`XIChangeHierarchy`), XI's passive grabs,
+  and the slave devices a reference lists.
 - **The holes inside extensions are unchanged**: `ShapeGetRectangles`, `XFixesGetCursorImageAndName`
   and `XFixesChangeSaveSet`, XI1 past `ListInputDevices`, pointer acceleration (`ChangePointerControl`
   accepts and ignores) and host access control (`ChangeHosts`/`SetAccessControl` as no-ops).
@@ -6943,3 +6944,109 @@ application itself (`apple.awt.application.name`) was not asked for and was not 
 478 tests green, unchanged (this is platform behaviour with no seam a unit test can reach - A27's
 no-JavaFX backends were the only way to establish what the platform does, and the same helper is the
 verification again).
+
+### [x] A47. The XInput implementation is four releases behind a reference. **M** - fixed 2026-10-04
+
+**Asked for.** "你上次提到xinput实现落后xfvb几个版本，回忆下，确有此事的话，也完善下" - and the
+recollection is right: A36's re-measurement named it as **the one version gap on the whole page**
+("a reference answers 2.4, this server answers 2.0 ... the one capability a *modern* client could
+still reach for"). The version was 2.0 on purpose, with the reason written next to it: "this is the
+version this server implements, and a client that is told 2.4 will ask for requests that would be
+refused". Closing the gap therefore meant making that sentence false, not editing it.
+
+**What a reference does, measured with `tools/XiProbe versions` (its new mode) on 2026-10-04**, one
+connection per ask, on Xvfb `:98` and against this server:
+
+| asked | Xvfb | this server, before | this server, after |
+| --- | --- | --- | --- |
+| 2.0 / 2.1 / 2.2 / 2.3 | the same back | always **2.0** | the same back |
+| 2.4, 2.5, 2.9 | 2.4 | 2.0 | 2.4 |
+| 3.0 (major ahead) | **2.4** | 2.0 | 2.4 |
+| 1.0 (major behind) | **BadValue**, value 1, minor 47 | answered 1.0 | **BadValue**, value 1, minor 47 |
+
+`GetExtensionVersion` (XInput **1.x**'s handshake, which is what `xinput` asks first) answers 2.4 on
+both. Two details were invisible until this: a **second** `XIQueryVersion` on one connection is
+answered with the version that connection already latched (2.0, 2.0, 2.0 for asks of 2.0, 2.3, 2.9) -
+which is why the probe now opens a connection per ask, and why a test that asked twice measured
+nothing; and a client whose **major** is ahead is not refused, it is told what the server speaks.
+
+**What the four releases add, and what this server now does with each.**
+
+| release | what it adds | here |
+| --- | --- | --- |
+| 2.1 | raw events (`XI_RawMotion` and the four around it), `XIGetSelectedEvents` | **implemented**: selected on a **root** window, delivered for every device event the server receives, including input that is delivered to nobody |
+| 2.2 | touch (`XITouchClass`, `XI_TouchBegin/Update/End/Ownership`, the touch modes of `XIAllowEvents`) | **nothing to implement and nothing to lie about**: no device reports a touch class on this server *or on Xvfb* (measured with `XiProbe device <id>` - Button and two Valuators, no Touch), and `XIAllowEvents` with `XIAcceptTouch` is accepted in silence by both |
+| 2.3 | pointer barriers: `XI_BarrierHit`/`XI_BarrierLeave`, `XIBarrierReleasePointer` | **the request is answered as a reference answers it**: a barrier that does not exist is refused with the extension's **own barrier error, code 12**, with the barrier as the bad value (Xvfb: error 141 of a base of 129; here: 40 of a base of 28). Barriers are *created* through **XFIXES 5.0** (`CreatePointerBarrier`), which this server does not have - see the item below |
+| 2.4 | touch ownership semantics | nothing to implement, same reason as 2.2 |
+
+**Raw events, which are the substance of 2.1 and the part that had to be built.** The wire layout was
+measured off Xvfb with the probe's new `raw` mode rather than derived, and it is a **third** shape -
+neither a device event nor a crossing:
+
+```
+0  type 35            16 detail (keycode/button; 0 for a motion)
+1  extension opcode   20 source id         22 valuators_len = 2 words, measured, even for a key
+4  length             24 flags             28 pad
+8  evtype             32 the valuator mask, two words
+10 device id          [40 the raw values, one FP3232 per axis in the mask]
+12 time               [56 the processed values, the same shape]
+```
+
+| gesture (XTEST) | Xvfb | this server |
+| --- | --- | --- |
+| motion | 72 bytes, device 2, **source 4** (its XTEST slave), mask 3, values 100/200 twice | 72 bytes, device 2, **source 2**, mask 3, values 100/200 twice |
+| button press/release | 40 bytes, empty two-word mask, detail = the button | the same |
+| key press/release | 40 bytes, empty mask, detail = the keycode, device 3 | the same |
+| `WarpPointer` | **nothing** | **nothing** |
+
+The one difference is the source id: a reference names its XTEST slave (4/5) because it has one, and
+this server has **no slave devices at all** (its device list is two masters where Xvfb's is six -
+measured, and its own item below). Naming the device itself is the same choice its device events
+already make, and it is the honest answer for a server with nothing else to name.
+
+Three things about the delivery are worth keeping, each of them a measurement:
+
+- **The root of the *screen the input belongs to*, not the server's screen.** A client is told about
+  the screen it was given, and this server builds one screen per client in the mode a user runs, so
+  the first version delivered to `server.screen().root()` - and the probe's selection sat on 0x9
+  while the delivery looked at 0x2 (and, with a second connection driving XTEST, at *its* screen's
+  0xc). XTEST is scoped to the screen of the connection that sends it, which is why the probe and the
+  unit tests drive it from the same connection that selected.
+- **A warp is not a device event.** Measured on Xvfb: six XTEST motions arrive as raw events and a
+  `WarpPointer` sends nothing, because a warp is the server moving the pointer rather than the device
+  reporting it. The test pins it, and the live check reproduced it exactly (`xdotool mousemove`
+  produces nothing, `xdotool click` a `RawButtonPress`).
+- **The error has to be inside the range the extension declared.** Registering XInput with **one**
+  error code made code 12 land outside what `QueryExtension` had told the client, so the answer
+  arrived as an unnameable error; the registration now says **thirteen** (XServer's registration
+  site has the measurement: ours answered 40 where a reference answers 141).
+- Also measured while implementing: the raw values are **`FP3232`** (two words: integer and
+  fraction), not the `FP1616` a device event's positions are - writing `100 << 16` makes the integral
+  part 6553600, and the reference's own bytes (`64000000 00000000`) are what settled it.
+
+**Verified live with a real client.** `xinput test-xi2 --root 2` (libXi's own parsing, not a probe's)
+against this server: **`EVENT type 17 (RawMotion)`** for XTEST motion and **`EVENT type 15
+(RawButtonPress)`** for a click, with `device: 2`, `detail: 0`, and *nothing* after a
+`xdotool mousemove` (a warp). Termora (GDK) renders through the same build with no new refusals, and
+**GDK does not select the raw family at all** - measured from this server's own log: its masks are
+bits 4-8, 18-20 and 27-32 (buttons, motion, crossings, touch, gestures), so the new events go only to
+clients that ask for them. The suite is **482 tests, green** - four new ones pin the version rule,
+the raw motion shape and values, the raw key shape, and the barrier error.
+
+**What is left on this page, measured so the next item starts where this one stopped.**
+
+- **Pointer barriers themselves** - the other half of 2.3. Xvfb's XFIXES is **5.0** and
+  `CreatePointerBarrier` works there (measured: the request is accepted once the barrier id comes from
+  the client's own range; a bad id is `BadIDChoice`, and `XIBarrierReleasePointer` for a real barrier
+  is then the way it is let through). This server's XFIXES answers **4.0**, so nothing can create a
+  barrier and the only reachable answer for a release is the one above. Doing it means XFIXES 5.0,
+  the two requests, the `XFixes` barrier events, the `XI_BarrierHit`/`Leave` events **and the motion
+  blocking itself** (a barrier stops the pointer until the owner releases it) - a real feature, and
+  the reason the release request alone was not enough to claim the release.
+- **A device model that can change** - `XIChangeHierarchy` (an XI **2.0** request, refused here:
+  measured, a reference accepts an empty change list in silence and *creates* a master for
+  `XIAddMaster`). This server has exactly two masters and no slaves, so it also lists **two devices**
+  where Xvfb lists six; implementing the request means a device table that can grow, with the slave
+  ids events carry. `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55, also 2.0, still refused)
+  belong to the same piece: a reference answers the first with a modifier list - empty when nothing
+  conflicts - and accepts the second in silence.

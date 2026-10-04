@@ -10,6 +10,7 @@ import io.github.oyzh1994.xserver.client.ProtocolException;
 import io.github.oyzh1994.xserver.event.EventMasks;
 import io.github.oyzh1994.xserver.event.XInputMasks;
 import io.github.oyzh1994.xserver.event.Xi2Event;
+import io.github.oyzh1994.xserver.event.Xi2RawEvent;
 import io.github.oyzh1994.xserver.resource.XWindow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,22 +45,36 @@ import java.util.List;
  * position {@code XkbExtension} is in for {@code SetMap}. The replies are written as bytes for the
  * same reason: they carry lists whose shape no class here reproduces.
  *
- * <p><b>What is not here</b>, deliberately: touch, tablets, barriers and the raw event family, which
- * a client asks for by name and this server has no device behind; the property requests that
- * <em>change</em> something ({@code XIChangeProperty}, {@code XIDeleteProperty}), because there are
- * no device properties here to change - the two that <em>read</em> them are answered "none"
- * ({@link #listProperties} and {@link #getProperty}, both of which a forwarded client sends); and
- * the hierarchy's changing requests, which would let a client add a device this server cannot
- * invent. Each of them is refused rather than accepted and ignored - a refusal a client can see is
- * worth more than silence it cannot - except where a client asks for something it will wait on.
+ * <p><b>What is not here</b>, deliberately: touch and tablets, which a client asks for by name and
+ * this server has no device behind (a reference in this bed has none either - measured: no device
+ * reports a touch class on Xvfb); the property requests that <em>change</em> something
+ * ({@code XIChangeProperty}, {@code XIDeleteProperty}), because there are no device properties here
+ * to change - the two that <em>read</em> them are answered "none" ({@link #listProperties} and
+ * {@link #getProperty}, both of which a forwarded client sends); the hierarchy's changing requests,
+ * which would let a client add a device this server cannot invent; and pointer barriers, which are
+ * <em>created</em> through XFIXES 5.0 and therefore cannot exist here at all (XFIXES answers 4.0),
+ * so {@link #releaseBarrier} answers exactly what a reference answers for a barrier that is not
+ * there. Each of the rest is refused rather than accepted and ignored - a refusal a client can see
+ * is worth more than silence it cannot - except where a client asks for something it will wait on.
+ *
+ * <p><b>The raw family is here since A47, which is what let the version below move.</b> XI 2.1's raw
+ * events are the one addition of the three releases this server can have in full: 2.2's touch needs
+ * a touch device (neither server has one), 2.4 only rewords touch ownership, and 2.3's barriers need
+ * XFIXES 5.0 for anything to create. So the version is a reference's 2.4 and the three surfaces
+ * that could be reached are answered or delivered - measured rather than assumed, because the
+ * alternative (2.0 with a note) was the state this replaced.
  */
 public final class XInputExtension implements Extension {
 
     private static final Logger log = LoggerFactory.getLogger(XInputExtension.class);
 
-    /** The version this server answers with. Measured: a reference caps at what it has. */
+    /**
+     * The version this server answers with, which is now the one a reference answers (2.4, measured
+     * 2026-10-04) rather than 2.0 - see {@link #queryVersion} for what each release adds and what
+     * that costs.
+     */
     private static final int MAJOR_VERSION = 2;
-    private static final int MINOR_VERSION = 0;
+    private static final int MINOR_VERSION = 4;
 
     // Minor opcodes, from the extension's own numbering.
     private static final int GET_EXTENSION_VERSION = 1;
@@ -84,9 +99,20 @@ public final class XInputExtension implements Extension {
     private static final int XI_LIST_PROPERTIES = 56;
     private static final int XI_GET_PROPERTY = 59;
     private static final int XI_GET_SELECTED_EVENTS = 60;
+    private static final int XI_BARRIER_RELEASE_POINTER = 61;
 
     /** XInput's own errors, as offsets from the base the registry hands out. */
     private static final int ERROR_DEVICE = 0;
+
+    /**
+     * The extension's own error for a barrier, which is code 12 in its range and has no public name.
+     *
+     * <p>Measured, not read off a header: {@code XIBarrierReleasePointer} on Xvfb answers error
+     * {@code firstError + 12} with the barrier as its bad value (141 of a base of 129, value
+     * {@code 0x1234}, minor 61). The public {@code XI.h} only names the first five of the
+     * extension's errors, so the number is what a client can compare against.
+     */
+    private static final int ERROR_BARRIER = 12;
 
     /** How many buttons and valuators the pointer device says it has. */
     private static final int BUTTONS = 10;
@@ -155,6 +181,7 @@ public final class XInputExtension implements Extension {
             case XI_LIST_PROPERTIES -> ListPropertiesRequest.read(in);
             case XI_GET_PROPERTY -> GetPropertyRequest.read(in);
             case XI_GET_SELECTED_EVENTS -> SelectedEventsQuery.read(in);
+            case XI_BARRIER_RELEASE_POINTER -> BarrierRelease.read(in);
             case XI_QUERY_POINTER -> XIQueryPointerRequest.read(in);
             case XI_WARP_POINTER -> XIWarpPointerRequest.read(in);
             case XI_GRAB_DEVICE -> GrabDevice.read(in);
@@ -184,6 +211,7 @@ public final class XInputExtension implements Extension {
             case DeviceQuery query -> queryDevice(client, query);
             case SelectEvents select -> selectEvents(client, select);
             case SelectedEventsQuery query -> getSelectedEvents(client, query);
+            case BarrierRelease release -> releaseBarrier(client, release);
             case GetPropertyRequest property -> getProperty(client, property);
             case ListPropertiesRequest list -> listProperties(client, list);
             case XIQueryPointerRequest query -> queryPointer(client, query);
@@ -429,15 +457,26 @@ public final class XInputExtension implements Extension {
      * the code path ask this before anything else.
      */
     private void queryVersion(ClientConnection client, VersionQuery query) {
+        // **The lower of the two versions, and never a lie about the minor** - measured against Xvfb
+        // 2026-10-04, one connection per ask: 2.0 -> 2.0, 2.3 -> 2.3, 2.5 -> 2.4, **3.0 -> 2.4**
+        // (a client whose major is ahead is told what this server speaks and decides for itself),
+        // and a major *below* 2 is not a version negotiation at all: it is **BadValue** with the
+        // requested major as its bad value (measured: error 2, value 1, minor 47).
+        if (query.major() < MAJOR_VERSION) {
+            throw new ProtocolException(ProtocolException.VALUE, query.major(),
+                    "XInput2 was asked for major version " + query.major());
+        }
+        int major = Math.min(query.major(), MAJOR_VERSION);
+        int minor = query.major() > MAJOR_VERSION
+                ? MINOR_VERSION
+                : Math.min(query.minor(), MINOR_VERSION);
         byte[] reply = new byte[32];
         reply[0] = 1;
         putCard16(reply, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
-        putCard16(reply, 8, Math.min(query.major(), MAJOR_VERSION), client.isBigEndian());
-        putCard16(reply, 10, query.major() > MAJOR_VERSION ? 0 : Math.min(query.minor(),
-                MINOR_VERSION), client.isBigEndian());
+        putCard16(reply, 8, major, client.isBigEndian());
+        putCard16(reply, 10, minor, client.isBigEndian());
         log.debug("{} asked for XInput2 {}.{}, answering {}.{}", client, query.major(),
-                query.minor(), Math.min(query.major(), MAJOR_VERSION),
-                query.major() > MAJOR_VERSION ? 0 : Math.min(query.minor(), MINOR_VERSION));
+                query.minor(), major, minor);
         send(client, reply);
     }
 
@@ -601,6 +640,33 @@ public final class XInputExtension implements Extension {
                         java.util.Arrays.toString(mask.mask()), Integer.toHexString(window.id()));
             }
         }
+    }
+
+    /**
+     * {@code XIBarrierReleasePointer} (XI 2.3), for a barrier that is not here.
+     *
+     * <p>Pointer barriers are created through <b>XFIXES 5.0</b> ({@code CreatePointerBarrier}) and
+     * this server's XFIXES answers 4.0, so no barrier can exist on it - and the answer for a
+     * barrier that does not exist is exactly what a client is owed and what a reference gives it:
+     * the extension's own barrier error, code 12, with the barrier as its bad value (measured
+     * 2026-10-04: 141 of a base of 129, value {@code 0x1234}, minor 61, on Xvfb - where the barrier
+     * really did not exist either). Answering {@code BadRequest} instead, which is what this server
+     * did, tells a client its request was malformed when in fact it was fine.
+     *
+     * <p>An empty request is accepted in silence: there is nothing to release and nothing to
+     * refuse.
+     */
+    private void releaseBarrier(ClientConnection client, BarrierRelease request) {
+        if (request.count() == 0) {
+            return;
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("{} released barrier 0x{} on device {}: no such barrier here (XFIXES is"
+                            + " {} and creates none)", client, Integer.toHexString(request.barrier()),
+                    request.deviceId(), XFixesExtension.reportedVersion());
+        }
+        throw new ProtocolException((byte) (firstError() + ERROR_BARRIER), request.barrier(),
+                "no such barrier " + request.barrier());
     }
 
     /** {@code XIGetSelectedEvents}: what this client selected on a window. */
@@ -861,6 +927,63 @@ public final class XInputExtension implements Extension {
             return null;
         }
         return build(client, core, coreEvent.eventNumber(), device);
+    }
+
+    /**
+     * The raw events of XI 2.1, delivered from the input path as the device's own events.
+     *
+     * <p><b>A raw event is not about a window: it goes to every client that selected it on the
+     * screen's root</b>, whatever the pointer is over and whether anything was delivered at all -
+     * which is the whole point of the family (a client watching the device rather than the
+     * application). Measured against Xvfb 2026-10-04 with {@code tools/XiProbe raw}: an
+     * XTEST-driven motion arrives as {@code XI_RawMotion} with the master as the device and the
+     * XTEST slave as the source, a button and a key are the same shape with no axis in them, and a
+     * {@code WarpPointer} produces <b>nothing</b> - a warp is the server moving the pointer, not the
+     * device reporting it.
+     *
+     * <p>This server has one pointer and one keyboard and no slaves (Xvfb's four slave devices are a
+     * separate gap, measured in the backlog), so the source id is the device itself: the same choice
+     * its device events already make, and the honest one for a server with nothing else to name.
+     */
+    public void rawMotion(XWindow root, int x, int y) {
+        deliverRaw(root, XInputMasks.RAW_MOTION, XInputMasks.POINTER_DEVICE, 0, x, y);
+    }
+
+    /** One raw button event, from the press or the release. */
+    public void rawButton(XWindow root, int button, boolean pressed) {
+        deliverRaw(root, pressed ? XInputMasks.RAW_BUTTON_PRESS : XInputMasks.RAW_BUTTON_RELEASE,
+                XInputMasks.POINTER_DEVICE, button, 0, 0);
+    }
+
+    /** One raw key event, from the press or the release. */
+    public void rawKey(XWindow root, int keycode, boolean pressed) {
+        deliverRaw(root, pressed ? XInputMasks.RAW_KEY_PRESS : XInputMasks.RAW_KEY_RELEASE,
+                XInputMasks.KEYBOARD_DEVICE, keycode, 0, 0);
+    }
+
+    private void deliverRaw(XWindow root, int eventNumber, int device, int detail, int x, int y) {
+        if (root == null) {
+            return;
+        }
+        int time = (int) server.events().time();
+        for (XWindow.Xi2Selection selection : root.xi2Selections()) {
+            if (!XInputMasks.selectionCovers(selection.deviceId(), device)
+                    || !XInputMasks.hasBit(selection.mask(), eventNumber)) {
+                continue;
+            }
+            ClientConnection client = selection.client();
+            byte[] bytes = switch (eventNumber) {
+                case XInputMasks.RAW_MOTION -> Xi2RawEvent
+                        .motion(client, majorOpcode(), device, device, time, x, y).wire();
+                case XInputMasks.RAW_BUTTON_PRESS, XInputMasks.RAW_BUTTON_RELEASE -> Xi2RawEvent
+                        .button(client, majorOpcode(), device, device, time, detail,
+                                eventNumber == XInputMasks.RAW_BUTTON_PRESS).wire();
+                default -> Xi2RawEvent
+                        .key(client, majorOpcode(), device, device, time, detail,
+                                eventNumber == XInputMasks.RAW_KEY_PRESS).wire();
+            };
+            send(client, bytes);
+        }
     }
 
     /** Whether {@code client} selected the XI2 twin of core mask {@code coreMask} on a window. */
@@ -1533,6 +1656,44 @@ public final class XInputExtension implements Extension {
      * <p>Each mask is {@code deviceid}, a length in four byte words, and the words - the shape the
      * protocol gives it, and the reason a mask that names devices cannot be read as one flat word.
      */
+    private record BarrierRelease(int count, int deviceId, int barrier) implements XRequest {
+        static BarrierRelease read(X11Input in) throws IOException {
+            in.readCard8();
+            in.readCard16();
+            int count = in.readInt32();
+            if (count == 0) {
+                // A request that names no barrier has nothing to release and nothing to refuse.
+                return new BarrierRelease(0, 0, 0);
+            }
+            int device = in.readCard16();
+            in.readPad(2);
+            int barrier = in.readInt32();
+            // The rest of the entries (a deviceid, a pad, a barrier and an event id each) are left in
+            // the connection's own buffer: the first one is enough to answer with, and what the
+            // reference does is refuse the request by the *first* barrier it cannot find.
+            return new BarrierRelease(count, device, barrier);
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xinput";
+        }
+    }
+
     private record SelectEvents(int window, List<Mask> masks) implements XRequest {
         record Mask(int deviceId, int[] mask) {
         }

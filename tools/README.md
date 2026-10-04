@@ -290,6 +290,15 @@ The tools, one line each (the backlog's §1 table says what each is *for*):
   empty answer this server gives was built. The pseudo-devices (`0`, `1`) are **refused** by a
   reference for both property requests, which is also measured here and is why this server refuses
   them.
+  **Three modes came with A47** (the version gap): `versions` asks `XIQueryVersion` for every
+  version a client might ask for, **one connection per ask** - a reference latches the first
+  negotiation and answers it for every later call on that connection, which is a measurement of the
+  latch rather than of the negotiation. `raw` selects the raw family (XI 2.1, bits 13 to 17) on the
+  **root** and drives XTEST: a motion comes back as 72 bytes with the master as the device and the
+  XTEST slave as the source, a button and a key as 40 with an empty mask, and a warp as *nothing* -
+  the server moving the pointer is not the device reporting it. `barrier [id]` sends
+  `XIBarrierReleasePointer` (XI 2.3) for a barrier that cannot exist and prints the extension's own
+  barrier error, which is the answer a reference gives too.
   **Run it against Xvfb before writing anything**: a mask bit that looks wrong is wrong
   (`1<<3` selects nothing where `1<<4` is `ButtonPress`, and a wrong mask is *accepted* and changes
   nothing, which reads as a server that cannot deliver a device event at all), an XI2 event is a
@@ -652,11 +661,15 @@ a reference with no video hardware does (F6).
   names, so the lookup finds nothing and the cursor is left alone): both are "the name changes
   nothing", one says so. Measured and recorded as A8's answer; the probe prints the refusal per name
   rather than dying on it, which is what it used to do.
-- **`XiProbe`** - this server answers **XInput 2.0** and lists **two master devices**, where Xvfb
-  answers 2.4 and lists six (its own extra slaves). B4: XI 2.0 is what is implemented and the rest
-  (touch, tablets, barriers, raw events, device properties) is *refused* rather than half-answered.
-  The two versions are consistent with each other here - `XIQueryVersion` answers 2.0 too - which is
-  the point: a client is told the truth about what it may use.
+- **`XiProbe`** - this server answers **XInput 2.4** since A47, the version a reference answers, and
+  lists **two master devices** where Xvfb lists six (its four slaves are a gap of their own, recorded
+  in the backlog). What is behind the version: raw events (XI 2.1) are delivered on the root with
+  the reference's own shapes, `XIBarrierReleasePointer` (XI 2.3) is answered with the extension's
+  barrier error exactly as a reference answers it for a barrier that does not exist, and no touch or
+  gesture device exists on either server for 2.2's and 2.4's surfaces to have any content. What is
+  still not here: pointer barriers themselves (they are created through **XFIXES 5.0**, which this
+  server does not have), a changeable device hierarchy (`XIChangeHierarchy`), and XI's passive
+  grabs - each measured and written down rather than half-answered.
 - **`RandrProbe`** - three fields. `GetScreenSizeRange` answers min = the screen's current size
   (it never shrinks; `--max-screen` bounds the growth), where Xvfb's minimum is 1x1; the output
   carries no per-output properties (a `GetOutputProperty` for one answers an empty reply); and the

@@ -66,6 +66,20 @@ public final class XInputMasks {
     public static final int LEAVE = 8;
     public static final int FOCUS_IN = 9;
     public static final int FOCUS_OUT = 10;
+    /**
+     * The raw family (XI 2.1), which is the device's own event <em>before</em> the server has done
+     * anything with it - no pointer grab, no window under it, no acceleration.
+     *
+     * <p>Selected on a <b>root</b> window and delivered there whatever the pointer is over: a raw
+     * event names no window at all, which is why its shape is a third one (see
+     * {@link Xi2RawEvent}). Measured against Xvfb 2026-10-04: an XTEST-driven motion arrives as
+     * {@code XI_RawMotion}, a warp produces nothing, and a key event is a raw event like any other.
+     */
+    public static final int RAW_KEY_PRESS = 13;
+    public static final int RAW_KEY_RELEASE = 14;
+    public static final int RAW_BUTTON_PRESS = 15;
+    public static final int RAW_BUTTON_RELEASE = 16;
+    public static final int RAW_MOTION = 17;
 
     /** The mask bit a client selects for an event: measured to be {@code 1 << eventNumber}. */
     public static int bit(int eventNumber) {
@@ -81,9 +95,15 @@ public final class XInputMasks {
      */
     public static int deviceOf(int eventNumber) {
         return switch (eventNumber) {
-            case KEY_PRESS, KEY_RELEASE, FOCUS_IN, FOCUS_OUT, DEVICE_CHANGED -> KEYBOARD_DEVICE;
+            case KEY_PRESS, KEY_RELEASE, FOCUS_IN, FOCUS_OUT, DEVICE_CHANGED,
+                    RAW_KEY_PRESS, RAW_KEY_RELEASE -> KEYBOARD_DEVICE;
             default -> POINTER_DEVICE;
         };
+    }
+
+    /** Whether an event number is one of the raw family, which is delivered on the root alone. */
+    public static boolean isRaw(int eventNumber) {
+        return eventNumber >= RAW_KEY_PRESS && eventNumber <= RAW_MOTION;
     }
 
     /**

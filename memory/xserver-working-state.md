@@ -1773,3 +1773,24 @@ do not take synthetic clicks in *either* build - that is the tools' known limita
 regression). No internal API was used (the alternative was hooking `com.sun.glass.ui`'s quit handler),
 so the design notes' audit line "uses an internal API | nowhere" still holds; the new row in the
 Platforms table says what happens elsewhere. 478 tests green.
+
+**2026-10-04 (A47, the XInput version gap):** asked whether the XInput implementation really was
+several releases behind a reference ("你上次提到xinput实现落后xfvb几个版本...也完善下"). It was: A36
+had measured **2.0 here against Xvfb's 2.4**, the one version gap on §9's whole page, and the code
+said why (a client told 2.4 would ask for requests that were refused). So the work was to make that
+sentence false. `XIQueryVersion` now follows the reference's rule - the lower of the two versions,
+**BadValue** for a major below 2 (measured: error 2, value 1, minor 47), and 3.0 answered as 2.4 -
+and both handshakes say 2.4. **Raw events (XI 2.1) are implemented**: selected on a root window,
+delivered for every device event, in the reference's own third shape (a motion is 72 bytes with the
+mask, the raw values and the processed ones; a button and a key are 40 with an empty two-word mask)
+- with `xinput test-xi2 --root 2` and libXi's own parser as the live check, a warp sending nothing
+(as a reference does), and the root taken from **the screen the input belongs to** (the first
+version delivered to the server's screen and reached nobody, because a client is given a screen of
+its own in per-client mode and XTEST is scoped to the sender's screen). `XIBarrierReleasePointer`
+(2.3) now answers the extension's own barrier error, code 12, inside a range XInput declares (13
+errors, not 1 - the registration site says why), which is exactly what a reference answers for a
+barrier that does not exist; barriers themselves need XFIXES 5.0 and are written up as the next
+item, together with `XIChangeHierarchy` and XI passive grabs (both measured: a reference accepts an
+empty change list and *creates* a master, and answers a passive grab with a modifier list). Live:
+termora renders through the new build with no new refusals, and GDK does not select the raw family
+at all (measured from the log), so the new events only reach clients that ask. 482 tests green.

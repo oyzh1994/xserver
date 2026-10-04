@@ -17,6 +17,9 @@ package io.github.oyzh1994.xserver.tools;
  *   XiProbe &lt;host&gt; &lt;port&gt; device &lt;id&gt;    one device (0 means every device)
  *   XiProbe &lt;host&gt; &lt;port&gt; select &lt;mask&gt;  select XI2 events on a window and print what arrives
  *   XiProbe &lt;host&gt; &lt;port&gt; dump            the raw bytes of every reply above
+ *   XiProbe &lt;host&gt; &lt;port&gt; versions        XIQueryVersion for every version a client might ask for
+ *   XiProbe &lt;host&gt; &lt;port&gt; raw             select the raw events (XI 2.1) on the root and drive XTEST
+ *   XiProbe &lt;host&gt; &lt;port&gt; barrier [id]    XIBarrierReleasePointer, which is refused by the barrier id
  * </pre>
  *
  * <p><b>The reply layouts are read off a reference server here, not derived.</b> {@code
@@ -58,6 +61,16 @@ public final class XiProbe {
      * accepted, changes nothing, and looks exactly like a server that cannot deliver a device event.
      */
     private static final int BUTTON_MOTION_MASK = (1 << 4) | (1 << 5) | (1 << 6);
+
+    /**
+     * The raw masks (XI 2.1): {@code XI_RawKeyPress .. XI_RawMotion}, which are event numbers 13 to
+     * 17 and therefore bits 13 to 17 - measured the same way every other mask bit here was, and
+     * measured to be delivered on the <b>root</b> window alone.
+     */
+    private static final int RAW_MASK = (1 << 13) | (1 << 14) | (1 << 15) | (1 << 16) | (1 << 17);
+
+    /** The barrier a {@code barrier} run names when the caller does not: one that cannot exist. */
+    private static int barrierId = 0x1234;
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
@@ -114,6 +127,14 @@ public final class XiProbe {
                     }
                 }
                 case "dump" -> dump = true;
+                case "versions" -> mode = "versions";
+                case "raw" -> mode = "raw";
+                case "barrier" -> {
+                    mode = "barrier";
+                    if (i + 1 < args.length && args[i + 1].startsWith("0x")) {
+                        barrierId = Integer.decode(args[++i]);
+                    }
+                }
                 default -> {
                 }
             }
@@ -125,8 +146,26 @@ public final class XiProbe {
                 return;
             }
             System.out.println("XInputExtension opcode " + opcode);
+            if (mode.equals("versions")) {
+                // One connection per ask: a *reference* negotiates once and answers the version it
+                // latched for every later call (measured 2026-10-04: asking 2.0, then 2.3, then 2.9
+                // on one connection gives 2.0, 2.0, 2.0), so asking repeatedly on one connection
+                // measures the latch rather than the negotiation.
+                versions(args[0], Integer.parseInt(args[1]));
+                return;
+            }
             legacyVersion(wire, opcode, dump);
             listInputDevices(wire, opcode, dump);
+            if (mode.equals("raw")) {
+                queryVersion(wire, opcode, dump);
+                rawEvents(wire, opcode);
+                return;
+            }
+            if (mode.equals("barrier")) {
+                queryVersion(wire, opcode, dump);
+                barrierRelease(wire, opcode, barrierId);
+                return;
+            }
             if (mode.equals("select")) {
                 // The version handshake first, because that is the order a client uses and because
                 // an XISelectEvents sent before it is a request the reference accepts and then does
@@ -221,6 +260,170 @@ public final class XiProbe {
                     + " format=" + (reply[20] & 0xFF));
         }
         hex("XIGetProperty", reply);
+    }
+
+    /**
+     * {@code XIQueryVersion} for every version a client might ask for, <b>one connection each</b>.
+     *
+     * <p>Measured on a reference 2026-10-04: 2.0 -&gt; 2.0, 2.3 -&gt; 2.3, 2.4 -&gt; 2.4, 2.5 -&gt;
+     * 2.4, <b>3.0 -&gt; 2.4</b> (a client whose major is ahead is told what the server speaks and
+     * decides for itself), and a major below 2 is <b>BadValue</b> with the requested major as its bad
+     * value. A second call on the same connection is answered with the version that connection
+     * already latched, which is why this opens a connection per ask.
+     */
+    private static void versions(String host, int port) throws Exception {
+        int[][] wanted = {{2, 0}, {2, 1}, {2, 2}, {2, 3}, {2, 4}, {2, 5}, {2, 9}, {3, 0}, {1, 0}};
+        for (int[] want : wanted) {
+            try (Wire wire = Wire.connect(host, port)) {
+                int opcode = queryExtension(wire);
+                byte[] request = new byte[8];
+                request[0] = (byte) opcode;
+                request[1] = QUERY_VERSION;
+                Wire.writeShort(request, 2, 2);
+                Wire.writeShort(request, 4, want[0]);
+                Wire.writeShort(request, 6, want[1]);
+                wire.send(request);
+                byte[] message = wire.readMessage();
+                while (message != null && (message[0] & 0xFF) != 1 && (message[0] & 0xFF) != 0) {
+                    message = wire.readMessage();
+                }
+                if (message == null) {
+                    System.out.println("XIQueryVersion " + want[0] + "." + want[1]
+                            + " -> no answer");
+                } else if ((message[0] & 0xFF) == 0) {
+                    System.out.println("XIQueryVersion " + want[0] + "." + want[1] + " -> error "
+                            + (message[1] & 0xFF) + " value " + Wire.readInt(message, 4));
+                } else {
+                    System.out.println("XIQueryVersion " + want[0] + "." + want[1] + " -> "
+                            + Wire.readShort(message, 8) + "." + Wire.readShort(message, 10));
+                }
+            }
+        }
+    }
+
+    /**
+     * Selects the raw family on the root and drives XTEST, printing what comes back.
+     *
+     * <p>What a reference answers, measured 2026-10-04: an XTEST motion arrives as 72 bytes -
+     * {@code evtype} 17, the master as the device, the XTEST slave as the source, two words of
+     * valuator mask with both axes set, and the raw and processed values as four {@code FP3232}s -
+     * a button and a key as 40 bytes with an empty mask, and <b>a warp as nothing at all</b>.
+     */
+    private static void rawEvents(Wire wire, int opcode) throws Exception {
+        int xtest = queryExtensionNamed(wire, "XTEST");
+        if (xtest == 0) {
+            System.out.println("this server has no XTEST, so the probe cannot drive it");
+            return;
+        }
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = SELECT_EVENTS;
+        Wire.writeShort(select, 2, 5);
+        Wire.writeInt(select, 4, wire.root());
+        Wire.writeShort(select, 8, 1);                     // one mask record
+        Wire.writeShort(select, 12, ALL_MASTER_DEVICES);
+        Wire.writeShort(select, 14, 1);                    // one mask word
+        Wire.writeInt(select, 16, RAW_MASK);
+        wire.send(select);
+        System.out.println("selected the raw mask 0x" + Integer.toHexString(RAW_MASK)
+                + " on root 0x" + Integer.toHexString(wire.root()) + ", driving XTEST");
+        // The input comes from this same connection: XTEST is scoped to the screen of the client
+        // that sends it, and a server built for more than one screen puts another connection's
+        // motion on a root this one never selected on (measured against this project's server).
+        drive(wire, xtest, 6, 0, 220, 220, "motion");
+        drive(wire, xtest, 4, 1, 0, 0, "button press");
+        drive(wire, xtest, 5, 1, 0, 0, "button release");
+        drive(wire, xtest, 2, 38, 0, 0, "key press");
+        drive(wire, xtest, 3, 38, 0, 0, "key release");
+        // A warp: the server moving the pointer rather than the device reporting it.
+        byte[] warp = new byte[24];
+        warp[0] = 41;                                      // WarpPointer
+        Wire.writeShort(warp, 2, 6);
+        Wire.writeInt(warp, 20, 400);
+        wire.send(warp);
+        drainRaw(wire, "warp");
+    }
+
+    /** One XTEST event and everything it makes the server send back. */
+    private static void drive(Wire wire, int xtest, int type, int detail, int x, int y, String what)
+            throws Exception {
+        byte[] request = new byte[36];
+        request[0] = (byte) xtest;
+        request[1] = 2;                                    // X_XTestFakeInput
+        request[2] = 9;
+        request[4] = (byte) type;
+        request[5] = (byte) detail;
+        Wire.writeShort(request, 24, x);
+        Wire.writeShort(request, 26, y);
+        wire.send(request);
+        Thread.sleep(80);
+        drainRaw(wire, what);
+    }
+
+    private static void drainRaw(Wire wire, String what) throws Exception {
+        wire.readTimeoutMillis(200);
+        try {
+            byte[] message;
+            while ((message = wire.readMessage()) != null) {
+                if ((message[0] & 0xFF) != 35) {
+                    System.out.println("  " + what + " -> message type " + (message[0] & 0xFF));
+                    continue;
+                }
+                byte[] whole = wire.withExtraData(message);
+                System.out.println("  " + what + " -> evtype " + Wire.readShort(whole, 8)
+                        + ", device " + Wire.readShort(whole, 10)
+                        + ", detail " + Wire.readInt(whole, 16)
+                        + ", sourceid " + Wire.readShort(whole, 20)
+                        + ", valuators_len " + Wire.readShort(whole, 22)
+                        + ", flags " + Wire.readInt(whole, 24) + ", " + whole.length + " bytes");
+                hex("raw event", whole);
+            }
+        } finally {
+            wire.readTimeoutMillis(3000);
+        }
+    }
+
+    /**
+     * {@code XIBarrierReleasePointer} (XI 2.3) for a barrier that does not exist, which is the only
+     * answer this server can give and the one a reference gives too: <b>the extension's own error,
+     * code 12</b>, with the barrier as the bad value (measured 2026-10-04: error 141 of a base of
+     * 129, value 0x1234, minor 61).
+     */
+    private static void barrierRelease(Wire wire, int opcode, int barrier) throws Exception {
+        byte[] request = new byte[20];
+        request[0] = (byte) opcode;
+        request[1] = 61;                                   // X_XIBarrierReleasePointer
+        Wire.writeShort(request, 2, 5);
+        Wire.writeInt(request, 4, 1);                      // one barrier
+        Wire.writeShort(request, 8, 2);                    // deviceid: the pointer
+        Wire.writeInt(request, 12, barrier);
+        wire.send(request);
+        byte[] message = wire.readMessage();
+        if (message == null) {
+            System.out.println("XIBarrierReleasePointer -> no answer");
+        } else if ((message[0] & 0xFF) == 0) {
+            System.out.println("XIBarrierReleasePointer 0x" + Integer.toHexString(barrier)
+                    + " -> error " + (message[1] & 0xFF) + " value 0x"
+                    + Integer.toHexString(Wire.readInt(message, 4)) + " minor "
+                    + (message[8] & 0xFF) + " (the extension's first error is "
+                    + (queryExtensionInfo(wire)[3]) + ")");
+        } else {
+            System.out.println("XIBarrierReleasePointer -> reply " + (message.length) + " bytes");
+        }
+    }
+
+    /** {@code {present, majorOpcode, firstEvent, firstError}} for the extension, in one request. */
+    private static int[] queryExtensionInfo(Wire wire) throws Exception {
+        byte[] request = new byte[(8 + EXTENSION.length() + 3) & ~3];
+        request[0] = 98;                                   // QueryExtension
+        Wire.writeShort(request, 2, request.length / 4);
+        Wire.writeShort(request, 4, EXTENSION.length());
+        for (int i = 0; i < EXTENSION.length(); i++) {
+            request[8 + i] = (byte) EXTENSION.charAt(i);
+        }
+        wire.send(request);
+        byte[] reply = replyTo(wire, "QueryExtension");
+        return new int[] {reply[8] & 0xFF, reply[9] & 0xFF, reply[10] & 0xFF, reply[11] & 0xFF};
     }
 
     /** {@code InternAtom}, for naming a property in a request built here. */

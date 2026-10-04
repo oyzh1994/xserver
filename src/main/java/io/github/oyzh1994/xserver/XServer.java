@@ -343,8 +343,16 @@ public final class XServer {
         // months. **Sixteen event codes**, XInput 1.x's own count, so nothing else can be handed
         // them. It is kept by name because the event delivery asks it, for every event, whether a
         // client wants the device version instead.
+        //
+        // <p><b>Thirteen error codes</b>, which is the second half of the same rule: an error the
+        // extension did not declare is an error a client cannot name. This extension answers with
+        // its own errors - a bad device (code 0) and, since A47, XI 2.3's barrier error (code 12,
+        // measured against Xvfb: 141 of its base of 129) - and a client decodes code 12 by looking
+        // it up in the range its own `QueryExtension` reply named. Registering one error made the
+        // barrier answer land outside that range, which a client can only read as unknown (measured
+        // 2026-10-04: ours answered 40 where a reference answers 141).
         this.xinputExtension = extensions.register(
-                new io.github.oyzh1994.xserver.extension.XInputExtension(), 16, 1);
+                new io.github.oyzh1994.xserver.extension.XInputExtension(), 16, 13);
         // GLX answers the handshake a software OpenGL client needs, and nothing that would need a
         // renderer: a client granted a direct context renders itself and blits (B6). Off unless
         // `--glx` asks for it, because advertising it changes what JavaFX does with its own drawing

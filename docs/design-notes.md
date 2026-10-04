@@ -1297,7 +1297,11 @@ the opposite reason - XINERAMA and XKEYBOARD - because their *absence* was not a
 `xdotool` dereferences the null `XkbGetMap` a server without XKEYBOARD hands back, and dies in its own
 startup (A4). Those cost three small replies and one keymap.
 
-**XInput2 is the case the rule was written for, and it is now whole (B4).** The reconnaissance came
+**XInput2 is the case the rule was written for, and it is now whole (B4, and 2.4 since A47).** The
+version it answers is a reference's own - the last thing that was behind, and the reason was the rule
+below read forwards: 2.0 was claimed because 2.4's surfaces would have been refused. They are not any
+more: XI 2.1's raw events are delivered, 2.2's touch has no device on either server to have content,
+and 2.3's barrier release is answered exactly as a reference answers it. The reconnaissance came
 first, and it is why: JavaFX's Linux backend is GTK, `libglassgtk3.so` calls
 `gdk_device_grab`/`gdk_device_ungrab`, and **`libgdk-3.so` resolves
 `XIGrabDevice`/`XIUngrabDevice`** wherever they exist - measured with `strings` on the AppImage's own

@@ -1065,6 +1065,11 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
+            // **The raw event goes out before the server has done anything with the motion** (XI 2.1):
+            // it is the device's own report, so it is not about a window, a grab or a frozen device -
+            // and a client that asked for it on the root hears about input that was delivered to
+            // nobody. See XInputExtension.deliverRaw.
+            rawMotion(x, y);
             deliver(new Held(true, KIND_MOTION, 0, false, x, y));
         } finally {
             server.unlockServer();
@@ -1082,6 +1087,7 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
+            rawButton(button, pressed);
             // A frozen device holds the press rather than acting on it - even the button state is not
             // updated, because the client that stopped the device has not said what to do with it yet.
             deliver(new Held(true, KIND_BUTTON, button, pressed, x, y));
@@ -1210,6 +1216,7 @@ public final class InputState implements DisplayBackend.InputSink {
         server.screenSaver().noteInput();
         server.lockServer();
         try {
+            rawKey(keycode, pressed);
             // The repeat follows the *device's* key state, not what was delivered: X cancels a
             // key's repeat as the release is enqueued, and the difference is not academic - a
             // device frozen with a released key that still repeated would fill the queue at 25
@@ -1222,6 +1229,33 @@ public final class InputState implements DisplayBackend.InputSink {
             deliver(new Held(false, KIND_KEY, keycode, pressed, x, y));
         } finally {
             server.unlockServer();
+        }
+    }
+
+    /** One raw event, when the extension is registered - it always is, but a test may not. */
+    private void rawMotion(int x, int y) {
+        io.github.oyzh1994.xserver.extension.XInputExtension xinput = server.xinput();
+        if (xinput != null) {
+            // **This screen's root**, not the server's: a client is told about the screen it was
+            // given (see `ConnectionSetup.sendSetup`), and in per-client mode that is a screen of its
+            // own - so a raw event delivered to the wrong root reaches nobody, which is exactly how
+            // this behaved first (measured: the selection logged on 0x9 while the delivery looked at
+            // 0x2).
+            xinput.rawMotion(screen.root(), x, y);
+        }
+    }
+
+    private void rawButton(int button, boolean pressed) {
+        io.github.oyzh1994.xserver.extension.XInputExtension xinput = server.xinput();
+        if (xinput != null) {
+            xinput.rawButton(screen.root(), button, pressed);
+        }
+    }
+
+    private void rawKey(int keycode, boolean pressed) {
+        io.github.oyzh1994.xserver.extension.XInputExtension xinput = server.xinput();
+        if (xinput != null) {
+            xinput.rawKey(screen.root(), keycode, pressed);
         }
     }
 

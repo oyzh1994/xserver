@@ -89,7 +89,12 @@ class XInputTest {
             // this did first. With them four out, `present` reads as zero and `xinput list` segfaults.
             assertEquals(1, reply[1] & 0xFF, "the reply type belongs in the header's second byte");
             assertEquals(2, RawXClient.readShort(reply, 8), "server_major");
-            assertEquals(0, RawXClient.readShort(reply, 10), "server_minor: what this server has");
+            // **2.4 since A47**: the minor a reference answers, because this server now answers the
+            // surfaces 2.1 to 2.4 add (raw events, the barrier release, no touch device anywhere in
+            // this bed). It used to say 2.0 for exactly one reason - "a client told 2.4 will ask for
+            // requests that would be refused" - and that reason is what the rest of this file now
+            // pins as answered.
+            assertEquals(4, RawXClient.readShort(reply, 10), "server_minor: what a reference answers");
             assertEquals(1, reply[12] & 0xFF, "present");
         }
     }
@@ -113,6 +118,207 @@ class XInputTest {
             assertEquals(3, RawXClient.readShort(devices, 38), "a button class and two axes");
             assertEquals("Virtual core pointer".length(), RawXClient.readShort(devices, 40));
         }
+    }
+
+    /**
+     * The version negotiation, which is the lower of the two versions and never a lie - and
+     * {@code BadValue} for a major below 2, which is not a negotiation at all.
+     *
+     * <p>Measured against Xvfb 2026-10-04, one connection per ask: 2.0 -> 2.0, 2.3 -> 2.3, 2.5 ->
+     * 2.4, 3.0 -> 2.4 (a client whose major is ahead is told what this server speaks and decides
+     * for itself), and 1.0 -> error 2 with the requested major as its bad value.
+     */
+    @Test
+    void theVersionIsTheLowerOfTheTwoAndNeverALie() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            assertEquals(0, RawXClient.readShort(version(client, opcode, 2, 0), 10),
+                    "a client that asks for less is answered what it asked for");
+            assertEquals(3, RawXClient.readShort(version(client, opcode, 2, 3), 10),
+                    "and a client that asks for 2.3 gets 2.3");
+            assertEquals(4, RawXClient.readShort(version(client, opcode, 2, 9), 10),
+                    "a minor ahead of this server's is capped at 2.4, as a reference caps it");
+            byte[] ahead = version(client, opcode, 3, 0);
+            assertEquals(2, RawXClient.readShort(ahead, 8), "a major ahead is told this server's");
+            assertEquals(4, RawXClient.readShort(ahead, 10), "with the minor it really has, not 0");
+
+            // A major below 2 is BadValue, and the value it names is the version asked for.
+            byte[] request = new byte[8];
+            request[0] = (byte) opcode;
+            request[1] = XI_QUERY_VERSION;
+            RawXClient.writeShortAt(request, 2, 2);
+            RawXClient.writeShortAt(request, 4, 1);
+            RawXClient.writeShortAt(request, 6, 0);
+            client.sendRequest(request);
+            client.flush();
+            byte[] error = client.readEvent();
+            assertNotNull(error, "the server has to answer");
+            assertEquals(0, error[0] & 0xF, "an error, not a reply");
+            assertEquals(2, error[1] & 0xFF, "BadValue");
+            assertEquals(1, RawXClient.readInt(error, 4), "the version that was asked for");
+        }
+    }
+
+    /**
+     * A raw motion (XI 2.1) reaches the client that selected it on the root, in the shape a
+     * reference sends - and a {@code WarpPointer} produces none at all.
+     *
+     * <p>Measured against Xvfb 2026-10-04 with {@code tools/XiProbe raw}: the event is 72 bytes, its
+     * fixed part is 32 (it names no window at all), {@code valuators_len} is <b>two words</b> even
+     * for the keyboard, the mask has both axes, and behind it come the raw values and the processed
+     * ones - two {@code FP3232} pairs. A warp sends nothing: that is the server moving the pointer,
+     * not the device reporting it.
+     */
+    @Test
+    void aRawMotionReachesARootSelectionInTheShapeAReferenceSends() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int xtest = client.queryExtension("XTEST");
+            version(client, opcode, 2, 4);
+            selectRaw(client, opcode, 1 << 17);          // XI_RawMotion, on the root
+
+            // **The input has to come from this client**: XTEST is scoped to the screen of the
+            // connection that sends it, and a server with a screen per client puts a second
+            // connection's faked motion on a root this one never selected on (measured: the
+            // selection was on 0x9 while the motion landed on the screen root 0xc).
+            client.fakeMotion(xtest, 100, 200);
+            client.flush();
+
+            byte[] raw = null;
+            for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+                if ((event[0] & 0xFF) == RawXClient.GENERIC_EVENT
+                        && (event[1] & 0xFF) == opcode
+                        && RawXClient.readShort(event, 8) == 17) {
+                    raw = event;
+                    break;
+                }
+            }
+            assertNotNull(raw, "the raw motion has to arrive");
+            assertEquals(72, raw.length, "32 bytes of fixed part, two words of mask, four values");
+            assertEquals(10, RawXClient.readInt(raw, 4), "length is the size in words, less eight");
+            assertEquals(2, RawXClient.readShort(raw, 10), "the pointer, as the device a reference"
+                    + " names here");
+            assertEquals(0, RawXClient.readInt(raw, 16), "a motion's detail is nought");
+            assertEquals(2, RawXClient.readShort(raw, 22), "valuators_len: two words, measured");
+            assertEquals(0x03, RawXClient.readInt(raw, 32), "both axes are in this event");
+            assertEquals(100, RawXClient.readInt(raw, 40), "x, as FP3232");
+            assertEquals(200, RawXClient.readInt(raw, 48), "y");
+            assertEquals(100, RawXClient.readInt(raw, 56), "and the processed x: this server's"
+                    + " pointer does not accelerate, so the two pairs are the same numbers");
+            assertEquals(200, RawXClient.readInt(raw, 64), "processed y");
+
+            // **A warp is not a device event**: measured on a reference, where six XTEST motions
+            // arrive and a WarpPointer sends nothing.
+            client.warpPointer(client.root(), 300, 300);
+            client.flush();
+            assertNull(client.readEvent(), "a warp must not be reported as the device's own event");
+        }
+    }
+
+    /** A raw key is the same 40-byte shape with no axis in it: an empty mask and the keycode. */
+    @Test
+    void aRawKeyIsTheShortShapeWithItsKeycode() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int xtest = client.queryExtension("XTEST");
+            version(client, opcode, 2, 4);
+            selectRaw(client, opcode, 1 << 13);          // XI_RawKeyPress, on the root
+
+            client.fakeKey(xtest, 38, true);
+            client.flush();
+
+            byte[] raw = null;
+            for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+                if ((event[0] & 0xFF) == RawXClient.GENERIC_EVENT
+                        && (event[1] & 0xFF) == opcode
+                        && RawXClient.readShort(event, 8) == 13) {
+                    raw = event;
+                    break;
+                }
+            }
+            assertNotNull(raw, "the raw key has to arrive");
+            assertEquals(40, raw.length, "the fixed part and two words of mask, and nothing else");
+            assertEquals(2, RawXClient.readInt(raw, 4), "length in words, less eight");
+            assertEquals(3, RawXClient.readShort(raw, 10), "the keyboard is the device");
+            assertEquals(38, RawXClient.readInt(raw, 16), "the keycode is the detail");
+            assertEquals(2, RawXClient.readShort(raw, 22), "valuators_len: two words even for a"
+                    + " device with no axes, measured");
+            assertEquals(0, RawXClient.readInt(raw, 32), "and the mask is empty: no axis is in it");
+        }
+    }
+
+    /**
+     * The barrier release (XI 2.3) is refused with <b>the extension's own barrier error</b>, which
+     * is what a reference answers for a barrier that does not exist - and the error has to be
+     * inside the range this extension declared, or a client cannot name it.
+     *
+     * <p>Measured against Xvfb 2026-10-04: {@code XIBarrierReleasePointer} for a made-up barrier
+     * answers {@code firstError + 12} with the barrier as the bad value and 61 as the minor opcode.
+     * This server answered {@code BadRequest}, which tells a client its request was malformed when
+     * it was fine - and its extension then declared a single error code, so code 12 landed outside
+     * the range a client had been told about.
+     */
+    @Test
+    void theBarrierReleaseIsTheExtensionsOwnError() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int[] info = client.queryExtensionInfo("XInputExtension");
+            int opcode = info[1];
+            int firstError = info[3];
+            version(client, opcode, 2, 4);
+            byte[] barrier = new byte[20];
+            barrier[0] = (byte) opcode;
+            barrier[1] = 61;                            // XIBarrierReleasePointer
+            RawXClient.writeShortAt(barrier, 2, 5);
+            RawXClient.writeIntAt(barrier, 4, 1);       // one barrier
+            RawXClient.writeShortAt(barrier, 8, 2);     // the pointer
+            RawXClient.writeIntAt(barrier, 12, 0x1234);
+            client.sendRequest(barrier);
+            client.flush();
+
+            byte[] error = client.readEvent();
+            assertNotNull(error, "the server has to answer");
+            assertEquals(0, error[0] & 0xF, "an error");
+            assertEquals(firstError + 12, error[1] & 0xFF,
+                    "the extension's barrier error, inside the range QueryExtension named");
+            assertEquals(0x1234, RawXClient.readInt(error, 4), "the barrier that was named");
+            assertEquals(61, RawXClient.readShort(error, 8), "and the request it came from");
+            assertEquals(opcode, error[10] & 0xFF, "raised by this extension");
+        }
+    }
+
+    /**
+     * {@code XIQueryVersion}, whose body is two <b>CARD16</b>s - unlike every other request here,
+     * whose body is whole words. Written by hand because the word-based helper puts the minor at 8
+     * and a server reads it at 6, which is how a test can pass while asking for a version it never
+     * sends (measured: the first version test asked for 2.3 and got 2.0, because only the major
+     * landed where the server looks).
+     */
+    private static byte[] version(RawXClient client, int opcode, int major, int minor)
+            throws IOException {
+        byte[] request = new byte[8];
+        request[0] = (byte) opcode;
+        request[1] = XI_QUERY_VERSION;
+        RawXClient.writeShortAt(request, 2, 2);
+        RawXClient.writeShortAt(request, 4, major);
+        RawXClient.writeShortAt(request, 6, minor);
+        client.sendRequest(request);
+        client.flush();
+        return client.readReply();
+    }
+
+    /** Selects one raw mask on the root window, which is where raw events are delivered. */
+    private static void selectRaw(RawXClient client, int opcode, int mask) throws IOException {
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = XI_SELECT_EVENTS;
+        RawXClient.writeShortAt(select, 2, 5);
+        RawXClient.writeIntAt(select, 4, client.root());
+        RawXClient.writeShortAt(select, 8, 1);          // one mask record
+        RawXClient.writeShortAt(select, 12, 1);         // XIAllMasterDevices
+        RawXClient.writeShortAt(select, 14, 1);         // one mask word
+        RawXClient.writeIntAt(select, 16, mask);
+        client.sendRequest(select);
+        client.flush();
     }
 
     @Test

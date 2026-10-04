@@ -119,6 +119,15 @@ public final class XFixesExtension implements Extension {
     private static final int MAJOR_VERSION = 4;
     private static final int MINOR_VERSION = 0;
 
+    /**
+     * The version this extension reports, for the one place that has to say why pointer barriers
+     * cannot exist here: XI 2.3's barrier release is real, but the barriers are made through
+     * XFIXES 5.0's {@code CreatePointerBarrier} (see {@code XInputExtension.releaseBarrier}).
+     */
+    static String reportedVersion() {
+        return MAJOR_VERSION + "." + MINOR_VERSION;
+    }
+
     /** Resource class of an XFIXES region, shared by every region this extension creates. */
 
     private final XfixesPlugin plugin = new XfixesPlugin();
