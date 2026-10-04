@@ -1892,3 +1892,14 @@ reference's own numbers there are 88/107 pass and 55 failures, so that gap is a 
 Harness lesson: an XTS run against a server backgrounded from a one-shot shell command reports "81 of
 82 failed" with every purpose ABORT - the server was killed when the command ended; run it in a live
 session. 486 tests green.
+
+**2026-10-04 (A50 cont., the last SHAPE case):** "关于SHAPE的问题，追查下，想办法解决" - the remaining
+case was `XShapeQueryExtents` purpose 8, expecting `-1,-1 1154x654` against our `0,0 1152x652`. The
+test's own source says why: the window has a **one pixel border**, and the shape coordinate space puts
+the border outside the window's origin, so an unshaped window's *bounding* shape is
+`(-bw, -bw, w + 2bw, h + 2bw)` while its *clip* shape is `(0,0,w,h)` - and `ShapeGetRectangles`
+answers one less in each dimension than `ShapeQueryExtents` for the same shape (regions are
+half-open). Measured with a probe on Xvfb and here: bounding extents -1,-1 62x42, clip 0,0 60x40,
+rectangles -1,-1 61x41. This server ignored the border, which is invisible when the border is nought -
+the case every earlier probe used. Fixed in `ShapeExtension.extents` (and the ShapeNotify extents use
+the same convention now). **The SHAPE set is `All 11 tests passed`.** 486 tests green.

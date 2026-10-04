@@ -403,8 +403,8 @@ public final class ShapeExtension implements Extension {
         ShapeState state = state(window);
         ShapeState.Shape bounding = state.shape(ShapeState.BOUNDING);
         ShapeState.Shape clip = state.shape(ShapeState.CLIP);
-        Rectangle boundingExtents = extents(bounding, window);
-        Rectangle clipExtents = extents(clip, window);
+        Rectangle boundingExtents = extents(bounding, window, true, false);
+        Rectangle clipExtents = extents(clip, window, false, false);
         client.sendReply(QueryExtentsReply.builder()
                 .sequenceNumber(client.sequenceNumber())
                 .boundingShaped(bounding.isSet())
@@ -474,8 +474,9 @@ public final class ShapeExtension implements Extension {
         ShapeState.Shape shape = state(window).shape(kind);
         List<Rectangle> rectangles;
         if (!shape.isSet()) {
-            // An unshaped window is its own rectangle.
-            rectangles = List.of(new Rectangle(0, 0, window.width(), window.height()));
+            // An unshaped window is its own rectangle - the *bounding* one including the border, and
+            // one smaller in each dimension than QueryExtents reports (measured; see extents()).
+            rectangles = List.of(extents(shape, window, kind == ShapeState.BOUNDING, true));
         } else {
             rectangles = band(shape.absoluteRectangles());
         }
@@ -578,7 +579,9 @@ public final class ShapeExtension implements Extension {
             return;
         }
         ShapeState.Shape shape = state(window).shape(kind);
-        Rectangle extents = extents(shape, window);
+        // A ShapeNotify's extents are the rectangles' own convention (measured: one less than
+        // QueryExtents for an unshaped window with a border).
+        Rectangle extents = extents(shape, window, kind == ShapeState.BOUNDING, true);
         for (ClientConnection recipient : clients) {
             server.events().send(recipient, NotifyEvent.builder()
                     .firstEventOffset(firstEvent())
@@ -597,9 +600,29 @@ public final class ShapeExtension implements Extension {
     }
 
     /** A shape's extents, falling back to the window's rectangle when the shape is unset. */
-    private static Rectangle extents(ShapeState.Shape shape, XWindow window) {
-        Rectangle extents = shape.isSet() ? shape.extents() : null;
-        return extents == null ? new Rectangle(0, 0, window.width(), window.height()) : extents;
+    /**
+     * The extents of one shape, with an <b>unshaped window's own rectangle</b> standing in for a shape
+     * that was never set - and it is not simply the window's size, which is what the SHAPE set of the
+     * X Test Suite found (A50).
+     *
+     * <p>Measured against Xvfb, a 60x40 window with a one pixel border: an <em>unshaped</em> window
+     * answers bounding extents **-1,-1 62x42** and clip extents **0,0 60x40**, while
+     * {@code ShapeGetRectangles} for the same window answers **-1,-1 61x41** for the bounding shape -
+     * one less in each dimension than {@code ShapeQueryExtents}, because a region's extents are
+     * half-open. The bounding shape of a window therefore *includes its border* (the border lies
+     * outside the window's own coordinate origin), and the clip shape, which no client may enlarge,
+     * does not. With a border of nought - the case this server answered correctly by accident - the
+     * two conventions agree, which is why nothing noticed.
+     */
+    private static Rectangle extents(ShapeState.Shape shape, XWindow window, boolean bounding,
+                                     boolean rectangles) {
+        if (shape.isSet()) {
+            return shape.extents();
+        }
+        int border = bounding ? window.borderWidth() : 0;
+        int shrink = bounding && rectangles ? 1 : 0;
+        return new Rectangle(-border, -border,
+                window.width() + 2 * border - shrink, window.height() + 2 * border - shrink);
     }
 
     private static XWindow requireWindow(XServer server, ClientConnection client, int id) {
