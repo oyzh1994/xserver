@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A51~~ | ~~**the VNC password as a value** (the user's report: "密码明明配置为123456了，但是finder连接却失败了")~~ **fixed 2026-10-04**: the value form itself was fine - what Finder could not do was finish the *handshake*, and then the picture and the input each had a bug of their own. `--vnc-password VALUE` is in (A52's entry has the rest); the three real bugs were the **RFB 3.3 SecurityResult** Apple waits for, the **ZRPE CPIXEL** for a client that asks for depth 32, and **input queued behind an outstanding update request** - each measured against Finder's own Screen Sharing and pinned by a test | correctness | M |
 | ~~A50~~ | ~~**the SHAPE set of the X Test Suite**, and the XI/XIproto sets~~ **run 2026-10-04**: SHAPE is now **11 of 11 passing** (it was 5 of 11 failing, then 10, then all) - the second fix was the window **border width** in the shape extents; - a reference answers `ShapeGetRectangles` with ordering **YXBanded (3)** for every shape a client sets (measured: Unsorted, YSorted and YXBanded inputs alike), where this server answered `Unsorted (0)` 'with no promise', which is what five XTS cases read as `Expected order of 3, Received 0`; the list is now banded for real and masks are decomposed into their own rectangles. The XI and XIproto sets cannot run here: **107 of XIproto's 107 tests are UNTESTED and 279 of XI's 316**, because both sets are XInput **1.x** protocol this server implements only as far as the device list (A49's neighbour, §9's XI1 hole). A reference passes 88 of 107 there and fails 55 of its own - the target is its numbers, not a clean sheet | correctness | M |
 | [ ] A49 | **pointer barriers' blocking half** - the last piece of XI 2.3: XFIXES 5.0 plus `CreatePointerBarrier`/`DestroyPointerBarrier`, the `XI_BarrierHit`/`XI_BarrierLeave` events and the clamping itself (a barrier stops the pointer until its owner releases it). **Recorded, deliberately not built**: nothing in this bed can use a barrier, and the one server that has them cannot demonstrate the blocking (see the entry for the measurements, the cost and how it would be verified) | capability | M |
 | ~~A48~~ | ~~**the device model**: this server listed **two** devices where a reference lists six, and named the master as the source of every event~~ **done 2026-10-04**: the device set is a **mutable table** and it is now a reference's own six - the two masters, the two **XTEST** slaves, and the two the host's input arrives on (where a reference keeps its backend's "Xvfb mouse"/"Xvfb keyboard"; named `xserver mouse`/`xserver keyboard` here, the one choice that is not a measurement). XTEST input carries its slave as `sourceid` and host input carries the host's device; **`XIChangeHierarchy`** is implemented (`XIAddMaster` creates the four devices a reference creates, `XIRemoveMaster`/`XIAttachSlave`/`XIDetachSlave` move them, `XI_HierarchyChanged` goes to the clients that selected it with a reference's shape and flags); **XI's passive grabs** are armed, answered and taken back on the table the core grabs use; and the device-state events are selectable on `XIAllDevices` alone. Verified with `xinput` itself: `list` draws the same tree a reference draws, `create-master`/`remove-master` work, removing the core pointer is refused the same way | correctness | M |
@@ -7265,3 +7266,58 @@ clients here do not use it.
 **Also re-confirmed**: A37's Xproto result stands (the 120-odd purposes that fail are its PURPOSE 2,
 the malformed-length cases, which need the per-request length table A37 describes), and the suite runs
 without a single crash on the server.
+
+### [x] A51. Three bugs in one report: "Finder cannot connect, and then the picture is 花屏, and then clicks do nothing". **M** - fixed 2026-10-04
+
+**The report, in three acts**, each verified against **macOS's own Screen Sharing** (Finder -> `vnc://`,
+driven here with the bed's host-input tools, which is what makes a real client's behaviour measurable):
+
+1. "密码明明配置为123456了，但是finder连接却失败了" - the log said `gave the wrong password`, but the
+   password was right.
+2. After that was fixed: "画面异常，花屏等".
+3. And then: "无法正常点击vnc页面，无任何反应".
+
+**1. The password was fine; the handshake was not: RFB 3.3 waits for a SecurityResult.** Measured with
+a temporary log of the challenge and the response in `RfbSession.vncAuthentication`: two connections
+arrive, one with an **all-zero response** (Screen Sharing's first probe, before its dialog is answered
+- that is the `gave the wrong password` line the report quoted) and one with **exactly the expected
+response** - and then the handshake stopped dead: the client never sent ClientInit, its dialog sat on
+"connecting". The reason is that Screen Sharing speaks **RFB 003.003** (measured: `minor 3`), and after
+the challenge response it waits for the four byte **SecurityResult** that 3.7 introduced and that 3.3
+does not have. A spec-compliant 3.3 client sends ClientInit straight away instead, so the two are told
+apart by **the byte that does not come**: the session waits 500 ms for ClientInit, and sends the result
+only if it is still not there (`clientInitOrAppleResult`). Sending it to a compliant client would be
+worse - those four bytes would be read as the start of its ServerInit. **The same mistake was on the
+other side of the same version**: SecurityResult was sent for 3.8 and later, where 3.7 is where it
+arrived, so a 3.7 client would have hung the same way.
+
+**2. 花屏: the ZRLE CPIXEL, which is three bytes for *any* 32bpp client whose masks fit in 24 bits.**
+Measured: the client asks for `SetPixelFormat 32bpp depth **32**` and offers encodings
+`[1011,1002,6,16,-239,...]` - ZRLE (16) among them - so the session sent ZRLE frames; the picture came
+out black with a few coloured slivers, and the same content through `x11vnc` on the same X display was
+correct (a blue root with a clock, captured from both). The cause is one condition:
+`compressedPixelBytes` returned **4** when `depth > 24`, per the specification's prose ("32bpp *and* a
+depth of 24 or less" uses a 3 byte CPIXEL) - but real clients, Apple's included, use **3 bytes for any
+32bpp client whose colour masks fit in the low 24 bits, whatever depth they announce**. The test
+client here had been written with the real clients' rule, which is why the whole suite passed while a
+real viewer showed 花屏; with Apple's exact format it failed in one line (`the root outside it:
+expected 15263976 but was 0`), and the fix is that condition's removal. `ZrleEncoder` was already
+CPIXEL-size-agnostic.
+
+**3. Clicks doing nothing: the request was waited on with input unread.** The viewer sends its pointer
+and key events *after* the update request it has outstanding. `updateRequest` was a loop that **waited
+on damage inside the request** - so on a screen that is not repainting itself (a clock, an idle
+desktop) the session never went back to read, and the viewer's clicks sat in the socket. Measured with
+a thread dump: the session thread `TIMED_WAITING ... at RfbSession.updateRequest` while the X pointer
+had not moved. The fix keeps the wait (damage still wakes it, so a frame is never late) but **checks
+`in.available()` first**: if anything is waiting, the request is remembered in `outstanding` and the
+message loop serves the input, answering the request from there - after every message and on every
+idle poll, and announcing a resize with it.
+
+**Verified.** Finder against this server, end to end: it connects with the password, draws the screen
+correctly (captured and compared with `x11vnc` on the same display), and the input path is pinned by a
+new test that reproduces act 3 exactly - an **incremental request outstanding on a static screen**,
+then a press and release, which must reach an X client that selected `ButtonPressMask` (it did not
+before the fix). `VncBackendTest` is 18 tests; the suite is **491 tests green** (excluding the
+project's own `XServerTest`, which launches a real server and cannot run inside a test JVM - it is what
+makes a plain `mvn test` report "the forked VM terminated": worth knowing when reading a red run).

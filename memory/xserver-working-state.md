@@ -1903,3 +1903,20 @@ half-open). Measured with a probe on Xvfb and here: bounding extents -1,-1 62x42
 rectangles -1,-1 61x41. This server ignored the border, which is invisible when the border is nought -
 the case every earlier probe used. Fixed in `ShapeExtension.extents` (and the ShapeNotify extents use
 the same convention now). **The SHAPE set is `All 11 tests passed`.** 486 tests green.
+
+**2026-10-04 (A51, three VNC bugs from one report):** the user reported that Finder could not connect
+with the right password, then that the picture was 花屏, then that clicks did nothing. All three were
+real and were measured against Finder's own Screen Sharing driven by the bed's input tools: (1) Apple
+speaks **RFB 003.003** and waits for the **SecurityResult** that only 3.7 has, so the handshake stopped
+after the challenge response - the fix waits 500 ms for the ClientInit a compliant 3.3 client sends
+instead and sends the result only if it does not come (and the result is now sent for **3.7+**, not
+3.8+, which was the same mistake on the other side); the `gave the wrong password` line in the log was
+Screen Sharing's first, empty probe. (2) The **ZRLE CPIXEL** was four bytes because the client
+announces depth 32 - real clients use three for any 32bpp client whose masks fit in 24 bits, and the
+condition that made it four is gone (the test client already had the real rule, which is why the suite
+was green while the picture was not). (3) Clicks did nothing because the update request **waited for
+damage inside itself with the client's input unread** - a thread dump showed the session `TIMED_WAITING
+... at updateRequest` while the pointer had not moved; now the wait checks `in.available()` first and
+remembers the request in `outstanding`, which the message loop answers. 491 tests green (the project's
+own `XServerTest` excluded: it launches a real server and is what makes a plain `mvn test` say "the
+forked VM terminated").

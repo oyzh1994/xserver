@@ -322,6 +322,34 @@ class VncBackendTest {
     }
 
     /**
+     * A 3.3 client that waits for a SecurityResult gets one, and the session works - which is what
+     * Finder's Screen Sharing needed (A52).
+     *
+     * <p>Measured against the real client 2026-10-04: it announces {@code RFB 003.003}, answers the
+     * challenge correctly, and then sits there showing "connecting" for ever, because it waits for the
+     * four byte result a 3.7 server sends. The specification does not send one in 3.3, so this server
+     * waits a moment for the ClientInit a compliant client sends instead and sends the result only if
+     * that byte does not come.
+     */
+    @Test
+    void aThirtyThreeClientThatWaitsForTheResultGetsOne() throws Exception {
+        try (Server server = new Server("s3cret")) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = new VncClient(server.backend.boundPort(), "s3cret", true,
+                            true)) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 100, 100, 0x0000FF);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestFullFrame();
+                assertEquals(0x0000FF, viewer.readFrame().pixel(50, 50),
+                        "an Apple-shaped 3.3 client authenticates and gets the screen");
+            }
+        }
+    }
+
+    /**
      * The same password given as a **value**: the form an embedder uses, since it has the password in
      * hand and no file to write it into. It has to reach RFB authentication exactly as the file form
      * does - a wrong password refused, the right one served the screen - which is the whole of what
@@ -459,6 +487,86 @@ class VncBackendTest {
                 int pixel = ((pixels[at + 2] & 0xFF) << 16) | ((pixels[at + 1] & 0xFF) << 8)
                         | (pixels[at] & 0xFF);
                 assertEquals(0x00FF00, pixel, "the pixel the X client drew, out of a WebSocket frame");
+            }
+        }
+    }
+
+    /**
+     * A viewer's pointer and buttons reach the X screen, which is the other half of "VNC works".
+     *
+     * <p>Measured 2026-10-04, while chasing a report that clicks in a viewer did nothing: the
+     * position the X pointer ends at is the viewer's own, and a press and release arrive as the X
+     * events a client selects.
+     */
+    @Test
+    void aViewersPointerAndButtonsReachTheXScreen() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 300, 200, 0xFFFFFF);
+                client.mapWindow(window);
+                client.selectInput(window, 0x04);                // ButtonPressMask
+                client.flush();
+                Thread.sleep(150);
+
+                // **With an incremental request outstanding and a screen that is not repainting**,
+                // which is the state a viewer spends its life in: the request has nothing to send,
+                // and a server that waits on damage inside it never reads the events that follow.
+                // Measured 2026-10-04 against Finder's Screen Sharing: a picture that was fine and
+                // clicks that did nothing at all.
+                viewer.setEncodings(0);
+                viewer.requestFullFrame();
+                viewer.readFrame();
+                viewer.requestIncrementalFrame();
+
+                viewer.pointer(0, 50, 60);
+                viewer.pointer(1, 50, 60);                       // left button down
+                viewer.pointer(0, 50, 60);                       // and up
+                client.flush();
+
+                byte[] press = null;
+                for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+                    if ((event[0] & 0x7F) == 4) {
+                        press = event;
+                        break;
+                    }
+                }
+                assertNotNull(press, "a click in the viewer has to reach the X client");
+                int[] location = client.queryPointer(client.root());   // {x, y}
+                assertEquals(50, location[0], "the X pointer is where the viewer put it");
+                assertEquals(60, location[1], "in both axes");
+            }
+        }
+    }
+
+    /**
+     * ZRLE to a client whose pixel format is **Apple's**: 32 bits per pixel with a <b>depth of 32</b>,
+     * which is what Finder's Screen Sharing asks for (measured 2026-10-04). The CPIXEL is four bytes
+     * there where the common 32bpp/depth-24 client's is three - the difference the garbled picture
+     * turned out to hang on.
+     */
+    @Test
+    void aZrleClientInApplesFormatGetsTheSamePixels() throws Exception {
+        try (Server server = new Server()) {
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                viewer.setPixelFormat(32, 32, false, true, 255, 255, 255, 16, 8, 0);
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 200, 200, 0xFFFFFF);
+                client.mapWindow(window);
+                int gc = client.allocateId();
+                client.createGC(gc, client.root(), 0x0000FF);
+                client.fillRectangle(window, gc, 0, 0, 200, 200);
+                client.flush();
+                Thread.sleep(150);
+
+                viewer.setEncodings(16, 0);
+                viewer.requestFullFrame();
+                Frame frame = viewer.readFrame();
+
+                assertEquals(0x0000FF, frame.pixel(50, 50), "the flat area");
+                assertEquals(0xE8E8E8, frame.pixel(250, 230), "and the root outside it");
             }
         }
     }
@@ -886,15 +994,27 @@ class VncBackendTest {
 
         /** {@code thirtyThree} announces RFB 003.003, the version Apple's client speaks. */
         VncClient(int port, String password, boolean thirtyThree) throws IOException {
+            this(port, password, thirtyThree, false);
+        }
+
+        /**
+         * The same, with {@code apple33} making the client behave like Finder's own Screen Sharing:
+         * it speaks 003.003, sends the challenge response, and then **waits for the four byte
+         * SecurityResult** a 3.7 server would send before it sends ClientInit. Measured 2026-10-04
+         * against the real client: a server that sends nothing there leaves it "connecting" for ever.
+         */
+        VncClient(int port, String password, boolean thirtyThree, boolean apple33)
+                throws IOException {
             socket = new Socket();
             socket.connect(new InetSocketAddress("127.0.0.1", port), 4000);
             socket.setSoTimeout(4000);
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
-            runHandshake(password, thirtyThree);
+            runHandshake(password, thirtyThree, apple33);
         }
 
-        private void runHandshake(String password, boolean thirtyThree) throws IOException {
+        private void runHandshake(String password, boolean thirtyThree, boolean apple33)
+                throws IOException {
             String version = readAscii(12);
             assertEquals("RFB 003.008\n", version, "the server announces the version it speaks");
             out.write((thirtyThree ? "RFB 003.003\n" : "RFB 003.008\n")
@@ -907,6 +1027,10 @@ class VncBackendTest {
                     byte[] challenge = readBytes(16);
                     out.write(vncEncrypt(challenge, password));
                     out.flush();
+                    if (apple33) {
+                        assertEquals(0, readInt(), "the SecurityResult Apple's 3.3 client waits for,"
+                                + " and which the specification does not send in 3.3");
+                    }
                 }
             } else {
             assertEquals(1, in.read(), "one security type");

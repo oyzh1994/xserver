@@ -234,6 +234,20 @@ final class RfbSession implements Runnable {
      */
     private final Object lock = new Object();
     private Rectangle pending;
+
+    /**
+     * An incremental request that has not been answered yet, because there was nothing to send when
+     * it arrived.
+     *
+     * <p><b>The request must not be waited on with input unread.</b> A viewer sends its pointer and
+     * key events *after* the update request it has outstanding, and this session used to sit inside
+     * the request - waiting on damage - until there was something to send: on a screen that is not
+     * repainting itself, a viewer's picture was perfectly fine and **its clicks did nothing at all**
+     * (reported and measured 2026-10-04, Finder's Screen Sharing against a display showing a clock).
+     * The request is remembered here instead, and answered from the message loop - after every
+     * message and on every idle poll - so input is never behind a frame.
+     */
+    private Rectangle outstanding;
     private boolean resized;
     /** Clipboard text waiting to be sent to this viewer, from the bridge's listener. */
     private String pendingCutText;
@@ -409,6 +423,7 @@ final class RfbSession implements Runnable {
         }
         int minor = parseMinor(version);
         int offered = password == null ? SECURITY_NONE : SECURITY_VNC;
+        int shared;
         if (minor >= 7) {
             // 3.7 and later: the server lists its security types and the client chooses one. With a
             // password configured there is exactly one offer and it is not None - offering both would
@@ -431,22 +446,32 @@ final class RfbSession implements Runnable {
                 out.flush();
                 throw new IOException("VNC authentication failed");
             }
-            if (minor >= 8) {
-                writeInt(0);                        // SecurityResult: OK
-                out.flush();
-            }
+            // **3.7 is where SecurityResult arrived**, not 3.8: a 3.7 client waits for it, and this
+            // sent it only from 3.8 up, which left such a client hanging the way Apple's 3.3 client
+            // was left hanging (below) - the same mistake on the other side of the same version.
+            writeInt(0);                            // SecurityResult: OK
+            out.flush();
+            shared = in.read();                     // ClientInit: the shared flag
         } else {
-            // 3.3: one four byte security type instead of a list, and no result after it.
+            // 3.3: one four byte security type instead of a list, and no result after it - except
+            // for the client below.
             writeInt(offered);
             out.flush();
-            if (offered == SECURITY_VNC && !vncAuthentication()) {
-                writeInt(1);
-                writeReason("Authentication failed");
-                out.flush();
-                throw new IOException("VNC authentication failed");
+            if (offered == SECURITY_VNC) {
+                if (!vncAuthentication()) {
+                    writeInt(1);
+                    writeReason("Authentication failed");
+                    out.flush();
+                    throw new IOException("VNC authentication failed");
+                }
+                shared = clientInitOrAppleResult();
+            } else {
+                shared = in.read();
             }
         }
-        in.read();                                   // ClientInit: the shared flag, which changes nothing here
+        if (shared < 0) {
+            throw new IOException("the client went away during the handshake");
+        }
 
         byte[] init = new byte[24];
         init[0] = (byte) (screen.width() >> 8);
@@ -463,6 +488,37 @@ final class RfbSession implements Runnable {
         out.write(nameBytes);
         out.flush();
     }
+
+    /**
+     * The byte after a successful VNC authentication in RFB 3.3: the client's ClientInit - or the
+     * four byte SecurityResult that <b>Apple's Screen Sharing</b> waits for instead.
+     *
+     * <p>Measured 2026-10-04 against Finder's own client, which speaks {@code RFB 003.003}: after the
+     * correct challenge response it sends nothing at all, and the handshake sits there for ever with
+     * the client showing "connecting" - the same client against a 3.7 server is handed a
+     * SecurityResult and carries on. A spec-compliant 3.3 client sends ClientInit with no result in
+     * between, so **the byte that does not come is what tells the two apart**: wait a moment for it,
+     * and only if it does not arrive send the result and read it. Sending the result to a compliant
+     * 3.3 client would be worse - those four bytes would be read as the start of its ServerInit.
+     */
+    private int clientInitOrAppleResult() throws IOException {
+        transport.readTimeout(APPLE_RESULT_WAIT_MILLIS);
+        try {
+            return in.read();
+        } catch (java.net.SocketTimeoutException noInitYet) {
+            log.debug("this client waited for a SecurityResult: it is an Apple one (RFB 3.3 without"
+                    + " the ClientInit that the specification sends)");
+            writeInt(0);                             // SecurityResult: OK
+            out.flush();
+            transport.readTimeout(0);
+            return in.read();
+        } finally {
+            transport.readTimeout(0);
+        }
+    }
+
+    /** How long a 3.3 client is given to send ClientInit before the Apple reading is assumed. */
+    private static final int APPLE_RESULT_WAIT_MILLIS = 500;
 
     /**
      * The VNC scheme: a sixteen byte challenge, and the client's answer is the challenge encrypted
@@ -542,8 +598,9 @@ final class RfbSession implements Runnable {
             } catch (java.net.SocketTimeoutException idle) {
                 // Nothing from the client, and that is the moment to send what is waiting: a
                 // clipboard change is not damage, so it arrives whether or not an update was asked
-                // for.
+                // for - and an update request that is still outstanding is answered here.
                 flushPending();
+                answerOutstanding();
                 continue;
             }
             transport.readTimeout(0);                    // the rest of the message is not on a clock
@@ -561,6 +618,54 @@ final class RfbSession implements Runnable {
                         + ": this server sends raw frames and speaks 3.8, and a message it cannot"
                         + " skip is one it cannot stay in step with");
             }
+            // **After every message, because the message may have been the input that caused the
+            // damage**: a click that opens a menu has to be answered with the menu's pixels, and
+            // not only when the next idle poll comes round.
+            answerOutstanding();
+        }
+    }
+
+    /**
+     * Answers the incremental request that is still outstanding, if there is anything to send.
+     *
+     * <p>The counterpart of {@link #outstanding}: the request is served from the message loop rather
+     * than from a blocking wait inside the request, so a viewer's input is read whatever the screen
+     * is doing. Damage is taken out of {@code pending} with the same rule the request's own loop
+     * uses - what the client asked about, and only that - and a resize is announced with it.
+     */
+    private void answerOutstanding() throws IOException {
+        Rectangle asked = outstanding;
+        if (asked == null) {
+            return;
+        }
+        flushPending();
+        Rectangle send;
+        boolean announceResize = false;
+        synchronized (lock) {
+            if (resized) {
+                resized = false;
+                announceResize = desktopSizeWanted;
+            }
+            if (pending == null) {
+                if (announceResize) {
+                    sendDesktopSize();
+                }
+                return;
+            }
+            send = pending.intersection(asked);
+            if (send.isEmpty()) {
+                if (asked.contains(pending)) {
+                    pending = null;
+                }
+            } else if (asked.contains(pending)) {
+                pending = null;
+            }
+        }
+        if (announceResize) {
+            sendDesktopSize();
+        }
+        if (!send.isEmpty() && sendUpdate(send, true)) {
+            outstanding = null;
         }
     }
 
@@ -677,6 +782,16 @@ final class RfbSession implements Runnable {
                 if (incremental) {
                     while (running && !resized && pendingCutText == null && pendingCursor == null
                             && (pending == null || pending.intersection(asked).isEmpty())) {
+                        if (in.available() > 0) {
+                            // **Input is waiting, and it goes first**: the client sends its pointer and
+                            // key events after the request it has outstanding, and waiting for damage
+                            // here left them in the socket for as long as the screen was static - a
+                            // viewer whose picture was fine and whose clicks did nothing at all
+                            // (measured 2026-10-04). The request is remembered and the message loop
+                            // answers it; damage still wakes this wait, so a frame is never late.
+                            outstanding = asked;
+                            return;
+                        }
                         try {
                             lock.wait(1000);         // a wake-up is also how a closed socket is noticed
                         } catch (InterruptedException e) {
@@ -1168,9 +1283,14 @@ final class RfbSession implements Runnable {
      */
     private int compressedPixelBytes() {
         int bytes = Math.max(1, format.bitsPerPixel / 8);
-        if (bytes != 4 || format.depth > 24) {
+        if (bytes != 4) {
             return bytes;
         }
+        // **Not "depth 24 or less", which is what the specification's prose says and what this did
+        // first**: a 32bpp client whose colour masks fit in the low 24 bits gets three byte CPIXELs
+        // whatever depth it announces - Apple's Screen Sharing asks for 32bpp with a *depth of 32*
+        // and reads three bytes, and so does this project's own test client (measured 2026-10-04: a
+        // four byte CPIXEL there decodes as a screen of black with the window's own tiles right).
         int highest = Math.max(Math.max(format.redShift + bitsFor(format.redMax),
                 format.greenShift + bitsFor(format.greenMax)),
                 format.blueShift + bitsFor(format.blueMax));
