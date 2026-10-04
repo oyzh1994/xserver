@@ -376,6 +376,53 @@ class XInputTest {
     }
 
     /** Selects one raw mask on the root window, which is where raw events are delivered. */
+    /**
+     * The three device-state events are selectable on {@code XIAllDevices} alone, and a reference
+     * says so with {@code BadValue} naming the bit.
+     *
+     * <p>Measured 2026-10-04: bit 11 on {@code XIAllMasterDevices} is error 2 value 11, while bits
+     * 1, 11 and 12 on {@code XIAllDevices} are accepted. This server accepted them everywhere, which
+     * is a client being told it will hear about a device appearing when it will not.
+     */
+    @Test
+    void theDeviceStateEventsAreSelectableOnAllDevicesAlone() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            version(client, opcode, 2, 4);
+            assertNull(selectMask(client, opcode, 0, (1 << 1) | (1 << 11) | (1 << 12)),
+                    "XIAllDevices takes the device-state events");
+            assertNull(selectMask(client, opcode, 2, 1 << 4),
+                    "and an ordinary event on a master is accepted as before");
+            byte[] error = selectMask(client, opcode, 1, 1 << 11);
+            assertNotNull(error, "XIAllMasterDevices may not select the hierarchy event");
+            assertEquals(2, error[1] & 0xFF, "BadValue");
+            assertEquals(11, RawXClient.readInt(error, 4), "the bit, which is what a reference names");
+        }
+    }
+
+    /** Selects a mask and returns null when it was accepted, or the error message when refused. */
+    private static byte[] selectMask(RawXClient client, int opcode, int device, int mask)
+            throws IOException {
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = XI_SELECT_EVENTS;
+        RawXClient.writeShortAt(select, 2, 5);
+        RawXClient.writeIntAt(select, 4, client.root());
+        RawXClient.writeShortAt(select, 8, 1);
+        RawXClient.writeShortAt(select, 12, device);
+        RawXClient.writeShortAt(select, 14, 1);
+        RawXClient.writeIntAt(select, 16, mask);
+        client.sendRequest(select);
+        client.flush();
+        client.readTimeoutMillis(300);
+        try {
+            byte[] event = client.readEvent();
+            return event != null && (event[0] & 0xFF) == 0 ? event : null;
+        } finally {
+            client.readTimeoutMillis(3000);
+        }
+    }
+
     private static void selectRaw(RawXClient client, int opcode, int mask) throws IOException {
         byte[] select = new byte[20];
         select[0] = (byte) opcode;

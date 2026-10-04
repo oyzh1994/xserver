@@ -1811,3 +1811,17 @@ master), the `XI_HierarchyChanged` event (bit 11; GDK selects it) and XI passive
 findings for the barrier item: a registered barrier on Xvfb does **not** stop an XTEST-driven pointer
 (absolute or relative, with or without a device list) and sends no hit event, so that item's semantics
 have to come from the reference's `Xi/xibarriers.c` rather than from this bed. 483 tests green.
+
+**2026-10-04 (A48, cont.):** "那你继续往下做剩下的" - the next slice is the *changing* device table, and
+this round measured it end to end so the implementation starts from numbers: `XIAddMaster` (name,
+send_core, enable) creates **four** devices, not two - `<name> pointer`/`<name> keyboard` plus
+`<name> XTEST pointer`/`<name> XTEST keyboard` attached to them (ids 8..11 for the first master added
+to a fresh reference, list 6 -> 10) - and each new device also emits `XI_PropertyEvent`s.
+`XI_HierarchyChanged` (evtype 11) is a 32 byte fixed part (`deviceid` 0, time, `flags` 0x55 =
+MasterAdded|SlaveAdded|SlaveAttached|DeviceEnabled, `num_info`) followed by **one 12 byte record per
+device in the server** (the whole hierarchy after the change: 344 bytes with 26 devices on the
+reference). The one piece of it that could be landed without the mutable table is the selection rule,
+and it is in: bits 1/11/12 are only selectable on **XIAllDevices** - on a master a reference answers
+**BadValue naming the bit** (error 2, value 11, measured), which is what a client reads to know it
+will hear about a device appearing. Implemented and pinned by a test; the request itself stays refused
+until the table can change, and `XIPassiveGrabDevice`/`Ungrab` (54/55) go with it. 484 tests green.

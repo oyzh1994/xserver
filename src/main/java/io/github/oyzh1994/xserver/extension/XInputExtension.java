@@ -678,10 +678,35 @@ public final class XInputExtension implements Extension {
         XWindow window = checkWindow(select.window());
         for (SelectEvents.Mask mask : select.masks()) {
             checkDevice(mask.deviceId());
+            checkSelectable(mask.deviceId(), mask.mask());
             window.selectXi2(client, mask.deviceId(), mask.mask());
             if (log.isDebugEnabled()) {
                 log.debug("{} selects XInput2 device {} mask {} on 0x{}", client, mask.deviceId(),
                         java.util.Arrays.toString(mask.mask()), Integer.toHexString(window.id()));
+            }
+        }
+    }
+
+    /**
+     * The three device-state events are about the server's device set, not about a window, and a
+     * reference refuses them for any device but {@code XIAllDevices}.
+     *
+     * <p>Measured 2026-10-04: {@code XI_HierarchyChanged} (bit 11) selected on {@code
+     * XIAllMasterDevices} is <b>BadValue naming the bit</b> (error 2, value 11), while the same bit
+     * and its two neighbours (1, 12) on {@code XIAllDevices} are accepted - and the second is what
+     * GDK selects, measured from this server's own log of its masks. Accepting them everywhere looks
+     * harmless until a client uses the answer to know whether it will hear about a device appearing:
+     * a reference tells it plainly that it will not.
+     */
+    private void checkSelectable(int deviceId, int[] mask) {
+        if (deviceId == XInputMasks.ALL_DEVICES) {
+            return;
+        }
+        for (int bit : new int[] {XInputMasks.DEVICE_CHANGED, XInputMasks.HIERARCHY_CHANGED,
+                XInputMasks.PROPERTY_EVENT}) {
+            if (XInputMasks.hasBit(mask, bit)) {
+                throw new ProtocolException(ProtocolException.VALUE, bit,
+                        "event " + bit + " is only selectable on XIAllDevices");
             }
         }
     }

@@ -7098,17 +7098,34 @@ Verified live: `XiProbe device 0` against this server prints the reference's fir
 **What is deliberately not here, and why the item is not closed.** A reference's last two devices are
 its **backend's** ("Xvfb mouse"/"Xvfb keyboard"): the devices its own input arrives on. This server's
 host input *is* the master's own, so it has no equivalent - and introducing one means naming a device
-after the host, which is a design decision rather than a measurement. The changing half of the item -
-`XIChangeHierarchy` (an XI **2.0** request this server still refuses: a reference accepts an empty
-change list in silence and really creates a master for `XIAddMaster`, measured) with the
-`XI_HierarchyChanged` event a client selects (bit 11; GDK does, measured from its selection mask) -
-needs the device table to become mutable, and `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55:
-a reference answers the first with a modifier list - empty when nothing conflicts - and accepts the
-second in silence) belong with it. All three are measured and are the next piece.
+after the host, which is a design decision rather than a measurement. The changing half of the item needs the device
+table to become mutable, and it is now **measured end to end** so the next slice starts from numbers:
+
+- **`XIChangeHierarchy` with `XIAddMaster`** (measured 2026-10-04, name "Probe master", send_core 1,
+  enable 1) creates **four** devices, not two: `<name> pointer` (master pointer, attached to the new
+  keyboard), `<name> keyboard` (master keyboard), `<name> XTEST pointer` (slave pointer, attached to
+  the new pointer) and `<name> XTEST keyboard` (slave keyboard) - ids 8, 9, 10 and 11 for the first
+  master added to a fresh reference, and the device list goes from six to ten.
+- **`XI_HierarchyChanged`** (evtype 11) is a 32 byte fixed part - `deviceid` 0, `time`, **`flags`**
+  (0x55 measured = `XIMasterAdded | XISlaveAdded | XISlaveAttached | XIDeviceEnabled`) and `num_info`
+  - followed by **one 12 byte record per device the server has** (`deviceid`, `attachment`, `use`,
+  `enabled`, `flags`): the whole hierarchy *after* the change, so the event was 344 bytes with 26
+  devices on the reference after repeated runs.
+- **Each new device also produces `XI_PropertyEvent`s** (evtype 12, one per new device, naming it),
+  which is what a client that watches properties sees when a device appears.
+- **The device-state events are selectable on `XIAllDevices` alone**: bits 1, 11 and 12 on
+  `XIAllMasterDevices` are **BadValue naming the bit** (error 2, value 11), and `XIAllDevices` takes
+  all three - which is the selection GDK makes (measured). **That rule is implemented now** (and pinned by a test), because
+  accepting it everywhere tells a client it will hear about a device appearing when it will not; the
+  request itself is still refused until the table can change.
+- Earlier measurements for the rest of the request: `AttachSlave` naming a device that is not a slave
+  is the extension's `BadDevice` (base + 0) with the device as its bad value; `XIPassiveGrabDevice` is
+  answered with a reply whose `num_modifiers` counts the conflicting grabs (0 when nothing conflicts)
+  and `XIPassiveUngrabDevice` is accepted in silence.
 
 **Two new findings this round cost the barrier item its measurability**: a *registered* barrier on
 Xvfb does not stop an XTEST-driven pointer - absolute or relative motion, with or without a device
 list, the pointer walks straight through and no `XI_BarrierHit` arrives (measured 2026-10-04). So
 Xvfb's own barrier behaviour cannot be used as an oracle in this bed; the semantics have to come from
 the reference's implementation, which is written up in A47's "what is left" with the event's field
-list. 483 tests green (two new tests: the device records the four devices a reference leads with, and the XTEST slave plus the source id its input carries).
+list. 484 tests green (three new tests: the device records the four devices a reference leads with, the XTEST slave plus the source id its input carries, and the device-state events being selectable on XIAllDevices alone).

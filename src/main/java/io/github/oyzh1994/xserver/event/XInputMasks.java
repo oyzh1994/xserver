@@ -122,6 +122,17 @@ public final class XInputMasks {
     public static final int RAW_BUTTON_PRESS = 15;
     public static final int RAW_BUTTON_RELEASE = 16;
     public static final int RAW_MOTION = 17;
+    /**
+     * The device-state events, which are about <em>the server's device set</em> rather than about a
+     * window's input: a reference refuses them for any device but {@code XIAllDevices}.
+     *
+     * <p>Measured 2026-10-04 with a selection per case: {@code XI_HierarchyChanged} (bit 11) on
+     * {@code XIAllDevices} is accepted and on a master is <b>BadValue with the bit number as its bad
+     * value</b> (error 2, value 11), and the same two neighbours (bit 1 changed, bit 12 property) are
+     * what GDK selects on {@code XIAllDevices} - which is why that device is where they live.
+     */
+    public static final int HIERARCHY_CHANGED = 11;
+    public static final int PROPERTY_EVENT = 12;
 
     /** The mask bit a client selects for an event: measured to be {@code 1 << eventNumber}. */
     public static int bit(int eventNumber) {
