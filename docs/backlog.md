@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A46~~ | ~~**the dock's Quit does nothing in single-window mode** - "单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在per-client模式下正常"~~ **fixed 2026-10-04**: the platform's Quit is answered by whichever toolkit *claimed the application*, and the two answer differently - AWT ends the process (so the JVM's shutdown hook stops the server, asking the clients to close first), while a JavaFX (Glass) application only turns it into a close request on its **visible** windows, so an application with no window on the screen answers the platform with nothing at all. Per-client mode's clipboard, tray and scale code all touch AWT while the server starts, which is why that mode's Quit has always worked; single-window mode opened its window first, so JavaFX claimed the application and the Quit went nowhere whenever nothing was connected. `XServer.claimHostApplication` now claims the application for AWT before any window exists. Measured with the Dock's own request (`NSRunningApplication -terminate`): **nothing, for ever** before, **gone in 500 ms** after (3.5 s with a client attached, which is the ask-and-grace path A27 added) | correctness | S |
 | ~~A45~~ | ~~**the project is cross-platform and one thing in it was not** - the full screen exit key was macOS's Control-Command-F only~~ **fixed 2026-10-04, and the owner's rule is stricter than the table**: the *tools* may be platform-specific (they are written for whichever system the debugging happens on) but the **product** may not be - and nothing under `src/main` uses the tools or needs a platform. The audit records every place `src/main` touches the platform at all, which is one `os.name` read and one `Files.separatorChar` comparison, and fixes the two real violations: the audit is in the design notes' *Platforms* section (the inventory of everything platform-specific, in one table, and the four rules a change has to keep), and the one real violation is fixed - `F11` everywhere that is not macOS - along with the unix socket, which used to create `/tmp/.X11-unix` on a platform that cannot use it before failing. Nothing else in `src/main` requires a platform: the extended window is behind a capability check, the unix socket behind a fallback, JavaFX behind Swing behind headless, and the macOS quirks are handled in code that is inert elsewhere | correctness | M |
 | ~~A44~~ | ~~single-window mode's window with nothing to show - the question was whether it should be hidden with no clients connected and shown, raised and focused when one arrives~~ **changed 2026-10-04**: it was already not opened *before the first client*, and it used to be kept afterwards holding its last frame (a deliberate design, asserted by eight tests); it is now closed after a 1.5 s grace period with nothing to show - long enough that a toolkit which unmaps one window and maps another while starting up does not make it flicker - and the next client that maps a window opens it again, raised **and focused** (`raiseAndFocus`, new; the urgency hint still only raises). See the entry | correctness | S |
 | ~~A43~~ | ~~**JavaFX 27, with the window's title bar drawn by the toolkit** (the user upgraded the pom and asked for `HeaderBar`)~~ **done 2026-10-04**: the window is a `StageStyle.EXTENDED` one whose 30 point `HeaderBar` carries the client's title in bold, and the content starts below it. The geometry was adapted around that (`content = canvas below the header`, the pointer mapping, the cursor policy, full screen hiding the bar) and the maximize was **re-designed** rather than ported: JavaFX 27's macOS zoom now goes to the display instead of to the window's content, so A38's fill of the usable area is both unnecessary and harmful - resizing a zoomed window un-zooms it, which made the state oscillate and the second double click restore nothing. The zoom is left alone and the client takes the size the window has, reported once per gesture. Verified: all four edges exact, the header drag leaks no clicks into the client, maximize/restore exact, full screen in and out, the pointer mapping exact, 477 tests green. Two known artifacts are in the entry | correctness | L |
@@ -6869,3 +6870,76 @@ the complete list of every place `src/main` touches the platform at all (one `os
 `File.separatorChar` comparison, one font *search list* that ends in the built-in tables, `user.home`, no
 `ProcessBuilder` anywhere), so the next reader can check the list instead of the code.
 
+### [x] A46. The dock's Quit does nothing in single-window mode. **S** - fixed 2026-10-04
+
+**The report.** "发现一个小问题，单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在per-client模式下
+正常，寻找下原因，修复下".
+
+**Reproduced, both modes, with the Dock's own request** (`NSRunningApplication -terminate`, a two-line
+AppKit helper - the same `NSApplicationTerminate` event the Dock's Quit item sends, and the same trick
+A27 used):
+
+| mode | state | before: the Dock's Quit | after |
+| --- | --- | --- | --- |
+| per-client | idle | **gone in ~500 ms** | unchanged |
+| per-client | a client's window up | **gone in ~500 ms** | unchanged |
+| single-window | idle (**no window at all** - A44's state) | **nothing happened, ever** | **gone in ~500 ms** |
+| single-window | a client's window up | gone in ~1 s (the window's close request) | gone in ~3.5 s (the ask-and-grace path below) |
+
+The state that mattered is the idle one, and it is A44's own doing: before A44 a single-window server
+had a window up from the start, and the Quit had something to close; since A44 the window is closed
+while nothing is connected, and that is exactly when the Quit stopped working.
+
+**The cause, and it is a JavaFX behaviour rather than this server's.** The platform asks *the
+application* to quit, and **the application belongs to whichever toolkit claimed it first**:
+
+- **AWT** answers the request by ending the process (the JVM's shutdown hooks run, and this server's
+  hook is `Main`'s: `server.stop()`, which asks every client to close, waits the grace, and exits).
+- **JavaFX (Glass)** turns the same request into a close request on each of its **visible** windows -
+  `QuantumToolkit$2.handleQuitAction` is `GlassStage.requestClosingAllWindows()`, and that loop skips
+  a window whose `isVisible()` is false - so an application with no window on the screen answers the
+  platform with **nothing at all**, and the request hangs unfinished. Measured with a minimal JavaFX
+  program: a hidden stage and the Dock's Quit did nothing; the same program with one AWT call before
+  `Platform.startup` was gone in half a second.
+
+**Why the two modes differed.** Per-client mode's clipboard bridge (`HostClipboard.open`), tray bridge
+and scale probe (`ServerOptions.hostScale`) all reach into AWT *while the server is starting* - before
+any client has a window - so AWT has always claimed the application there. Single-window mode opens its
+screen's window inside `openSessionBackend` **before** all of them, so JavaFX claimed it instead. That
+is also why the report says per-client mode is normal: it is, by accident of the order of the calls,
+and A27 had already recorded the underlying asymmetry ("a windowless JavaFX app hears nothing at all").
+
+**The fix - `XServer.claimHostApplication`, called before any window can be built.** It asks for AWT's
+toolkit, which is the claim; it is skipped where there is no host window at all (`--backend headless`,
+`--backend vnc`: no dock icon, nothing to quit from), and a machine where AWT will not start is left as
+it was, with a debug line. Explicit rather than left to the bridges that happen to do it today, because
+every one of them can be switched off (`--no-clipboard`, `--no-tray`, `--scale 1`) and a mode whose
+Quit works by accident is a mode whose Quit stops working the next time one of them changes.
+
+**Nothing in this is a platform requirement** (`docs/design-notes.md`'s rules): AWT is the toolkit the
+clipboard and the tray are built on everywhere, a process with both toolkits in it is the ordinary
+JavaFX-in-Swing shape, and on a platform where the question does not arise the call is inert. It adds
+no internal API use - the audit line "uses an internal API | nowhere" still holds, which is why this
+was done by *claiming the application* rather than by hooking Glass's quit handler (that would have
+been the alternative: `com.sun.glass.ui.Application.setEventHandler`, precise but internal).
+
+**Verified live, in the mode that was broken.** Single-window, nothing connected: before, the Dock's
+Quit left the process running for as long as it was watched (12 s, then killed); after, gone in 500 ms,
+with `xserver: display :96 stopped` in the log. With `xclock` on the VM attached: the window is shown
+when the client connects (header bar, 400x300 content in a 400x330 frame, empty window list while idle),
+the Quit ends the process in 3.5 s and the client is asked to close rather than cut off. The two
+behaviours most at risk from changing who owns the application were measured against per-client mode
+(which has always been AWT-owned) and are identical: the platform pointer is **hidden** over the
+content (`CGCursorIsVisible` 0) and **shown** over the header bar, repeatedly; the header bar still
+drags the window (`hostdrag`, +60/+87 exactly); and clicks that do not reach a title bar button here do
+not reach it in the pre-fix build either - that is the synthetic-click limitation the tools' notes
+already carry, not a regression.
+
+**One thing to know**: the process is registered with the platform as AWT's, which is what the Dock
+shows for a bundle-less JVM. In single-window mode the label the Dock reports changes with it (from the
+JavaFX default to the AWT/JDK one) - the same label per-client mode has shown all along; naming the
+application itself (`apple.awt.application.name`) was not asked for and was not done.
+
+478 tests green, unchanged (this is platform behaviour with no seam a unit test can reach - A27's
+no-JavaFX backends were the only way to establish what the platform does, and the same helper is the
+verification again).

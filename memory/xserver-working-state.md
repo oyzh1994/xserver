@@ -1755,3 +1755,21 @@ URIs in DropBridge), one font *search list* that ends in the built-in tables (so
 answers every request anyway), `user.home`, and no `ProcessBuilder` anywhere - so the next reader checks the
 list instead of the code. 478 tests green.
 
+**2026-10-04 (A46, the Dock's Quit in single-window mode):** the report was "单窗口下，macos在dock栏右键程序，
+点击退出没有反应，但是在per-client模式下正常". Reproduced with the Dock's own request
+(`NSRunningApplication -terminate`, the A27 helper): per-client mode was gone in ~500 ms in both states,
+single-window mode did nothing at all **when nothing was connected** - which is A44's state, a session
+with no window. The cause is who the *application* belongs to: the platform asks one toolkit to quit,
+and **JavaFX (Glass) only turns that into close requests on its *visible* windows** (measured with a
+minimal JavaFX program: a hidden stage hears nothing), while **AWT ends the process** - and per-client
+mode's clipboard/tray/scale code happens to touch AWT while the server starts, which is why that mode
+always worked. Single-window mode opened its window first, so JavaFX claimed it.
+`XServer.claimHostApplication` now asks for AWT's toolkit before any window can be built, skipped where
+there is no host window (headless, VNC). Verified: idle single-window Quit is gone in 500 ms with
+`display :96 stopped`; with a client attached it is 3.5 s and the client is asked to close rather than
+cut off; the pointer is still hidden over the content and shown over the header bar, the header bar
+still drags the window, and the two A/B checks against the pre-fix build agree (the title-bar buttons
+do not take synthetic clicks in *either* build - that is the tools' known limitation, not a
+regression). No internal API was used (the alternative was hooking `com.sun.glass.ui`'s quit handler),
+so the design notes' audit line "uses an internal API | nowhere" still holds; the new row in the
+Platforms table says what happens elsewhere. 478 tests green.

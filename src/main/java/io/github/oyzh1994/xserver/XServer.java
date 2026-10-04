@@ -1065,6 +1065,8 @@ public final class XServer {
         if (backendFactory == null) {
             backendFactory = () -> BackendFactory.create(options);
         }
+        // **Before any window exists, because a JavaFX one would claim the application** (A46).
+        claimHostApplication();
         if (!options.perClientWindows()) {
             // **The session is idle before its backend is built, because it is: nothing is connected
             // yet.** Idle is otherwise worked out by the tick, and the tick has not run at this point -
@@ -1095,6 +1097,55 @@ public final class XServer {
                 options.perClientWindows() ? "one window per client" : "a single shared window");
         System.out.printf("xserver: display :%d ready, run clients with DISPLAY=:%d%n",
                 options.displayNumber(), options.displayNumber());
+    }
+
+    /**
+     * Makes this process's platform <em>application</em> AWT's, before a JavaFX toolkit can make it
+     * JavaFX's (A46).
+     *
+     * <p><b>The platform asks the application to quit, and whichever toolkit claimed it is the one
+     * that answers - and the two answer differently.</b> On macOS the dock's Quit is an
+     * {@code NSApplicationTerminate} request: AWT ends the process, so the JVM's own shutdown hook
+     * runs and {@link #stop()} follows, exactly as {@code Ctrl-C} does; a JavaFX (Glass) application
+     * turns the same request into a close request on its <b>visible</b> windows and answers the
+     * platform with nothing at all when there is no window to close. Measured 2026-10-04 with a
+     * minimal JavaFX program: with a hidden stage the dock's Quit did nothing at all; the same
+     * program, with AWT touched first, was gone in half a second.
+     *
+     * <p><b>That is the difference between the two modes, and the report that found it.</b>
+     * Per-client mode's clipboard bridge, tray bridge and scale probe all reach into AWT while the
+     * server is starting - before the first client has a window - which is why that mode's Quit has
+     * always worked. Single-window mode opens its screen's window inside
+     * {@link #openSessionBackend} <em>first</em>, so JavaFX claimed the application, and with nothing
+     * connected - a window that is deliberately not on the screen, see {@code ScreenSession.idle} -
+     * the dock's Quit went nowhere ("单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在
+     * per-client模式下正常").
+     *
+     * <p>The claim is made here, explicitly, rather than left to the bridges that happen to do it
+     * today: every one of them can be switched off ({@code --no-clipboard}, {@code --no-tray}, a
+     * display whose scale is not worth reporting), and a mode whose Quit worked by accident is a mode
+     * whose Quit stops working the next time one of them changes.
+     *
+     * <p>Nothing about this is macOS-only: AWT is the toolkit the clipboard and the tray are built on
+     * everywhere, and a process with both toolkits in it is the ordinary JavaFX-in-Swing shape. A
+     * machine with no display has no application to claim, and a machine that will not start AWT is
+     * not a machine this can help - the window is JavaFX's either way.
+     */
+    private void claimHostApplication() {
+        if (presentsNoWindowHere()) {
+            // Headless, and served to a VNC viewer: there is no window on this desktop, so there is
+            // no dock icon to be quit from and no application to claim. A VNC server that does own
+            // the application does so through its clipboard bridge, which is a bridge this server
+            // has always had.
+            return;
+        }
+        try {
+            java.awt.Toolkit.getDefaultToolkit();
+        } catch (Throwable e) {
+            // A display-less or broken AWT does not stop the server: JavaFX is what draws the window,
+            // and this call is only about who answers the platform's Quit.
+            log.debug("the host application stays unclaimed: {}", e.toString());
+        }
     }
 
     /**
