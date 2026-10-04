@@ -423,6 +423,130 @@ class XInputTest {
         }
     }
 
+    /**
+     * {@code XIChangeHierarchy} with {@code XIAddMaster}: the four devices a reference creates, and
+     * the event that says so.
+     *
+     * <p>Measured on Xvfb 2026-10-04: a master called N brings **four** devices - "N pointer", "N
+     * keyboard", "N XTEST pointer" and "N XTEST keyboard", attached to each other - the list grows by
+     * four, and the {@code XI_HierarchyChanged} event that follows has flags **0x55**
+     * ({@code XIMasterAdded | XISlaveAdded | XISlaveAttached | XIDeviceEnabled}), device id 0, and
+     * one twelve byte record per device the server has. The event names no window, so the selection
+     * is the {@code XIAllDevices} one on the root - the only device those bits are selectable on.
+     *
+     * <p><b>Its own server</b>, because the devices a test adds are that server's for the rest of its
+     * life and every other test here counts them.
+     */
+    @Test
+    void addingAMasterCreatesFourDevicesAndOneEvent() throws IOException {
+        XServer isolated = new XServer(ServerOptions.parse(new String[]{"--display", ":69",
+                "--geometry", "600x400", "--backend", "headless", "--no-unix"}));
+        isolated.start();
+        isolated.startEventLoop();
+        try (RawXClient client = RawXClient.connect(69)) {
+            int opcode = client.queryExtension("XInputExtension");
+            version(client, opcode, 2, 4);
+            assertEquals(4, RawXClient.readShort(request(client, opcode, XI_QUERY_DEVICE, 0), 8),
+                    "four devices before the change");
+            client.sendRequest(selectMessage(opcode, client.root(), 0, (1 << 1) | (1 << 11)));
+            client.flush();
+            client.readTimeoutMillis(300);
+            assertNull(client.readEvent(), "a selection is not answered");
+            client.readTimeoutMillis(3000);
+
+            byte[] add = hierarchyMessage(opcode, "Probe master", 1);
+            client.sendRequest(add);
+            client.flush();
+
+            byte[] event = null;
+            for (byte[] message = client.readEvent(); message != null; message = client.readEvent()) {
+                if ((message[0] & 0xFF) == RawXClient.GENERIC_EVENT
+                        && (message[1] & 0xFF) == opcode
+                        && RawXClient.readShort(message, 8) == 11) {
+                    event = message;
+                    break;
+                }
+            }
+            assertNotNull(event, "the hierarchy change has to be reported");
+            assertEquals(0, RawXClient.readShort(event, 10), "device id 0: it is about the set");
+            assertEquals(0x55, RawXClient.readInt(event, 16),
+                    "MasterAdded | SlaveAdded | SlaveAttached | DeviceEnabled, measured on Xvfb");
+            assertEquals(8, RawXClient.readShort(event, 20), "one record per device: the four plus"
+                    + " the four the change added");
+            assertEquals(128, event.length, "32 bytes and eight 12 byte records");
+            // The last four records are the new devices: a master pair and the XTEST pair under it.
+            assertEquals(6, RawXClient.readShort(event, 32 + 4 * 12), "the new master pointer");
+            assertEquals(7, RawXClient.readShort(event, 32 + 4 * 12 + 2), "attached to its keyboard");
+            assertEquals(1, event[32 + 4 * 12 + 4] & 0xFF, "MasterPointer");
+            assertEquals(7, RawXClient.readShort(event, 32 + 5 * 12), "the new master keyboard");
+            assertEquals(2, event[32 + 5 * 12 + 4] & 0xFF, "MasterKeyboard");
+            assertEquals(8, RawXClient.readShort(event, 32 + 6 * 12), "its XTEST pointer");
+            assertEquals(3, event[32 + 6 * 12 + 4] & 0xFF, "SlavePointer, attached to the new master");
+            assertEquals(9, RawXClient.readShort(event, 32 + 7 * 12), "and its XTEST keyboard");
+            assertEquals(4, event[32 + 7 * 12 + 4] & 0xFF, "SlaveKeyboard");
+
+            byte[] devices = request(client, opcode, XI_QUERY_DEVICE, 0);
+            assertEquals(8, RawXClient.readShort(devices, 8), "the list grew by four");
+            byte[] newPointer = request(client, opcode, XI_QUERY_DEVICE, 6);
+            assertEquals(1, RawXClient.readShort(newPointer, 34), "MasterPointer");
+            assertEquals("Probe master pointer".length(), RawXClient.readShort(newPointer, 40),
+                    "the name a reference gives it");
+
+            // The core masters are not a client's to remove: a reference answers BadValue, and this
+            // server says the same rather than quietly taking the server's own pointer away.
+            byte[] remove = hierarchyMessage(opcode, "", 2);
+            RawXClient.writeShortAt(remove, 12, 2);          // the core pointer
+            client.sendRequest(remove);
+            client.flush();
+            byte[] refusal = client.readEvent();
+            assertNotNull(refusal, "the server has to answer");
+            assertEquals(0, refusal[0] & 0xF, "an error");
+            assertEquals(2, refusal[1] & 0xFF, "BadValue");
+        } finally {
+            isolated.stop();
+        }
+    }
+
+    /** An {@code XISelectEvents} message for one mask. */
+    private static byte[] selectMessage(int opcode, int window, int device, int mask) {
+        byte[] select = new byte[20];
+        select[0] = (byte) opcode;
+        select[1] = XI_SELECT_EVENTS;
+        RawXClient.writeShortAt(select, 2, 5);
+        RawXClient.writeIntAt(select, 4, window);
+        RawXClient.writeShortAt(select, 8, 1);
+        RawXClient.writeShortAt(select, 12, device);
+        RawXClient.writeShortAt(select, 14, 1);
+        RawXClient.writeIntAt(select, 16, mask);
+        return select;
+    }
+
+    /**
+     * An {@code XIChangeHierarchy} with one change: kind 1 is {@code XIAddMaster} (which carries the
+     * name), 2 is {@code XIRemoveMaster} (the caller writes the device id at 12).
+     */
+    private static byte[] hierarchyMessage(int opcode, String name, int kind) {
+        int padded = (name.length() + 3) & ~3;
+        byte[] request = new byte[8 + 8 + padded];
+        request[0] = (byte) opcode;
+        request[1] = 43;                                 // X_XIChangeHierarchy
+        RawXClient.writeShortAt(request, 2, request.length / 4);
+        request[4] = 1;                                  // one change
+        RawXClient.writeShortAt(request, 8, kind);
+        RawXClient.writeShortAt(request, 10, 2 + padded / 4);
+        if (kind == 1) {
+            RawXClient.writeShortAt(request, 12, name.length());
+            request[14] = 1;                             // send_core
+            request[15] = 1;                             // enable
+            for (int i = 0; i < name.length(); i++) {
+                request[16 + i] = (byte) name.charAt(i);
+            }
+        } else {
+            request[14] = 1;                             // return_mode: XIFloating
+        }
+        return request;
+    }
+
     private static void selectRaw(RawXClient client, int opcode, int mask) throws IOException {
         byte[] select = new byte[20];
         select[0] = (byte) opcode;

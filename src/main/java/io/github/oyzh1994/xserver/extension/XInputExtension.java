@@ -100,6 +100,20 @@ public final class XInputExtension implements Extension {
     private static final int XI_GET_PROPERTY = 59;
     private static final int XI_GET_SELECTED_EVENTS = 60;
     private static final int XI_BARRIER_RELEASE_POINTER = 61;
+    private static final int XI_CHANGE_HIERARCHY = 43;
+
+    /** The four changes {@code XIChangeHierarchy} can carry, and the flags the event reports. */
+    private static final int XI_ADD_MASTER = 1;
+    private static final int XI_REMOVE_MASTER = 2;
+    private static final int XI_ATTACH_SLAVE = 3;
+    private static final int XI_DETACH_SLAVE = 4;
+    private static final int MASTER_ADDED = 1 << 0;
+    private static final int MASTER_REMOVED = 1 << 1;
+    private static final int SLAVE_ADDED = 1 << 2;
+    private static final int SLAVE_REMOVED = 1 << 3;
+    private static final int SLAVE_ATTACHED = 1 << 4;
+    private static final int SLAVE_DETACHED = 1 << 5;
+    private static final int DEVICE_ENABLED = 1 << 6;
 
     /** XInput's own errors, as offsets from the base the registry hands out. */
     private static final int ERROR_DEVICE = 0;
@@ -121,6 +135,23 @@ public final class XInputExtension implements Extension {
     private final XInputPlugin plugin = new XInputPlugin();
 
     private XServer server;
+
+    /** The device model, which a client can change with {@code XIChangeHierarchy} (A48's second half). */
+    private final io.github.oyzh1994.xserver.input.DeviceTable devices =
+            new io.github.oyzh1994.xserver.input.DeviceTable();
+
+    /**
+     * The clients that selected the device-state events, which are selectable on
+     * {@code XIAllDevices} alone and are about the device set rather than a window.
+     *
+     * <p>The event carries no window at all (measured: {@code XI_HierarchyChanged} has a fixed part
+     * of deviceid, time, flags and the device records - nothing else), so the answer to "who hears
+     * it" cannot be a window's selection: a reference delivers it to every client that selected the
+     * bit, and GDK is one of them (measured from its mask: device 0, bits 1, 11 and 12). The set is
+     * kept here because the selections themselves live on windows.
+     */
+    private final java.util.Set<ClientConnection> deviceStateWatchers =
+            java.util.Collections.newSetFromMap(new java.util.WeakHashMap<>());
 
     /** The atom naming an axis, interned once: a valuator class carries one as its label. */
     private int axisX;
@@ -182,6 +213,7 @@ public final class XInputExtension implements Extension {
             case XI_GET_PROPERTY -> GetPropertyRequest.read(in);
             case XI_GET_SELECTED_EVENTS -> SelectedEventsQuery.read(in);
             case XI_BARRIER_RELEASE_POINTER -> BarrierRelease.read(in);
+            case XI_CHANGE_HIERARCHY -> HierarchyChange.read(in);
             case XI_QUERY_POINTER -> XIQueryPointerRequest.read(in);
             case XI_WARP_POINTER -> XIWarpPointerRequest.read(in);
             case XI_GRAB_DEVICE -> GrabDevice.read(in);
@@ -212,6 +244,7 @@ public final class XInputExtension implements Extension {
             case SelectEvents select -> selectEvents(client, select);
             case SelectedEventsQuery query -> getSelectedEvents(client, query);
             case BarrierRelease release -> releaseBarrier(client, release);
+            case HierarchyChange change -> changeHierarchy(change);
             case GetPropertyRequest property -> getProperty(client, property);
             case ListPropertiesRequest list -> listProperties(client, list);
             case XIQueryPointerRequest query -> queryPointer(client, query);
@@ -279,7 +312,7 @@ public final class XInputExtension implements Extension {
         }
         int names = 0;
         for (int[] device : devices) {
-            names += 1 + XI1_NAMES.get(device[0]).length();
+            names += 1 + xi1Name(device[0]).length();
         }
         byte[] reply = new byte[align4(32 + devices.size() * 8 + classes * 2 + names)];
         reply[0] = 1;
@@ -302,7 +335,7 @@ public final class XInputExtension implements Extension {
             }
         }
         for (int[] device : devices) {
-            String name = XI1_NAMES.get(device[0]);
+            String name = xi1Name(device[0]);
             reply[at] = (byte) name.length();
             for (int i = 0; i < name.length(); i++) {
                 reply[at + 1 + i] = (byte) name.charAt(i);
@@ -380,16 +413,35 @@ public final class XInputExtension implements Extension {
 
     /** This server's devices as XInput 1 numbers them: id, class count and {@code DeviceUse}. */
     private List<int[]> xi1Devices() {
-        return List.of(
-                new int[] {XInputMasks.POINTER_DEVICE, 2, USE_IS_X_POINTER},
-                new int[] {XInputMasks.KEYBOARD_DEVICE, 1, USE_IS_X_KEYBOARD},
-                new int[] {XInputMasks.XTEST_POINTER_DEVICE, 2, USE_IS_X_EXTENSION_POINTER},
-                new int[] {XInputMasks.XTEST_KEYBOARD_DEVICE, 1, USE_IS_X_EXTENSION_KEYBOARD});
+        // **A master a client *added* is not in this list, which is measured**: after an
+        // `XIAddMaster` on a reference, `ListInputDevices` listed eight devices - the core pointer
+        // and keyboard, its four slaves, and the two XTEST slaves of the master that was added - and
+        // not the added master pair itself. XI 1 is the core pointer's and keyboard's own model.
+        List<int[]> listed = new ArrayList<>();
+        for (io.github.oyzh1994.xserver.input.DeviceTable.Device device : devices.all()) {
+            if (device.isMaster() && device.id() != XInputMasks.POINTER_DEVICE
+                    && device.id() != XInputMasks.KEYBOARD_DEVICE) {
+                continue;
+            }
+            int use;
+            if (device.id() == XInputMasks.POINTER_DEVICE) {
+                use = USE_IS_X_POINTER;
+            } else if (device.id() == XInputMasks.KEYBOARD_DEVICE) {
+                use = USE_IS_X_KEYBOARD;
+            } else if (device.isPointer()) {
+                use = USE_IS_X_EXTENSION_POINTER;
+            } else {
+                use = USE_IS_X_EXTENSION_KEYBOARD;
+            }
+            listed.add(new int[] {device.id(), device.isPointer() ? 2 : 1, use});
+        }
+        return listed;
     }
 
     /** The class records of one device: class id and the core event type it would be reported with. */
     private List<int[]> xi1Classes(int device) {
-        return device == XInputMasks.POINTER_DEVICE || device == XInputMasks.XTEST_POINTER_DEVICE
+        io.github.oyzh1994.xserver.input.DeviceTable.Device known = devices.byId(device);
+        return known == null || known.isPointer()
                 ? List.of(new int[] {1, 4}, new int[] {2, 6})       // Button, Valuator
                 : List.of(new int[] {0, 2});                        // Key
     }
@@ -410,11 +462,10 @@ public final class XInputExtension implements Extension {
     private static final int USE_IS_X_EXTENSION_KEYBOARD = 3;
 
     /** The names the two devices answer to, by id. */
-    private static final java.util.Map<Integer, String> XI1_NAMES = java.util.Map.of(
-            XInputMasks.POINTER_DEVICE, XInputMasks.POINTER_NAME,
-            XInputMasks.KEYBOARD_DEVICE, XInputMasks.KEYBOARD_NAME,
-            XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.XTEST_POINTER_NAME,
-            XInputMasks.XTEST_KEYBOARD_DEVICE, XInputMasks.XTEST_KEYBOARD_NAME);
+    private String xi1Name(int device) {
+        io.github.oyzh1994.xserver.input.DeviceTable.Device known = devices.byId(device);
+        return known == null ? "" : known.name();
+    }
 
     /**
      * {@code XIChangeCursor}: sets a window's cursor, and says nothing back.
@@ -519,42 +570,40 @@ public final class XInputExtension implements Extension {
      * {@code tools/XiProbe ... dump}.
      */
     private void queryDevice(ClientConnection client, DeviceQuery query) {
-        java.util.List<Integer> ids = devicesFor(query.deviceId());
-        List<byte[]> devices = new ArrayList<>();
-        for (int id : ids) {
-            devices.add(deviceRecord(id));
+        java.util.List<io.github.oyzh1994.xserver.input.DeviceTable.Device> wanted =
+                devicesFor(query.deviceId());
+        List<byte[]> records = new ArrayList<>();
+        for (io.github.oyzh1994.xserver.input.DeviceTable.Device device : wanted) {
+            records.add(deviceRecord(device));
         }
-        int body = devices.stream().mapToInt(d -> d.length).sum();
+        int body = records.stream().mapToInt(d -> d.length).sum();
         int padding = (4 - body % 4) % 4;
         byte[] reply = new byte[32 + body + padding];
         reply[0] = 1;
         putCard16(reply, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
         putCard32(reply, 4, (reply.length - 32) / 4, client.isBigEndian());
-        putCard16(reply, 8, devices.size(), client.isBigEndian());
+        putCard16(reply, 8, records.size(), client.isBigEndian());
         int at = 32;
-        for (byte[] device : devices) {
+        for (byte[] device : records) {
             System.arraycopy(device, 0, reply, at, device.length);
             at += device.length;
         }
         send(client, reply);
     }
 
-    /** {@code XIQueryDevice}'s device ids for a selector, or for one device. */
-    private java.util.List<Integer> devicesFor(int deviceId) {
-        if (deviceId == XInputMasks.ALL_DEVICES) {
-            return java.util.List.of(XInputMasks.POINTER_DEVICE, XInputMasks.KEYBOARD_DEVICE,
-                    XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.XTEST_KEYBOARD_DEVICE);
+    /** {@code XIQueryDevice}'s devices for a selector, or the one device named. */
+    private java.util.List<io.github.oyzh1994.xserver.input.DeviceTable.Device> devicesFor(
+            int deviceId) {
+        if (deviceId == XInputMasks.ALL_DEVICES || deviceId == XInputMasks.ALL_MASTER_DEVICES) {
+            // XIAllMasterDevices takes the masters alone, which is what that selector means.
+            return devices.forSelector(deviceId);
         }
-        if (deviceId == XInputMasks.ALL_MASTER_DEVICES) {
-            // The masters alone: a selector that says so, measured - a reference's
-            // XIAllMasterDevices answer is its two masters and not its four slaves.
-            return java.util.List.of(XInputMasks.POINTER_DEVICE, XInputMasks.KEYBOARD_DEVICE);
+        io.github.oyzh1994.xserver.input.DeviceTable.Device device = devices.byId(deviceId);
+        if (device == null) {
+            throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
+                    "bad device " + deviceId);
         }
-        if (XInputMasks.isDevice(deviceId)) {
-            return java.util.List.of(deviceId);
-        }
-        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
-                "bad device " + deviceId);
+        return java.util.List.of(device);
     }
 
     /**
@@ -566,22 +615,13 @@ public final class XInputExtension implements Extension {
      * comes from as their {@code sourceid} - device 2's button and axis classes say {@code sourceid
      * 4}, not 2, which is what makes a client able to tell where a master's input really comes from.
      */
-    private byte[] deviceRecord(int id) {
-        return switch (id) {
-            case XInputMasks.POINTER_DEVICE -> pointerLike(XInputMasks.POINTER_DEVICE,
-                    XInputMasks.MASTER_POINTER, XInputMasks.KEYBOARD_DEVICE,
-                    XInputMasks.POINTER_NAME, XInputMasks.XTEST_POINTER_DEVICE);
-            case XInputMasks.XTEST_POINTER_DEVICE -> pointerLike(
-                    XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.SLAVE_POINTER,
-                    XInputMasks.POINTER_DEVICE, XInputMasks.XTEST_POINTER_NAME,
-                    XInputMasks.XTEST_POINTER_DEVICE);
-            case XInputMasks.KEYBOARD_DEVICE -> keyboardLike(XInputMasks.KEYBOARD_DEVICE,
-                    XInputMasks.MASTER_KEYBOARD, XInputMasks.POINTER_DEVICE,
-                    XInputMasks.KEYBOARD_NAME, XInputMasks.XTEST_KEYBOARD_DEVICE);
-            default -> keyboardLike(XInputMasks.XTEST_KEYBOARD_DEVICE,
-                    XInputMasks.SLAVE_KEYBOARD, XInputMasks.KEYBOARD_DEVICE,
-                    XInputMasks.XTEST_KEYBOARD_NAME, XInputMasks.XTEST_KEYBOARD_DEVICE);
-        };
+    private byte[] deviceRecord(io.github.oyzh1994.xserver.input.DeviceTable.Device device) {
+        if (device.isPointer()) {
+            return pointerLike(device.id(), device.type(), device.attachment(), device.name(),
+                    device.classSource());
+        }
+        return keyboardLike(device.id(), device.type(), device.attachment(), device.name(),
+                device.classSource());
     }
 
     /** The pointer: a button class and the two axes, as a reference describes one. */
@@ -679,11 +719,116 @@ public final class XInputExtension implements Extension {
         for (SelectEvents.Mask mask : select.masks()) {
             checkDevice(mask.deviceId());
             checkSelectable(mask.deviceId(), mask.mask());
+            if (mask.deviceId() == XInputMasks.ALL_DEVICES
+                    && XInputMasks.hasBit(mask.mask(), XInputMasks.HIERARCHY_CHANGED)) {
+                // The hierarchy event names no window, so "who hears it" cannot be a window's own
+                // selection: a reference delivers it to every client that selected the bit, and GDK
+                // is one of them (measured from its mask: XIAllDevices, bits 1, 11 and 12).
+                deviceStateWatchers.add(client);
+            }
             window.selectXi2(client, mask.deviceId(), mask.mask());
             if (log.isDebugEnabled()) {
                 log.debug("{} selects XInput2 device {} mask {} on 0x{}", client, mask.deviceId(),
                         java.util.Arrays.toString(mask.mask()), Integer.toHexString(window.id()));
             }
+        }
+    }
+
+    /**
+     * {@code XIChangeHierarchy}: the request that makes the device model change (A48's second half).
+     *
+     * <p>What each change does is measured, not recalled - the device list and the event were read
+     * off a reference on 2026-10-04, and {@link io.github.oyzh1994.xserver.input.DeviceTable} carries
+     * the numbers. The two refusals are measured too: removing the **core** master is
+     * {@code BadValue} (error 2, value 0) and attaching something that is not a slave is this
+     * extension's {@code BadDevice} naming the device.
+     *
+     * <p>The event goes out after every change in the list has been applied, with the flags of all of
+     * them: it describes the device tree <em>after</em> the request, which is what a client needs to
+     * rebuild its model, and it is one event per request rather than one per change.
+     */
+    private void changeHierarchy(HierarchyChange request) {
+        int flags = 0;
+        for (HierarchyChange.Change change : request.changes()) {
+            switch (change.type()) {
+                case XI_ADD_MASTER -> {
+                    if (change.name().isEmpty()) {
+                        throw new ProtocolException(ProtocolException.VALUE, 0,
+                                "a master needs a name");
+                    }
+                    devices.addMaster(change.name());
+                    flags |= MASTER_ADDED | SLAVE_ADDED | SLAVE_ATTACHED | DEVICE_ENABLED;
+                }
+                case XI_REMOVE_MASTER -> {
+                    if (!devices.isRemovable(change.deviceId())) {
+                        // The core pointer and keyboard are not a client's to remove, which is what a
+                        // reference answers for them (measured: BadValue with a bad value of 0).
+                        throw new ProtocolException(ProtocolException.VALUE, 0,
+                                "the core masters cannot be removed");
+                    }
+                    devices.removeMaster(change.deviceId());
+                    flags |= MASTER_REMOVED | SLAVE_REMOVED;
+                }
+                case XI_ATTACH_SLAVE -> {
+                    io.github.oyzh1994.xserver.input.DeviceTable.Device slave =
+                            devices.byId(change.deviceId());
+                    if (slave == null || slave.isMaster()) {
+                        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE),
+                                change.deviceId(), "attach: not a slave " + change.deviceId());
+                    }
+                    if (!devices.isDevice(change.returnPointer())) {
+                        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE),
+                                change.returnPointer(), "attach: not a master");
+                    }
+                    devices.attachSlave(change.deviceId(), change.returnPointer());
+                    flags |= SLAVE_ATTACHED;
+                }
+                case XI_DETACH_SLAVE -> {
+                    io.github.oyzh1994.xserver.input.DeviceTable.Device slave =
+                            devices.byId(change.deviceId());
+                    if (slave == null || slave.isMaster()) {
+                        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE),
+                                change.deviceId(), "detach: not a slave " + change.deviceId());
+                    }
+                    devices.detachSlave(change.deviceId());
+                    flags |= SLAVE_DETACHED;
+                }
+                default -> throw new ProtocolException(ProtocolException.VALUE, change.type(),
+                        "unknown hierarchy change " + change.type());
+            }
+        }
+        sendHierarchyChanged(flags);
+    }
+
+    /**
+     * {@code XI_HierarchyChanged}, in the shape a reference sends (measured 2026-10-04): a thirty
+     * two byte fixed part - {@code deviceid} 0, the time, the flags and the count - and then one
+     * twelve byte record per device the server has, which is the whole tree after the change (344
+     * bytes with 26 devices on the reference this was measured on).
+     */
+    private void sendHierarchyChanged(int flags) {
+        List<io.github.oyzh1994.xserver.input.DeviceTable.Device> all = devices.all();
+        for (ClientConnection client : deviceStateWatchers) {
+            byte[] event = new byte[32 + all.size() * 12];
+            event[0] = 35;                                  // GenericEvent
+            event[1] = majorOpcode();
+            putCard16(event, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+            putCard32(event, 4, (event.length - 32) / 4, client.isBigEndian());
+            putCard16(event, 8, XInputMasks.HIERARCHY_CHANGED, client.isBigEndian());
+            putCard16(event, 10, XInputMasks.ALL_DEVICES, client.isBigEndian());
+            putCard32(event, 12, (int) server.events().time(), client.isBigEndian());
+            putCard32(event, 16, flags, client.isBigEndian());
+            putCard16(event, 20, all.size(), client.isBigEndian());
+            int at = 32;
+            for (io.github.oyzh1994.xserver.input.DeviceTable.Device device : all) {
+                putCard16(event, at, device.id(), client.isBigEndian());
+                putCard16(event, at + 2, device.attachment(), client.isBigEndian());
+                event[at + 4] = (byte) device.type();
+                event[at + 5] = (byte) (device.enabled() ? 1 : 0);
+                putCard32(event, at + 8, 0, client.isBigEndian());   // per-device change flags
+                at += 12;
+            }
+            send(client, event);
         }
     }
 
@@ -1376,11 +1521,12 @@ public final class XInputExtension implements Extension {
     }
 
     private void checkDevice(int deviceId) {
-        if (deviceId != XInputMasks.ALL_DEVICES && deviceId != XInputMasks.ALL_MASTER_DEVICES
-                && deviceId != XInputMasks.POINTER_DEVICE && deviceId != XInputMasks.KEYBOARD_DEVICE) {
-            throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
-                    "bad device " + deviceId);
+        if (deviceId == XInputMasks.ALL_DEVICES || deviceId == XInputMasks.ALL_MASTER_DEVICES
+                || devices.isDevice(deviceId)) {
+            return;
         }
+        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
+                "bad device " + deviceId);
     }
 
     /**
@@ -1740,6 +1886,92 @@ public final class XInputExtension implements Extension {
      * <p>Each mask is {@code deviceid}, a length in four byte words, and the words - the shape the
      * protocol gives it, and the reason a mask that names devices cannot be read as one flat word.
      */
+    /**
+     * {@code XIChangeHierarchy}: a change list whose records are <b>variable length</b> - the one
+     * request here that is not a fixed number of words.
+     *
+     * <p>Each change is its own two-word header ({@code type}, {@code length} in four byte words)
+     * followed by its body, and an {@code XIAddMaster} carries a name after its four fixed fields.
+     * The length is what keeps the reader in step: a change this server does not know is skipped by
+     * its own length rather than guessed at, which is the difference between refusing one change and
+     * desynchronising the connection.
+     */
+    private record HierarchyChange(java.util.List<Change> changes) implements XRequest {
+
+        /** One change: what it is, the device it names, and the name an {@code XIAddMaster} carries. */
+        record Change(int type, int deviceId, int returnPointer, int returnKeyboard, String name) {
+        }
+
+        static HierarchyChange read(X11Input in) throws IOException {
+            in.readCard8();
+            in.readCard16();
+            int count = in.readCard8();
+            in.readPad(3);
+            java.util.List<Change> changes = new java.util.ArrayList<>();
+            for (int i = 0; i < count; i++) {
+                int type = in.readCard16();
+                int words = in.readCard16();
+                int body = (words - 1) * 4;
+                switch (type) {
+                    case XI_ADD_MASTER -> {
+                        int nameLength = in.readCard16();
+                        in.readCard8();                     // send_core
+                        in.readCard8();                     // enable
+                        StringBuilder name = new StringBuilder();
+                        for (int c = 0; c < nameLength; c++) {
+                            name.append((char) in.readCard8());
+                        }
+                        int padded = ((nameLength + 3) & ~3) - nameLength;
+                        in.readPad(padded);
+                        changes.add(new Change(type, 0, 0, 0, name.toString()));
+                    }
+                    case XI_REMOVE_MASTER -> {
+                        int deviceId = in.readCard16();
+                        in.readCard8();                     // return_mode
+                        in.readCard8();                     // pad
+                        int returnPointer = in.readCard16();
+                        int returnKeyboard = in.readCard16();
+                        changes.add(new Change(type, deviceId, returnPointer, returnKeyboard, ""));
+                    }
+                    case XI_ATTACH_SLAVE -> {
+                        int deviceId = in.readCard16();
+                        int master = in.readCard16();
+                        changes.add(new Change(type, deviceId, master, 0, ""));
+                    }
+                    case XI_DETACH_SLAVE -> {
+                        int deviceId = in.readCard16();
+                        in.readCard16();                    // pad
+                        changes.add(new Change(type, deviceId, 0, 0, ""));
+                    }
+                    default -> {
+                        changes.add(new Change(type, 0, 0, 0, ""));
+                        in.readPad(body);
+                    }
+                }
+            }
+            return new HierarchyChange(changes);
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xinput";
+        }
+    }
+
     private record BarrierRelease(int count, int deviceId, int barrier) implements XRequest {
         static BarrierRelease read(X11Input in) throws IOException {
             in.readCard8();

@@ -1825,3 +1825,28 @@ and it is in: bits 1/11/12 are only selectable on **XIAllDevices** - on a master
 **BadValue naming the bit** (error 2, value 11, measured), which is what a client reads to know it
 will hear about a device appearing. Implemented and pinned by a test; the request itself stays refused
 until the table can change, and `XIPassiveGrabDevice`/`Ungrab` (54/55) go with it. 484 tests green.
+
+**2026-10-04 (A48, the changing device table):** "那就继续吧" - the device model became a **mutable
+table** (`input/DeviceTable`, built from the four devices A48's first half measured) and
+`XIChangeHierarchy` is implemented on it: `XIAddMaster` creates the **four** devices a reference
+creates (`<name> pointer`/`<name> keyboard` and their `<name> XTEST pointer`/`keyboard`, ids from 6
+here where a reference starts at 8 because it has two more devices of its own), `XIRemoveMaster`
+takes a created master and its slaves away (the core pair is refused with the same `BadValue` a
+reference answers), `XIAttachSlave`/`XIDetachSlave` re-attach a slave (anything that is not a slave is
+the extension's `BadDevice`), and the **`XI_HierarchyChanged`** event goes to the clients that
+selected bit 11 with `XIAllDevices` - a registry kept because that event names no window - in a
+reference's shape: 32 bytes of `deviceid` 0, time, flags and count, then one 12 byte record per device
+the server has (flags **0x55** for an add = MasterAdded|SlaveAdded|SlaveAttached|DeviceEnabled,
+measured on Xvfb; the reference's own extra `XI_PropertyEvent`s per new device are not sent because
+this server has no device properties at all). Also measured and implemented: `ListInputDevices` (XI 1)
+lists the core pair and every *slave* but **not** an added master pair - a reference listed eight
+devices after an AddMaster and not the master it had just made. What is left of the item:
+`XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55) and a naming decision for a backend device of
+this server's own. 485 tests green. Verified with `xinput` itself against this server: `create-master TestMaster` makes
+the four devices and `xinput list` draws the same tree the reference draws, `remove-master` takes
+them away, and removing `"Virtual core pointer"` is refused by both servers with the same BadValue.
+
+Verified with `xinput` itself against this server (and beside the reference): `create-master TestMaster`
+makes the four devices and `xinput list` draws the same tree the reference draws, `remove-master`
+takes them away again, and removing `"Virtual core pointer"` is refused by both servers with the same
+BadValue (minor 43, value 0).
