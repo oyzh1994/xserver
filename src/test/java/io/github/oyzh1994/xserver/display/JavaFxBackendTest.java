@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -155,15 +156,72 @@ class JavaFxBackendTest {
     }
 
     /**
-     * Opening the window leaves the platform pointer alone, for the reason above.
+     * Where the pointer really is decides whether the platform pointer is handed back, and a window
+     * that moves or changes size under a pointer that does not move is what the enter and leave
+     * events miss.
      *
-     * <p>What the window installs is what is read: the platform effect cannot be observed from a
-     * test, since a cursor only reaches the platform when a mouse event arrives and a test has no
-     * pointer to move.
+     * <p>Measured 2026-10-04: leaving full screen shrank the window away from a stationary pointer, no
+     * {@code MOUSE_EXITED} arrived, and the platform pointer stayed hidden - it then vanished over the
+     * desktop and came back only once it was moved into the window again ("full screen is fine, after
+     * leaving full screen the mouse disappears unless it is over the xserver window"). The backend
+     * asks the platform where the pointer is instead of trusting the events alone, so the two
+     * directions of that decision are worth pinning.
+     */
+    @Test
+    void thePointerIsOverAWindowByWhereItIsNotByTheLastEvent() {
+        assertTrue(JavaFxBackend.pointerInside(100, 200, 400, 300, 300, 350),
+                "a point in the middle is inside");
+        assertTrue(JavaFxBackend.pointerInside(100, 200, 400, 300, 100, 200),
+                "the top left corner belongs to the window");
+        assertTrue(JavaFxBackend.pointerInside(100, 200, 400, 300, 499, 499),
+                "so does the last pixel before the right and bottom edge");
+        assertFalse(JavaFxBackend.pointerInside(100, 200, 400, 300, 500, 350),
+                "the right edge itself is outside");
+        assertFalse(JavaFxBackend.pointerInside(100, 200, 400, 300, 300, 500),
+                "and so is the bottom edge");
+        assertFalse(JavaFxBackend.pointerInside(100, 200, 400, 300, 99, 350),
+                "a point to the left of the window is outside");
+        assertFalse(JavaFxBackend.pointerInside(100, 200, 400, 300, 300, 199),
+                "and one above it");
+        // The case that was reported: the window shrinks away from a pointer that has not moved, so
+        // the same point that was inside a full screen window is outside the window it came back to.
+        assertTrue(JavaFxBackend.pointerInside(0, 37, 1512, 945, 900, 500));
+        assertFalse(JavaFxBackend.pointerInside(106, 81, 400, 328, 900, 500));
+    }
+
+    /**
+     * A window the pointer is not over leaves the platform pointer alone, for the reason above.
+     *
+     * <p>What the window installs is what is read: the platform effect cannot be observed from a test,
+     * since a cursor only reaches the platform when the window is under the pointer - which is now the
+     * truth this asks about rather than "has a mouse event arrived". So the window is moved to a corner
+     * the pointer is not in first, and what is checked is the rule rather than wherever this session's
+     * mouse happens to be sitting (a window the pointer *is* over hides the arrow, which is the whole
+     * point of it, and cannot be checked here because it also needs this application to be the active
+     * one).
      */
     private static void assertWindowLeavesThePointerAlone(JavaFxBackend backend) throws Exception {
+        javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
+        java.awt.Point pointer = pointerOnScreen();
+        if (pointer != null) {
+            boolean pointerOnTheLeft = pointer.x < usable.getMinX() + usable.getWidth() / 2;
+            boolean pointerAtTheTop = pointer.y < usable.getMinY() + usable.getHeight() / 2;
+            backend.setWindowPosition(
+                    (int) (pointerOnTheLeft ? usable.getMaxX() - 1 : usable.getMinX()),
+                    (int) (pointerAtTheTop ? usable.getMaxY() - 1 : usable.getMinY()));
+        }
         assertSame(Cursor.DEFAULT, onFxThread(backend::windowCursor),
-                "a freshly opened window must not hide the platform pointer");
+                "a window the pointer is not over must not hide the platform pointer");
+    }
+
+    /** Where the pointer is, or null where the platform will not say. */
+    private static java.awt.Point pointerOnScreen() {
+        try {
+            java.awt.PointerInfo info = java.awt.MouseInfo.getPointerInfo();
+            return info == null ? null : info.getLocation();
+        } catch (RuntimeException | Error refused) {
+            return null;
+        }
     }
 
     /**

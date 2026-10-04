@@ -1603,3 +1603,32 @@ hand; and a host window that is behind the IDE takes none of the synthetic event
 measurement here was taken with the window freshly opened (`raisePending`) or after
 `/tmp/xsn/activate <pid>`. `FsProbe` must be started in a session of its own: started with `&` its
 process group is killed when the command returns, which reads as the client disconnecting mid-test.
+
+**2026-10-04 (the pointer after full screen, A42): a loan that was never given back.** Reported as
+"全屏后退出后鼠标会消失，拖回 xserver 窗口就恢复，再拖出就正常". The cause is the *decision*, not the
+hiding: whether the pointer is over the window - which is what decides whether macOS's arrow is hidden
+with a process-wide `[NSCursor hide]` - came only from JavaFX's enter/leave events, and the case those
+miss is **a window that moves or changes size under a pointer that does not move**, which is what full
+screen is made of. The window shrinks away from a stationary pointer on the way out, no leave event
+arrives, the answer stays "over the window", and the arrow stays hidden - and the sprite that would have
+been visible is clipped by the canvas, so the pointer is simply gone over the desktop.
+
+**Fix**: `updatePointerOverWindow` takes the answer from `java.awt.MouseInfo` compared against the
+window's frame (`pointerInside`, package-private and tested), and `applyHostCursor` runs again whenever
+the window's position or size changes. The events still give it the moment they happen. Logged when the
+decision changes: `host pointer hidden/handed back: over the window=..., application active=...,
+idle=...` - three inputs, one line.
+
+**Verified in the direction that matters**: leaving full screen with the pointer parked outside, the
+arrow is handed back 28 ms after `fullScreen true -> false`, from the geometry alone - with the
+leave-event handler disabled the line still appears, and the event itself only arrives 600 ms later.
+476 tests green (the new one pins the geometry decision, including the reported pair).
+
+**And the instrument traps, because both invalidate a measurement rather than a fix**: on this machine
+the cursor's real visibility **cannot be measured from a shell** - `screencapture -C` draws the cursor
+*even while it is hidden* (calibrated with an AppKit tool holding `[NSCursor hide]`: a full-screen
+capture pair still differs by the whole cursor, 439 px), and `CGCursorIsVisible()` is deprecated and
+always answers `true`. Every "visible/hidden" reading taken before that calibration was noise; do not
+build a test on either. The opposite desync (macOS re-shows the pointer on a Space switch while
+JavaFX's flag still says hidden, so the next hide is skipped and two pointers show) is in the backlog
+with why a hide/unhide "pump" only trades one symptom for the other.

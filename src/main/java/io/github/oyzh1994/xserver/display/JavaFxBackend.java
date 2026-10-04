@@ -88,9 +88,13 @@ public final class JavaFxBackend implements DisplayBackend {
     private Stage stage;
     private Scene scene;
     /**
-     * True while the platform pointer is over the window, so {@link #hostCursor} can decide.
+     * True while the platform pointer is over the window, so {@link #hostCursor} can decide. Taken
+     * from where the pointer really is rather than from the enter and leave events alone - see
+     * {@link #updatePointerOverWindow}.
      */
     private boolean pointerOverWindow;
+    /** Whether the platform pointer is currently the one this window asked to be hidden. */
+    private boolean cursorHidden;
     /**
      * True while no client is connected, so the window has no pointer of its own to show.
      */
@@ -1092,6 +1096,15 @@ public final class JavaFxBackend implements DisplayBackend {
         // knows: it is remembered per client so the next session opens where this one was left.
         stage.xProperty().addListener((observable, was, is) -> windowMovedByUser());
         stage.yProperty().addListener((observable, was, is) -> windowMovedByUser());
+        // **A window that moves or changes size under a pointer that does not move is the one case the
+        // enter and leave events miss**, and full screen is made of them: the window grows over the
+        // pointer on the way in and shrinks away from it on the way out, with no mouse event in
+        // between. The pointer's side of the decision is taken again from where it really is, so the
+        // arrow is handed back on the way out as it is on any other leave.
+        stage.xProperty().addListener((observable, was, is) -> applyHostCursor());
+        stage.yProperty().addListener((observable, was, is) -> applyHostCursor());
+        stage.widthProperty().addListener((observable, was, is) -> applyHostCursor());
+        stage.heightProperty().addListener((observable, was, is) -> applyHostCursor());
         stage.sizeToScene();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
@@ -1195,7 +1208,17 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene == null || stage == null) {
             return;
         }
+        updatePointerOverWindow();
         boolean wantHidden = !idle && hostCursor(pointerOverWindow, applicationActive()) == Cursor.NONE;
+        if (wantHidden != cursorHidden) {
+            // One line per change of the decision, which is the whole of what a pointer that is not
+            // where it should be leaves behind: whether it was hidden or handed back, and the three
+            // things that decide it.
+            log.debug("host pointer {}: over the window={}, application active={}, idle={}",
+                    wantHidden ? "hidden" : "handed back", pointerOverWindow, applicationActive(),
+                    idle);
+            cursorHidden = wantHidden;
+        }
         if (wantHidden) {
             CURSOR_OWNER.set(this);
         }
@@ -1217,6 +1240,56 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene != null) {
             scene.setCursor(Cursor.DEFAULT);
         }
+    }
+
+    /**
+     * Whether the platform pointer is over this window, taken from where the pointer really is.
+     *
+     * <p>Entering and leaving arrive as mouse events, and those were all this went on - but a window
+     * whose geometry changes under a pointer that does not move can leave the answer stale, and this
+     * answer is what decides whether the platform pointer is handed back at all. Measured 2026-10-04:
+     * leaving full screen shrank the window away from a stationary pointer, no {@code MOUSE_EXITED}
+     * arrived, and the platform pointer stayed hidden - the cursor then vanished over the desktop and
+     * came back only once it was moved into the window again, and stayed right on the next round trip
+     * (which is exactly the report: "full screen is fine, after leaving full screen the mouse
+     * disappears unless it is over the xserver window"). Asking the platform where the pointer is
+     * makes the answer independent of an event arriving; the events still give it the moment they
+     * happen, and {@link #applyHostCursor} re-decides whenever the window's geometry changes -
+     * which is the entry and the exit of full screen, and every drag of an edge.
+     */
+    private void updatePointerOverWindow() {
+        if (stage == null || !stage.isShowing()) {
+            pointerOverWindow = false;
+            return;
+        }
+        java.awt.Point pointer;
+        try {
+            java.awt.PointerInfo info = java.awt.MouseInfo.getPointerInfo();
+            if (info == null) {
+                return;                         // no pointer to ask about: keep the events' answer
+            }
+            pointer = info.getLocation();
+        } catch (RuntimeException | Error refused) {
+            // A platform that will not answer (headless, or a security manager): the events are all
+            // there is, which is what this did before.
+            return;
+        }
+        pointerOverWindow = pointerInside(stage.getX(), stage.getY(), stage.getWidth(),
+                stage.getHeight(), pointer.x, pointer.y);
+    }
+
+    /**
+     * Whether a point on the display is inside a window's frame. The edges belong to the window the
+     * way a window server counts them: the left and top edge are inside, the right and bottom edge
+     * are the first pixel of what is outside.
+     *
+     * <p>Package-private and static because it is the half of the pointer decision a test can pin -
+     * the other half is where the platform says the pointer is.
+     */
+    static boolean pointerInside(double windowX, double windowY, double windowWidth,
+                                 double windowHeight, int pointX, int pointY) {
+        return pointX >= windowX && pointX < windowX + windowWidth
+                && pointY >= windowY && pointY < windowY + windowHeight;
     }
 
     @Override
