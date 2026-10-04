@@ -1745,3 +1745,13 @@ the socket is unavailable). Everything else is either a capability behind a chec
 (extended windows -> decorated, JavaFX -> Swing -> headless, unix socket -> TCP) or a macOS quirk handled
 in code that is inert elsewhere. `tools/` is macOS-only on purpose and nothing under `src/main` uses it.
 477 tests green.
+
+**2026-10-04 (A45, the owner's rule for the tools):** "测试工具例外，如果要在其他系统下调试，我会要求创建对应
+平台的测试工具，但是xserver本身不应该依赖系统平台". The tools' platform-specificity is by design, and the
+audit's *conclusion* is what matters: nothing under `src/main` uses them, or needs a platform at all. The
+complete list of every platform touch in `src/main` is now in the design notes' Platforms section - one
+`os.name` read (the full screen exit key, A45), one `File.separatorChar` comparison (Windows-aware file
+URIs in DropBridge), one font *search list* that ends in the built-in tables (so a machine with no X fonts
+answers every request anyway), `user.home`, and no `ProcessBuilder` anywhere - so the next reader checks the
+list instead of the code. 478 tests green.
+

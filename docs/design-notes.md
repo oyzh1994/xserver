@@ -1953,11 +1953,25 @@ machine reached over the network) and `vnc` (the screen served to a viewer inste
 | the unix domain socket at `/tmp/.X11-unix/X<n>` | `ClientListener.startUnixSocket` | the family is asked for *before* the directory is made, so nothing is left behind where it is unsupported, and the TCP listener carries on (`unix domain socket unavailable: ...`) |
 | the notification area | `AwtTrayIcon`, through AWT's `SystemTray` | the menu bar on macOS, the notification area on Windows, whatever the desktop provides on Linux |
 | the display's own scale (`--scale auto`) | `Screen.getOutputScaleX/Y` | 1x where the display is not scaled |
-| the testbed's tools | `tools/*.c`, `tools/vm.sh`, `tools/host-*` | **not part of the product**: AppKit and CoreGraphics probes, and ssh to a VM, for driving this project's own test bed from a Mac. Nothing under `src/main` depends on them |
+| the testbed's tools | `tools/*.c`, `tools/vm.sh`, `tools/host-*` | **an exception, by the owner's own rule: the tools may be platform-specific, the product may not.** They are AppKit and CoreGraphics probes and ssh to this project's test bed - written for the machine the tests are driven from - and *if debugging on another system needs tools of its own, tools for that system are written then*. Nothing under `src/main` uses them, and that is the part that matters |
+
+**What the audit found, beyond that table** - the complete list of places where `src/main` touches the
+platform at all, so that the next reader can check the list instead of the code:
+
+| what the code does | where | why it is not a dependency |
+| --- | --- | --- |
+| reads `os.name`, once | `JavaFxBackend.keyFor` (A45) | a *convention*: the answer for every platform is in one testable function, and the fallback is what most platforms share |
+| compares `File.separatorChar == '\\'` once | `DropBridge`'s file URIs | it is *platform-aware* rather than platform-bound: the other branch is POSIX, and both are the same rule |
+| looks in a few X font directories | `FontPath.defaultPath` | a **search list**: only the ones that exist are used and the built-in tables are always last, so a machine with no X fonts at all still answers every font request |
+| reads `user.home` | `HostWindowStore`, the font directory a client may set | the JVM's own answer on every platform |
+| shells out | nowhere | the only `Runtime` use is a shutdown hook, and there is no `ProcessBuilder` in `src/main` at all |
+| uses an internal API | nowhere: `sun.misc.Signal` is *mentioned* in a comment in `ControlListener` as the thing the control port exists to avoid (`ControlListener`'s own words) |
 
 **The rules a change has to follow**, which is what "cross-platform" means here:
 
-1. **Nothing in `src/main` may require one platform.** A capability that is not universal goes behind a
+1. **Nothing in `src/main` may require one platform** - not "should prefer not to": a change that only
+   works on one platform is a bug in this project, and the tools' exception is the tools' alone. A
+   capability that is not universal goes behind a check with a fallback - A capability that is not universal goes behind a
    check with a fallback - `Platform.isSupported(ConditionalFeature.EXTENDED_WINDOW)` above is the
    shape of it, and the JavaFX preview feature it needs is opted into by the backend itself rather than
    by a command line (see A43).
