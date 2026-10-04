@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A48~~ | ~~**the device model**: this server listed **two** devices where a reference lists six, and named the master as the source of every event~~ **half done 2026-10-04**: the two **XTEST slaves** a reference has are here - `Virtual core XTEST pointer` (id 4, attached to 2) and `Virtual core XTEST keyboard` (5, attached to 3), with a reference's names, types and class records, and **XTEST input now carries the slave as its `sourceid`** (measured on Xvfb: `device 2, sourceid 4`) in both raw and device events; a master's own class records name the slave their class comes from, which is what a reference answers. Still open and measured: `XIChangeHierarchy` (a reference accepts an empty change list in silence and *creates* a master for `XIAddMaster`), `XIPassiveGrabDevice`/`UngrabDevice` (54/55, answered with a modifier list), and a backend device of this server's own where a reference has "Xvfb mouse"/"Xvfb keyboard" (6/7) | correctness | M |
 | ~~A47~~ | ~~**the XInput implementation is four releases behind a reference** - the one version gap A36 left: Xvfb answers `XInputExtension` **2.4** where this server answered **2.0**~~ **fixed 2026-10-04**: the version is a reference's 2.4 and the surfaces behind it are measured and answered - **raw events (XI 2.1) are implemented and delivered** (a root selection, the reference's own shapes: a motion is 72 bytes, a button and a key 40, and a warp sends nothing), `XIBarrierReleasePointer` (2.3) answers the extension's own barrier error exactly as a reference answers it for a barrier that does not exist, and 2.2's touch has no device on either server to have content. `XIQueryVersion` now follows the reference's rule (the lower of the two, and **BadValue** for a major below 2) and both handshakes answer 2.4. What is left is measured rather than half-answered: barriers themselves need XFIXES 5.0, `XIChangeHierarchy` would need a device model that can change, and XI's passive grabs are still refused | capability | M |
 | ~~A46~~ | ~~**the dock's Quit does nothing in single-window mode** - "单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在per-client模式下正常"~~ **fixed 2026-10-04**: the platform's Quit is answered by whichever toolkit *claimed the application*, and the two answer differently - AWT ends the process (so the JVM's shutdown hook stops the server, asking the clients to close first), while a JavaFX (Glass) application only turns it into a close request on its **visible** windows, so an application with no window on the screen answers the platform with nothing at all. Per-client mode's clipboard, tray and scale code all touch AWT while the server starts, which is why that mode's Quit has always worked; single-window mode opened its window first, so JavaFX claimed the application and the Quit went nowhere whenever nothing was connected. `XServer.claimHostApplication` now claims the application for AWT before any window exists. Measured with the Dock's own request (`NSRunningApplication -terminate`): **nothing, for ever** before, **gone in 500 ms** after (3.5 s with a client attached, which is the ask-and-grace path A27 added) | correctness | S |
 | ~~A45~~ | ~~**the project is cross-platform and one thing in it was not** - the full screen exit key was macOS's Control-Command-F only~~ **fixed 2026-10-04, and the owner's rule is stricter than the table**: the *tools* may be platform-specific (they are written for whichever system the debugging happens on) but the **product** may not be - and nothing under `src/main` uses the tools or needs a platform. The audit records every place `src/main` touches the platform at all, which is one `os.name` read and one `Files.separatorChar` comparison, and fixes the two real violations: the audit is in the design notes' *Platforms* section (the inventory of everything platform-specific, in one table, and the four rules a change has to keep), and the one real violation is fixed - `F11` everywhere that is not macOS - along with the unix socket, which used to create `/tmp/.X11-unix` on a platform that cannot use it before failing. Nothing else in `src/main` requires a platform: the extended window is behind a capability check, the unix socket behind a fallback, JavaFX behind Swing behind headless, and the macOS quirks are handled in code that is inert elsewhere | correctness | M |
@@ -7037,16 +7038,77 @@ the raw motion shape and values, the raw key shape, and the barrier error.
 
 - **Pointer barriers themselves** - the other half of 2.3. Xvfb's XFIXES is **5.0** and
   `CreatePointerBarrier` works there (measured: the request is accepted once the barrier id comes from
-  the client's own range; a bad id is `BadIDChoice`, and `XIBarrierReleasePointer` for a real barrier
-  is then the way it is let through). This server's XFIXES answers **4.0**, so nothing can create a
-  barrier and the only reachable answer for a release is the one above. Doing it means XFIXES 5.0,
-  the two requests, the `XFixes` barrier events, the `XI_BarrierHit`/`Leave` events **and the motion
-  blocking itself** (a barrier stops the pointer until the owner releases it) - a real feature, and
-  the reason the release request alone was not enough to claim the release.
+  the client's own range and the length counts the device list; a bad id is `BadIDChoice`, and
+  `XIBarrierReleasePointer` for a real barrier is accepted in silence, where a made-up one is refused
+  with error 12). This server's XFIXES answers **4.0**, so nothing can create a barrier and the only
+  reachable answer for a release is the one above. Doing it means XFIXES 5.0, the two requests, the
+  **`XI_BarrierHit`/`XI_BarrierLeave` events** (a 68 byte generic event - `evtype`, `deviceid`,
+  `eventid`, `root`/`event`/`barrier`, `dtime`, `flags`, `sourceid`, `root_x/y`, `dx`/`dy` - delivered
+  to clients that selected bits 25/26 on the barrier's window) **and the motion blocking itself**.
+  **And the bed cannot measure the blocking**: a *registered* barrier on Xvfb does not stop an
+  XTEST-driven pointer (measured 2026-10-04, absolute and relative motion, with and without a device
+  list: the pointer walks straight through and no event arrives), so the semantics have to come from
+  the reference's own implementation - `Xi/xibarriers.c`, fetched the same day: the hit is per master
+  pointer, a hit clamps the pointer to the barrier until the owner releases it
+  (`XIBarrierReleasePointer` sets the release id to the hit's event id), leaving the barrier's hit box
+  ends the hit and starts a new event id, and the blocking is done in the screen's
+  `ConstrainCursorHarder` hook. That is why this is a feature of its own rather than a follow-up.
 - **A device model that can change** - `XIChangeHierarchy` (an XI **2.0** request, refused here:
   measured, a reference accepts an empty change list in silence and *creates* a master for
-  `XIAddMaster`). This server has exactly two masters and no slaves, so it also lists **two devices**
-  where Xvfb lists six; implementing the request means a device table that can grow, with the slave
-  ids events carry. `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55, also 2.0, still refused)
-  belong to the same piece: a reference answers the first with a modifier list - empty when nothing
-  conflicts - and accepts the second in silence.
+  `XIAddMaster`). **Its first half is done: see A48** - the two XTEST slaves a reference has are now
+  here, listed with its names, types, attachments and class source ids, and XTEST input carries the
+  slave as its source. What is left is the *changing*: a device table that can grow (AddMaster /
+  RemoveMaster / AttachSlave / DetachSlave) with the `XI_HierarchyChanged` event a client selects
+  (bit 11 - GDK does, measured), and `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55, also 2.0,
+  still refused: a reference answers the first with a modifier list, empty when nothing conflicts, and
+  accepts the second in silence).
+
+### [~] A48. The device model: the slaves first. **M** - the first half done 2026-10-04
+
+**Asked for** as the follow-up to A47: "继续完成你记录剩下的事项", whose second half was "a device model
+that can change" - this server listed **two** devices where a reference lists six, and named the
+**master** as the source of every event it delivered.
+
+**What a reference's device list is, measured with `XiProbe device 0` on 2026-10-04:**
+
+| id | name | type | attached to | classes (with the source id they carry) |
+| --- | --- | --- | --- | --- |
+| 2 | Virtual core pointer | 1 master pointer | 3 | button (13, 10 buttons) + two valuators, **sourceid 4** |
+| 3 | Virtual core keyboard | 2 master keyboard | 2 | key (250, 248 keys 8..255), **sourceid 5** |
+| 4 | Virtual core XTEST pointer | 3 slave pointer | 2 | button + two valuators, sourceid 4 |
+| 5 | Virtual core XTEST keyboard | 4 slave keyboard | 3 | key, sourceid 5 |
+| 6 | Xvfb mouse | 3 slave pointer | 2 | button (3 buttons) + two valuators |
+| 7 | Xvfb keyboard | 4 slave keyboard | 3 | key |
+
+Its XI 1 `ListInputDevices` lists the same six, with `use` 0 and 1 for the masters and **4/3** for the
+slaves; and an XTEST-driven event carries **`device 2, sourceid 4`** - the master as the device and the
+slave that produced the input as its source.
+
+**What is here now.** The four devices a reference leads with: the two masters and the two **XTEST
+slaves**, with those ids, names, types, attachments and class records, the masters' class records
+naming the *slave* their class comes from (device 2's button class says sourceid 4, as a reference's
+does), the XI 1 list carrying the same four with the reference's `use` values, and
+`XIAllMasterDevices` still answering masters alone. **XTEST input now says where it came from**: the
+XTEST extension marks its events with the slave that produced them (`InputState.setSourceDevice`
+around each faked event), so both the raw events of A47 and the ordinary device events carry
+`sourceid 4`/`5` - which is what a client that wants to know *which device* did something reads.
+Verified live: `XiProbe device 0` against this server prints the reference's first four records, and
+`XiProbe raw` prints `device 2, sourceid 4` for its XTEST motion.
+
+**What is deliberately not here, and why the item is not closed.** A reference's last two devices are
+its **backend's** ("Xvfb mouse"/"Xvfb keyboard"): the devices its own input arrives on. This server's
+host input *is* the master's own, so it has no equivalent - and introducing one means naming a device
+after the host, which is a design decision rather than a measurement. The changing half of the item -
+`XIChangeHierarchy` (an XI **2.0** request this server still refuses: a reference accepts an empty
+change list in silence and really creates a master for `XIAddMaster`, measured) with the
+`XI_HierarchyChanged` event a client selects (bit 11; GDK does, measured from its selection mask) -
+needs the device table to become mutable, and `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55:
+a reference answers the first with a modifier list - empty when nothing conflicts - and accepts the
+second in silence) belong with it. All three are measured and are the next piece.
+
+**Two new findings this round cost the barrier item its measurability**: a *registered* barrier on
+Xvfb does not stop an XTEST-driven pointer - absolute or relative motion, with or without a device
+list, the pointer walks straight through and no `XI_BarrierHit` arrives (measured 2026-10-04). So
+Xvfb's own barrier behaviour cannot be used as an oracle in this bed; the semantics have to come from
+the reference's implementation, which is written up in A47's "what is left" with the event's field
+list. 483 tests green (two new tests: the device records the four devices a reference leads with, and the XTEST slave plus the source id its input carries).

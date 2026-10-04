@@ -382,12 +382,14 @@ public final class XInputExtension implements Extension {
     private List<int[]> xi1Devices() {
         return List.of(
                 new int[] {XInputMasks.POINTER_DEVICE, 2, USE_IS_X_POINTER},
-                new int[] {XInputMasks.KEYBOARD_DEVICE, 1, USE_IS_X_KEYBOARD});
+                new int[] {XInputMasks.KEYBOARD_DEVICE, 1, USE_IS_X_KEYBOARD},
+                new int[] {XInputMasks.XTEST_POINTER_DEVICE, 2, USE_IS_X_EXTENSION_POINTER},
+                new int[] {XInputMasks.XTEST_KEYBOARD_DEVICE, 1, USE_IS_X_EXTENSION_KEYBOARD});
     }
 
     /** The class records of one device: class id and the core event type it would be reported with. */
     private List<int[]> xi1Classes(int device) {
-        return device == XInputMasks.POINTER_DEVICE
+        return device == XInputMasks.POINTER_DEVICE || device == XInputMasks.XTEST_POINTER_DEVICE
                 ? List.of(new int[] {1, 4}, new int[] {2, 6})       // Button, Valuator
                 : List.of(new int[] {0, 2});                        // Key
     }
@@ -400,10 +402,19 @@ public final class XInputExtension implements Extension {
     private static final int USE_IS_X_POINTER = 0;
     private static final int USE_IS_X_KEYBOARD = 1;
 
+    /**
+     * And the two a *slave* has, which is what a reference's XTEST pair reports: measured with
+     * {@code XiProbe} on 2026-10-04 - device 4 is {@code use 4} and device 5 is {@code use 3}.
+     */
+    private static final int USE_IS_X_EXTENSION_POINTER = 4;
+    private static final int USE_IS_X_EXTENSION_KEYBOARD = 3;
+
     /** The names the two devices answer to, by id. */
     private static final java.util.Map<Integer, String> XI1_NAMES = java.util.Map.of(
             XInputMasks.POINTER_DEVICE, XInputMasks.POINTER_NAME,
-            XInputMasks.KEYBOARD_DEVICE, XInputMasks.KEYBOARD_NAME);
+            XInputMasks.KEYBOARD_DEVICE, XInputMasks.KEYBOARD_NAME,
+            XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.XTEST_POINTER_NAME,
+            XInputMasks.XTEST_KEYBOARD_DEVICE, XInputMasks.XTEST_KEYBOARD_NAME);
 
     /**
      * {@code XIChangeCursor}: sets a window's cursor, and says nothing back.
@@ -508,20 +519,10 @@ public final class XInputExtension implements Extension {
      * {@code tools/XiProbe ... dump}.
      */
     private void queryDevice(ClientConnection client, DeviceQuery query) {
+        java.util.List<Integer> ids = devicesFor(query.deviceId());
         List<byte[]> devices = new ArrayList<>();
-        if (query.deviceId() == XInputMasks.ALL_DEVICES
-                || query.deviceId() == XInputMasks.ALL_MASTER_DEVICES
-                || query.deviceId() == XInputMasks.POINTER_DEVICE) {
-            devices.add(pointerDevice());
-        }
-        if (query.deviceId() == XInputMasks.ALL_DEVICES
-                || query.deviceId() == XInputMasks.ALL_MASTER_DEVICES
-                || query.deviceId() == XInputMasks.KEYBOARD_DEVICE) {
-            devices.add(keyboardDevice());
-        }
-        if (devices.isEmpty()) {
-            throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), query.deviceId(),
-                    "bad device " + query.deviceId());
+        for (int id : ids) {
+            devices.add(deviceRecord(id));
         }
         int body = devices.stream().mapToInt(d -> d.length).sum();
         int padding = (4 - body % 4) % 4;
@@ -538,8 +539,53 @@ public final class XInputExtension implements Extension {
         send(client, reply);
     }
 
+    /** {@code XIQueryDevice}'s device ids for a selector, or for one device. */
+    private java.util.List<Integer> devicesFor(int deviceId) {
+        if (deviceId == XInputMasks.ALL_DEVICES) {
+            return java.util.List.of(XInputMasks.POINTER_DEVICE, XInputMasks.KEYBOARD_DEVICE,
+                    XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.XTEST_KEYBOARD_DEVICE);
+        }
+        if (deviceId == XInputMasks.ALL_MASTER_DEVICES) {
+            // The masters alone: a selector that says so, measured - a reference's
+            // XIAllMasterDevices answer is its two masters and not its four slaves.
+            return java.util.List.of(XInputMasks.POINTER_DEVICE, XInputMasks.KEYBOARD_DEVICE);
+        }
+        if (XInputMasks.isDevice(deviceId)) {
+            return java.util.List.of(deviceId);
+        }
+        throw new ProtocolException((byte) (firstError() + ERROR_DEVICE), deviceId,
+                "bad device " + deviceId);
+    }
+
+    /**
+     * One device's {@code XIDeviceInfo}, as a reference describes it.
+     *
+     * <p>The four devices this server has since A48 are the reference's own first four, measured
+     * with {@code XiProbe device 0} on 2026-10-04: the two masters (2, 3) and the two **XTEST**
+     * slaves (4, 5) attached to them, and the class records of a master name the **slave** the class
+     * comes from as their {@code sourceid} - device 2's button and axis classes say {@code sourceid
+     * 4}, not 2, which is what makes a client able to tell where a master's input really comes from.
+     */
+    private byte[] deviceRecord(int id) {
+        return switch (id) {
+            case XInputMasks.POINTER_DEVICE -> pointerLike(XInputMasks.POINTER_DEVICE,
+                    XInputMasks.MASTER_POINTER, XInputMasks.KEYBOARD_DEVICE,
+                    XInputMasks.POINTER_NAME, XInputMasks.XTEST_POINTER_DEVICE);
+            case XInputMasks.XTEST_POINTER_DEVICE -> pointerLike(
+                    XInputMasks.XTEST_POINTER_DEVICE, XInputMasks.SLAVE_POINTER,
+                    XInputMasks.POINTER_DEVICE, XInputMasks.XTEST_POINTER_NAME,
+                    XInputMasks.XTEST_POINTER_DEVICE);
+            case XInputMasks.KEYBOARD_DEVICE -> keyboardLike(XInputMasks.KEYBOARD_DEVICE,
+                    XInputMasks.MASTER_KEYBOARD, XInputMasks.POINTER_DEVICE,
+                    XInputMasks.KEYBOARD_NAME, XInputMasks.XTEST_KEYBOARD_DEVICE);
+            default -> keyboardLike(XInputMasks.XTEST_KEYBOARD_DEVICE,
+                    XInputMasks.SLAVE_KEYBOARD, XInputMasks.KEYBOARD_DEVICE,
+                    XInputMasks.XTEST_KEYBOARD_NAME, XInputMasks.XTEST_KEYBOARD_DEVICE);
+        };
+    }
+
     /** The pointer: a button class and the two axes, as a reference describes one. */
-    private byte[] pointerDevice() {
+    private byte[] pointerLike(int id, int type, int attachment, String name, int source) {
         // A button class is its header, the button count, one state word per thirty two buttons and
         // one atom label per button. The state word is easy to leave out and the class length then
         // stops being a multiple of four - twelve units where a reference sends thirteen - which
@@ -548,32 +594,30 @@ public final class XInputExtension implements Extension {
         byte[] buttonClass = new byte[6 + 2 + stateWords * 4 + BUTTONS * 4];
         putCard16(buttonClass, 0, 1, false);                    // DeviceClassType.Button
         putCard16(buttonClass, 2, buttonClass.length / 4, false);
-        putCard16(buttonClass, 4, XInputMasks.POINTER_DEVICE, false);
+        putCard16(buttonClass, 4, source, false);
         putCard16(buttonClass, 6, BUTTONS, false);
         io.github.oyzh1994.xserver.input.InputState input = server.inputFor(server.screen());
         byte[][] classes = {
                 buttonClass,
-                valuatorClass(0, axisX, 0, server.screen().width(), input.pointerX()),
-                valuatorClass(1, axisY, 0, server.screen().height(), input.pointerY()),
+                valuatorClass(0, axisX, 0, server.screen().width(), input.pointerX(), source),
+                valuatorClass(1, axisY, 0, server.screen().height(), input.pointerY(), source),
         };
-        return deviceInfo(XInputMasks.POINTER_DEVICE, XInputMasks.MASTER_POINTER,
-                XInputMasks.KEYBOARD_DEVICE, XInputMasks.POINTER_NAME, classes);
+        return deviceInfo(id, type, attachment, name, classes);
     }
 
     /** The keyboard: one key class, listing every keycode it has. */
-    private byte[] keyboardDevice() {
+    private byte[] keyboardLike(int id, int type, int attachment, String name, int source) {
         int first = io.github.oyzh1994.xserver.input.Keymap.MIN_KEYCODE;
         int count = io.github.oyzh1994.xserver.input.Keymap.MAX_KEYCODE - first + 1;
         byte[] keys = new byte[6 + 2 + count * 4];
         putCard16(keys, 0, 0, false);
         putCard16(keys, 2, keys.length / 4, false);
-        putCard16(keys, 4, XInputMasks.KEYBOARD_DEVICE, false);
+        putCard16(keys, 4, source, false);
         putCard16(keys, 6, count, false);
         for (int i = 0; i < count; i++) {
             putCard32(keys, 8 + i * 4, first + i, false);
         }
-        return deviceInfo(XInputMasks.KEYBOARD_DEVICE, XInputMasks.MASTER_KEYBOARD,
-                XInputMasks.POINTER_DEVICE, XInputMasks.KEYBOARD_NAME, new byte[][] {keys});
+        return deviceInfo(id, type, attachment, name, new byte[][] {keys});
     }
 
     /**
@@ -583,11 +627,11 @@ public final class XInputExtension implements Extension {
      * <p>{@code mode} 0 is absolute, which is what a pointer's axes are - the pointer's position,
      * not a delta. The values are {@code FP3232}, a 32 bit integer part and a 32 bit fraction.
      */
-    private byte[] valuatorClass(int number, int label, int min, int max, int value) {
+    private byte[] valuatorClass(int number, int label, int min, int max, int value, int source) {
         byte[] axis = new byte[44];
         putCard16(axis, 0, 2, false);
         putCard16(axis, 2, axis.length / 4, false);
-        putCard16(axis, 4, XInputMasks.POINTER_DEVICE, false);
+        putCard16(axis, 4, source, false);
         putCard16(axis, 6, number, false);
         putCard32(axis, 8, label, false);
         putFixed(axis, 12, min);
@@ -945,23 +989,24 @@ public final class XInputExtension implements Extension {
      * separate gap, measured in the backlog), so the source id is the device itself: the same choice
      * its device events already make, and the honest one for a server with nothing else to name.
      */
-    public void rawMotion(XWindow root, int x, int y) {
-        deliverRaw(root, XInputMasks.RAW_MOTION, XInputMasks.POINTER_DEVICE, 0, x, y);
+    public void rawMotion(XWindow root, int source, int x, int y) {
+        deliverRaw(root, XInputMasks.RAW_MOTION, XInputMasks.POINTER_DEVICE, source, 0, x, y);
     }
 
     /** One raw button event, from the press or the release. */
-    public void rawButton(XWindow root, int button, boolean pressed) {
+    public void rawButton(XWindow root, int source, int button, boolean pressed) {
         deliverRaw(root, pressed ? XInputMasks.RAW_BUTTON_PRESS : XInputMasks.RAW_BUTTON_RELEASE,
-                XInputMasks.POINTER_DEVICE, button, 0, 0);
+                XInputMasks.POINTER_DEVICE, source, button, 0, 0);
     }
 
     /** One raw key event, from the press or the release. */
-    public void rawKey(XWindow root, int keycode, boolean pressed) {
+    public void rawKey(XWindow root, int source, int keycode, boolean pressed) {
         deliverRaw(root, pressed ? XInputMasks.RAW_KEY_PRESS : XInputMasks.RAW_KEY_RELEASE,
-                XInputMasks.KEYBOARD_DEVICE, keycode, 0, 0);
+                XInputMasks.KEYBOARD_DEVICE, source, keycode, 0, 0);
     }
 
-    private void deliverRaw(XWindow root, int eventNumber, int device, int detail, int x, int y) {
+    private void deliverRaw(XWindow root, int eventNumber, int device, int source, int detail,
+                            int x, int y) {
         if (root == null) {
             return;
         }
@@ -974,12 +1019,12 @@ public final class XInputExtension implements Extension {
             ClientConnection client = selection.client();
             byte[] bytes = switch (eventNumber) {
                 case XInputMasks.RAW_MOTION -> Xi2RawEvent
-                        .motion(client, majorOpcode(), device, device, time, x, y).wire();
+                        .motion(client, majorOpcode(), device, source, time, x, y).wire();
                 case XInputMasks.RAW_BUTTON_PRESS, XInputMasks.RAW_BUTTON_RELEASE -> Xi2RawEvent
-                        .button(client, majorOpcode(), device, device, time, detail,
+                        .button(client, majorOpcode(), device, source, time, detail,
                                 eventNumber == XInputMasks.RAW_BUTTON_PRESS).wire();
                 default -> Xi2RawEvent
-                        .key(client, majorOpcode(), device, device, time, detail,
+                        .key(client, majorOpcode(), device, source, time, detail,
                                 eventNumber == XInputMasks.RAW_KEY_PRESS).wire();
             };
             send(client, bytes);
@@ -1025,6 +1070,20 @@ public final class XInputExtension implements Extension {
             }
         }
         return false;
+    }
+
+    /**
+     * The device an event names as its {@code sourceid}: the slave the input came from, or the
+     * device itself.
+     *
+     * <p>Measured (A48): a reference's XTEST input is {@code device 2, sourceid 4} - the master as
+     * the device and the slave that produced it as the source - and this server has the same two
+     * XTEST slaves. Host input names the master, which is where this server's own device sits.
+     */
+    private int sourceOf(ClientConnection client, int device) {
+        io.github.oyzh1994.xserver.input.InputState input = server.inputFor(client);
+        int source = input == null ? 0 : input.sourceDevice();
+        return source == 0 ? device : source;
     }
 
     /** An XI2 event number and the window a core event is reported against. */
@@ -1079,7 +1138,7 @@ public final class XInputExtension implements Extension {
         Xi2Event.Builder event = Xi2Event.builder(client, majorOpcode(), shape)
                 .evtype(eventNumber)
                 .device(device)
-                .source(device);
+                .source(sourceOf(client, device));
         int rootX = 0;
         int rootY = 0;
         int eventX = 0;

@@ -10,6 +10,7 @@ import com.github.moaxcp.x11.protocol.xtest.GetVersionReply;
 import com.github.moaxcp.x11.protocol.xtest.GrabControl;
 import com.github.moaxcp.x11.protocol.xtest.XtestPlugin;
 import io.github.oyzh1994.xserver.XServer;
+import io.github.oyzh1994.xserver.event.XInputMasks;
 import io.github.oyzh1994.xserver.client.ClientConnection;
 import io.github.oyzh1994.xserver.input.InputState;
 import io.github.oyzh1994.xserver.resource.XCursor;
@@ -139,22 +140,38 @@ public final class XTestExtension implements Extension {
             // Only a motion event carries a position: Xlib zeroes the coordinates for every other
             // type, and a real server delivers a key or button event without moving the pointer.
             // Passing the pointer's current position keeps it exactly where it is.
-            case KEY_PRESS, KEY_RELEASE -> input.keyChanged(detail, type == KEY_PRESS,
-                    input.pointerX(), input.pointerY());
-            case BUTTON_PRESS, BUTTON_RELEASE -> input.buttonChanged(detail,
-                    type == BUTTON_PRESS, input.pointerX(), input.pointerY());
+            //
+            // **And it is the XTEST *slave* that produces it** (A48): XInput's source id is where a
+            // client learns which device did this, and a reference answers 4/5 here - its XTEST
+            // pointer and keyboard, which are the two devices this server now also has.
+            case KEY_PRESS, KEY_RELEASE -> asXtest(input, XInputMasks.XTEST_KEYBOARD_DEVICE,
+                    () -> input.keyChanged(detail, type == KEY_PRESS,
+                            input.pointerX(), input.pointerY()));
+            case BUTTON_PRESS, BUTTON_RELEASE -> asXtest(input, XInputMasks.XTEST_POINTER_DEVICE,
+                    () -> input.buttonChanged(detail, type == BUTTON_PRESS,
+                            input.pointerX(), input.pointerY()));
             case MOTION_NOTIFY -> {
                 if (detail == MOTION_RELATIVE) {
                     // A relative motion is an offset from wherever the pointer is now.
-                    input.pointerMoved(input.pointerX() + x,
-                            input.pointerY() + y);
+                    asXtest(input, XInputMasks.XTEST_POINTER_DEVICE, () -> input.pointerMoved(
+                            input.pointerX() + x, input.pointerY() + y));
                 } else if (detail == MOTION_ABSOLUTE) {
-                    input.pointerMoved(x, y);
+                    asXtest(input, XInputMasks.XTEST_POINTER_DEVICE, () -> input.pointerMoved(x, y));
                 } else {
                     log.debug("XTEST FakeInput: ignoring unknown motion detail {}", detail);
                 }
             }
             default -> log.debug("XTEST FakeInput: ignoring unknown event type {}", type);
+        }
+    }
+
+    /** Runs one faked event as the XTEST slave it came from, and gives the device back after it. */
+    private static void asXtest(InputState input, int device, Runnable action) {
+        input.setSourceDevice(device);
+        try {
+            action.run();
+        } finally {
+            input.setSourceDevice(0);
         }
     }
 

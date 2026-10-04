@@ -662,8 +662,10 @@ a reference with no video hardware does (F6).
   nothing", one says so. Measured and recorded as A8's answer; the probe prints the refusal per name
   rather than dying on it, which is what it used to do.
 - **`XiProbe`** - this server answers **XInput 2.4** since A47, the version a reference answers, and
-  lists **two master devices** where Xvfb lists six (its four slaves are a gap of their own, recorded
-  in the backlog). What is behind the version: raw events (XI 2.1) are delivered on the root with
+  lists **four devices** since A48 - its two masters and the two XTEST slaves a reference has, with a
+  reference's names, types, attachments and class source ids, and with XTEST input carrying the slave
+  as its `sourceid`. Where a reference still lists two more (its backend's "Xvfb mouse"/"Xvfb
+  keyboard", 6/7) this server has none: its host input is the master's own. What is behind the version: raw events (XI 2.1) are delivered on the root with
   the reference's own shapes, `XIBarrierReleasePointer` (XI 2.3) is answered with the extension's
   barrier error exactly as a reference answers it for a barrier that does not exist, and no touch or
   gesture device exists on either server for 2.2's and 2.4's surfaces to have any content. What is

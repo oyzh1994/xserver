@@ -1794,3 +1794,20 @@ item, together with `XIChangeHierarchy` and XI passive grabs (both measured: a r
 empty change list and *creates* a master, and answers a passive grab with a modifier list). Live:
 termora renders through the new build with no new refusals, and GDK does not select the raw family
 at all (measured from the log), so the new events only reach clients that ask. 482 tests green.
+
+**2026-10-04 (A48, the device model's first half):** the follow-up to A47's "what is left" was "继续
+完成你记录剩下的事项", and the device model went first because it is the half a reference can be
+measured against. Xvfb's own device list is six entries (measured with `XiProbe device 0`): two
+masters, the two **XTEST** slaves (4/5) and its backend's "Xvfb mouse"/"Xvfb keyboard" (6/7), with the
+masters' *class* records naming the slave the class comes from and an XTEST event carrying `device 2,
+sourceid 4`. This server now has the same four devices a reference leads with (ids, names, types,
+attachments, classes, and the XI 1 list with the reference's `use` values), and **XTEST input carries
+its slave as the source** in raw and device events alike (`InputState.setSourceDevice`, set by
+XTESTExtension around each faked event) - verified live: `XiProbe device 0` prints the reference's
+first four records and `XiProbe raw` prints `sourceid 4`. What is not here is written down: a backend
+device of this server's own (a naming decision, where a reference has "Xvfb mouse"), and the changing
+half - `XIChangeHierarchy` (still refused; a reference accepts an empty list and really creates a
+master), the `XI_HierarchyChanged` event (bit 11; GDK selects it) and XI passive grabs (54/55). Two
+findings for the barrier item: a registered barrier on Xvfb does **not** stop an XTEST-driven pointer
+(absolute or relative, with or without a device list) and sends no hit event, so that item's semantics
+have to come from the reference's `Xi/xibarriers.c` rather than from this bed. 483 tests green.

@@ -100,15 +100,15 @@ class XInputTest {
     }
 
     @Test
-    void itAnswersTheVersionAndNamesTwoMasterDevices() throws IOException {
+    void itNamesTheDevicesAReferenceNames() throws IOException {
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int opcode = client.queryExtension("XInputExtension");
-            byte[] version = request(client, opcode, XI_QUERY_VERSION, 2, 0);
-            assertEquals(2, RawXClient.readShort(version, 8), "major");
-            assertEquals(0, RawXClient.readShort(version, 10), "minor");
+            assertEquals(4, RawXClient.readShort(version(client, opcode, 2, 4), 10), "2.4, as a"
+                    + " reference answers");
 
             byte[] devices = request(client, opcode, XI_QUERY_DEVICE, 0);
-            assertEquals(2, RawXClient.readShort(devices, 8), "one pointer and one keyboard");
+            assertEquals(4, RawXClient.readShort(devices, 8),
+                    "the two masters and the two XTEST slaves, which is A48");
             // The records are positional and the classes carry their own lengths. The first device
             // is the pointer at 32, and its name follows the twelve byte header; the keyboard's name
             // is the second record's, which starts after the pointer's three classes.
@@ -117,6 +117,75 @@ class XInputTest {
             assertEquals(3, RawXClient.readShort(devices, 36), "attached to the keyboard");
             assertEquals(3, RawXClient.readShort(devices, 38), "a button class and two axes");
             assertEquals("Virtual core pointer".length(), RawXClient.readShort(devices, 40));
+
+            byte[] masters = request(client, opcode, XI_QUERY_DEVICE, 1);   // XIAllMasterDevices
+            assertEquals(2, RawXClient.readShort(masters, 8),
+                    "the selector for masters alone leaves the slaves out, as a reference does");
+        }
+    }
+
+    /**
+     * The XTEST slaves are real devices here since A48, and the input they generate says so.
+     *
+     * <p>Measured on Xvfb 2026-10-04: {@code Virtual core XTEST pointer} is device 4 attached to 2
+     * and {@code Virtual core XTEST keyboard} is 5 attached to 3, and an XTEST-driven raw motion
+     * arrives as {@code device 2, sourceid 4} - the master as the device, the slave that produced
+     * the input as its source. This server listed two devices and named the master as the source of
+     * everything before that, which is the difference this closes.
+     */
+    @Test
+    void theXtestSlavesAreListedAndTheirInputSaysSo() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int opcode = client.queryExtension("XInputExtension");
+            int xtest = client.queryExtension("XTEST");
+            version(client, opcode, 2, 4);
+            byte[] devices = request(client, opcode, XI_QUERY_DEVICE, 4);
+            assertEquals(1, RawXClient.readShort(devices, 8), "one device");
+            assertEquals(4, RawXClient.readShort(devices, 32), "the XTEST pointer's id");
+            assertEquals(3, RawXClient.readShort(devices, 34), "SlavePointer");
+            assertEquals(2, RawXClient.readShort(devices, 36), "attached to the core pointer");
+            assertEquals("Virtual core XTEST pointer".length(), RawXClient.readShort(devices, 40),
+                    "the name a reference gives it, so a client that caches ids sees the same tree");
+            // The class records of a *master* name the slave the class comes from - device 2's
+            // button class is the XTEST pointer's, which is what a reference answers.
+            byte[] pointer = request(client, opcode, XI_QUERY_DEVICE, 2);
+            assertEquals(4, RawXClient.readShort(pointer, 32 + 12 + 20 + 4),
+                    "the master's first class belongs to the slave");
+            // And the XI 1 list has them too: AWT reads its device model from that one.
+            byte[] legacy = client.extensionRequest(opcode, 2);
+            assertEquals(4, legacy[8] & 0xFF, "ListInputDevices lists the same four");
+
+            // A device event driven by XTEST carries the slave as its source id (offset 52 in the
+            // device shape), where it used to name the master.
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), 0, 0, 200, 200, 0x00FF00);
+            client.mapWindow(window);
+            client.flush();
+            byte[] select = new byte[20];
+            select[0] = (byte) opcode;
+            select[1] = XI_SELECT_EVENTS;
+            RawXClient.writeShortAt(select, 2, 5);
+            RawXClient.writeIntAt(select, 4, window);
+            RawXClient.writeShortAt(select, 8, 1);
+            RawXClient.writeShortAt(select, 12, 2);          // the pointer device
+            RawXClient.writeShortAt(select, 14, 1);
+            RawXClient.writeIntAt(select, 16, 1 << 6);       // XI_Motion
+            client.sendRequest(select);
+            client.fakeMotion(xtest, 40, 40);
+            client.flush();
+            byte[] motion = null;
+            for (byte[] event = client.readEvent(); event != null; event = client.readEvent()) {
+                if ((event[0] & 0xFF) == RawXClient.GENERIC_EVENT
+                        && (event[1] & 0xFF) == opcode
+                        && RawXClient.readShort(event, 8) == 6) {
+                    motion = event;
+                    break;
+                }
+            }
+            assertNotNull(motion, "the device motion has to arrive");
+            assertEquals(2, RawXClient.readShort(motion, 10), "the device is still the master");
+            assertEquals(4, RawXClient.readShort(motion, 52),
+                    "and the source is the XTEST slave that produced it");
         }
     }
 

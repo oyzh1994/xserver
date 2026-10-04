@@ -47,13 +47,55 @@ public final class XInputMasks {
     public static final int POINTER_DEVICE = 2;
     public static final int KEYBOARD_DEVICE = 3;
 
+    /**
+     * The slaves a reference has and this server did not until A48: the two <b>XTEST</b> devices,
+     * which are what XTEST-injected input comes from.
+     *
+     * <p>Measured on Xvfb 2026-10-04 ({@code XiProbe device 0}): {@code Virtual core XTEST pointer}
+     * is device **4** attached to 2, {@code Virtual core XTEST keyboard} is device **5** attached to
+     * 3, and an XTEST-driven raw motion carries {@code device 2, sourceid 4} - the master as the
+     * device and the slave that produced it as the source. A reference also lists two more slaves
+     * (its backend's "Xvfb mouse"/"Xvfb keyboard", 6 and 7), which is what its *own* input comes
+     * from; this server's host input is the master's own and is documented as the remaining
+     * difference.
+     */
+    public static final int XTEST_POINTER_DEVICE = 4;
+    public static final int XTEST_KEYBOARD_DEVICE = 5;
+
     /** {@code DeviceType}: what a device is, in {@code XIQueryDevice}'s answer. */
     public static final int MASTER_POINTER = 1;
     public static final int MASTER_KEYBOARD = 2;
+    /** {@code XISlavePointer}/{@code XISlaveKeyboard}: what a device attached to a master is. */
+    public static final int SLAVE_POINTER = 3;
+    public static final int SLAVE_KEYBOARD = 4;
 
     /** What a reference server calls its two masters, measured with {@code XIQueryDevice 0}. */
     public static final String POINTER_NAME = "Virtual core pointer";
     public static final String KEYBOARD_NAME = "Virtual core keyboard";
+    /** A reference's names for its XTEST slaves, measured with the device list above. */
+    public static final String XTEST_POINTER_NAME = "Virtual core XTEST pointer";
+    public static final String XTEST_KEYBOARD_NAME = "Virtual core XTEST keyboard";
+
+    /** Whether a device is one this server has, for the requests that name one. */
+    public static boolean isDevice(int deviceId) {
+        return deviceId == POINTER_DEVICE || deviceId == KEYBOARD_DEVICE
+                || deviceId == XTEST_POINTER_DEVICE || deviceId == XTEST_KEYBOARD_DEVICE;
+    }
+
+    /**
+     * The slave a master's events come from when the master is not the source itself.
+     *
+     * <p>XTEST input arrives on the XTEST pair (4/5) and everything else on the master, which is
+     * this server's own device - see {@link #XTEST_POINTER_DEVICE}.
+     */
+    public static int slaveOf(int deviceId) {
+        return deviceId == POINTER_DEVICE ? XTEST_POINTER_DEVICE : XTEST_KEYBOARD_DEVICE;
+    }
+
+    /** The master a slave belongs to, which is what a barrier and a pointer event are about. */
+    public static int masterOf(int deviceId) {
+        return deviceId == XTEST_POINTER_DEVICE ? POINTER_DEVICE : KEYBOARD_DEVICE;
+    }
 
     // XI2 event numbers, as {@code evtype} in the generic event's header.
     public static final int DEVICE_CHANGED = 1;

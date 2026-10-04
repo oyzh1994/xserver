@@ -8,6 +8,7 @@ import com.github.moaxcp.x11.protocol.xproto.KeyReleaseEvent;
 import com.github.moaxcp.x11.protocol.xproto.MotionNotifyEvent;
 import io.github.oyzh1994.xserver.XServer;
 import io.github.oyzh1994.xserver.client.ClientConnection;
+import io.github.oyzh1994.xserver.event.XInputMasks;
 import io.github.oyzh1994.xserver.display.CursorSprite;
 import io.github.oyzh1994.xserver.display.DisplayBackend;
 import io.github.oyzh1994.xserver.display.Screen;
@@ -58,6 +59,17 @@ public final class InputState implements DisplayBackend.InputSink {
     private int pointerX;
     private int pointerY;
     private XWindow pointerWindow;
+
+    /**
+     * The device the input being processed right now came from, or 0 when it is the device itself.
+     *
+     * <p>XTEST input is the case: a reference's XTEST events carry the **XTEST slave** as their
+     * {@code sourceid} (measured 2026-10-04: an XTEST-driven raw motion is {@code device 2,
+     * sourceid 4} on Xvfb) and this server has that slave since A48. The host's own input leaves
+     * this clear, which names the master - the remaining difference, because a reference has a
+     * backend device of its own ("Xvfb mouse") in that place.
+     */
+    private int sourceDevice;
     /**
      * The window the client was last <em>told</em> the pointer is in, by a crossing event. Not the
      * same as {@link #pointerWindow}: that one is recomputed by every button or key event too, with
@@ -333,6 +345,16 @@ public final class InputState implements DisplayBackend.InputSink {
     /** The screen whose pointer, focus and grabs this is. */
     public Screen screen() {
         return screen;
+    }
+
+    /** Which device the input right now came from, or 0 when it is the event's own device. */
+    public int sourceDevice() {
+        return sourceDevice;
+    }
+
+    /** Marks the input that follows as coming from another device, until it is cleared again. */
+    public void setSourceDevice(int device) {
+        sourceDevice = device;
     }
 
     /**
@@ -1241,22 +1263,27 @@ public final class InputState implements DisplayBackend.InputSink {
             // own - so a raw event delivered to the wrong root reaches nobody, which is exactly how
             // this behaved first (measured: the selection logged on 0x9 while the delivery looked at
             // 0x2).
-            xinput.rawMotion(screen.root(), x, y);
+            xinput.rawMotion(screen.root(), sourceOf(XInputMasks.POINTER_DEVICE), x, y);
         }
     }
 
     private void rawButton(int button, boolean pressed) {
         io.github.oyzh1994.xserver.extension.XInputExtension xinput = server.xinput();
         if (xinput != null) {
-            xinput.rawButton(screen.root(), button, pressed);
+            xinput.rawButton(screen.root(), sourceOf(XInputMasks.POINTER_DEVICE), button, pressed);
         }
     }
 
     private void rawKey(int keycode, boolean pressed) {
         io.github.oyzh1994.xserver.extension.XInputExtension xinput = server.xinput();
         if (xinput != null) {
-            xinput.rawKey(screen.root(), keycode, pressed);
+            xinput.rawKey(screen.root(), sourceOf(XInputMasks.KEYBOARD_DEVICE), keycode, pressed);
         }
+    }
+
+    /** The device a raw event names as its source: the one that generated it, or the device. */
+    private int sourceOf(int device) {
+        return sourceDevice == 0 ? device : sourceDevice;
     }
 
     /** The key's own work, once {@link #deliver} has decided it is this device's turn. */
