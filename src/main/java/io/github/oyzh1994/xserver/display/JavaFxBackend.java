@@ -4,7 +4,6 @@ import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.input.Keymap;
 import javafx.application.Platform;
 import javafx.application.ConditionalFeature;
-import javafx.geometry.Insets;
 import javafx.geometry.Point2D;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Cursor;
@@ -16,7 +15,6 @@ import javafx.scene.control.Label;
 import javafx.scene.control.OverrunStyle;
 import javafx.scene.image.PixelBuffer;
 import javafx.scene.image.PixelFormat;
-import javafx.scene.image.ImageView;
 import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
@@ -119,7 +117,6 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     private HeaderBar headerBar;
     private Label titleLabel;
-    private ImageView titleIcon;
     /**
      * True while the platform pointer is over the window, so {@link #hostCursor} can decide. Taken
      * from where the pointer really is rather than from the enter and leave events alone - see
@@ -369,22 +366,12 @@ public final class JavaFxBackend implements DisplayBackend {
             }
             if (argb == null || width <= 0 || height <= 0) {
                 stage.getIcons().clear();
-                if (titleIcon != null) {
-                    titleIcon.setImage(null);
-                    titleIcon.setVisible(false);
-                }
                 return;
             }
             WritableImage icon = new WritableImage(width, height);
             icon.getPixelWriter().setPixels(0, 0, width, height,
                     PixelFormat.getIntArgbInstance(), argb, 0, width);
             stage.getIcons().setAll(icon);
-            if (titleIcon != null) {
-                // The header bar's own icon: the platform's title bar is not drawn, so a client's icon
-                // has nowhere else to appear in the window.
-                titleIcon.setImage(icon);
-                titleIcon.setVisible(true);
-            }
         });
     }
 
@@ -1006,9 +993,8 @@ public final class JavaFxBackend implements DisplayBackend {
      *
      * <p>Fixed at {@link #HEADER_HEIGHT}: the platform's height for its own title bar is a function of
      * the window's style and the display, and the point of drawing this one here is that the page says
-     * how tall it is. The client's icon and title go in the areas the platform's header buttons are
-     * not in - the bar pads its left area for them itself, which is why nothing here adds an inset for
-     * the lights.
+     * how tall it is. The title is centred on the window and **bold**, which is what a title bar's own
+     * title looks like; there is no icon, which is a matter of taste rather than of the platform.
      *
      * <p>Runs on the FX thread.
      */
@@ -1018,17 +1004,12 @@ public final class JavaFxBackend implements DisplayBackend {
         bar.setPrefHeight(HEADER_HEIGHT);
         bar.setMaxHeight(HEADER_HEIGHT);
 
-        titleIcon = new ImageView();
-        titleIcon.setFitWidth(16);
-        titleIcon.setFitHeight(16);
-        titleIcon.setPreserveRatio(true);
-        titleIcon.setSmooth(true);
-        titleIcon.setVisible(false);
-        HeaderBar.setMargin(titleIcon, new Insets(0, 6, 0, 8));
-        bar.setLeft(titleIcon);
-
         titleLabel = new Label(this.title);
         titleLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+        // Bold by stylesheet rather than by a font: the platform's own title is the system UI font in
+        // bold, and naming a family here would freeze the size and the family with it. The weight is
+        // the one thing the platform's title bar adds on top of the default text.
+        titleLabel.setStyle("-fx-font-weight: bold;");
         // A label is content, and content is not draggable by default: without this a drag that
         // starts on the window's name does nothing, and the name is exactly where a hand goes.
         HeaderBar.setDragType(titleLabel, HeaderDragType.DRAGGABLE_SUBTREE);

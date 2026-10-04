@@ -1671,3 +1671,9 @@ are recorded in A43: a maximized window can be up to one client increment wider 
 snaps to its cells (xterm: 1499 of 1511 - we may not clamp a zoomed window's frame, which is what
 would un-zoom it), and the first left/top edge drag right after a maximize/restore can slide because
 macOS's live-resize reference can still be the zoomed frame.
+
+**2026-10-04 (the two header-bar details, the same day):** the client's icon is **out** of the header bar
+(the user asked for it), and the title is **bold** - by `-fx-font-weight` rather than by setting a font,
+because the platform's own title is the system UI font in bold and naming a family would freeze the size
+and the family along with the weight that was wanted. With the left area empty the centred title sits in
+the middle of the window, which is where a title bar's title belongs. 477 tests green.
