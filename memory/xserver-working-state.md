@@ -1920,3 +1920,19 @@ damage inside itself with the client's input unread** - a thread dump showed the
 remembers the request in `outstanding`, which the message loop answers. 491 tests green (the project's
 own `XServerTest` excluded: it launches a real server and is what makes a plain `mvn test` say "the
 forked VM terminated").
+
+**2026-10-04 (A52, the whole option surface on a real machine):** the user asked for a complete
+real-machine pass over every configuration option ("各种配置项都验证下…要完整验证所有配置项看下是否都生效").
+Every option in `ServerOptions` was started for real and probed with a real client - the VM over TCP
+(`xdpyinfo`/`xrandr`/`xwininfo`/`xclock`/`xeyes`), the host's window list for the two window backends,
+a **real RFB 3.8 handshake** (Java + `javax.crypto` DES, validated first against `x11vnc` so a failure
+is the server's), a **WebSocket RFB banner** for the noVNC path, and a client that ignores the close
+request to time `--close-grace-ms`. **Two bugs fixed**: `--title` was parsed, documented and read by
+**nobody** (every backend got `DEFAULT_TITLE`; the VNC desktop name is now `--title`, pinned by a new
+`VncBackendTest` case), and **`--max-clients` had no reader at all** (the earlier "accepted 4 of 4"
+matrix result was the probe closing each connection before the next, so it never exceeded one; a
+`--max-clients 2` server now accepts 2 of 4 held open, logs the refusal, and is pinned by
+`net/MaxClientsTest`). One difference **recorded**: the depth in `-screen 0 WxHxD` is accepted for
+compatibility and ignored (the root is always 24 bit; the server now warns once at startup) - the doc
+is the checklist's §7 and the entry. Everything else measured green, including both passwords forms
+(handshake OK / wrong refused) and the both-forms and missing-file refusals. **493 tests green.**

@@ -1865,6 +1865,12 @@ does not - is `backlog.md`, which is written to be worked through item by item.
   `--max-screen`, and the host window resizes the client's window with it; there is deliberately no
   gesture that says "and now the desktop is smaller", which is why `SetScreenConfig` and the rest of
   RandR's changing requests are refused.
+- **The root is always 24 bit TrueColor, whatever depth a geometry names** (A52). `--geometry WxHxD`
+  accepts the `D` because `-screen 0 WxHxD` is how X servers are usually started (the bed's own Xvfb
+  runs `x16`), and the server says so once at startup rather than ignoring it silently - measured: a
+  `640x480x16` geometry still answers `depth of root window: 24 planes`. Only the *window* visuals
+  carry 16/8/1 bit. Honouring a 16 bit root would mean a second whole framebuffer path (packing,
+  compositing, `GetImage`) at another depth, which nothing in this bed has needed.
 - **A session survives its window, not the server.** `--detach-on-close` keeps the clients running
   with no window and `--control-port` puts one back (D1), but a server that is *stopped* still takes
   its clients with it: persisting across a restart would mean journalling the framebuffer and

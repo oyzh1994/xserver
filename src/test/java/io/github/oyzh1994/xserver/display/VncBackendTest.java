@@ -377,6 +377,21 @@ class VncBackendTest {
     }
 
     /**
+     * {@code --title}, which every backend was handed {@code "xserver"} instead of (measured
+     * 2026-10-04: the option was parsed, documented, and read by nobody). The VNC desktop name is
+     * where it is visible without a window: a viewer's own title bar says what it is watching.
+     */
+    @Test
+    void theTitleOptionNamesTheDesktopAViewerShows() throws Exception {
+        try (Server server = new Server(null, false, "my-desktop")) {
+            try (VncClient viewer = server.connect()) {
+                assertEquals("my-desktop :" + DISPLAY, viewer.desktopName,
+                        "the name a viewer puts in its window is the option's");
+            }
+        }
+    }
+
+    /**
      * A viewer's copy lands in the X clipboard, and X's copy lands in the viewer's.
      *
      * <p>Both directions go through the server's clipboard bridge - the same one the Mac's pasteboard
@@ -780,6 +795,11 @@ class VncBackendTest {
          * password in hand and no file to put it in.
          */
         Server(String password, boolean asValue) throws Exception {
+            this(password, asValue, null);
+        }
+
+        /** The same, with {@code --title} naming the desktop a viewer shows. */
+        Server(String password, boolean asValue, String title) throws Exception {
             this.password = password;
             // Through the real path: `--backend vnc` is parsed, implies single-window (which is what
             // puts a backend on the master screen before any client connects), and the factory makes
@@ -789,20 +809,23 @@ class VncBackendTest {
             if (password != null) {
                 java.nio.file.Files.writeString(passwordFile, password);
             }
-            String[] args;
-            if (password == null) {
-                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
-                        "--no-clipboard"};
-            } else if (asValue) {
-                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
-                        "--vnc-password", password, "--no-clipboard"};
-            } else {
-                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
-                        "--vnc-password-file", passwordFile.toString(), "--no-clipboard"};
+            java.util.List<String> base = new java.util.ArrayList<>(java.util.List.of(
+                    "--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
+                    "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240", "--no-clipboard"));
+            if (title != null) {
+                base.add("--title");
+                base.add(title);
             }
+            if (password == null) {
+                // no more arguments
+            } else if (asValue) {
+                base.add("--vnc-password");
+                base.add(password);
+            } else {
+                base.add("--vnc-password-file");
+                base.add(passwordFile.toString());
+            }
+            String[] args = base.toArray(new String[0]);
             xserver = new XServer(ServerOptions.parse(args));
             xserver.start();
             xserver.startEventLoop();
@@ -976,6 +999,8 @@ class VncBackendTest {
         final java.util.List<int[]> lastRectangles = new java.util.ArrayList<>();
         /** Whether the update just read carried a Tight-JPEG rectangle (A32). */
         private boolean lastWasJpeg;
+        /** The desktop name from the ServerInit: what a viewer puts in its own window's title. */
+        String desktopName;
 
         boolean lastWasJpeg() {
             return lastWasJpeg;
@@ -1064,7 +1089,7 @@ class VncBackendTest {
             readU16();                                      // height
             setPixelFormatBytes(readBytes(16));             // the default format
             int nameLength = readInt();
-            readAscii(nameLength);
+            desktopName = readAscii(nameLength);
         }
 
         /** {@code SetEncodings}: what this viewer says it can decode, in its order of preference. */

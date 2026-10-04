@@ -32,7 +32,7 @@ Options:
 | Option | Meaning |
 | --- | --- |
 | `--display :N` | display number; listens on TCP 6000+N and `/tmp/.X11-unix/XN` |
-| `--geometry WxH[xD]` | root window size and depth (default 1280x800x24) |
+| `--geometry WxH[xD]` | root window size (default 1280x800). The depth is accepted for compatibility with the usual `-screen 0 WxHxD` invocation and **ignored**: the root is always 24 bit TrueColor and the server warns once at startup when a geometry names another depth |
 | `--backend NAME` | `javafx` (default), `swing`, `headless`, or `vnc` |
 | `--auth [FILE]` | require MIT-MAGIC-COOKIE-1 from `~/.Xauthority` |
 | `--no-tcp` / `--no-unix` | restrict the transports |

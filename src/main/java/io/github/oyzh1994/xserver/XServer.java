@@ -157,6 +157,17 @@ public final class XServer {
         // embedders do - still gets a screen that fits the display it will be shown on.
         options.fitToDisplay();
         this.usedClientIndices.set(SERVER_CLIENT_INDEX);
+        // The depth a geometry can name is accepted for compatibility with the usual
+        // `-screen 0 WxHxD` invocation and is the one field of it this server does not honour: the
+        // root is always 24 bit TrueColor, whatever the geometry says (measured 2026-10-04: a
+        // `--geometry 640x480x16` server answers `depth of root window: 24 planes`, and so does x8).
+        // Said out loud rather than silently ignored, so a configuration that wanted a 16 bit root
+        // finds out here instead of from a client that asked for one.
+        if (options.depth() != ROOT_DEPTH) {
+            log.warn("--geometry asked for a {} bit root; this server's root is always {} bit"
+                    + " TrueColor, and the depth in a geometry is accepted for compatibility only",
+                    options.depth(), ROOT_DEPTH);
+        }
 
         // A modern desktop is TrueColor first: 24 bit for the root, 32 bit ARGB for translucency,
         // plus the low depth visuals clients still probe for.
@@ -2556,8 +2567,18 @@ public final class XServer {
 
     /**
      * Reserves a client index, or -1 when the server is full.
+     *
+     * <p>Two ceilings, and the lower one is the caller's: the index space itself (256 slots, what the
+     * top bits of a resource id can name) and {@code --max-clients}, which is the one a user sets and
+     * which was parsed and documented but had no reader at all - so a {@code --max-clients 2} server
+     * accepted four connections when measured. The count is of *allocated* slots rather than of
+     * registered clients, because a slot is taken from the moment a connection is accepted and a
+     * connection that is still in its setup handshake has a resource id space reserved for it.
      */
     public synchronized int allocateClientIndex() {
+        if (usedClientIndices.cardinality() - 1 >= Math.max(1, options.maxClients())) {
+            return -1;
+        }
         int index = usedClientIndices.nextClearBit(1);
         if (index >= ClientConnection.MAX_CLIENTS) {
             return -1;

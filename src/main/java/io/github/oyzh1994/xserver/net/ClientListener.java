@@ -121,7 +121,10 @@ public final class ClientListener {
     private void handle(SocketChannel channel) {
         int index = server.allocateClientIndex();
         if (index < 0) {
-            log.warn("refusing connection: server is full");
+            // Name the limit, because the one that is usually reached is the caller's: the default
+            // 256 is the index space, and a smaller --max-clients is a choice somebody made.
+            log.warn("refusing connection: {} clients are already connected (--max-clients)",
+                    server.options().maxClients());
             try {
                 channel.close();
             } catch (IOException ignored) {

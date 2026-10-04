@@ -32,38 +32,43 @@ public final class BackendFactory {
     /** Never returns null: an unusable JavaFX installation yields a Swing backend. */
     public static DisplayBackend create(ServerOptions options) {
         return switch (options.backend()) {
-            case JAVAFX -> createJavaFx();
-            case SWING -> createSwing();
+            case JAVAFX -> createJavaFx(options.title());
+            case SWING -> createSwing(options.title());
             case HEADLESS -> new HeadlessBackend();
             // The only backend that needs an option of its own, and the only one whose "screen" is
             // not a window on this machine at all (backlog D2).
-            case VNC -> new VncBackend(options.vncPort(), options.vncWebSocketPort(), DEFAULT_TITLE,
+            case VNC -> new VncBackend(options.vncPort(), options.vncWebSocketPort(), options.title(),
                     !options.listenAll(), options.vncPassword());
         };
     }
 
-    private static DisplayBackend createJavaFx() {
+    /**
+     * The title the caller asked for, which is the name the window carries until the client publishes
+     * one of its own - {@code --title} was parsed and documented but every backend was handed {@link
+     * #DEFAULT_TITLE} instead, so the option did nothing at all.
+     */
+    private static DisplayBackend createJavaFx(String title) {
         try {
             // Starting the toolkit here is the only honest test of whether JavaFX works: a missing
             // class, a missing native library and a missing display all show up at this point.
             JavaFxBackend.verifyAvailable();
-            return new JavaFxBackend(DEFAULT_TITLE);
+            return new JavaFxBackend(title);
         } catch (Throwable t) {
             if (java.awt.GraphicsEnvironment.isHeadless()) {
                 return headlessInstead("JavaFX is not usable (" + describe(t) + ")");
             }
             log.warn("JavaFX is not usable ({}), falling back to the swing backend", describe(t));
             log.debug("JavaFX startup failed", t);
-            return new SwingBackend(DEFAULT_TITLE);
+            return new SwingBackend(title);
         }
     }
 
     /** A Swing window, or the headless backend where there is no display to open one on. */
-    private static DisplayBackend createSwing() {
+    private static DisplayBackend createSwing(String title) {
         if (java.awt.GraphicsEnvironment.isHeadless()) {
             return headlessInstead("this machine has no display");
         }
-        return new SwingBackend(DEFAULT_TITLE);
+        return new SwingBackend(title);
     }
 
     /**

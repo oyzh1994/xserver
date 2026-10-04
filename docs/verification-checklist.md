@@ -208,6 +208,11 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
 - **The `eventcopy` rewrite in `ClientOutput` is the design**, not a workaround to remove (E1, closed).
 - **A drag out of an application is not finished** (C5: the trigger was reverted; the owner has
   parked it).
+- **The depth in a `-screen 0 WxHxD` / `--geometry WxHxD` invocation is accepted and ignored** (A52):
+  the root is always 24 bit TrueColor and only the *window* visuals carry 16/8/1 bit, so a server
+  asked for `x16` answers `depth of root window: 24 planes` and says so once at startup. It is
+  accepted because it is part of the usual X-server invocation (the bed's own Xvfb runs `x16`), and
+  honouring it would mean the whole framebuffer path at another root depth.
 
 ## 8. How a run lies (measured traps)
 
