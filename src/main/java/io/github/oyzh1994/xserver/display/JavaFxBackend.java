@@ -125,6 +125,10 @@ public final class JavaFxBackend implements DisplayBackend {
     private boolean pointerOverWindow;
     /** Whether the platform pointer is currently the one this window asked to be hidden. */
     private boolean cursorHidden;
+    /** Whether the window is on the screen: it is built before it is shown - see {@link #showWindow}. */
+    private boolean shown;
+    /** What to place the window by when it is first shown, in framebuffer pixels. */
+    private java.awt.Dimension windowSize = new java.awt.Dimension();
     /**
      * Whether a mouse button is down on this window, wherever it went down.
      *
@@ -1340,22 +1344,17 @@ public final class JavaFxBackend implements DisplayBackend {
             // hidden for the whole process, and a server whose display loop has exited may live on.
             releaseHostCursor();
         });
-        stage.show();
-        rememberSceneBorder();
-        // The frame the platform settled on is what the border was measured against, so the size is
-        // put back once more here: the first sizing asked for content plus a border that had not been
-        // measured yet (nothing at all on macOS, but a border is a border).
-        sizeFrameToContent();
-        // The window is on its way open: the sizes it passes through before it has settled are not
-        // the user either - see the settle in {@link #clientAreaChanged}.
-        openingUntil = System.currentTimeMillis() + 700;
-        startPulseProbe();
-        // The scene coordinates must stay equal to screen coordinates for the pointer mapping to be
-        // right, so the window is placed inside the usable area rather than left to the platform,
-        // which will happily put a large window under the menu bar or off the edge of the display.
-        placeOnScreen(width, height);
-        applyHostCursor();
-        rememberSettledFrame();
+        // **And the window is not shown yet.** Whether it should be is the server's answer, given by
+        // {@link #setIdle} - and it says idle for a session with nothing to show, which is what the
+        // master screen of single-window mode is until a client connects. Showing it here and hiding it
+        // a frame later is a window that appears and vanishes as the server starts, which is what was
+        // reported ("我以单窗口模式启动时，会先显示一次窗口，然后过一会这个窗口消失…我要跟per-client一样
+        // 保持静默，直到x客户端连接才显示真正的窗口"): everything else opens now, the window opens on
+        // the first thing a client shows in it.
+        windowSize = new java.awt.Dimension(width, height);
+        if (!idle) {
+            showWindow();
+        }
     }
 
     /**
@@ -1535,8 +1534,59 @@ public final class JavaFxBackend implements DisplayBackend {
     public void setIdle(boolean idle) {
         runOnFxThreadAndWait(() -> {
             this.idle = idle;
+            if (idle) {
+                // **Nothing to show means no window.** The window is the frame around a client's
+                // output, so with none of it there is nothing to frame and no reason to keep a window
+                // on the user's desktop: it is hidden here, the moment the session goes idle, and shown
+                // again by the first thing a client draws - exactly as a per-client window goes when
+                // its client disconnects. Hidden rather than closed: the backend is the session's, and
+                // the server is the one that decides when a window stops existing (it closes the
+                // backend of a session that has had nothing to show for a while).
+                hideWindow();
+            } else {
+                showWindow();
+            }
             applyHostCursor();
         });
+    }
+
+    /**
+     * Shows the window, sizes it to what it shows and places it, once. Runs on the FX thread.
+     *
+     * <p>The size and the placement are asked for here rather than when the window was built because
+     * until it is shown the platform has no frame to measure: its decoration is part of what the window
+     * is, and the window is placed inside the usable area of the display, which is only meaningful for
+     * a window that is on it.
+     */
+    private void showWindow() {
+        if (stage == null || shown) {
+            return;
+        }
+        shown = true;
+        stage.show();
+        rememberSceneBorder();
+        // The frame the platform settled on is what the border was measured against, so the size is
+        // put back once more: the first sizing asked for content plus a border that had not been
+        // measured yet (nothing at all on macOS, but a border is a border).
+        sizeFrameToContent();
+        // The window is on its way open: the sizes it passes through before it has settled are not the
+        // user either - see the settle in {@link #clientAreaChanged}.
+        openingUntil = System.currentTimeMillis() + 700;
+        startPulseProbe();
+        placeOnScreen(windowSize.width, windowSize.height);
+        rememberSettledFrame();
+        log.debug("window shown ({}x{})", windowSize.width, windowSize.height);
+    }
+
+    /** Takes the window off the screen without closing it. Runs on the FX thread. */
+    private void hideWindow() {
+        if (stage == null || !shown) {
+            return;
+        }
+        shown = false;
+        stage.hide();
+        releaseHostCursor();
+        log.debug("window hidden: nothing to show in it");
     }
 
     /**

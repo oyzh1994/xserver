@@ -6781,6 +6781,29 @@ as a flicker rather than as an application - which is exactly what the eight tes
 are all still green with it (they do not wait a second and a half). Only a *window* is closed: a headless
 or VNC session has none, and a VNC viewer keeps watching a screen no client is drawing on.
 
+**Its own follow-up, the same day: the window was shown once at startup and then hidden.** "我以单窗口
+模式启动时，会先显示一次窗口，然后过一会这个窗口消失，我不想要这样，我要跟per-client一样保持静默，直到x客户端
+连接才显示真正的窗口，当所有x客户端断开，应当马上关闭窗口，保持和保证设计上的一致性". Two halves, and the
+first one is the interesting one:
+
+- **The window is no longer shown when it is built.** The backend is still created when the server starts
+  (that is what the VNC, tray and in-process paths need: a VNC server serves viewers before any client
+  draws, and a test's fake backend is the window it asserts about), but showing is the *server's* answer
+  rather than the backend's own decision: `setIdle(false)` shows it, and a session with nothing to show is
+  idle from the first tick. Everything else about the window - its size, its placement, its decoration -
+  is measured when it is first shown, because until then the platform has no frame to measure.
+- **And it is hidden the moment the session goes idle** - the last client vanishing, or a client whose
+  windows are all gone - which is the same rule a per-client window follows when its client disconnects.
+  Hidden rather than closed: the backend belongs to the session, and the server still decides when a
+  window stops existing (it closes the backend of a session that has had nothing to show for the grace
+  period above).
+
+This is what "silent until a client connects" means, and it is where the two modes agree: verified in
+single-window mode, a server started with no client has **no window at all**, a client connecting puts the
+window on the screen *first in the window list* (raised and focused, above), and killing the client takes
+the window away **within 400 ms** (`window hidden: nothing to show in it`). 477 tests green with no change
+to the server or to any test - the whole change is the JavaFX backend's own show/hide.
+
 **And it is raised *and focused* now**, not only raised: `DisplayBackend.raiseAndFocus` is new, used for
 "a window has just appeared for a client that has started drawing" - the one moment the user is waiting
 for it - while the urgency hint keeps calling `raise()` alone, because a client saying "look at me" has

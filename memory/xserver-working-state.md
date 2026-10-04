@@ -1713,3 +1713,14 @@ window and maps another while starting up must not make the window flicker. Veri
 -> the window is first in the window list; kill the client -> "holds its last frame" then "has had nothing
 to show for 1500 ms: its window is closed"; connect again -> a **new window id** and front again. 477
 tests green.
+
+**2026-10-04 (A44's follow-up): the window was shown once and then hidden.** "我要跟per-client一样保持静默，
+直到x客户端连接才显示真正的窗口，当所有x客户端断开，应当马上关闭窗口" - and the first half matters: the
+**backend** is still created at startup (VNC needs to serve viewers before any client draws, the tray and
+the in-process tests need the backend object) but **showing** is now the server's answer rather than the
+backend's own decision - `setIdle(false)` shows the window, and a session with nothing to show is idle from
+the first tick. Everything measured from a frame (the size, the placement, the platform's decoration) is
+measured at that first show. Hiding happens the moment the session goes idle, which is the same rule a
+per-client window follows on disconnect. Verified: a server started with no client has no window at all;
+connecting puts it on the screen first in the window list; killing the client takes it away within 400 ms.
+477 tests green, with no change to the server or to any test - the whole change is the JavaFX backend.
