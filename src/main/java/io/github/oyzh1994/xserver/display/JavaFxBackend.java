@@ -118,9 +118,9 @@ public final class JavaFxBackend implements DisplayBackend {
     private HeaderBar headerBar;
     private Label titleLabel;
     /**
-     * True while the platform pointer is over the window, so {@link #hostCursor} can decide. Taken
-     * from where the pointer really is rather than from the enter and leave events alone - see
-     * {@link #updatePointerOverWindow}.
+     * True while the platform pointer is over what this window *shows* - the client's page, not the
+     * window's chrome - so {@link #hostCursor} can decide. Taken from where the pointer really is
+     * rather than from the enter and leave events alone - see {@link #updatePointerOverWindow}.
      */
     private boolean pointerOverWindow;
     /** Whether the platform pointer is currently the one this window asked to be hidden. */
@@ -1373,10 +1373,14 @@ public final class JavaFxBackend implements DisplayBackend {
             // One line per change of the decision, which is the whole of what a pointer that is not
             // where it should be leaves behind: whether it was hidden or handed back, and the three
             // things that decide it.
-            log.debug("host pointer {}: over the window={}, application active={}, idle={}",
+            log.debug("host pointer {}: over the client's page={}, application active={}, idle={}",
                     wantHidden ? "hidden" : "handed back", pointerOverWindow, applicationActive(),
                     idle);
             cursorHidden = wantHidden;
+            // And the sprite goes with the decision: it is the client's pointer, so a move that takes
+            // the pointer off the page has to take it off the canvas too, and the frame that is
+            // redrawn without it is what erases it (the damage box covers where it was).
+            repaintCursorArea();
         }
         if (wantHidden) {
             CURSOR_OWNER.set(this);
@@ -1508,10 +1512,13 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     /**
-     * Notes that the pointer is over the window, and hides the platform's arrow if that is new.
+     * Notes that the pointer is over the window, and re-decides the platform's arrow if that is new.
      *
-     * <p>Not left to the enter event alone: a window that opens under a pointer which never moves
-     * never gets one, and the arrow would sit on top of the client's cursor until it does.
+     * <p>Not left to the enter event alone: a window that opens under a pointer which never moves never
+     * gets one, and the arrow would sit on top of the client's cursor until it does. Whether the
+     * pointer is then over the *page* rather than over the header bar is not this method's to answer -
+     * {@link #applyHostCursor} asks the platform where the pointer is, and the flag set here is only
+     * the event's opinion of it.
      */
     private void enterWindow() {
         if (!pointerOverWindow) {
@@ -1666,6 +1673,13 @@ public final class JavaFxBackend implements DisplayBackend {
             // This process is in the background, so the platform is drawing the pointer (and will not
             // let it be hidden - see applicationActive). Drawing the sprite too is exactly the
             // "two cursors" the user reported.
+            return;
+        }
+        if (!pointerOverWindow) {
+            // The pointer is over the window's chrome - the header bar - and not over the client's
+            // page. The sprite is the *client's* pointer, so it has no place there: drawn at the point
+            // the pointer left the content, it is a second pointer beside the platform's arrow, on the
+            // strip where the window's own buttons are.
             return;
         }
         if (sprite.pixels() != cursorPixels) {
@@ -1901,6 +1915,13 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     private void pointerMoved(MouseEvent event) {
+        // **A move is where the pointer can cross between the client's page and the window's chrome,
+        // and that crossing is neither an enter nor a leave of the window.** The platform's arrow is
+        // hidden while the pointer is over the content and must come back over the header bar, whose
+        // own buttons are pressed with it - reported 2026-10-04: "整个标题栏区域，鼠标是隐藏的…
+        // 导致我想按一下最小化或者全屏按钮都很困难". Re-decided from where the pointer is, which is
+        // what {@link #updatePointerOverWindow} asks about; cheap, and a no-op when nothing changed.
+        applyHostCursor();
         if (heldButtons == 0 && !overContent(event)) {
             // Over the header bar, which is the window's chrome rather than the client's page: the
             // pointer is not on the screen the client is being shown, and moving the window by its

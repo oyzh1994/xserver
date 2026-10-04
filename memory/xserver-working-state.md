@@ -1677,3 +1677,13 @@ macOS's live-resize reference can still be the zoomed frame.
 because the platform's own title is the system UI font in bold and naming a family would freeze the size
 and the family along with the weight that was wanted. With the left area empty the centred title sits in
 the middle of the window, which is where a title bar's title belongs. 477 tests green.
+
+**2026-10-04 (same day, the pointer over the header bar):** "整个标题栏区域，鼠标是隐藏的…想按最小化
+或者全屏按钮都很困难". The decision (A42) was taken from the platform's pointer position, but only
+*asked* on the events that used to matter - entering or leaving the window, focus, idle, geometry - and
+crossing from the content to the header bar is none of them (the scene is not entered or left, and
+`enterWindow` finds the flag already set). So `pointerMoved` now re-decides on every move, and
+`drawCursor` skips the client's sprite while the pointer is over the chrome, with a decision change
+repainting the sprite's own box so that frame is what erases it. Verified: the log says "handed back"
+over the bar, and two captures of the same window differ only in the 24x30 pixel box where the sprite
+was. 477 tests green.

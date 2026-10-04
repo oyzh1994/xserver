@@ -6699,3 +6699,27 @@ than papered over:
    exact (the table above), and the drags after the first are exact too, so this is the platform's
    stale reference rather than the anchor arithmetic (A39) - which is why it is written down instead of
    guessed at.
+
+**Its own follow-up, reported the same day: the pointer was hidden over the header bar.** "从x窗口往下到
+标题栏下方边界至桌面这部分区域，也就是整个标题栏区域，鼠标是隐藏的，不符合预期，导致我想按一下最小化
+或者全屏按钮都很困难". Two things were wrong, and both are fixed:
+
+- **The decision was not re-taken when the pointer crossed from the page to the chrome.** It is taken
+  from where the pointer really is (A42), but only *asked* on the events that used to matter: entering
+  and leaving the window, a focus change, an idle change and the window's own geometry. Crossing from
+  the content to the header bar is none of those - the scene is entered and left, not the window - and
+  `enterWindow` sees the flag already set and does nothing. So the arrow stayed hidden for as long as
+  the pointer was over the header, which is where the window's own buttons are. A move now re-decides
+  (`pointerMoved` calls `applyHostCursor`), which is a `MouseInfo` query and a no-op when nothing
+  changed. Verified by the log: content -> "host pointer hidden", header bar -> "**host pointer handed
+  back**", content again -> hidden.
+- **The client's sprite was still drawn there.** The sprite is the *client's* pointer and has no place
+  over the chrome, but the pointer's X position stays where it last was over the page, so a sprite was
+  left sitting on the strip the header bar occupies - a second pointer beside the platform's arrow, on
+  the one strip where the window's buttons are. `drawCursor` now skips it while the pointer is over the
+  chrome, and a change of the decision repaints the sprite's own box so the frame without it is what
+  erases it. Verified by comparing two captures of the same window: with the pointer over the page the
+  only difference between them is a 24x30 pixel box at the sprite's place; with the pointer over the
+  header bar that box is the framebuffer, i.e. clean.
+
+477 tests green.
