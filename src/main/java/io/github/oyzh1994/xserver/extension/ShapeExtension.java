@@ -452,6 +452,21 @@ public final class ShapeExtension implements Extension {
                 .build());
     }
 
+    /**
+     * {@code ShapeGetRectangles}: the window's shape as rectangles, <b>banded</b>.
+     *
+     * <p>Measured against Xvfb 2026-10-04 (a window whose shape was set with one rectangle, three
+     * times - {@code Unsorted}, {@code YSorted} and {@code YXBanded}): a reference answers
+     * <b>{@code YXBanded} (3) every time</b> and the same rectangles, while this server answered
+     * {@code Unsorted} (0) with a comment promising nothing. The X Test Suite reads that field as a
+     * contract - "Expected order of 3, Received 0" in five of its eleven SHAPE cases - and a client
+     * that merges the list does too. So the list is now put in that order rather than the answer
+     * being dressed up: sorted by y then x, with rectangles of the same band merged when they touch.
+     *
+     * <p>A mask is decomposed into its own rectangles here (it used to be answered as one big
+     * rectangle, "the closest honest answer"), which is both more of the truth and already banded by
+     * construction.
+     */
     private void getRectangles(XServer server, ClientConnection client, GetRectangles request) {
         XWindow window = requireWindow(server, client, request.getWindow());
         int kind = unsigned(request.getSourceKind());
@@ -461,12 +476,8 @@ public final class ShapeExtension implements Extension {
         if (!shape.isSet()) {
             // An unshaped window is its own rectangle.
             rectangles = List.of(new Rectangle(0, 0, window.width(), window.height()));
-        } else if (shape.mode() == ShapeState.MODE_MASK) {
-            // The bits of a mask are not decomposed back into rectangles, so the closest honest
-            // answer is the rectangle the mask occupies.
-            rectangles = List.of(shape.extents());
         } else {
-            rectangles = shape.absoluteRectangles();
+            rectangles = band(shape.absoluteRectangles());
         }
         List<com.github.moaxcp.x11.protocol.xproto.Rectangle> reply =
                 new ArrayList<>(rectangles.size());
@@ -475,9 +486,42 @@ public final class ShapeExtension implements Extension {
         }
         client.sendReply(GetRectanglesReply.builder()
                 .sequenceNumber(client.sequenceNumber())
-                .ordering((byte) 0)                     // Unsorted: we make no ordering promise
+                .ordering((byte) ORDERING_YX_BANDED)
                 .rectangles(Lists.immutable.ofAll(reply))
                 .build());
+    }
+
+    /** The ordering this server answers with, which is what a reference answers (measured). */
+    private static final int ORDERING_YX_BANDED = 3;
+
+    /**
+     * Sorts a rectangle list into the yx-banded form and merges what that form considers one
+     * rectangle: same band (same y and height) and overlapping or touching x ranges.
+     */
+    private static List<Rectangle> band(List<Rectangle> rectangles) {
+        List<Rectangle> banded = new ArrayList<>();
+        for (Rectangle rectangle : rectangles) {
+            if (rectangle.width <= 0 || rectangle.height <= 0) {
+                continue;
+            }
+            Rectangle merged = rectangle;
+            for (int i = 0; i < banded.size(); i++) {
+                Rectangle other = banded.get(i);
+                if (other.y == merged.y && other.height == merged.height
+                        && merged.x <= other.x + other.width
+                        && other.x <= merged.x + merged.width) {
+                    int x1 = Math.min(other.x, merged.x);
+                    int x2 = Math.max(other.x + other.width, merged.x + merged.width);
+                    merged = new Rectangle(x1, other.y, x2 - x1, other.height);
+                    banded.remove(i);
+                    i = -1;                             // the merge can make it touch another
+                }
+            }
+            banded.add(merged);
+        }
+        banded.sort(java.util.Comparator.comparingInt((Rectangle r) -> r.y)
+                .thenComparingInt(r -> r.x));
+        return banded;
     }
 
     // ------------------------------------------------------------------

@@ -1874,3 +1874,21 @@ names its slaves, and an added master starts at 8 exactly as a reference's does.
 `xinput list` side by side: the same tree with the same ids and attachments, differing only in the
 backend pair's name. 486 tests green. The device-model item (A48) is closed; what is left on the
 XInput page is the barrier item (A47's blocking half, unmeasurable in this bed) and nothing else.
+
+**2026-10-04 (A49 recorded, A50 the X Test Suite):** asked to record the barrier blocking rather than
+build it, and to run the X11 completeness tests. **A49** now carries the whole picture: what is
+missing (XFIXES 5.0, the barrier events, the clamping), why it is parked (no client in this bed links
+`XFixesCreatePointerBarrier` - checked with `nm -D`: libXfixes exports it, x11vnc/xinput/xdotool/Xvfb/
+libgdk-3 all have zero references - a client is told 4.0 and falls back, the bed cannot verify the
+blocking, and it would touch the pointer-motion hot path), and exactly how it would be verified
+(request surface against a reference, event layout from the header, behaviour on this server with the
+*host* pointer via a kit tool plus the CGEvent tools). **A50** is the XTS run: SHAPE went from 5 of 11
+failing to 10 of 11 - a reference answers `ShapeGetRectangles` with ordering **YXBanded (3)** for
+every shape it is given, where this server answered `Unsorted (0)`, and the list is now really banded
+(and masks decomposed) rather than the field dressed up; one case is left with its journal numbers
+(the bounding-box -1/-1 convention). The XI/XIproto sets cannot run at all - 107 of 107 and 279 of 316
+UNTESTED - because they are XInput **1.x**, which is implemented only as far as the device list; the
+reference's own numbers there are 88/107 pass and 55 failures, so that gap is a project of its own.
+Harness lesson: an XTS run against a server backgrounded from a one-shot shell command reports "81 of
+82 failed" with every purpose ABORT - the server was killed when the command ended; run it in a live
+session. 486 tests green.

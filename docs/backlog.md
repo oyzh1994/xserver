@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A50~~ | ~~**the SHAPE set of the X Test Suite**, and the XI/XIproto sets~~ **run 2026-10-04**: SHAPE went from **5 of 11 failing** to **10 of 11 passing** - a reference answers `ShapeGetRectangles` with ordering **YXBanded (3)** for every shape a client sets (measured: Unsorted, YSorted and YXBanded inputs alike), where this server answered `Unsorted (0)` 'with no promise', which is what five XTS cases read as `Expected order of 3, Received 0`; the list is now banded for real and masks are decomposed into their own rectangles. The XI and XIproto sets cannot run here: **107 of XIproto's 107 tests are UNTESTED and 279 of XI's 316**, because both sets are XInput **1.x** protocol this server implements only as far as the device list (A49's neighbour, §9's XI1 hole). A reference passes 88 of 107 there and fails 55 of its own - the target is its numbers, not a clean sheet | correctness | M |
 | [ ] A49 | **pointer barriers' blocking half** - the last piece of XI 2.3: XFIXES 5.0 plus `CreatePointerBarrier`/`DestroyPointerBarrier`, the `XI_BarrierHit`/`XI_BarrierLeave` events and the clamping itself (a barrier stops the pointer until its owner releases it). **Recorded, deliberately not built**: nothing in this bed can use a barrier, and the one server that has them cannot demonstrate the blocking (see the entry for the measurements, the cost and how it would be verified) | capability | M |
 | ~~A48~~ | ~~**the device model**: this server listed **two** devices where a reference lists six, and named the master as the source of every event~~ **done 2026-10-04**: the device set is a **mutable table** and it is now a reference's own six - the two masters, the two **XTEST** slaves, and the two the host's input arrives on (where a reference keeps its backend's "Xvfb mouse"/"Xvfb keyboard"; named `xserver mouse`/`xserver keyboard` here, the one choice that is not a measurement). XTEST input carries its slave as `sourceid` and host input carries the host's device; **`XIChangeHierarchy`** is implemented (`XIAddMaster` creates the four devices a reference creates, `XIRemoveMaster`/`XIAttachSlave`/`XIDetachSlave` move them, `XI_HierarchyChanged` goes to the clients that selected it with a reference's shape and flags); **XI's passive grabs** are armed, answered and taken back on the table the core grabs use; and the device-state events are selectable on `XIAllDevices` alone. Verified with `xinput` itself: `list` draws the same tree a reference draws, `create-master`/`remove-master` work, removing the core pointer is refused the same way | correctness | M |
 | ~~A47~~ | ~~**the XInput implementation is four releases behind a reference** - the one version gap A36 left: Xvfb answers `XInputExtension` **2.4** where this server answered **2.0**~~ **fixed 2026-10-04**: the version is a reference's 2.4 and the surfaces behind it are measured and answered - **raw events (XI 2.1) are implemented and delivered** (a root selection, the reference's own shapes: a motion is 72 bytes, a button and a key 40, and a warp sends nothing), `XIBarrierReleasePointer` (2.3) answers the extension's own barrier error exactly as a reference answers it for a barrier that does not exist, and 2.2's touch has no device on either server to have content. `XIQueryVersion` now follows the reference's rule (the lower of the two, and **BadValue** for a major below 2) and both handshakes answer 2.4. What is left is measured rather than half-answered: barriers themselves need XFIXES 5.0, `XIChangeHierarchy` would need a device model that can change, and XI's passive grabs are still refused | capability | M |
@@ -7202,3 +7203,58 @@ plan rather than a blank page):
   motion crosses; moving away from the hit box produces `XI_BarrierLeave`. `xdotool getmouselocation`
   (or a probe's `QueryPointer`) is the assertion for the clamped position, and `tools/sweep.sh` keeps
   the request surface from drifting.
+
+### [x] A50. The X Test Suite, again: SHAPE fixed, and what the XI sets say. **M** - 2026-10-04
+
+**What was run.** The X Test Suite on the bed (A37's build, `/root/xts`), with a section that A37 did
+not run - `ShapeExt`, `XI` and `XIproto` - against Xvfb `:98` and against this server on `:61`
+(`--single-window --no-clipboard --no-tray --backend headless`). Adding a section is A37's own recipe:
+
+```
+xsinput
+	"VSW5TESTSUITE SECTION ShapeExt 11 11 0 0"
+	:include:/scenarios/shape_scen
+	"VSW5TESTSUITE SECTION XI 36 316 0 0"
+	:include:/scenarios/XI_scen
+	"VSW5TESTSUITE SECTION XIproto 35 107 0 0"
+	:include:/scenarios/XIproto_scen
+```
+
+**The harness lesson first, because it invalidated the first run.** The server has to be started in a
+session that *stays alive*: a server backgrounded from a one-shot shell command was killed when that
+command finished, and the run then reported `81 of 82 tests failed` with every XI and XIproto purpose
+`UNINITIATED`/`ABORT` - all of them, in the journal, `ERROR: avs_xext_init: Unable to open display`.
+That is a dead server, not a protocol failure, and it looks exactly like one from the summary line.
+
+**SHAPE: 5 of 11 failing, and it was a real protocol bug.** A reference answers
+`ShapeGetRectangles` with `ordering = YXBanded (3)` **whatever the client set** - measured with a
+probe that sets one rectangle three ways (Unsorted, YSorted, YXBanded) and asks for it back: a
+reference answers `3` and the same rectangles every time, this server answered `0` with a comment
+promising nothing. Five XTS cases read it as `Expected order of 3, Received 0`, and a client that
+merges the list would too. The list is now actually put in that order (`ShapeExtension.band`: sorted
+by y then x, rectangles of a band merged when they touch) rather than the field being dressed up, and
+a **mask is decomposed into its own rectangles** where it used to be answered as one big rectangle
+("the closest honest answer"). XTS: **10 of 11 SHAPE cases pass** now, verified live too (the probe's
+four cases answer exactly what the reference answers, line for line).
+
+**The one SHAPE case left, recorded with its numbers.** Purpose 8 expects a bounding box of
+`-1,-1 1154x654` where this server answers `0,0 1152x652` - our extents expanded by one on each side.
+It is *not* a blanket rule: the probe above shows a plain window shape answered identically on both
+servers, so the case must involve the shape coordinate space's boundary convention (an offset). Its
+journal line is `520|8 1 ...|ERROR: Expected x_bounding of -1, Received 0` in
+`/root/xts-shape/<date>/journal`, and the next step is to read that purpose's setup in
+`xts5/tset/ShapeExt/XShapeGetRectangles` and reproduce it with the probe.
+
+**XI and XIproto: the sets cannot run, and that is the XI **1.x** surface.** 107 of XIproto's 107
+tests and 279 of XI's 316 are `UNTESTED` here against 12 and 49 on the reference, because both sets
+are XInput **1.x** protocol - `SelectExtensionEvent`, `GetDeviceMotionEvents`, `GetDeviceControl`,
+`ChangeFeedbackControl`, `GrabDevice*`, `DeviceBell`, `ChangeKeyboardDevice` - which this server
+implements only as far as `ListInputDevices`/`OpenDevice`/the two mappings (the AWT-critical part).
+§9 already lists that hole; this is its measurement, and the reference's own numbers are the target:
+**88 of 107 XIproto tests pass there and 7 fail; of XI's 316, 200 pass, 48 fail, 13 unresolved**.
+Implementing XI 1.x's event selection and device control is a project of its own, and the modern
+clients here do not use it.
+
+**Also re-confirmed**: A37's Xproto result stands (the 120-odd purposes that fail are its PURPOSE 2,
+the malformed-length cases, which need the per-request length table A37 describes), and the suite runs
+without a single crash on the server.
