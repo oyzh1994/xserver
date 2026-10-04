@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A45~~ | ~~**the project is cross-platform and one thing in it was not** - the full screen exit key was macOS's Control-Command-F only~~ **fixed 2026-10-04**: the audit is in the design notes' *Platforms* section (the inventory of everything platform-specific, in one table, and the four rules a change has to keep), and the one real violation is fixed - `F11` everywhere that is not macOS - along with the unix socket, which used to create `/tmp/.X11-unix` on a platform that cannot use it before failing. Nothing else in `src/main` requires a platform: the extended window is behind a capability check, the unix socket behind a fallback, JavaFX behind Swing behind headless, and the macOS quirks are handled in code that is inert elsewhere | correctness | M |
 | ~~A44~~ | ~~single-window mode's window with nothing to show - the question was whether it should be hidden with no clients connected and shown, raised and focused when one arrives~~ **changed 2026-10-04**: it was already not opened *before the first client*, and it used to be kept afterwards holding its last frame (a deliberate design, asserted by eight tests); it is now closed after a 1.5 s grace period with nothing to show - long enough that a toolkit which unmaps one window and maps another while starting up does not make it flicker - and the next client that maps a window opens it again, raised **and focused** (`raiseAndFocus`, new; the urgency hint still only raises). See the entry | correctness | S |
 | ~~A43~~ | ~~**JavaFX 27, with the window's title bar drawn by the toolkit** (the user upgraded the pom and asked for `HeaderBar`)~~ **done 2026-10-04**: the window is a `StageStyle.EXTENDED` one whose 30 point `HeaderBar` carries the client's title in bold, and the content starts below it. The geometry was adapted around that (`content = canvas below the header`, the pointer mapping, the cursor policy, full screen hiding the bar) and the maximize was **re-designed** rather than ported: JavaFX 27's macOS zoom now goes to the display instead of to the window's content, so A38's fill of the usable area is both unnecessary and harmful - resizing a zoomed window un-zooms it, which made the state oscillate and the second double click restore nothing. The zoom is left alone and the client takes the size the window has, reported once per gesture. Verified: all four edges exact, the header drag leaks no clicks into the client, maximize/restore exact, full screen in and out, the pointer mapping exact, 477 tests green. Two known artifacts are in the entry | correctness | L |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
@@ -6826,3 +6827,36 @@ front window again. 477 tests green.
 
 The `--single-window` trade-off from A39 is unchanged and still the thing to judge: the window shows the
 clients' windows, not the whole screen.
+
+### [x] A45. The project is cross-platform, and one thing in it was not. **M** - fixed 2026-10-04
+
+**Asked for.** "这个项目是跨平台的，你检查项目所有代码和配置，不单单只考虑macos这一个系统，记录进文档，严格
+执行，我记得你有个全屏退出快捷键就是仅适配macos".
+
+**The audit** (every `src/main` file, and the configuration) is in `docs/design-notes.md`'s **Platforms**
+section: the table of everything platform-specific and what happens elsewhere, and the four rules a
+change has to keep. Two things were wrong:
+
+1. **The full screen exit key really was macOS only** (`KeyCombination.valueOf("Ctrl+Meta+F")`, and the
+   reader of this project remembered it). It is now `JavaFxBackend.keyFor(osName)`: Control-Command-F on
+   macOS, **F11** everywhere else - and it is the only place in the codebase that reads `os.name`. Which
+   key it is happens to be a platform convention; *that Escape is not it* is not (JavaFX consumes its
+   exit key before the scene sees it, so a forwarded terminal, editor or IDE would be denied its own
+   Escape). Pinned by a test that gives the answer for four platform names and for a platform that will
+   not say.
+2. **The unix domain socket created its directory before asking whether the platform has the family.**
+   `/tmp/.X11-unix` is a POSIX path; on Windows it resolves against the current drive, so a machine that
+   cannot use a unix socket at all was left with a `\tmp\.X11-unix` and *then* told the socket was
+   unavailable. The channel is now opened first, so only what the platform supports is created; the TCP
+   listener carries on either way, as it already did.
+
+**Everything else that is platform-specific, and why it is not a violation**: the window's own title bar
+is `StageStyle.EXTENDED` behind `Platform.isSupported(EXTENDED_WINDOW)`, with the platform's decorated
+window as the fallback; `Cursor.NONE`'s process-wide hide and the "a full screen window is maximized too"
+quirk are macOS behaviours that the code *handles* with guards that are inert elsewhere; the tray goes
+through AWT's `SystemTray`; the display scale comes from the display; and the JavaFX preview feature the
+header bar needs is opted into by the backend itself rather than by a command line (A43), so no platform
+needs a special invocation. The tools under `tools/` are macOS-only (AppKit/CoreGraphics probes and ssh to
+the test bed) and deliberately so: nothing under `src/main` depends on them.
+
+477 tests green.

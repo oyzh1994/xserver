@@ -110,6 +110,27 @@ public final class JavaFxBackend implements DisplayBackend {
     private Scene scene;
     /** The canvas the screen is drawn into - the window's *content*, below the header bar. */
     private Canvas canvas;
+
+    /**
+     * The key that leaves full screen, which is the platform's own convention rather than Escape (see
+     * the call in {@link #openWindow} for why Escape is not it).
+     *
+     * <p>**This is the one place in the backend that reads the platform's name, and it has to**: macOS
+     * leaves full screen with Control-Command-F and Windows and the X desktops use F11, and a server
+     * that offered only the macOS one leaves a Windows or Linux user with no way out of a full screen
+     * window at all - which is what the user of this project found ("我记得你有个全屏退出快捷键就是仅
+     * 适配macos"). Package-private and taking the name as a value so both answers can be pinned.
+     */
+    static javafx.scene.input.KeyCombination fullScreenExitKey(String osName) {
+        return javafx.scene.input.KeyCombination.valueOf(keyFor(osName));
+    }
+
+    /** The name of that key: {@code Ctrl+Meta+F} on macOS, {@code F11} everywhere else. */
+    static String keyFor(String osName) {
+        return osName != null && osName.toLowerCase(java.util.Locale.ROOT).startsWith("mac")
+                ? "Ctrl+Meta+F"
+                : "F11";
+    }
     /**
      * The client-area header bar: the window's title bar, drawn by JavaFX (JavaFX 27's
      * {@link StageStyle#EXTENDED}), or null where the platform has no extended windows and the
@@ -1221,10 +1242,9 @@ public final class JavaFxBackend implements DisplayBackend {
         // Escape, and it is consumed by JavaFX before the scene sees it: a forwarded application in a
         // full screen window would never be given its own Escape key - which a terminal, an editor
         // and an IDE all need - and pressing it would throw the window out of full screen instead.
-        // Control-Command-F is what macOS itself uses to leave full screen, so the window is still
-        // easy to leave the way every other application on the system is.
-        stage.setFullScreenExitKeyCombination(
-                javafx.scene.input.KeyCombination.valueOf("Ctrl+Meta+F"));
+        // Which key to use instead is the platform's own convention, not this server's (see
+        // {@link #fullScreenExitKey}).
+        stage.setFullScreenExitKeyCombination(fullScreenExitKey(System.getProperty("os.name")));
         // The window is the frame around the client's window, so pulling its edge is the gesture a
         // window manager's frame has always had: the client's window is resized to match. A scene
         // listener rather than a stage one, because the content area is the client's size and the

@@ -156,6 +156,24 @@ class JavaFxBackendTest {
     }
 
     /**
+     * The key that leaves full screen is the platform's own convention, and Escape is not it: JavaFX
+     * consumes its exit key before the scene sees it, so a forwarded application in a full screen
+     * window would never be given its own Escape - which a terminal, an editor and an IDE all need.
+     *
+     * <p>Which key to use instead is not this server's decision, and offering only the macOS one is
+     * what a reader of this project caught: on Windows and the X desktops it is F11, and a full screen
+     * window with no key to leave it is a window with no way out.
+     */
+    @Test
+    void theKeyThatLeavesFullScreenIsThePlatformsOwn() {
+        assertEquals("Ctrl+Meta+F", JavaFxBackend.keyFor("Mac OS X"), "macOS uses Control-Command-F");
+        assertEquals("Ctrl+Meta+F", JavaFxBackend.keyFor("macOS"), "whatever the name says, if it is mac");
+        assertEquals("F11", JavaFxBackend.keyFor("Windows 11"), "and Windows uses F11");
+        assertEquals("F11", JavaFxBackend.keyFor("Linux"), "as do the X desktops");
+        assertEquals("F11", JavaFxBackend.keyFor(null), "a platform that will not say gets the common one");
+    }
+
+    /**
      * The window is the content plus whatever is above it, and two different things can be: the
      * client-area header bar of an extended window, which is inside the scene, or the platform's own
      * title bar, which is outside it.

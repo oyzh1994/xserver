@@ -78,13 +78,18 @@ public final class ClientListener {
     }
 
     private void startUnixSocket(int display) throws IOException {
+        // **The family is asked for before the directory is made.** `/tmp/.X11-unix` is a POSIX path:
+        // on Windows it resolves against the current drive, so `createDirectories` would leave a
+        // `\tmp\.X11-unix` behind on a machine that cannot use a unix socket at all - and then the
+        // open below would have thrown and the whole attempt been logged as unavailable anyway. The
+        // channel is opened first, so what is left to do is only what the platform supports.
+        ServerSocketChannel unix = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         Files.createDirectories(UNIX_SOCKET_DIR);
         Path path = UNIX_SOCKET_DIR.resolve("X" + display);
         // A stale socket from a crashed server would make bind fail; only remove real sockets.
         if (Files.exists(path)) {
             Files.delete(path);
         }
-        ServerSocketChannel unix = ServerSocketChannel.open(StandardProtocolFamily.UNIX);
         unix.bind(UnixDomainSocketAddress.of(path), 64);
         unix.configureBlocking(true);
         channels.add(unix);

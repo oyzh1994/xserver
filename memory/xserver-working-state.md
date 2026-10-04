@@ -1733,3 +1733,15 @@ ticks ("我看了下还是会极短地闪一下窗口，并且这行代码明显
 what the session is before it returns. Verified: no `window shown` line in the log at startup at all.
 Lesson worth keeping: a backend flag that mirrors a server decision is not a decision the backend can
 make - ask the server, or be told before you act.
+
+**2026-10-04 (A45, cross-platform):** asked to audit the whole project for macOS-only assumptions and
+record them. The audit is `docs/design-notes.md`'s **Platforms** section - a table of everything
+platform-specific with what happens elsewhere, and four rules a change has to keep - and two things were
+actually wrong: the **full screen exit key was macOS's Control-Command-F only** (now `F11` on everything
+that is not macOS, via `JavaFxBackend.keyFor`, the only `os.name` read in the codebase, pinned by a test),
+and the **unix socket created `/tmp/.X11-unix` before asking whether the platform has that family** (the
+channel is opened first now, so a Windows machine is not left with a `\tmp` directory before being told
+the socket is unavailable). Everything else is either a capability behind a check with a fallback
+(extended windows -> decorated, JavaFX -> Swing -> headless, unix socket -> TCP) or a macOS quirk handled
+in code that is inert elsewhere. `tools/` is macOS-only on purpose and nothing under `src/main` uses it.
+477 tests green.

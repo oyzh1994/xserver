@@ -291,9 +291,10 @@ painted where the application is active.
 
 A host window that opens behind the IDE never becomes active (its title bar stays grey), so the
 platform's arrow is the pointer there until the user clicks it - and since A28 the sprite is not drawn
-in that state, so what the user sees is one pointer, not two. Raising and focusing the window once when
-its client first draws would make the sprite appear earlier; it is deliberately not done, because a
-window that jumps to the front on every client is worse than the arrow.
+in that state, so what the user sees is one pointer, not two. **Raising the window when its client first
+draws** makes the sprite appear earlier, and since A44 it is raised *and focused* once, at that one
+moment (a window that has just appeared is one the user is waiting for); the urgency hint still only
+raises, because a client asking to be looked at has not asked for the keyboard.
 
 ## Input is mapped through the viewport
 
@@ -1932,3 +1933,39 @@ End-to-end checks that do need one:
   a second. **Prefer a measurement of the two servers to an argument about which is right** - three
   sessions of reasoning about that flood produced nothing, and the tap produced the answer in an
   afternoon.
+
+## Platforms
+
+**The product is cross-platform; only a handful of conventions are the platform's own.** The X side -
+the protocol, the handlers, the input state machine, the framebuffer - has no platform in it at all.
+The display backends are chosen with `--backend`: `javafx` (all platforms JavaFX runs on), `swing` (AWT,
+for a machine where JavaFX will not start), `headless` (a server with no window, for tests and for a
+machine reached over the network) and `vnc` (the screen served to a viewer instead of to a window).
+
+**Everything platform-specific, in one list** - this is the inventory a change has to keep true:
+
+| what | where | on a platform that is not macOS |
+| --- | --- | --- |
+| the key that leaves full screen | `JavaFxBackend.keyFor` - the **only** `os.name` read in the codebase | `F11` instead of Control-Command-F. Never Escape: JavaFX consumes that before the scene sees it, so a forwarded terminal, editor or IDE would lose its own Escape |
+| the window's own title bar | `StageStyle.EXTENDED` + `HeaderBar`, behind `Platform.isSupported(EXTENDED_WINDOW)` | the platform's decorated window and no header bar of ours - the same check that keeps two title bars from appearing |
+| `Cursor.NONE` hiding the pointer process-wide | `JavaFxBackend.hostCursor`, the `CURSOR_OWNER` bookkeeping | NONE is an ordinary "no cursor" for one window; the loan-and-give-it-back discipline is harmless there |
+| a full screen window being reported as *maximized* too | `JavaFxBackend`'s maximized listener | the same guard is inert |
+| the unix domain socket at `/tmp/.X11-unix/X<n>` | `ClientListener.startUnixSocket` | the family is asked for *before* the directory is made, so nothing is left behind where it is unsupported, and the TCP listener carries on (`unix domain socket unavailable: ...`) |
+| the notification area | `AwtTrayIcon`, through AWT's `SystemTray` | the menu bar on macOS, the notification area on Windows, whatever the desktop provides on Linux |
+| the display's own scale (`--scale auto`) | `Screen.getOutputScaleX/Y` | 1x where the display is not scaled |
+| the testbed's tools | `tools/*.c`, `tools/vm.sh`, `tools/host-*` | **not part of the product**: AppKit and CoreGraphics probes, and ssh to a VM, for driving this project's own test bed from a Mac. Nothing under `src/main` depends on them |
+
+**The rules a change has to follow**, which is what "cross-platform" means here:
+
+1. **Nothing in `src/main` may require one platform.** A capability that is not universal goes behind a
+   check with a fallback - `Platform.isSupported(ConditionalFeature.EXTENDED_WINDOW)` above is the
+   shape of it, and the JavaFX preview feature it needs is opted into by the backend itself rather than
+   by a command line (see A43).
+2. **A convention - a key, a path, a gesture - is read from the platform, and defaulted to the common
+   choice.** `fullScreenExitKey` is the model: the answer for every platform is in one place, is
+   testable without a window, and the fallback is the convention most platforms share.
+3. **A platform's quirk may be handled, but the code has to say which platform it is and what happens
+   elsewhere.** Every macOS measurement in these notes names macOS and says what the alternative is -
+   that is documentation, not a platform requirement.
+4. **A platform whose answer is "no" degrades, it does not fail**: no extended windows means a decorated
+   window, no unix socket means TCP, no JavaFX means Swing, no display at all means headless.
