@@ -22,7 +22,11 @@ if [ $# -lt 1 ]; then
     exit 2
 fi
 
-if [ ! -f "$HERE/target/tools-cp.txt" ]; then
+# Regenerated when it is missing *or older than the pom*: a dependency whose version changed - a
+# JavaFX upgrade, say - leaves the file listing the jars of the version before it, and the failure
+# that produces is a NoSuchMethodError from a class that is there, in another version. That cost an
+# afternoon on 2026-10-04, when `HeaderBar.setLeft` "did not exist" while javap said it did.
+if [ ! -f "$HERE/target/tools-cp.txt" ] || [ "$HERE/pom.xml" -nt "$HERE/target/tools-cp.txt" ]; then
     (cd "$HERE" && "$MVN" -o -q dependency:build-classpath -Dmdep.outputFile=target/tools-cp.txt)
 fi
 if [ ! -d "$HERE/target/test-classes" ]; then

@@ -156,6 +156,25 @@ class JavaFxBackendTest {
     }
 
     /**
+     * The window is the content plus whatever is above it, and two different things can be: the
+     * client-area header bar of an extended window, which is inside the scene, or the platform's own
+     * title bar, which is outside it.
+     *
+     * <p>The client is shown neither, and a window sized as if it were only the content is short by
+     * the header - which is what the first report of this feature turned into: the window opened as a
+     * strip thirty points tall (measured 2026-10-04).
+     */
+    @Test
+    void theHeaderBarIsPartOfTheWindowAndNotOfTheContent() {
+        assertEquals(374, JavaFxBackend.windowHeight(344, 30, 0),
+                "the header bar is added above the content");
+        assertEquals(372, JavaFxBackend.windowHeight(344, 0, 28),
+                "and the platform's own title bar with it, when there is no header bar");
+        assertEquals(344, JavaFxBackend.windowHeight(344, 0, 0),
+                "a window with neither is exactly its content");
+    }
+
+    /**
      * Where the pointer really is decides whether the platform pointer is handed back, and a window
      * that moves or changes size under a pointer that does not move is what the enter and leave
      * events miss.

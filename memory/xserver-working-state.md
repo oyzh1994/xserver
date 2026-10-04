@@ -1632,3 +1632,42 @@ always answers `true`. Every "visible/hidden" reading taken before that calibrat
 build a test on either. The opposite desync (macOS re-shows the pointer on a Space switch while
 JavaFX's flag still says hidden, so the next hide is skipped and two pointers show) is in the backlog
 with why a hide/unhide "pump" only trades one symptom for the other.
+
+**2026-10-04 (the JavaFX 27 upgrade and the window's own title bar, A43): the user put the pom at 27
+and asked for `HeaderBar` as the title bar, 30 points fixed.** Three things about JavaFX 27 that are
+worth not re-learning: **`StageStyle.EXTENDED` and `HeaderBar` are preview features** and throw unless
+`javafx.enablePreview=true` is set *before the toolkit reads it* (done in `JavaFxBackend`'s static
+initializer, which loads before the toolkit starts); the window is extended-only where
+`Platform.isSupported(ConditionalFeature.EXTENDED_WINDOW)` says so, and a platform that answers no
+keeps its own title bar and gets no header bar of ours; and **`target/tools-cp.txt` does not follow the
+pom** - the tools' manual classpath kept listing JavaFX 25 after the upgrade, which shows up as a
+`NoSuchMethodError` for a method that exists in the jar on the classpath, and `tools/kit.sh` now
+regenerates it when the pom is newer than it.
+
+**The rendering adaptation is "content" changing meaning**: the scene is the whole window including the
+header bar, and the client is shown the canvas below it. So the content size is read from the window
+minus the header (and the platform's frame), the pointer mapping subtracts the canvas's place in the
+scene, mouse events on the chrome are not forwarded to the client (a press there is the window being
+moved - without the guard every title-bar drag delivered a click at the top row), the cursor policy is
+about the content rather than the window, and full screen hides the bar (`managed` false as well as
+invisible). `sizeToScene()` had to go: its "preferred size" is the BorderPane's header bar alone, so
+the window opened as a 30 point strip and the client was shrunk to 21 points by the platform's own
+resize of it.
+
+**The maximize was re-designed, and that is an upgrade effect rather than a port.** JavaFX 27's macOS
+zoom now goes to the display (measured: a 784x344 window zooms to 1504x853) where the old measurement
+had it coming from the window's content (1280x828 -> 1280x886), so A38's fill is unnecessary - and
+harmful: **setting a window's size while macOS has it zoomed un-zooms it**, which undid the fill within
+the second, flipped the state back and restored nothing (measured on the pre-change revision too). The
+zoom is now left alone and the client takes the size the window has; the one addition is a 160 ms
+settle that reports only the size the frame *stops* at, because the zoom is animated (785, 787, 798,
+... 1511) and the client chasing every intermediate flapped the window between two sizes twice a second.
+
+**Verified**: the four edges exact with the header bar (all far edges preserved), the header drag moves
+the window without leaking a single button event into the client, the maximize/restore is exact
+(784x374 <-> 1511x884), full screen hides the bar and gives the client 1512x945, a click 10 px inside
+the content lands at screen (11,61) for a viewport at (1,51), and **477 tests green**. Two artifacts
+are recorded in A43: a maximized window can be up to one client increment wider than a client that
+snaps to its cells (xterm: 1499 of 1511 - we may not clamp a zoomed window's frame, which is what
+would un-zoom it), and the first left/top edge drag right after a maximize/restore can slide because
+macOS's live-resize reference can still be the zoomed frame.

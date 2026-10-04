@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| ~~A43~~ | ~~**JavaFX 27, with the window's title bar drawn by the toolkit** (the user upgraded the pom and asked for `HeaderBar`)~~ **done 2026-10-04**: the window is a `StageStyle.EXTENDED` one whose 30 point `HeaderBar` carries the client's title and icon, and the content starts below it. The geometry was adapted around that (`content = canvas below the header`, the pointer mapping, the cursor policy, full screen hiding the bar) and the maximize was **re-designed** rather than ported: JavaFX 27's macOS zoom now goes to the display instead of to the window's content, so A38's fill of the usable area is both unnecessary and harmful - resizing a zoomed window un-zooms it, which made the state oscillate and the second double click restore nothing. The zoom is left alone and the client takes the size the window has, reported once per gesture. Verified: all four edges exact, the header drag leaks no clicks into the client, maximize/restore exact, full screen in and out, the pointer mapping exact, 477 tests green. Two known artifacts are in the entry | correctness | L |
 | [ ] A20 | "the context menu vanishes after the 片段 page is opened" - **not reproduced**: the menu opens and stays in both states here *and* on Xvfb, `MenuProbe` is identical, and `main` behaves the same; the page holds the X focus, which no server-side change touches | correctness | M |
 | ~~B6~~ | ~~GLX / OpenGL~~ **done 2026-09-27**: a software GL client renders itself and blits, so no renderer was needed - `glxinfo` and `glxgears` pass on `.147` | extension | XL |
 | [ ] D4 | audio and other devices - **out of scope by default**, no work planned | large | L-XL |
@@ -6589,3 +6590,109 @@ re-asserts, not in the same change as the fix above.
 So the platform's side of this is the **user's to confirm**; what is verified here is the decision, which is what was wrong. A second, opposite desync is recorded below rather than fixed.
 
 **The other direction, measured but not fixed: the hide can also fail to take effect.** After a full screen transition, macOS re-shows the pointer on its own (the Space switch is an activation), while JavaFX's `MacCursor.isNSCursorVisible` flag still says "hidden" - and `set()` skips the native call when the flag already matches, so the arrow can stay drawn over a window whose sprite is meant to be the only pointer (two pointers). It cannot be forced through the public API without calling `[NSCursor unhide]` an extra time, which AppKit counts - an extra unhide makes the *next* hide fail instead, so a "pump" trades one symptom for the other. Worth another session with a way to read the platform's own state (a private API, or `NSSystemCursorIsVisible`-style), not worth guessing at.
+
+### [x] A43. JavaFX 27, and the window's title bar drawn by the toolkit. **L** - done 2026-10-04
+
+**The request.** "把javafx的版本升级到27了，请使用headerbar作为标题栏，并完成javafx端的渲染适配，要完整测试，headerbar能更好地兼容整个页面，效果更佳，headerbar高度固定为30".
+
+**What JavaFX 27 gives.** `StageStyle.EXTENDED` (a conditional feature, `EXTENDED_WINDOW`) is a
+window whose platform title bar is gone and whose header buttons are drawn as an overlay on the top of
+the *scene*, plus `javafx.scene.layout.HeaderBar` - a layout container for `left`/`center`/`right`
+content that carries the drag-to-move and double-click-to-zoom behaviours the platform would have
+provided. It also needs **`javafx.enablePreview=true`**: the feature throws from
+`PreviewFeature.checkEnabled` (JavaFX's own message: "can only use preview features when the following
+system property is set") unless the application opts in, and the property has to be set before the
+toolkit reads it. That is done in `JavaFxBackend`'s static initializer, which is loaded before the
+toolkit starts and therefore the earliest the backend can speak for itself; an application that has
+already answered keeps its answer, and one that says no gets the platform's decorated window with no
+header bar of ours - the only way not to end up with two title bars.
+
+**The header bar.** Fixed at **30 points** (`min`/`pref`/`max`, which is what overrides the bar's
+default of the platform's own title bar height), with the client's title in `center` and its icon in
+`left`. The title label is marked `HeaderDragType.DRAGGABLE_SUBTREE`: content is not draggable by
+default, and the window's name is exactly where a hand goes to move it. The left area needs no inset
+of its own - the bar pads it for the platform's header buttons.
+
+**The rendering adaptation, which is what "content" means now.** The window's scene is the *whole*
+window - header bar and all - while what the client is shown is the canvas below it, which changes
+every piece of geometry that used to assume "scene == content":
+
+- `contentWidth()/contentHeight()` read the window's own size minus the header bar and the platform's
+  frame, and `frameWidth()/frameHeight()` add them back. `windowHeight(content, header, border)` is
+  package-private and tested: two different things sit above the content and both are easy to forget -
+  the header bar is *inside* the scene and the platform's title bar is *outside* it.
+- `sizeToScene()` was replaced by `sizeFrameToContent()`. What `sizeToScene` measures is the root's
+  *preferred* size, and with the content in a `BorderPane` centre that is the header bar's own height:
+  the window opened as a 30 point strip, and the platform's own resize of it arrived as "the user
+  dragged the frame" and shrank the client to 21 points tall (measured before this line existed).
+- The pointer mapping subtracts the canvas's place in the scene (`contentOrigin()`), asked of the
+  canvas rather than assumed to be 30, so full screen (where the bar is gone) needs no special case.
+  Verified: a click 10 px inside the content's top-left lands at screen (11,61) for a window showing
+  the rectangle at (1,51) - exactly right.
+- Mouse events on the chrome are **not** forwarded to the client: the header bar is inside this window,
+  so the toolkit delivers them to the scene, and a press or drag there is the window being moved or
+  zoomed. Without the guard, every attempt to move the window by its title delivered a click at the
+  top row of the screen. A button that is already held is the exception (a drag that wanders out of
+  the content keeps going), and an unmatched release is dropped rather than sent.
+- The cursor policy asks about the **content**, not the window: the header bar is the platform's
+  chrome, the client's sprite is not drawn there, and its buttons are pressed with the platform's own
+  arrow. (A42's decision stays, one rectangle narrower.)
+- Full screen hides the header bar - `managed` false as well as invisible, or the layout keeps the gap
+  - so the client gets the whole display (1512x945 measured) and the bar is back on the way out.
+- A window on its way open passes through sizes nobody asked for (the scene shrinks to its root's
+  preferred size before the platform applies ours: 0x374, 0x66, 784x66 ...). They are the frame
+  settling, so while `openingUntil` runs the frame is put back and the client is told nothing.
+
+**The maximize was re-designed rather than ported, and it is a JavaFX 27 change.** A38 replaced the
+platform's zoom with a fill of our own because macOS worked its zoomed frame out from the window's
+*content* - for a forwarded window, a client's X window at whatever size the client last asserted
+(measured 2026-10-03: 1280x828 -> 1280x886 -> 1512x886, restoring nothing). **That is no longer what it
+does**: measured 2026-10-04 under 27, a 784x344 window zooms to 1504x853, which is the display and not
+the client. And the fill has a cost of its own now: setting a window's size while macOS has it zoomed
+**un-zooms it**, so the fill was undone within the second, the state flipped back, and the window
+oscillated - the second double click restored nothing and left the window at neither size (the same
+was measured on the pre-change revision, so it is the upgrade, not this work). So the zoom is left
+alone: its resize arrives on the scene like any other, the client's window takes the size the window
+now has, and the restore is the platform putting its own frame back - exactly as full screen works
+(A41). The one thing added is a **settle on the gesture** (`platformSettle`, 160 ms of the frame
+holding still) because the zoom is animated
+
+    measured: 785, 787, 798, 858, 875, ... on the way to 1511
+
+and telling the client every intermediate made it chase the animation, while its own re-assertion
+after each one left the window flapping between 1511 and 1499 twice a second. What the client is told
+is the size the frame *stops* at, once.
+
+**Verified** (scripted, on the bed; the window is the *frame*, and every "far edge" number below must
+not move):
+
+| what | result |
+| --- | --- |
+| a window with an xterm | opens **784x374** = content 784x344 + the 30 point header |
+| dragging the header bar | 106,66 -> 146,106, size **unchanged**, and **0 button events** reached the client |
+| double click on the header | **0,38 1511x884** (the platform's zoom) |
+| double click again | back to **146,106 784x374** exactly |
+| left edge +40 / -40 | far edge 1512 -> **1512**, twice |
+| top edge +40 / -40 | far edge 423 -> **423**, twice |
+| right edge -40 | origin 741 -> **741**; bottom edge -40 | origin 66 -> **66** |
+| a click 10 px inside the content | lands at screen **(11,61)** = the viewport's (1,51) + (10,10) |
+| full screen | the header bar is gone, the client gets **1512x945**, and 400x300 comes back on the way out |
+| `mvn -o test` | **477 green** (the new one pins `windowHeight`) |
+
+**Two known artifacts, both from the platform's zoom rather than from this work** - recorded rather
+than papered over:
+
+1. **A maximized window is up to one client increment wider than what the client takes.** xterm will
+   not take 1511 and takes 1499 (a whole number of character cells plus its border), so a 12 point
+   strip of the window is not covered by the client's picture (measured: white up to x=1499, the
+   window's own light grey from 1500 to 1510). A window manager would clamp the zoom to the hints
+   before setting the frame, and we cannot: the frame a macOS-zoomed window is not ours to set - doing
+   so is what un-zooms it and made the previous design oscillate. The user's own clients (EasyShell,
+   termora) do not snap, so they fill the window; a terminal that does will show the strip.
+2. **The first left or top edge drag after a maximize/restore cycle can slide the window.** macOS's
+   live-resize reference frame can still be the *zoomed* one: measured after a restore, a left-edge
+   drag of 40 points moved the window's origin from 0 to **779** and kept the far edge at the zoomed
+   1511, i.e. it resized against the wrong edge. A drag from a window that has never been zoomed is
+   exact (the table above), and the drags after the first are exact too, so this is the platform's
+   stale reference rather than the anchor arithmetic (A39) - which is why it is written down instead of
+   guessed at.

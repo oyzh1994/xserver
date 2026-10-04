@@ -3,21 +3,32 @@ package io.github.oyzh1994.xserver.display;
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.input.Keymap;
 import javafx.application.Platform;
+import javafx.application.ConditionalFeature;
+import javafx.geometry.Insets;
+import javafx.geometry.Point2D;
 import javafx.geometry.Rectangle2D;
 import javafx.scene.Cursor;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.canvas.Canvas;
 import javafx.scene.canvas.GraphicsContext;
+import javafx.scene.control.Label;
+import javafx.scene.control.OverrunStyle;
 import javafx.scene.image.PixelBuffer;
 import javafx.scene.image.PixelFormat;
+import javafx.scene.image.ImageView;
 import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.input.ScrollEvent;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HeaderBar;
+import javafx.scene.layout.HeaderDragType;
 import javafx.scene.layout.Pane;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
+import javafx.stage.StageStyle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,6 +57,18 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class JavaFxBackend implements DisplayBackend {
 
     private static final Logger log = LoggerFactory.getLogger(JavaFxBackend.class);
+
+    static {
+        // **The window's own title bar is a preview feature of JavaFX 27** (`StageStyle.EXTENDED`
+        // and the header bar that goes with it), and opting in has to happen before the toolkit reads
+        // the property - which is why it is here rather than on a command line: this class is loaded
+        // before the toolkit starts, so this is the earliest the backend can speak for itself. An
+        // application that has already answered for itself keeps its answer, and one that says no
+        // gets the platform's own decorated window instead (see the stage in {@link #openWindow}).
+        if (System.getProperty("javafx.enablePreview") == null) {
+            System.setProperty("javafx.enablePreview", "true");
+        }
+    }
 
     /**
      * How long the toolkit gets to run a task before it counts as unusable.
@@ -87,6 +110,16 @@ public final class JavaFxBackend implements DisplayBackend {
     // Everything below is only ever touched on the JavaFX Application Thread.
     private Stage stage;
     private Scene scene;
+    /** The canvas the screen is drawn into - the window's *content*, below the header bar. */
+    private Canvas canvas;
+    /**
+     * The client-area header bar: the window's title bar, drawn by JavaFX (JavaFX 27's
+     * {@link StageStyle#EXTENDED}), or null where the platform has no extended windows and the
+     * platform's own title bar is what the window has.
+     */
+    private HeaderBar headerBar;
+    private Label titleLabel;
+    private ImageView titleIcon;
     /**
      * True while the platform pointer is over the window, so {@link #hostCursor} can decide. Taken
      * from where the pointer really is rather than from the enter and leave events alone - see
@@ -248,7 +281,6 @@ public final class JavaFxBackend implements DisplayBackend {
                 // Called before the window exists: openWindow will size itself from the rectangle.
                 return;
             }
-            Canvas canvas = canvasOf(open.getScene());
             if (platformOwnsFrame()) {
                 // **A drag in flight: the pixels move, the window's size does not.** While the user has
                 // the frame's edge under the pointer, the platform is the one computing the size from
@@ -315,9 +347,16 @@ public final class JavaFxBackend implements DisplayBackend {
     @Override
     public void setWindowTitle(String title) {
         runOnFxThreadAndWait(() -> {
+            // Null means the client publishes no title: the server's own name is the fallback.
+            String wanted = title == null || title.isEmpty() ? this.title : title;
             if (stage != null) {
-                // Null means the client publishes no title: the server's own name is the fallback.
-                stage.setTitle(title == null || title.isEmpty() ? this.title : title);
+                // The stage's title is still worth setting: the platform uses it for the miniaturized
+                // preview, which has a title of its own next to the picture.
+                stage.setTitle(wanted);
+            }
+            if (titleLabel != null) {
+                // And this is where it is actually read, since the platform's title bar is not there.
+                titleLabel.setText(wanted);
             }
         });
     }
@@ -330,12 +369,22 @@ public final class JavaFxBackend implements DisplayBackend {
             }
             if (argb == null || width <= 0 || height <= 0) {
                 stage.getIcons().clear();
+                if (titleIcon != null) {
+                    titleIcon.setImage(null);
+                    titleIcon.setVisible(false);
+                }
                 return;
             }
             WritableImage icon = new WritableImage(width, height);
             icon.getPixelWriter().setPixels(0, 0, width, height,
                     PixelFormat.getIntArgbInstance(), argb, 0, width);
             stage.getIcons().setAll(icon);
+            if (titleIcon != null) {
+                // The header bar's own icon: the platform's title bar is not drawn, so a client's icon
+                // has nowhere else to appear in the window.
+                titleIcon.setImage(icon);
+                titleIcon.setVisible(true);
+            }
         });
     }
 
@@ -356,8 +405,8 @@ public final class JavaFxBackend implements DisplayBackend {
             if (log.isDebugEnabled()) {
                 // How far the window may be dragged is otherwise only visible by dragging it, and a
                 // limit that is somehow too small cannot be resized out of.
-                log.debug("window may be dragged up to {}x{} of content, plus {}x{} of decoration",
-                        width, height, decorationWidth, decorationHeight);
+                log.debug("window may be dragged up to {}x{} of content, plus {}x{} around it",
+                        width, height, sceneBorderWidth, headerHeight() + sceneBorderHeight);
             }
         });
     }
@@ -374,39 +423,93 @@ public final class JavaFxBackend implements DisplayBackend {
                 || stage.isFullScreen()) {
             return;
         }
-        stage.setMaxWidth(logical(maxClientAreaWidth) + decorationWidth);
-        stage.setMaxHeight(logical(maxClientAreaHeight) + decorationHeight);
+        stage.setMaxWidth(frameWidth(logical(maxClientAreaWidth)));
+        stage.setMaxHeight(frameHeight(logical(maxClientAreaHeight)));
     }
 
     /**
-     * What the platform adds around the content - a title bar, and borders where the platform has
-     * any - measured while the window fits the content exactly.
+     * What the platform adds around the *scene* - borders, where the platform has any - measured
+     * while the window fits the content exactly.
      *
-     * <p>Measured there rather than when the limit is applied, because by then the window may have
-     * been dragged larger than its content, and the difference would read as decoration that does
-     * not exist. {@link #setMaxClientArea} limits a window, not the area the client is drawn in, so
-     * the decoration has to be given back to it.
+     * <p>This is not the title bar any more: since JavaFX 27 the window's title bar is a
+     * {@link HeaderBar} **inside** the scene (see {@link #headerHeight}), and what is left outside
+     * the scene is only the platform's own frame - nothing at all on macOS.
      */
-    private void rememberDecoration() {
+    private void rememberSceneBorder() {
         if (stage == null || scene == null) {
             return;
         }
-        decorationWidth = Math.max(0, stage.getWidth() - scene.getWidth());
-        decorationHeight = Math.max(0, stage.getHeight() - scene.getHeight());
+        sceneBorderWidth = Math.max(0, stage.getWidth() - scene.getWidth());
+        sceneBorderHeight = Math.max(0, stage.getHeight() - scene.getHeight());
     }
 
-    private double decorationWidth;
-    private double decorationHeight;
+    private double sceneBorderWidth;
+    private double sceneBorderHeight;
 
     /**
-     * The content size to come back to when the window is un-maximized, in points, or zero when the
-     * window is not maximized - written and read on the FX thread only.
+     * The header bar's height in points - the window's own title bar - or zero while the window has
+     * none: a platform without extended windows, where the platform's title bar is the one outside
+     * the scene, and full screen, where the platform hides its chrome and the picture takes the
+     * whole display.
      */
-    private int restoreContentWidth;
-    private int restoreContentHeight;
+    private double headerHeight() {
+        return headerBar != null && headerBar.isManaged() ? HEADER_HEIGHT : 0;
+    }
 
-    /** Until this millisecond, a content resize is the platform's reaction to a maximize. */
-    private long settlingMaximizeUntil;
+    /** The window's width for a content width, in points: the content plus the platform's frame. */
+    private double frameWidth(double contentWidth) {
+        return contentWidth + sceneBorderWidth;
+    }
+
+    /** The window's height for a content height, in points: the content plus the header and frame. */
+    private double frameHeight(double contentHeight) {
+        return windowHeight(contentHeight, headerHeight(), sceneBorderHeight);
+    }
+
+    /**
+     * The window's height for a content height, in points: the content, the header bar above it, and
+     * whatever the platform puts around the scene.
+     *
+     * <p>Two different things are above the content and both are easy to forget: with an extended
+     * window the header bar is *inside* the scene (JavaFX 27) and without one the platform's title bar
+     * is *outside* it. Either way the client is not shown it, so either way it belongs to this sum.
+     * Package-private and static so the one piece of arithmetic the header bar changed can be pinned
+     * without a window.
+     */
+    static double windowHeight(double contentHeight, double headerHeight, double sceneBorderHeight) {
+        return contentHeight + headerHeight + sceneBorderHeight;
+    }
+
+    /**
+     * Until this millisecond, a content resize is a window on its way open rather than the user
+     * dragging it: the sizes a window passes through before the platform has applied the size this
+     * backend asked for, which arrive on the scene's size listeners all the same.
+     */
+    private long openingUntil;
+
+    /**
+     * Until this millisecond, the frame's own geometry is the platform's doing - a zoom of the
+     * window's title bar, or full screen - and not a drag of its edge.
+     *
+     * <p>Both are reported as a resize like any other and the client should take the size the window
+     * has; what they must not do is *anchor* it: a drag's far edge is put back where the user left it
+     * (A39), and a zoom moves the window to the corner of the display on purpose, so a stale anchor
+     * would drag it back out of it.
+     */
+    private long platformGestureUntil;
+
+    /**
+     * The content size the platform's own gesture has stopped at, waiting for the frame to hold still
+     * long enough to be sure the animation is over - see {@link #clientAreaChanged}.
+     */
+    private java.awt.Dimension platformSettledContent;
+
+    /**
+     * Fires when the platform's gesture has stopped changing the frame, and tells the client the size
+     * it stopped at. Restarted by every size the animation passes through.
+     */
+    private final javafx.animation.PauseTransition platformSettle =
+            new javafx.animation.PauseTransition(javafx.util.Duration.millis(160));
 
     /**
      * True while a size this server set is still being applied by the platform. Its resize reports
@@ -460,9 +563,6 @@ public final class JavaFxBackend implements DisplayBackend {
     private final javafx.animation.PauseTransition dragSettle =
             new javafx.animation.PauseTransition(javafx.util.Duration.millis(1100));
 
-    /** Whether the window is currently filled by this server's own maximize, not the platform's. */
-    private boolean filledByServer;
-
     /**
      * The window's content area changed size. Most such changes are the backend's own, sizing the
      * window to the client's window; {@link #isUserResize} tells the user's apart from those, and
@@ -476,6 +576,8 @@ public final class JavaFxBackend implements DisplayBackend {
         if (scene == null || input == null || stage == null) {
             return;
         }
+        int width = contentWidth();
+        int height = contentHeight();
         if (viewportPending) {
             // **The platform applies a window size in two steps, and the step in between is a mixture
             // of the old size and the new one.** Anything that is *only* such a mixture - each
@@ -483,8 +585,6 @@ public final class JavaFxBackend implements DisplayBackend {
             // half of the change, and reporting it as a drag is what made the window walk upwards two
             // pixels at a time. Anything else is the user, and clears the mark: the guard must not be
             // able to swallow a real drag.
-            int width = (int) Math.round(scene.getWidth() * scale);
-            int height = (int) Math.round(scene.getHeight() * scale);
             boolean matchesOldOrNew = (width == viewport.width || width == pendingFromWidth)
                     && (height == viewport.height || height == pendingFromHeight);
             if (matchesOldOrNew) {
@@ -493,50 +593,33 @@ public final class JavaFxBackend implements DisplayBackend {
             }
             viewportPending = false;
         }
-        if (System.currentTimeMillis() < settlingMaximizeUntil) {
-            // **The platform's own "maximized" frame arrives behind ours, and it is not the user.**
-            // macOS works its standard frame out from the window's content - which here is a
-            // client's X window at the size the client last asserted - so a double click on the
-            // title bar is followed by a resize to that size a moment *after* the size this server
-            // asked for, and reporting it as a drag would shrink the client window straight back
-            // (measured 2026-10-03: 1512x858 applied, then 1280x858 reported, and the window ended
-            // at the client's old width). So during the settle, the window is put back to the size
-            // the server has instead.
+        if (System.currentTimeMillis() < openingUntil) {
+            // **A window on its way open passes through sizes that are nobody's doing.** The scene
+            // shrinks to its root's preferred size before the platform has applied the size this
+            // backend asked for - with the content in a BorderPane that is the header bar's own
+            // height, and then a frame the platform has not finished with - and every one of those
+            // arrives here. They are the frame settling, not the user dragging it, so the frame is put
+            // back to the size the server has and the client is told nothing. Measured 2026-10-04:
+            // scene 0x374, then 0x66, then 784x66, and without this the client's window was shrunk to
+            // 21 points tall before the window had finished opening.
             enforceWindowSize();
             return;
         }
-        if (filledByServer) {
-            // A resize while the window is filled by this server, and not one of the platform's own
-            // (those are absorbed by the settle above), is the *second* double click or the green
-            // button: un-maximize. Its own idea of the old geometry is the geometry the client had,
-            // so the size to come back to is the one remembered when the fill happened.
-            filledByServer = false;
-            // A fill is not a drag, and whatever edge the last one pulled has nothing to do with
-            // where this window goes now.
-            dragJustEnded = false;
-            settlingMaximizeUntil = System.currentTimeMillis() + 700;
-            // And the platform's own state goes with it. It is the same flag this server has been
-            // filling *for*: left set, the next double click is a platform zoom the property does not
-            // change, so no fill is asked for and the window lands on the platform's own geometry -
-            // measured, a third double click gave 1289x886 after two good ones. Clearing it makes the
-            // next double click a `false -> true` again, i.e. the same gesture as the first.
-            adjustingWindow = true;
-            try {
-                stage.setMaximized(false);
-            } finally {
-                adjustingWindow = false;
-            }
-            if (restoreContentWidth > 0 && restoreContentHeight > 0) {
-                int restoredWidth = (int) Math.round(restoreContentWidth * scale);
-                int restoredHeight = (int) Math.round(restoreContentHeight * scale);
-                restoreContentWidth = 0;
-                restoreContentHeight = 0;
-                input.windowMaximized(false, restoredWidth, restoredHeight);
-            }
+        if (System.currentTimeMillis() < platformGestureUntil) {
+            // **The platform is animating the frame itself: a zoom of the title bar, or the Space of
+            // full screen.** Every size the animation passes through arrives here - measured
+            // 2026-10-04: 785, 787, 798, 858, 875, ... on the way to 1511 - and telling the client each
+            // of them makes it chase an animation, while its own re-assertion after each one leaves the
+            // window flapping between two sizes (1511 and 1499, twice a second). The size the frame
+            // *stops* at is what the client is told, once, when it has held still; the frame itself is
+            // the platform's for as long as its gesture lasts.
+            platformSettledContent = new java.awt.Dimension(width, height);
+            platformSettle.playFromStart();
+            platformGestureUntil = System.currentTimeMillis() + 400;
+            userDragPending = true;
+            userDragUntil = System.currentTimeMillis() + 1000;
             return;
         }
-        int width = (int) Math.round(scene.getWidth() * scale);
-        int height = (int) Math.round(scene.getHeight() * scale);
         if (!isUserResize(adjustingWindow, width, height, viewport)) {
             return;
         }
@@ -607,11 +690,6 @@ public final class JavaFxBackend implements DisplayBackend {
         return width != viewport.width || height != viewport.height;
     }
 
-    /** The canvas a scene is drawing the screen into. */
-    private static Canvas canvasOf(Scene scene) {
-        return (Canvas) ((Pane) scene.getRoot()).getChildren().get(0);
-    }
-
     /**
      * Puts the window back to the size of what it shows.
      *
@@ -624,8 +702,8 @@ public final class JavaFxBackend implements DisplayBackend {
         if (stage == null || stage.isFullScreen()) {
             return;
         }
-        double wantedWidth = logical(viewport.width) + decorationWidth;
-        double wantedHeight = logical(viewport.height) + decorationHeight;
+        double wantedWidth = frameWidth(logical(viewport.width));
+        double wantedHeight = frameHeight(logical(viewport.height));
         if (Math.abs(stage.getWidth() - wantedWidth) <= 1.0
                 && Math.abs(stage.getHeight() - wantedHeight) <= 1.0) {
             return;
@@ -702,8 +780,13 @@ public final class JavaFxBackend implements DisplayBackend {
         // is the one that moves the window's own origin, and so the one whose far edge the
         // platform's arithmetic can carry away with it; a drag of the right or the bottom edge
         // leaves the origin alone and needs no correction.
-        draggedLeft = Math.abs(stage.getX() - settledFrameX) > 1;
-        draggedTop = Math.abs(stage.getY() - settledFrameY) > 1;
+        //
+        // Unless the platform was the one moving the frame: a zoom or full screen puts the window in
+        // the corner of the display on purpose, and anchoring its far edge there would drag it back
+        // out of it.
+        boolean platformMoved = System.currentTimeMillis() < platformGestureUntil;
+        draggedLeft = !platformMoved && Math.abs(stage.getX() - settledFrameX) > 1;
+        draggedTop = !platformMoved && Math.abs(stage.getY() - settledFrameY) > 1;
         dragJustEnded = draggedLeft || draggedTop;
         return false;
     }
@@ -746,8 +829,8 @@ public final class JavaFxBackend implements DisplayBackend {
             // {@link #setViewport} does for a drag in flight as well.
             return;
         }
-        double width = logical(viewport.width) + decorationWidth;
-        double height = logical(viewport.height) + decorationHeight;
+        double width = frameWidth(logical(viewport.width));
+        double height = frameHeight(logical(viewport.height));
         double x = stage.getX();
         double y = stage.getY();
         if (dragJustEnded) {
@@ -896,11 +979,76 @@ public final class JavaFxBackend implements DisplayBackend {
     // ------------------------------------------------------------------
 
     /**
+     * The window's title bar's height, in points, fixed. Thirty is the usual height of a platform
+     * title bar the buttons in it are drawn for, so the window's own header buttons sit in it without
+     * crowding the title.
+     */
+    private static final double HEADER_HEIGHT = 30;
+
+    /**
+     * Whether this window has the toolkit's own title bar ({@link StageStyle#EXTENDED}, JavaFX 27)
+     * rather than the platform's.
+     *
+     * <p>One decision in one place, because everything about the window's geometry depends on it: the
+     * stage's style, whether there is a header bar at all, and therefore what counts as content. A
+     * platform that does not support it downgrades the style to {@code DECORATED} rather than
+     * failing, and this is the same question asked before the window is built - so the answer is
+     * remembered for the life of the window rather than asked twice.
+     */
+    private boolean extendedWindow() {
+        return Platform.isSupported(ConditionalFeature.EXTENDED_WINDOW);
+    }
+
+    /**
+     * The client-area header bar: the window's title, its icon, and the strip that dragging moves the
+     * window by - all of it the application's own, since the platform's title bar is not there (see
+     * {@code StageStyle.EXTENDED}).
+     *
+     * <p>Fixed at {@link #HEADER_HEIGHT}: the platform's height for its own title bar is a function of
+     * the window's style and the display, and the point of drawing this one here is that the page says
+     * how tall it is. The client's icon and title go in the areas the platform's header buttons are
+     * not in - the bar pads its left area for them itself, which is why nothing here adds an inset for
+     * the lights.
+     *
+     * <p>Runs on the FX thread.
+     */
+    private HeaderBar buildHeaderBar() {
+        HeaderBar bar = new HeaderBar();
+        bar.setMinHeight(HEADER_HEIGHT);
+        bar.setPrefHeight(HEADER_HEIGHT);
+        bar.setMaxHeight(HEADER_HEIGHT);
+
+        titleIcon = new ImageView();
+        titleIcon.setFitWidth(16);
+        titleIcon.setFitHeight(16);
+        titleIcon.setPreserveRatio(true);
+        titleIcon.setSmooth(true);
+        titleIcon.setVisible(false);
+        HeaderBar.setMargin(titleIcon, new Insets(0, 6, 0, 8));
+        bar.setLeft(titleIcon);
+
+        titleLabel = new Label(this.title);
+        titleLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
+        // A label is content, and content is not draggable by default: without this a drag that
+        // starts on the window's name does nothing, and the name is exactly where a hand goes.
+        HeaderBar.setDragType(titleLabel, HeaderDragType.DRAGGABLE_SUBTREE);
+        bar.setCenter(titleLabel);
+        return bar;
+    }
+
+    /**
      * Runs on the FX thread.
      */
     private void openWindow(int width, int height, IntBuffer pixels) {
         screenWidth = width;
         screenHeight = height;
+        // **A window being opened passes through sizes that are nobody's doing.** The scene shrinks to
+        // its root's preferred size before the platform has applied the size this backend asks for -
+        // with the content in a BorderPane that is the header bar's own height and then a frame the
+        // platform has not finished with - and every one of those arrives on the scene's size
+        // listeners. They are the frame settling, not the user dragging it, so the settle starts
+        // before the scene is even built; see the same window in {@link #clientAreaChanged}.
+        openingUntil = System.currentTimeMillis() + 700;
         if (viewport.isEmpty()) {
             viewport = new Rectangle(0, 0, width, height);
         }
@@ -916,19 +1064,28 @@ public final class JavaFxBackend implements DisplayBackend {
         // converted either way.
         pixelBuffer = new PixelBuffer<>(width, height, pixels, PixelFormat.getIntArgbPreInstance());
         image = new WritableImage(pixelBuffer);
-        Canvas canvas = new Canvas(logical(viewport.width), logical(viewport.height));
+        canvas = new Canvas(logical(viewport.width), logical(viewport.height));
         graphics = canvas.getGraphicsContext2D();
         drawViewport();
 
         // A Pane rather than a StackPane, and the canvas left unmanaged: a StackPane centres what it
-        // holds, and the canvas is only ever the same size as the scene until the user drags the
-        // window - at which point centring it would shift every coordinate this backend reports by
-        // half the difference. Unmanaged, too, so the canvas cannot set a minimum size on the
-        // window: a canvas is not resizable, and one that is 1200 wide would stop the user from
+        // holds, and the canvas is only ever the same size as the scene's content until the user
+        // drags the window - at which point centring it would shift every coordinate this backend
+        // reports by half the difference. Unmanaged, too, so the canvas cannot set a minimum size on
+        // the window: a canvas is not resizable, and one that is 1200 wide would stop the user from
         // ever shrinking the window below that.
-        Pane root = new Pane(canvas);
+        //
+        // The canvas sits in the *centre* of a BorderPane whose top is the header bar, so the
+        // content starts below the title bar by the layout itself and nothing here has to place it.
+        headerBar = extendedWindow() ? buildHeaderBar() : null;
+        Pane content = new Pane(canvas);
         canvas.setManaged(false);
-        Scene scene = new Scene(root, logical(viewport.width), logical(viewport.height),
+        BorderPane root = new BorderPane();
+        if (headerBar != null) {
+            root.setTop(headerBar);
+        }
+        root.setCenter(content);
+        Scene scene = new Scene(root, logical(viewport.width), frameHeight(logical(viewport.height)),
                 Color.BLACK);
         this.scene = scene;
         // The platform would otherwise draw its own arrow over the window, on top of the sprite the
@@ -1008,7 +1165,13 @@ public final class JavaFxBackend implements DisplayBackend {
             }
         });
 
-        stage = new Stage();
+        // **The title bar is JavaFX's own from 27 on** (StageStyle.EXTENDED): the window's header
+        // buttons stay the platform's, drawn over the top of the scene, and the strip they are in
+        // belongs to this application - which is the point of it, because a forwarded client's
+        // window is a page whose title bar is worth drawing in the same toolkit that draws the page.
+        // A platform without extended windows keeps its own decorated window and no header bar of
+        // ours, which is the only way not to end up with two title bars.
+        stage = new Stage(extendedWindow() ? StageStyle.EXTENDED : StageStyle.DECORATED);
         stage.setTitle(title);
         stage.setScene(scene);
         // **The key that leaves full screen is the platform's own, not Escape.** JavaFX's default is
@@ -1031,54 +1194,45 @@ public final class JavaFxBackend implements DisplayBackend {
                 sizeFrameToContent();
             }
         });
+        platformSettle.setOnFinished(event -> {
+            java.awt.Dimension settled = platformSettledContent;
+            platformSettledContent = null;
+            if (stage == null || settled == null || closed) {
+                return;
+            }
+            // The platform's gesture has stopped: this is the size the frame is, and the client's
+            // window should take it. The frame stays the platform's - a zoom or a full screen window
+            // whose size is set by us is the fight A41 and A42 are about - so the anchor a drag would
+            // leave behind is kept out of the way for a while longer than the drag deadline.
+            platformGestureUntil = System.currentTimeMillis() + 1500;
+            rememberSettledFrame();
+            log.debug("platform gesture settled at {}x{}", settled.width, settled.height);
+            input.windowResized(settled.width, settled.height);
+        });
         scene.widthProperty().addListener((observable, was, is) -> clientAreaChanged());
         scene.heightProperty().addListener((observable, was, is) -> clientAreaChanged());
-        // **A double click on the title bar is the platform's gesture, and its own "standard frame"
-        // is not what a forwarded window needs.** macOS zooms the window to a size it works out from
-        // the window's content - and this window's content *is* a client's X window, whose size the
-        // client reasserts as soon as it is resized. Measured 2026-10-03: the first double click
-        // took a 1280x828 window to 1280x886 (height only, the width left at the client's), the
-        // second to 1512x886, and a third did not restore anything - "it stretches partway and
-        // stops", in the report. So the platform's *decision* is taken and its *geometry* is
-        // replaced by ours: a maximized window is the display's usable area, and un-maximizing puts
-        // back the size the window had before. The client's window is what is resized (the screen
-        // grows to fit it), by the same path a drag takes, so the framebuffer and the frame never
-        // disagree.
         stage.maximizedProperty().addListener((observable, was, is) -> {
             log.debug("host window maximized {} -> {} ({}x{})", was, is,
-                    (int) Math.round(scene.getWidth()), (int) Math.round(scene.getHeight()));
-            if (stage.isFullScreen()) {
-                // **macOS reports a full screen window as maximized too**, and acting on that is what
-                // broke full screen completely: the fill below resized a window that was in its own
-                // Space, and a full screen window whose frame is changed leaves that Space without
-                // giving it back - the menu bar and the Dock stay hidden until the session is locked
-                // and unlocked, which is the report. A full screen window's geometry is the
-                // platform's; nothing of ours sizes it (see {@link #sizeFrameToContent}).
-                return;
-            }
-            if (!is || filledByServer) {
-                return;
-            }
-            // **The gesture is the platform's; the geometry is this server's.** macOS works its
-            // "maximized" size out from the window's content, and this window's content is a client's
-            // X window - so the zoom stops where the client's window does (measured 2026-10-03: a
-            // 1280x828 window went to 1280x886 on the first double click, to 1512x886 on the second,
-            // and a third restored nothing: "it stretches partway and stops"). Filling is the
-            // display's usable area here, and the platform's own resize, which arrives a moment
-            // later, is put back - see {@link #clientAreaChanged} and {@link #enforceWindowSize}.
-            restoreContentWidth = (int) Math.round(scene.getWidth());
-            restoreContentHeight = (int) Math.round(scene.getHeight());
-            filledByServer = true;
+                    contentWidth(), contentHeight());
+            // **The zoom is the platform's, geometry and all, from JavaFX 27 on.** It used to be
+            // replaced by a fill of this backend's own - the window set to the display's usable area,
+            // the client told to match - because macOS worked its zoomed frame out from the window's
+            // *content*, which for a forwarded window is a client's X window at whatever size the
+            // client last asserted (measured 2026-10-03: 1280x828 -> 1280x886 -> 1512x886, restoring
+            // nothing). That is no longer what it does: measured 2026-10-04, a 784x344 window zooms to
+            // 1504x853, which is the display and not the client. And the fill has a cost of its own -
+            // setting a window's size while macOS has it zoomed *un-zooms* it, so the fill was undone
+            // within the second, the state flipped back, and the window oscillated: the second double
+            // click restored nothing and the window was left at neither size. So the zoom is left
+            // alone. Its resize arrives on the scene like any other, {@link #clientAreaChanged}
+            // reports it, and the client's window takes the size the window now has; the restore is
+            // the platform putting its own frame back, which reaches the client the same way - exactly
+            // as full screen does (A41).
             dragJustEnded = false;
-            settlingMaximizeUntil = System.currentTimeMillis() + 700;
-            javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
-            int filledWidth = (int) Math.round((usable.getWidth() - decorationWidth) * scale);
-            int filledHeight = (int) Math.round((usable.getHeight() - decorationHeight) * scale);
-            if (filledWidth > 0 && filledHeight > 0) {
-                log.debug("filling the window to {}x{} (display {}x{})",
-                        filledWidth, filledHeight, (int) usable.getWidth(), (int) usable.getHeight());
-                input.windowMaximized(true, filledWidth, filledHeight);
-            }
+            // The zoom's own resize reports are wanted - the client takes the size the window has -
+            // but they are not a drag of the frame's edge, and the anchor below must not treat them
+            // as one: a zoom puts the window in the corner of the display on purpose.
+            platformGestureUntil = System.currentTimeMillis() + 2000;
         });
         stage.fullScreenProperty().addListener((observable, was, is) -> {
             log.debug("host window fullScreen {} -> {}", was, is);
@@ -1086,6 +1240,16 @@ public final class JavaFxBackend implements DisplayBackend {
             // stood, has nothing to do with where it comes back to: the Space puts it at the top left
             // of the display, and the platform's own frame is what it returns to.
             dragJustEnded = false;
+            platformGestureUntil = System.currentTimeMillis() + 3000;
+            if (headerBar != null) {
+                // **The header bar is chrome, and full screen is where chrome goes.** The platform
+                // hides its own title bar there and the picture is meant to have the whole display -
+                // thirty points of title bar would be thirty points of screen the client cannot use.
+                // Unmanaged rather than only invisible: an invisible managed node still takes its
+                // place in the layout, so the content would keep the gap.
+                headerBar.setManaged(!is);
+                headerBar.setVisible(!is);
+            }
             if (!is) {
                 // A limit that arrived while the window was full screen has been waiting for a
                 // moment the window could take it.
@@ -1105,7 +1269,14 @@ public final class JavaFxBackend implements DisplayBackend {
         stage.yProperty().addListener((observable, was, is) -> applyHostCursor());
         stage.widthProperty().addListener((observable, was, is) -> applyHostCursor());
         stage.heightProperty().addListener((observable, was, is) -> applyHostCursor());
-        stage.sizeToScene();
+        // **The window's size is the content's size plus the header bar, set here rather than asked
+        // for.** {@code sizeToScene()} used to stand in for this and cannot any more: what it measures
+        // is the root's *preferred* size, and the canvas - which is the whole of what the window shows
+        // - is unmanaged so that it cannot put a floor under the window, so a BorderPane root whose
+        // centre it is has a preferred height of just the header bar. The window opened as a strip
+        // thirty points tall, the platform's own resize of it arrived as "the user dragged the frame",
+        // and the client's window was shrunk to it - measured before this line existed.
+        sizeFrameToContent();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
             setWindowFocused(focused);
@@ -1123,7 +1294,14 @@ public final class JavaFxBackend implements DisplayBackend {
             releaseHostCursor();
         });
         stage.show();
-        rememberDecoration();
+        rememberSceneBorder();
+        // The frame the platform settled on is what the border was measured against, so the size is
+        // put back once more here: the first sizing asked for content plus a border that had not been
+        // measured yet (nothing at all on macOS, but a border is a border).
+        sizeFrameToContent();
+        // The window is on its way open: the sizes it passes through before it has settled are not
+        // the user either - see the settle in {@link #clientAreaChanged}.
+        openingUntil = System.currentTimeMillis() + 700;
         startPulseProbe();
         // The scene coordinates must stay equal to screen coordinates for the pointer mapping to be
         // right, so the window is placed inside the usable area rather than left to the platform,
@@ -1243,7 +1421,8 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     /**
-     * Whether the platform pointer is over this window, taken from where the pointer really is.
+     * Whether the platform pointer is over what this window *shows*, taken from where the pointer
+     * really is.
      *
      * <p>Entering and leaving arrive as mouse events, and those were all this went on - but a window
      * whose geometry changes under a pointer that does not move can leave the answer stale, and this
@@ -1256,6 +1435,10 @@ public final class JavaFxBackend implements DisplayBackend {
      * makes the answer independent of an event arriving; the events still give it the moment they
      * happen, and {@link #applyHostCursor} re-decides whenever the window's geometry changes -
      * which is the entry and the exit of full screen, and every drag of an edge.
+     *
+     * <p>The content, not the window: the header bar is part of the window and the client's cursor is
+     * not drawn there, so a pointer over the title bar is one the platform's own arrow owns - which is
+     * also the arrow the window's buttons are pressed with.
      */
     private void updatePointerOverWindow() {
         if (stage == null || !stage.isShowing()) {
@@ -1274,8 +1457,13 @@ public final class JavaFxBackend implements DisplayBackend {
             // there is, which is what this did before.
             return;
         }
-        pointerOverWindow = pointerInside(stage.getX(), stage.getY(), stage.getWidth(),
-                stage.getHeight(), pointer.x, pointer.y);
+        // The scene's own frame around the window is not part of the content either, and the content
+        // itself is placed inside the scene by the layout (below the header bar).
+        double sceneX = stage.getX() + (stage.getWidth() - scene.getWidth()) / 2;
+        double sceneY = stage.getY() + (stage.getHeight() - scene.getHeight()) / 2;
+        javafx.geometry.Bounds content = canvas.localToScene(canvas.getBoundsInLocal());
+        pointerOverWindow = pointerInside(sceneX + content.getMinX(), sceneY + content.getMinY(),
+                content.getWidth(), content.getHeight(), pointer.x, pointer.y);
     }
 
     /**
@@ -1357,8 +1545,10 @@ public final class JavaFxBackend implements DisplayBackend {
     private void placeOnScreen(int width, int height) {
         // Fully qualified: this class is in the same package as the server's own Screen.
         Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
-        double w = Math.min(logical(width), usable.getWidth());
-        double h = Math.min(logical(height), usable.getHeight());
+        // The window is taller than what it shows: the header bar is part of it, and a window placed
+        // as if it were only the content hangs that much further down the display.
+        double w = Math.min(frameWidth(logical(width)), usable.getWidth());
+        double h = Math.min(frameHeight(logical(height)), usable.getHeight());
         double offset = (LIVE_WINDOWS.getAndIncrement() % 8) * 32.0;
         stage.setX(usable.getMinX() + Math.max(0, (usable.getWidth() - w) / 2) + offset);
         stage.setY(usable.getMinY() + Math.max(0, (usable.getHeight() - h) / 2) + offset);
@@ -1708,7 +1898,34 @@ public final class JavaFxBackend implements DisplayBackend {
         }
     }
 
+    /**
+     * Whether a point of the scene is over the window's content rather than its chrome.
+     *
+     * <p>The header bar is <em>inside</em> this window, so the toolkit delivers events that happen on
+     * it to the scene - and the client must not see those. A press or a drag there is the window being
+     * moved or maximized, which is precisely what the client is not being asked about: forwarding it
+     * would deliver a click at the top row of the screen for every attempt to move the window. A
+     * button that is already held is the exception - a drag that wanders out of the content keeps
+     * going until it is released, which is what a client with a selection riding on it expects.
+     */
+    private boolean overContent(MouseEvent event) {
+        return overContent(event.getSceneX(), event.getSceneY());
+    }
+
+    /** The same, for events that are not mouse events: a scroll reports its own coordinates. */
+    private boolean overContent(double sceneX, double sceneY) {
+        Point2D local = canvas.sceneToLocal(sceneX, sceneY);
+        return local.getX() >= 0 && local.getY() >= 0
+                && local.getX() < canvas.getWidth() && local.getY() < canvas.getHeight();
+    }
+
     private void pointerMoved(MouseEvent event) {
+        if (heldButtons == 0 && !overContent(event)) {
+            // Over the header bar, which is the window's chrome rather than the client's page: the
+            // pointer is not on the screen the client is being shown, and moving the window by its
+            // title must not be reported as the pointer wandering along the top row of the screen.
+            return;
+        }
         int x = screenX(event.getX());
         int y = screenY(event.getY());
         pointerX = x;
@@ -1723,7 +1940,7 @@ public final class JavaFxBackend implements DisplayBackend {
         pointerY = y;
         int button = xButton(event.getButton());
         if (pressed) {
-            if (button == 0) {
+            if (button == 0 || !overContent(event)) {
                 return;
             }
             heldButtons |= 1 << button;
@@ -1731,6 +1948,11 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         if (button != 0) {
+            if ((heldButtons & (1 << button)) == 0) {
+                // A release for a press this window never handed on: the gesture began on the header
+                // bar, or on another window. There is nothing to let go of.
+                return;
+            }
             heldButtons &= ~(1 << button);
             input.buttonChanged(button, false, x, y);
             return;
@@ -1746,6 +1968,9 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     private void scrolled(ScrollEvent event) {
+        if (!overContent(event.getSceneX(), event.getSceneY())) {
+            return;
+        }
         int x = screenX(event.getX());
         int y = screenY(event.getY());
         pointerX = x;
@@ -1794,12 +2019,38 @@ public final class JavaFxBackend implements DisplayBackend {
         return framebufferPixels / scale;
     }
 
+    /**
+     * The size of the window's content - what the screen is drawn into - in framebuffer pixels, read
+     * from the window as it stands.
+     *
+     * <p>The scene is the whole window *including* the header bar and the platform's own frame, and
+     * the client is not shown those: a window that reported its whole height as the content would
+     * hand the client thirty points of screen that the title bar is standing in front of.
+     */
+    private int contentWidth() {
+        return (int) Math.round((scene.getWidth() - sceneBorderWidth) * scale);
+    }
+
+    private int contentHeight() {
+        return (int) Math.round((scene.getHeight() - headerHeight() - sceneBorderHeight) * scale);
+    }
+
     private int screenX(double sceneX) {
-        return screenCoordinate(sceneX, viewport.x, scale, screenWidth);
+        return screenCoordinate(sceneX - contentOrigin().getX(), viewport.x, scale, screenWidth);
     }
 
     private int screenY(double sceneY) {
-        return screenCoordinate(sceneY, viewport.y, scale, screenHeight);
+        return screenCoordinate(sceneY - contentOrigin().getY(), viewport.y, scale, screenHeight);
+    }
+
+    /**
+     * Where the content starts in the scene: below the header bar, which is inside the window rather
+     * than around it, so scene coordinates and content coordinates are not the same thing any more.
+     * Asked of the canvas instead of assumed to be {@link #HEADER_HEIGHT} so that full screen, where
+     * the header bar is gone, needs no special case.
+     */
+    private Point2D contentOrigin() {
+        return canvas == null ? Point2D.ZERO : canvas.localToScene(0, 0);
     }
 
     /**
