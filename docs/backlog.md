@@ -118,6 +118,7 @@ A prompt that starts a fresh session on this, verbatim:
 | [ ] A40 | **un-maximizing puts the window back at the right size but not where it was** - a window moved to 506,286 and then maximized comes back at 680x270 at **40,38**, a fixed corner rather than the remembered spot. Measured on the *pre-change* build too, so it is older than the drag work, and the user has not reported it as such ("双击标题栏就是最大化，再次双击恢复之前的大小" was about the size, which is exact) | correctness | M |
 | ~~A41~~ | ~~single-window **full screen** grows nothing, often will not restore, and takes the Dock and menu bar with it (they come back only after a lock and unlock) - "本来应该跟最大化和退出最大化一样，能变大和恢复"~~ **fixed 2026-10-04**: macOS reports a full screen window as **maximized** as well, so A38's fill ran a moment after the Space was entered and **resized a full screen window** - and a window whose frame is changed leaves its Space without giving it back, which is the Dock the user had to lock and unlock to get back. The fill also shrank the client's window from the full screen area (1512x945 -> 1512x922) and the zoom then flipped back, so the restore ran against the wrong remembered size. The frame is now the platform's for as long as the window is full screen (`platformOwnsFrame`), the zoom report is ignored there, and the client's window grows and comes back through the ordinary path. Verified by script in both modes, with a client that resizes itself while full screen, and with the user's own ⌃⌘F exit. See the entry | correctness | L |
 | ~~A42~~ | ~~**the platform pointer is not handed back after leaving full screen**: "全屏后退出后，这时候鼠标会消失，拖回到x服务窗口恢复" - the cursor was gone over the desktop, came back over the window, and stayed right on the next trip out~~ **fixed 2026-10-04**: whether the pointer is over the window - which is what decides whether the platform's arrow is hidden - came only from JavaFX's enter and leave events, and a window that **moves or changes size under a pointer that does not move** is exactly what those events miss: leaving full screen shrank the window away from a stationary pointer, no `MOUSE_EXITED` arrived, and the arrow stayed hidden globally. The answer is now taken from where the platform says the pointer is, and re-decided whenever the window's geometry changes. Verified by log in the direction that matters - the decision is made **600 ms before** the event that used to be the only trigger (and is made at all when that event is suppressed). The measurement traps are in the entry: `screencapture -C` draws a hidden cursor and `CGCursorIsVisible()` always answers "visible" | correctness | M |
+| [ ] A49 | **pointer barriers' blocking half** - the last piece of XI 2.3: XFIXES 5.0 plus `CreatePointerBarrier`/`DestroyPointerBarrier`, the `XI_BarrierHit`/`XI_BarrierLeave` events and the clamping itself (a barrier stops the pointer until its owner releases it). **Recorded, deliberately not built**: nothing in this bed can use a barrier, and the one server that has them cannot demonstrate the blocking (see the entry for the measurements, the cost and how it would be verified) | capability | M |
 | ~~A48~~ | ~~**the device model**: this server listed **two** devices where a reference lists six, and named the master as the source of every event~~ **done 2026-10-04**: the device set is a **mutable table** and it is now a reference's own six - the two masters, the two **XTEST** slaves, and the two the host's input arrives on (where a reference keeps its backend's "Xvfb mouse"/"Xvfb keyboard"; named `xserver mouse`/`xserver keyboard` here, the one choice that is not a measurement). XTEST input carries its slave as `sourceid` and host input carries the host's device; **`XIChangeHierarchy`** is implemented (`XIAddMaster` creates the four devices a reference creates, `XIRemoveMaster`/`XIAttachSlave`/`XIDetachSlave` move them, `XI_HierarchyChanged` goes to the clients that selected it with a reference's shape and flags); **XI's passive grabs** are armed, answered and taken back on the table the core grabs use; and the device-state events are selectable on `XIAllDevices` alone. Verified with `xinput` itself: `list` draws the same tree a reference draws, `create-master`/`remove-master` work, removing the core pointer is refused the same way | correctness | M |
 | ~~A47~~ | ~~**the XInput implementation is four releases behind a reference** - the one version gap A36 left: Xvfb answers `XInputExtension` **2.4** where this server answered **2.0**~~ **fixed 2026-10-04**: the version is a reference's 2.4 and the surfaces behind it are measured and answered - **raw events (XI 2.1) are implemented and delivered** (a root selection, the reference's own shapes: a motion is 72 bytes, a button and a key 40, and a warp sends nothing), `XIBarrierReleasePointer` (2.3) answers the extension's own barrier error exactly as a reference answers it for a barrier that does not exist, and 2.2's touch has no device on either server to have content. `XIQueryVersion` now follows the reference's rule (the lower of the two, and **BadValue** for a major below 2) and both handshakes answer 2.4. What is left is measured rather than half-answered: barriers themselves need XFIXES 5.0, `XIChangeHierarchy` would need a device model that can change, and XI's passive grabs are still refused | capability | M |
 | ~~A46~~ | ~~**the dock's Quit does nothing in single-window mode** - "单窗口下，macos在dock栏右键程序，点击退出没有反应，但是在per-client模式下正常"~~ **fixed 2026-10-04**: the platform's Quit is answered by whichever toolkit *claimed the application*, and the two answer differently - AWT ends the process (so the JVM's shutdown hook stops the server, asking the clients to close first), while a JavaFX (Glass) application only turns it into a close request on its **visible** windows, so an application with no window on the screen answers the platform with nothing at all. Per-client mode's clipboard, tray and scale code all touch AWT while the server starts, which is why that mode's Quit has always worked; single-window mode opened its window first, so JavaFX claimed the application and the Quit went nowhere whenever nothing was connected. `XServer.claimHostApplication` now claims the application for AWT before any window exists. Measured with the Dock's own request (`NSRunningApplication -terminate`): **nothing, for ever** before, **gone in 500 ms** after (3.5 s with a client attached, which is the ask-and-grace path A27 added) | correctness | S |
@@ -7139,3 +7140,65 @@ list, the pointer walks straight through and no `XI_BarrierHit` arrives (measure
 Xvfb's own barrier behaviour cannot be used as an oracle in this bed; the semantics have to come from
 the reference's implementation, which is written up in A47's "what is left" with the event's field
 list. 486 tests green (five new tests: the device records a reference leads with, the XTEST slave and the source id its input carries, the device-state events being selectable on XIAllDevices alone, `XIChangeHierarchy` creating the four devices with the event that reports them, and a passive grab being armed, answered and taken back).
+
+### [ ] A49. Pointer barriers' blocking half - recorded, not built. **M** - 2026-10-04
+
+**What is missing, precisely.** XI 2.3's barrier *surface* is here (A47): `XIBarrierReleasePointer` is
+answered exactly as a reference answers it, and the selection rule for the device-state events is in.
+What is not here is the thing barriers are *for*: **XFIXES 5.0** (this server answers 4.0, so
+`CreatePointerBarrier` is refused with `BadImplementation` and no barrier can exist at all), the
+`XI_BarrierHit`/`XI_BarrierLeave` events, and the pointer clamping - a barrier stops the pointer at its
+line until its owner releases it (`XIBarrierReleasePointer`), which is what makes a hot corner or a
+"keep the pointer in the guest" edge work.
+
+**Why it is not being built now, and the honest reasons rather than a shrug.**
+
+1. **No consumer in this bed, measured.** `libXfixes.so.3` on the bed does export the call (`nm -D`:
+   40 `XFixes` symbols, `XFixesCreatePointerBarrier` and `XFixesDestroyPointerBarrier` among them - the
+   calibration that says the check is real), and **none of the clients or toolkits here references it**:
+   `x11vnc`, `xinput`, `xdotool`, `Xvfb` and **`libgdk-3.so.0`** (what the forwarded applications draw
+   with) all have zero references. Barriers are used by compositors (Mutter's hot corners, KWin's edge
+   actions) and by dedicated pointer-confinement tools - the *host desktop's* side of the world, not a
+   forwarded application's.
+2. **A client that wants them is already told the truth**: this server answers XFIXES **4.0**, so a
+   client checks, finds the feature absent, and falls back - exactly as it would against an older
+   server. Nothing is reported as done that is not.
+3. **The bed cannot verify the blocking**, which was the deciding measurement (2026-10-04): a barrier
+   that a reference *accepts* (and whose removal by `XIBarrierReleasePointer` it accepts too, so it
+   really is registered) does **not** stop a pointer driven through XTEST - absolute or relative
+   motion, with and without a device list - and no `XI_BarrierHit` arrives. Xvfb's barrier behaviour is
+   therefore not an oracle, and the semantics would have to come from the reference's own
+   implementation (`Xi/xibarriers.c`): the hit state is per **master pointer**, a hit clamps the pointer
+   to the barrier until the owner's release (which sets the release id to the hit's event id), leaving
+   the hit box ends the hit, sends `XI_BarrierLeave` and starts a new event id, and the clamping is
+   done in the screen's `ConstrainCursorHarder` hook.
+4. **It touches the pointer-motion hot path.** Every pointer move would consult the barrier list, and a
+   mistake there is a pointer that sticks or stutters - the one failure this project has spent the most
+   time on. Worth paying only for a capability something uses.
+
+**What the two reachable halves look like now.** `CreatePointerBarrier` is refused (the XFIXES
+version says 4.0, and the refusal is visible rather than silent); `XIBarrierReleasePointer` answers the
+extension's own barrier error, code 12, with the barrier as its bad value - which is what a reference
+answers for a barrier that does not exist, and no barrier can exist here.
+
+**If it is ever built, this is how it would be done and verified** (so the next session starts from a
+plan rather than a blank page):
+
+- **The request/reply surface can be compared against a reference**: creation accepted for a
+  client-owned barrier id with a horizontal *or* vertical line (a diagonal or zero-length line is
+  `BadValue`; a bad id is `BadIDChoice`; the device list takes master ids only), `DestroyPointerBarrier`
+  silent, `XIBarrierReleasePointer` silent for a real barrier and error 12 for a made-up one - all
+  measured 2026-10-04 and listed in A47.
+- **The event layout is in the protocol header** (`xXIBarrierEvent`, 68 bytes: `evtype`, `deviceid`,
+  `eventid`, `root`/`event`/`barrier`, `dtime`, `flags`, `sourceid`, `root_x`/`root_y`, `dx`/`dy`),
+  delivered to the clients that selected bits 25/26 on the barrier's window.
+- **The behaviour can only be verified on this server, with the *host* pointer** - and that is the
+  point worth keeping: the clamping would live in this server's own input path (host input ->
+  `InputState.movePointer`), which is exactly the path XTEST-only Xvfb cannot exercise. So the check
+  is: a kit tool (C + `libXfixes`, or a Java probe writing the request by hand) creates a barrier and
+  prints the XI barrier events it receives, then a *real* hand - or the bed's CGEvent tools
+  (`/tmp/xsn/hostinput`, `tools/hostdrag`) - drives the host pointer into it. Expected: the pointer
+  stops at the barrier's line, the owner gets `XI_BarrierHit`; after `XIBarrierReleasePointer` the same
+  motion crosses; moving away from the hit box produces `XI_BarrierLeave`. `xdotool getmouselocation`
+  (or a probe's `QueryPointer`) is the assertion for the clamped position, and `tools/sweep.sh` keeps
+  the request surface from drifting.
