@@ -965,6 +965,20 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     @Override
+    public void raiseAndFocus() {
+        runOnFxThreadAndWait(() -> {
+            if (stage != null) {
+                // **A window that has just appeared is one the user is waiting for**, so it takes the
+                // front and the keyboard - unlike {@link #raise()}, which is the urgency hint and does
+                // not. The platform still has the last word: an application in the background cannot
+                // always take the keyboard, and macOS leaves that to the user's own settings.
+                stage.toFront();
+                stage.requestFocus();
+            }
+        });
+    }
+
+    @Override
     public void screenResized(Screen screen) {
         Framebuffer framebuffer = screen.framebuffer();
         int width = screen.width();

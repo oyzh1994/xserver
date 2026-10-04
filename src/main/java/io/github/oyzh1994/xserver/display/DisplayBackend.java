@@ -260,6 +260,19 @@ public interface DisplayBackend {
     }
 
     /**
+     * Brings the window to the front *and gives it the keyboard*, for a window that has just been
+     * opened for a client that has just started drawing - the one moment the user is asking for it.
+     *
+     * <p>Kept apart from {@link #raise()} because the two are asked for by different things: a client
+     * whose window carries the urgency hint is saying "look at me", which is not the same as asking for
+     * the keyboard away from whatever the user is typing into, and the window that has *appeared* is one
+     * the user is waiting for. Backends that cannot give it the keyboard raise it instead.
+     */
+    default void raiseAndFocus() {
+        raise();
+    }
+
+    /**
      * The pointer's appearance, told every frame whether or not anything was drawn.
      *
      * <p>A backend that shows the pointer itself - the JavaFX and Swing windows, which draw it over

@@ -1700,3 +1700,16 @@ does, so the move was read as the resize continuing. A move is now told apart by
 answer - an edge's live resize delivers no mouse events at all, a title-bar drag delivers them - so a
 button that is down when the position changes clears the pending anchor (verified: resize then drag ends
 at 248,136, not at the old position). 477 tests green.
+
+**2026-10-04 (A44, single-window mode with no clients):** the question was whether the window should be
+hidden when no client is connected and shown/raised/focused when one arrives. What it did: with no client
+*at the start* there is no window at all (it is opened by the first window a client maps), but a window
+that had been opened was **kept, holding its last frame** - a deliberate design that eight tests assert.
+Changed so that a session with nothing to show closes its window after **1500 ms** of grace (below the
+lock) and the next client to map a window opens it again - which was already where the raise happened, and
+now `raiseAndFocus` (new in the backend API) gives it the keyboard too, while the urgency hint keeps only
+raising. The grace period is what keeps the eight tests and their design intent: a toolkit that unmaps one
+window and maps another while starting up must not make the window flicker. Verified on the bed: connect
+-> the window is first in the window list; kill the client -> "holds its last frame" then "has had nothing
+to show for 1500 ms: its window is closed"; connect again -> a **new window id** and front again. 477
+tests green.

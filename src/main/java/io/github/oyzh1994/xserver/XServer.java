@@ -1150,6 +1150,10 @@ public final class XServer {
         Rectangle damage;
         CursorSprite cursor;
         boolean viewportChanged = false;
+        // Set when the window has nothing left to frame, and acted on below where the lock is not held:
+        // closing a window waits on the toolkit's own thread (see the backend calls at the end of this
+        // method), and the tick is the only place that decides a session has gone idle.
+        boolean hideIdleWindow = false;
         serverLock.lock();
         try {
             // A resize the user asked for goes first: it changes the windows the rectangle below is
@@ -1198,6 +1202,18 @@ public final class XServer {
                     // The frame that takes the server's pointer off a window it will not touch again.
                     markSpriteDamage(session, session.lastCursor());
                     session.setLastCursor(null);
+                    // **The window goes with the clients.** Single-window mode's window is the frame
+                    // around whatever its clients are drawing, so with none of them connected there is
+                    // nothing to frame and no reason to keep a window on the user's desktop - reported
+                    // 2026-10-04: "可以做成没有任何x客户端连接的时候，可以默认隐藏主窗口，有连接了再显示
+                    // 并置顶聚焦一次". It is opened again by the first window a client maps, which is
+                    // also where the raise and the focus are (see raisePending below). Not yet,
+                    // though: a session is given a moment to come back before its window is taken away
+                    // (see ScreenSession.idleSince), so a client that unmaps one window and maps
+                    // another does not make the window flicker.
+                    //
+                    // The line below still says what it always said - at this instant the window *is*
+                    // holding its last frame, and it is this tick that decides whether it keeps it.
                     // Said about a window only where there is one. "The window holds its last frame"
                     // was said for the headless and VNC backends and for a session that has no
                     // backend at all - which is every idle moment of per-client mode's master
@@ -1209,6 +1225,17 @@ public final class XServer {
                                     ? "the window holds its last frame"
                                     : "no window is showing it");
                 }
+            }
+            if (nowIdle && session.backend() != null && !session.backend().isHeadless()
+                    && System.currentTimeMillis() - session.idleSince()
+                            >= IDLE_WINDOW_GRACE_MILLIS) {
+                // Nothing to show for long enough that the client has gone rather than paused between
+                // windows: the window that was framing it goes too. It is closed below, where the lock
+                // is not held (closing a window waits on the toolkit's thread), and a window with
+                // nothing to show in it is not presented in the meantime either way. Only a *window*
+                // is closed: a headless or VNC session has none, and a VNC viewer keeps watching a
+                // screen that has no clients on it.
+                hideIdleWindow = true;
             }
             if (wanted == null || wanted.equals(session.viewport())) {
                 session.setPendingViewport(null);
@@ -1280,6 +1307,15 @@ public final class XServer {
             // and no new one is opened. Everything above this line still happened - the client's
             // requests were answered, its keys repeat, its damage was taken - so the session is
             // alive; the frame it drew is simply not shown to anybody until one attaches.
+            closeSessionBackend(session);
+            return;
+        }
+        if (hideIdleWindow) {
+            // The last client is gone: the window that was framing it goes too. Nothing else is done
+            // with it - there is no frame to present and no cursor to show - and the next tick that has
+            // content opens a window again, on the path below.
+            log.debug("display :{} has had nothing to show for {} ms: its window is closed",
+                    options.displayNumber(), IDLE_WINDOW_GRACE_MILLIS);
             closeSessionBackend(session);
             return;
         }
@@ -1378,7 +1414,10 @@ public final class XServer {
             // the damage that drew it, and a raise that waited for another one would wait for the
             // client to draw again, which a static window never does.
             session.setRaisePending(false);
-            window.raise();
+            // Raised *and* focused: the window has just appeared for a client that has just started
+            // drawing, which is the one moment the user is waiting for it - unlike the urgency hint,
+            // which only asks to be looked at (see DisplayBackend.raiseAndFocus).
+            window.raiseAndFocus();
             log.debug("display :{} host window brought to the front for a new client window",
                     options.displayNumber());
         }
@@ -1406,6 +1445,17 @@ public final class XServer {
      * makes the drag stutter, so the rectangle is applied once it settles.
      */
     private static final long VIEWPORT_SETTLE_MILLIS = 0;
+
+    /**
+     * How long a session with nothing to show keeps its window before the window is taken away.
+     *
+     * <p>A client that has gone leaves a window with nothing in it, and the window goes with it - but
+     * several toolkits unmap their first window and map another a moment later while they start up, and
+     * a window that disappears and comes back in between reads as a flicker rather than as an
+     * application. Long enough to cover that, short enough that a client that really has gone is not
+     * leaving a window on the desktop.
+     */
+    private static final long IDLE_WINDOW_GRACE_MILLIS = 1500;
     /**
      * How long the host window has to hold still before where it is gets written to the store. A
      * drag reports a position every frame; only where it came to rest is worth keeping.

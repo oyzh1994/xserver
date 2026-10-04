@@ -192,8 +192,26 @@ public final class ScreenSession {
     }
 
     public void setIdle(boolean idle) {
+        if (idle && !this.idle) {
+            idleSince = System.currentTimeMillis();
+        }
         this.idle = idle;
     }
+
+    /**
+     * When this session last went idle, or zero if it is not.
+     *
+     * <p>The window is not taken away the moment there is nothing to show: a toolkit that unmaps one
+     * window and maps another - which is what several do while they are starting up - would take the
+     * window away and put it back, and that reads as a flicker rather than as an application. The
+     * window goes once the session has had nothing to show for long enough that it is a client that
+     * has *gone* rather than one that is between windows.
+     */
+    public long idleSince() {
+        return idleSince;
+    }
+
+    private long idleSince;
 
     public boolean idleApplied() {
         return idleApplied;
