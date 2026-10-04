@@ -1724,3 +1724,12 @@ measured at that first show. Hiding happens the moment the session goes idle, wh
 per-client window follows on disconnect. Verified: a server started with no client has no window at all;
 connecting puts it on the screen first in the window list; killing the client takes it away within 400 ms.
 477 tests green, with no change to the server or to any test - the whole change is the JavaFX backend.
+
+**2026-10-04 (the same fix, corrected after the user read the file):** the first attempt left the decision
+to the backend (`if (!idle) showWindow()`) and a backend's own `idle` is false until it is *told* - the
+server told it a tick later, so `stage.show()` ran anyway and the window flashed inside the first two
+ticks ("我看了下还是会极短地闪一下窗口，并且这行代码明显被调用了"). The state now comes first:
+`masterSession.setIdle(true)` before its backend is built, and `openSessionBackend` tells the new backend
+what the session is before it returns. Verified: no `window shown` line in the log at startup at all.
+Lesson worth keeping: a backend flag that mirrors a server decision is not a decision the backend can
+make - ask the server, or be told before you act.

@@ -1066,7 +1066,15 @@ public final class XServer {
             backendFactory = () -> BackendFactory.create(options);
         }
         if (!options.perClientWindows()) {
-            // One window for the whole screen, opened now and kept for the life of the server.
+            // **The session is idle before its backend is built, because it is: nothing is connected
+            // yet.** Idle is otherwise worked out by the tick, and the tick has not run at this point -
+            // so the session's own flag still says "not idle", and a backend that is told *that* opens
+            // its window. Which is the flash reported twice: the window appeared as the server started
+            // and vanished a moment later, when the first tick found the session idle after all
+            // ("我以单窗口模式启动时，会先显示一次窗口…我要跟per-client一样保持静默，直到x客户端连接才显示
+            // 真正的窗口"). With the state set first, the backend is built and told there is nothing to
+            // show, so no window appears until a client draws in one.
+            masterSession.setIdle(true);
             openSessionBackend(masterSession, new Rectangle(0, 0, screen.width(), screen.height()));
         }
         startClipboardBridge();
@@ -1846,6 +1854,15 @@ public final class XServer {
         }
         session.setBackend(window);
         session.setViewport(viewport);
+        // **The window is told what the session is, before it is given the chance to show itself.**
+        // A backend that has nothing to show does not open a window at all (see JavaFxBackend's
+        // setIdle): whether there is anything to show is the *session's* answer, and a backend that
+        // only hears it on a later tick has already opened one - measured 2026-10-04, the window of a
+        // single-window server appeared and vanished as the server started, because the backend's own
+        // idea of idle is false until it is told. The session's own bookkeeping is set with it, so the
+        // tick does not say the same thing twice.
+        window.setIdle(session.idle());
+        session.setIdleApplied(session.idle());
         log.info("{}", openedMessage(window, options.displayNumber(), viewport, remembered));
     }
 

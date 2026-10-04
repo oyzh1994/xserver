@@ -6798,6 +6798,15 @@ first one is the interesting one:
   window stops existing (it closes the backend of a session that has had nothing to show for the grace
   period above).
 
+**And the first attempt at that still flashed, which the user caught by reading this file**: the backend
+was left to decide for itself with `if (!idle) showWindow()`, and a backend's own `idle` is false until it
+is *told* - the server told it on a later tick than the one that built it, so the window was shown and
+hidden again inside the first two ticks ("我看了下还是会极短地闪一下窗口，并且这行代码明显被调用了").
+The state now comes first: the session is marked idle before its backend is built (`masterSession.setIdle`
+in `start`), and `openSessionBackend` tells the new backend what the session is before it returns - so the
+first thing the window hears is "there is nothing to show", and `stage.show()` is never reached. Verified
+at startup: the log has **no `window shown` line at all** and the window list is empty.
+
 This is what "silent until a client connects" means, and it is where the two modes agree: verified in
 single-window mode, a server started with no client has **no window at all**, a client connecting puts the
 window on the screen *first in the window list* (raised and focused, above), and killing the client takes

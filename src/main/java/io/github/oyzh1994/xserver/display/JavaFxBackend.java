@@ -1345,16 +1345,15 @@ public final class JavaFxBackend implements DisplayBackend {
             releaseHostCursor();
         });
         // **And the window is not shown yet.** Whether it should be is the server's answer, given by
-        // {@link #setIdle} - and it says idle for a session with nothing to show, which is what the
-        // master screen of single-window mode is until a client connects. Showing it here and hiding it
-        // a frame later is a window that appears and vanishes as the server starts, which is what was
-        // reported ("我以单窗口模式启动时，会先显示一次窗口，然后过一会这个窗口消失…我要跟per-client一样
-        // 保持静默，直到x客户端连接才显示真正的窗口"): everything else opens now, the window opens on
-        // the first thing a client shows in it.
+        // {@link #setIdle}, which the server calls with the *session's* answer before this method even
+        // returns (see XServer.openSessionBackend) - it says idle for a session with nothing to show,
+        // which is what the master screen of single-window mode is until a client connects.
+        //
+        // **Not `if (!idle) showWindow();`**, which is what this said first and what the user caught:
+        // this backend's own `idle` is false until it is told, and it was told on a *later* tick, so the
+        // window was shown here and hidden a moment later - the very flash being fixed ("我看了下还是会
+        // 极短地闪一下窗口"). The first setIdle decides, and it always comes.
         windowSize = new java.awt.Dimension(width, height);
-        if (!idle) {
-            showWindow();
-        }
     }
 
     /**
