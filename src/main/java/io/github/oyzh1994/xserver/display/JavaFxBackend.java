@@ -71,7 +71,7 @@ public final class JavaFxBackend implements DisplayBackend {
     /**
      * How long the toolkit gets to run a task before it counts as unusable.
      */
-    private static final long STARTUP_TIMEOUT_SECONDS = 1;
+    private static final long STARTUP_TIMEOUT_SECONDS = 3;
 
     /**
      * True once the toolkit has been started and has run a task for us.
@@ -125,6 +125,14 @@ public final class JavaFxBackend implements DisplayBackend {
     private boolean pointerOverWindow;
     /** Whether the platform pointer is currently the one this window asked to be hidden. */
     private boolean cursorHidden;
+    /**
+     * Whether a mouse button is down on this window, wherever it went down.
+     *
+     * <p>A press over the window's chrome is not the client's business and never reaches it, but the
+     * window is still being moved by it - and a move is a different gesture from a resize of an edge,
+     * which is the distinction {@link #windowMovedByUser} needs to make.
+     */
+    private boolean hostButtonHeld;
     /**
      * True while no client is connected, so the window has no pointer of its own to show.
      */
@@ -593,13 +601,16 @@ public final class JavaFxBackend implements DisplayBackend {
             return;
         }
         if (System.currentTimeMillis() < platformGestureUntil) {
-            // **The platform is animating the frame itself: a zoom of the title bar, or the Space of
-            // full screen.** Every size the animation passes through arrives here - measured
-            // 2026-10-04: 785, 787, 798, 858, 875, ... on the way to 1511 - and telling the client each
-            // of them makes it chase an animation, while its own re-assertion after each one leaves the
-            // window flapping between two sizes (1511 and 1499, twice a second). The size the frame
-            // *stops* at is what the client is told, once, when it has held still; the frame itself is
-            // the platform's for as long as its gesture lasts.
+            // **The platform is animating a zoom of the window, and every size it passes through
+            // arrives here** - measured 2026-10-04: 785, 787, 798, 858, 875, ... on the way to 1511.
+            // Telling the client each of them makes it chase an animation, while its own re-assertion
+            // after each one leaves the window flapping between two sizes (1511 and 1499, twice a
+            // second). So the size the frame *stops* at is what the client is told, once, when it has
+            // held still; the frame itself is the platform's while the gesture lasts.
+            //
+            // Only a zoom arms this - see the full screen listener for why full screen is not held
+            // back the same way. A window on its way open is the other case that needs no reporting,
+            // and that is the guard above.
             platformSettledContent = new java.awt.Dimension(width, height);
             platformSettle.playFromStart();
             platformGestureUntil = System.currentTimeMillis() + 400;
@@ -626,6 +637,22 @@ public final class JavaFxBackend implements DisplayBackend {
             // the top left of the display: not an arrangement the user made, and remembering it would
             // reopen the window in the corner the next time the client is started.
             return;
+        }
+        if (hostButtonHeld) {
+            // **The user is moving the window by its title bar, and that ends any resize gesture.**
+            // The two are told apart by the question the platform already answers for us: a live resize
+            // of an edge delivers no mouse events at all (measured 2026-10-04, and it is what A39's
+            // whole design rests on), while a title-bar drag delivers the press and the moves - so a
+            // button that is down here means a *move*, and the same change of the frame's x or y that a
+            // left or top edge drag makes means something else.
+            //
+            // What has to go with it is everything the resize left pending, its anchor above all: that
+            // anchor is a *far edge* to put back, worked out from where the frame stood when the resize
+            // started, and a move that leaves it armed is pulled back to where the resize began -
+            // reported 2026-10-04: "如果拉伸过窗口，这时候按住标题栏拉伸窗口，窗口经常弹回去到旧位置".
+            userDragPending = false;
+            dragJustEnded = false;
+            platformGestureUntil = 0;
         }
         // A move is the one change of the frame's geometry that is neither a drag of an edge nor this
         // backend's own doing, and it moves both ends: what a later drag has to put back is where the
@@ -887,7 +914,16 @@ public final class JavaFxBackend implements DisplayBackend {
 
     @Override
     public void setFullScreen(boolean fullScreen) {
-        runOnFxThreadAndWait(() -> {
+        // **Run later, not now, and it is not a detail: `stage.setFullScreen` blocks the toolkit thread
+        // for the whole of the Space animation.** Measured 2026-10-04: the call was still inside when
+        // the window had been full screen for 658 ms. The caller is the display tick, and a tick that
+        // waits that long is a tick that does not resize the client - the size the window went to was
+        // reported 19 ms after the full screen state changed and the client only heard about it 700 ms
+        // later ("全屏反应速度有点慢，正常窗口200ms就完成了，这个xserver要超过1秒"). Nothing waits for
+        // this call: the server has already decided, and the toolkit runs these in the order they were
+        // submitted, so the window is still full screen before anything else this backend is asked to
+        // do with it.
+        Platform.runLater(() -> {
             if (stage == null || stage.isFullScreen() == fullScreen) {
                 return;
             }
@@ -1090,10 +1126,18 @@ public final class JavaFxBackend implements DisplayBackend {
         scene.setOnMouseDragged(this::pointerMoved);
         scene.setOnMousePressed(event -> {
             hostEvent("pressed", event);
+            // Recorded before the content guard below: a press on the window's chrome is not the
+            // client's business and is dropped from the X side, but the window is still being moved
+            // with it, and that is the one thing this flag is for - see {@link #windowMovedByUser}.
+            hostButtonHeld = true;
             enterWindow();
             mouseButton(event, true);
         });
-        scene.setOnMouseReleased(event -> { hostEvent("released", event); mouseButton(event, false); });
+        scene.setOnMouseReleased(event -> {
+            hostButtonHeld = false;
+            hostEvent("released", event);
+            mouseButton(event, false);
+        });
         scene.setOnScroll(this::scrolled);
         // A drag from the host's desktop onto this window. Accepting it on drag-over is what makes
         // the platform report the drop at all, and the files it carries are the whole of what the X
@@ -1221,7 +1265,15 @@ public final class JavaFxBackend implements DisplayBackend {
             // stood, has nothing to do with where it comes back to: the Space puts it at the top left
             // of the display, and the platform's own frame is what it returns to.
             dragJustEnded = false;
-            platformGestureUntil = System.currentTimeMillis() + 3000;
+            // **And full screen is *not* held back for its final size, because it does not pass
+            // through any.** A zoom is animated - a dozen sizes on the way - and the settle below is
+            // there so the client is told only the size it stops at; full screen arrives as the one
+            // size the platform went to, so holding it would be delay for nothing. Measured 2026-10-04:
+            // with the same settle applied to it, the client waited for the Space animation to finish
+            // before it was told anything, which is the "全屏反应速度有点慢，正常窗口 200ms 就完成了，
+            // 这个 xserver 要超过 1 秒" of the report. The anchor is still kept away from a full screen
+            // move - the property change above clears it, and the frame is the platform's while it is
+            // full screen anyway.
             if (headerBar != null) {
                 // **The header bar is chrome, and full screen is where chrome goes.** The platform
                 // hides its own title bar there and the picture is meant to have the whole display -

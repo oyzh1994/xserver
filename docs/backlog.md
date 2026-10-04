@@ -6723,3 +6723,37 @@ than papered over:
   header bar that box is the framebuffer, i.e. clean.
 
 477 tests green.
+
+**Two more of its follow-ups, both reported together (2026-10-04)** - "全屏反应速度有点慢，正常窗口200ms
+就完成了，这个xserver要超过1秒" and "如果拉伸过窗口，这时候按住标题栏拖动窗口，改变窗口位置，窗口经常
+弹回去到旧位置":
+
+- **Full screen took over a second because the display tick was blocked by the transition.** The client's
+  window was resized 19 ms after the full screen state changed, the server's tick applied it 34 ms in -
+  and then the canvas did not follow for another **658 ms**. The cause is `stage.setFullScreen`, which
+  does not return until the whole Space animation is over, called through `runOnFxThreadAndWait` from
+  the tick: the tick waited, so everything the tick does after it - the viewport above all - waited with
+  it. It is now submitted with `Platform.runLater`, which nothing needs to wait for (the server has
+  already decided, and the toolkit runs these in the order they were submitted). Measured after the
+  change: the size the window went to is reported 19 ms in, the client's window takes it **34 ms** in
+  (`growing the screen ... to 1512x945` 14 ms after the report). What is left is the picture: the
+  platform's transition holds the toolkit thread, so nothing queued from the tick - the canvas resize
+  among them - runs until it is over, and the old picture in the new window for the length of a Space
+  animation is what the animation looks like from the inside. Fixing that needs the client's window to
+  be resized *before* the transition starts (the server would size it to the display the platform is
+  about to use, from the request rather than from the scene arriving), which is worth doing on its own
+  rather than in the same change as a state fix.
+- **Dragging the window by its title bar after a resize pulled it back to where the resize began.** The
+  anchor A39 puts back the far edge of a *resize* is worked out from where the frame stood when the
+  resize started (`settledFrame*`), and it was armed by the resize and then left armed: a *move* is the
+  same kind of change to the frame's x or y that a left or top edge drag makes, so the next move
+  out of the title bar was read as "the same resize, one step on" and the window snapped back
+  ("拉伸过窗口，这时候按住标题栏拖动窗口...窗口经常弹回去到旧位置"). The two are told apart by the
+  question the platform already answers: **a live resize of an edge delivers no mouse events to the
+  window at all** (measured 2026-10-04, and A39's whole design rests on it), while a title-bar drag
+  delivers the press and the moves - so a button that is down when the frame's position changes means a
+  move, and a move now clears everything a resize left pending before recording where the window is.
+  Verified: resize the left edge +40 (146,66 744x374), then drag the title bar by +90,+70 immediately -
+  the window ends at **248,136**, where the hand put it, rather than back at the old position.
+
+477 tests green.

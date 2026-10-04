@@ -1687,3 +1687,16 @@ crossing from the content to the header bar is none of them (the scene is not en
 repainting the sprite's own box so that frame is what erases it. Verified: the log says "handed back"
 over the bar, and two captures of the same window differ only in the 24x30 pixel box where the sprite
 was. 477 tests green.
+
+**2026-10-04 (two more of A43's follow-ups):** **full screen was slow because the tick was blocked by
+the transition** - `stage.setFullScreen` blocks the toolkit thread for the whole Space animation (658 ms
+measured) and was called with `runOnFxThreadAndWait` from the tick, so the client's resize, already
+reported 19 ms in, was not applied for 700 ms. It now goes through `Platform.runLater`, and the client's
+window is at the new size **34 ms** after the state changes. What remains is the *picture*: the
+transition holds the toolkit thread, so nothing the tick queues runs until it is over (the old picture
+in the new window for the length of the animation). And **a title-bar move after a resize was pulled
+back**: A39's far-edge anchor is armed by a resize and a *move* changes the same x/y a left/top edge drag
+does, so the move was read as the resize continuing. A move is now told apart by the platform's own
+answer - an edge's live resize delivers no mouse events at all, a title-bar drag delivers them - so a
+button that is down when the position changes clears the pending anchor (verified: resize then drag ends
+at 248,136, not at the old position). 477 tests green.
