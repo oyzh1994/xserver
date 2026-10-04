@@ -50,6 +50,7 @@ class XInputTest {
     private static final int XI_QUERY_POINTER = 40;
     private static final int XI_LIST_PROPERTIES = 56;
     private static final int XI_GET_PROPERTY = 59;
+    private static final int XI_PASSIVE_GRAB_DEVICE = 54;
 
     /**
      * {@code XI_ButtonPress | XI_ButtonRelease}: measured to be {@code 1<<4 | 1<<5}, not the core
@@ -421,6 +422,86 @@ class XInputTest {
         } finally {
             client.readTimeoutMillis(3000);
         }
+    }
+
+    /**
+     * {@code XIPassiveGrabDevice}: armed, answered, and released by
+     * {@code XIPassiveUngrabDevice}.
+     *
+     * <p>Measured on Xvfb 2026-10-04: the grab is answered with a 32 byte reply whose
+     * {@code num_modifiers} is nought when nothing conflicts, and the ungrab is accepted in silence.
+     * The conflict case - another client already holding the same window, detail and modifier - is
+     * this server's own reading of the same field (the reference was not measured there), so it is
+     * pinned here as what it is: the second client is told which modifier was already taken.
+     */
+    @Test
+    void aPassiveGrabIsArmedAnsweredAndTakenBack() throws IOException {
+        try (RawXClient first = RawXClient.connect(DISPLAY);
+             RawXClient second = RawXClient.connect(DISPLAY)) {
+            int opcode = first.queryExtension("XInputExtension");
+            version(first, opcode, 2, 4);
+            int window = first.allocateId();
+            first.createWindow(window, first.root(), 0, 0, 200, 200, 0x00FF00);
+            first.mapWindow(window);
+            first.flush();
+
+            byte[] reply = passiveGrab(first, opcode, window, 38, 1 << 2);
+            assertEquals(1, reply[0] & 0xFF, "a reply, which is what the request expects");
+            assertEquals(XI_PASSIVE_GRAB_DEVICE, reply[1] & 0xFF, "the minor opcode, as a reference"
+                    + " puts it");
+            assertEquals(0, RawXClient.readShort(reply, 8), "nothing conflicts yet");
+            assertEquals(0, RawXClient.readInt(reply, 4), "and then no modifiers follow the header");
+
+            byte[] conflict = passiveGrab(second, opcode, window, 38, 1 << 2);
+            assertEquals(1, RawXClient.readShort(conflict, 8), "the other client's grab is reported");
+            assertEquals(0x80000000, RawXClient.readInt(conflict, 32),
+                    "naming the modifier that was already taken: XIAnyModifier, as it was asked for");
+
+            // The ungrab is accepted in silence: no reply, and the grab is gone.
+            byte[] ungrab = new byte[24];
+            ungrab[0] = (byte) opcode;
+            ungrab[1] = 55;                                  // X_XIPassiveUngrabDevice
+            RawXClient.writeShortAt(ungrab, 2, 6);           // 24 bytes: the modifier is in it
+            RawXClient.writeIntAt(ungrab, 4, window);
+            RawXClient.writeIntAt(ungrab, 8, 38);
+            RawXClient.writeShortAt(ungrab, 12, 1);          // XIAllMasterDevices
+            RawXClient.writeShortAt(ungrab, 14, 1);          // one modifier
+            ungrab[16] = 1;                                  // XIGrabtypeKeycode
+            RawXClient.writeIntAt(ungrab, 20, 0x80000000);   // the modifier list follows the pads
+            first.sendRequest(ungrab);
+            first.flush();
+            first.readTimeoutMillis(250);
+            assertNull(first.readEvent(), "an ungrab is not answered");
+            first.readTimeoutMillis(3000);
+
+            byte[] after = passiveGrab(second, opcode, window, 38, 1 << 2);
+            assertEquals(0, RawXClient.readShort(after, 8), "the first client's grab is gone");
+        }
+    }
+
+    /** {@code XIPassiveGrabDevice} for one key with {@code XIAnyModifier}, answering the reply. */
+    private static byte[] passiveGrab(RawXClient client, int opcode, int window, int detail,
+                                      int mask) throws IOException {
+        byte[] request = new byte[40];
+        request[0] = (byte) opcode;
+        request[1] = 54;                                     // X_XIPassiveGrabDevice
+        RawXClient.writeShortAt(request, 2, 10);
+        RawXClient.writeIntAt(request, 4, 0);                // time: CurrentTime
+        RawXClient.writeIntAt(request, 8, window);
+        RawXClient.writeIntAt(request, 12, 0);               // cursor: None
+        RawXClient.writeIntAt(request, 16, detail);
+        RawXClient.writeShortAt(request, 20, 1);             // XIAllMasterDevices
+        RawXClient.writeShortAt(request, 22, 1);             // num_modifiers
+        RawXClient.writeShortAt(request, 24, 1);             // mask_len, in words
+        request[26] = 1;                                     // XIGrabtypeKeycode
+        request[27] = 1;                                     // XIGrabmodeAsync
+        request[28] = 1;                                     // paired mode
+        request[29] = 0;                                     // owner_events
+        RawXClient.writeIntAt(request, 32, 0x80000000);      // XIAnyModifier
+        RawXClient.writeIntAt(request, 36, mask);
+        client.sendRequest(request);
+        client.flush();
+        return client.readReply();
     }
 
     /**

@@ -101,6 +101,15 @@ public final class XInputExtension implements Extension {
     private static final int XI_GET_SELECTED_EVENTS = 60;
     private static final int XI_BARRIER_RELEASE_POINTER = 61;
     private static final int XI_CHANGE_HIERARCHY = 43;
+    private static final int XI_PASSIVE_GRAB_DEVICE = 54;
+    private static final int XI_PASSIVE_UNGRAB_DEVICE = 55;
+
+    /** {@code XIGrabtypeKeycode} and {@code XIGrabtypeButton}: the two grabs this server arms. */
+    private static final int XI_GRABTYPE_KEYCODE = 1;
+    private static final int XI_GRABTYPE_BUTTON = 2;
+
+    /** {@code XIAnyModifier} in XI2's numbering, where the core protocol says {@code 0x8000}. */
+    private static final int XI_ANY_MODIFIER = 0x80000000;
 
     /** The four changes {@code XIChangeHierarchy} can carry, and the flags the event reports. */
     private static final int XI_ADD_MASTER = 1;
@@ -214,6 +223,8 @@ public final class XInputExtension implements Extension {
             case XI_GET_SELECTED_EVENTS -> SelectedEventsQuery.read(in);
             case XI_BARRIER_RELEASE_POINTER -> BarrierRelease.read(in);
             case XI_CHANGE_HIERARCHY -> HierarchyChange.read(in);
+            case XI_PASSIVE_GRAB_DEVICE -> PassiveGrabRequest.read(in);
+            case XI_PASSIVE_UNGRAB_DEVICE -> PassiveUngrabRequest.read(in);
             case XI_QUERY_POINTER -> XIQueryPointerRequest.read(in);
             case XI_WARP_POINTER -> XIWarpPointerRequest.read(in);
             case XI_GRAB_DEVICE -> GrabDevice.read(in);
@@ -245,6 +256,8 @@ public final class XInputExtension implements Extension {
             case SelectedEventsQuery query -> getSelectedEvents(client, query);
             case BarrierRelease release -> releaseBarrier(client, release);
             case HierarchyChange change -> changeHierarchy(change);
+            case PassiveGrabRequest grab -> passiveGrab(client, grab);
+            case PassiveUngrabRequest ungrab -> passiveUngrab(client, ungrab);
             case GetPropertyRequest property -> getProperty(client, property);
             case ListPropertiesRequest list -> listProperties(client, list);
             case XIQueryPointerRequest query -> queryPointer(client, query);
@@ -731,6 +744,206 @@ public final class XInputExtension implements Extension {
                 log.debug("{} selects XInput2 device {} mask {} on 0x{}", client, mask.deviceId(),
                         java.util.Arrays.toString(mask.mask()), Integer.toHexString(window.id()));
             }
+        }
+    }
+
+    /**
+     * {@code XIPassiveGrabDevice} (XI 2.0): a grab armed on a window that fires when its key or
+     * button is pressed there.
+     *
+     * <p>Measured on Xvfb 2026-10-04: the request is answered with a reply whose
+     * {@code num_modifiers} counts the modifiers that are <em>already</em> grabbed for the same
+     * window and detail by another client - nought when nothing conflicts - and the grab itself takes
+     * effect (the reply is the answer, not a promise). This server arms it on the table its core
+     * {@code GrabKey}/{@code GrabButton} already use, so a press inside the window activates the grab
+     * and the owner gets the events its mask names until the release.
+     *
+     * <p><b>The mask is translated</b>: a passive grab names it in XI2's numbering (one bit per event
+     * number) and the delivery here works in core masks - {@link XInputMasks#coreMaskFor} is that
+     * correspondence. The events the owner receives are therefore the ones it named, in whichever
+     * rail its own selection on that window chooses: a client that selected XI2 gets the device
+     * events, which is what a toolkit does.
+     *
+     * <p>Enter/leave and touch grabs (types 3 and up) are refused with {@code BadValue} naming the
+     * type: this server has no touch device (either server's bed has none) and a crossing grab is not
+     * something its input path arms, so an error a client can see is better than a grab that never
+     * fires.
+     */
+    private void passiveGrab(ClientConnection client, PassiveGrabRequest request) {
+        XWindow window = checkWindow(request.window());
+        boolean pointer = grabIsPointer(request.grabType());
+        checkDevice(request.deviceId());
+        int coreMask = 0;
+        for (int bit = 0; bit < request.mask().length * 32; bit++) {
+            if (XInputMasks.hasBit(request.mask(), bit)) {
+                coreMask |= XInputMasks.coreMaskFor(bit);
+            }
+        }
+        java.util.List<Integer> conflicts = new java.util.ArrayList<>();
+        for (int modifier : request.modifiers()) {
+            for (io.github.oyzh1994.xserver.handler.InputHandlers.PassiveGrab armed
+                    : server.passiveGrabs()) {
+                if (armed.client() != client && armed.window() == window
+                        && armed.pointer() == pointer && armed.detail() == request.detail()
+                        && armed.modifiers() == coreModifier(modifier)) {
+                    conflicts.add(modifier);
+                    break;
+                }
+            }
+        }
+        for (int modifier : request.modifiers()) {
+            int core = coreModifier(modifier);
+            server.passiveGrabs().removeIf(grab -> grab.client() == client
+                    && grab.window() == window && grab.pointer() == pointer
+                    && grab.detail() == request.detail() && grab.modifiers() == core);
+            server.passiveGrabs().add(new io.github.oyzh1994.xserver.handler.InputHandlers
+                    .PassiveGrab(client, window, request.ownerEvents(), coreMask, pointer,
+                    request.detail(), core, request.grabMode(), request.grabMode()));
+        }
+        byte[] reply = new byte[32 + conflicts.size() * 4];
+        reply[0] = 1;
+        reply[1] = (byte) XI_PASSIVE_GRAB_DEVICE;
+        putCard16(reply, 2, client.sequenceNumber() & 0xFFFF, client.isBigEndian());
+        putCard32(reply, 4, (reply.length - 32) / 4, client.isBigEndian());
+        putCard16(reply, 8, conflicts.size(), client.isBigEndian());
+        for (int i = 0; i < conflicts.size(); i++) {
+            putCard32(reply, 32 + i * 4, conflicts.get(i), client.isBigEndian());
+        }
+        send(client, reply);
+        if (log.isDebugEnabled()) {
+            log.debug("{} armed an XI2 passive {} grab on 0x{} for detail {} with mask 0x{}: {}"
+                            + " conflict(s)", client, pointer ? "button" : "key",
+                    Integer.toHexString(window.id()), request.detail(),
+                    Integer.toHexString(coreMask), conflicts.size());
+        }
+    }
+
+    /**
+     * {@code XIPassiveUngrabDevice}: the counter-request, accepted in silence (measured).
+     *
+     * <p>{@code detail} 0 means every detail, and {@code XIAnyModifier} every modifier, which is the
+     * same rule the core {@code UngrabKey} follows.
+     */
+    private void passiveUngrab(ClientConnection client, PassiveUngrabRequest request) {
+        XWindow window = checkWindow(request.window());
+        boolean pointer = grabIsPointer(request.grabType());
+        for (int modifier : request.modifiers()) {
+            server.passiveGrabs().removeIf(grab -> grab.client() == client && grab.window() == window
+                    && grab.pointer() == pointer
+                    && (request.detail() == 0 || grab.detail() == request.detail())
+                    && (modifier == XI_ANY_MODIFIER || grab.modifiers() == coreModifier(modifier)));
+        }
+    }
+
+    /** Whether a grab type is about the pointer, and refusing the ones that are neither. */
+    private static boolean grabIsPointer(int grabType) {
+        if (grabType == XI_GRABTYPE_KEYCODE) {
+            return false;
+        }
+        if (grabType == XI_GRABTYPE_BUTTON) {
+            return true;
+        }
+        throw new ProtocolException(ProtocolException.VALUE, grabType,
+                "grab type " + grabType + " is not one this server arms");
+    }
+
+    /** XI2's modifier values in the core numbering the grab table uses. */
+    private static int coreModifier(int modifier) {
+        return modifier == XI_ANY_MODIFIER ? 0x8000 : modifier;
+    }
+
+    /**
+     * {@code XI_PassiveGrabDevice}: the window, the detail, the device, the modifiers and the mask,
+     * whose two lists are sized by fields inside the request.
+     */
+    private record PassiveGrabRequest(int window, int detail, int deviceId, int grabType,
+                                      int grabMode, boolean ownerEvents,
+                                      java.util.List<Integer> modifiers, int[] mask)
+            implements XRequest {
+        static PassiveGrabRequest read(X11Input in) throws IOException {
+            in.readCard8();
+            in.readCard16();
+            in.readInt32();                                 // time
+            int window = in.readInt32();
+            in.readInt32();                                 // cursor
+            int detail = in.readInt32();
+            int deviceId = in.readCard16();
+            int numModifiers = in.readCard16();
+            int maskLen = in.readCard16();
+            int grabType = in.readCard8();
+            int grabMode = in.readCard8();
+            in.readCard8();                                 // paired_device_mode
+            int ownerEvents = in.readCard8();
+            in.readPad(2);
+            java.util.List<Integer> modifiers = new java.util.ArrayList<>();
+            for (int i = 0; i < numModifiers; i++) {
+                modifiers.add(in.readInt32());
+            }
+            int[] mask = new int[maskLen];
+            for (int i = 0; i < maskLen; i++) {
+                mask[i] = in.readInt32();
+            }
+            return new PassiveGrabRequest(window, detail, deviceId, grabType, grabMode,
+                    ownerEvents != 0, modifiers, mask);
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xinput";
+        }
+    }
+
+    /** {@code XI_PassiveUngrabDevice}: the same names with no mask and no reply. */
+    private record PassiveUngrabRequest(int window, int detail, int grabType,
+                                        java.util.List<Integer> modifiers) implements XRequest {
+        static PassiveUngrabRequest read(X11Input in) throws IOException {
+            in.readCard8();
+            in.readCard16();
+            int window = in.readInt32();
+            int detail = in.readInt32();
+            in.readCard16();                                // deviceid
+            int numModifiers = in.readCard16();
+            int grabType = in.readCard8();
+            in.readCard8();                                 // pad
+            in.readCard16();                                // pad
+            java.util.List<Integer> modifiers = new java.util.ArrayList<>();
+            for (int i = 0; i < numModifiers; i++) {
+                modifiers.add(in.readInt32());
+            }
+            return new PassiveUngrabRequest(window, detail, grabType, modifiers);
+        }
+
+        @Override
+        public byte getOpCode() {
+            return 0;
+        }
+
+        @Override
+        public int getSize() {
+            return 0;
+        }
+
+        @Override
+        public void write(byte majorOpcode, com.github.moaxcp.x11.protocol.X11Output out) {
+        }
+
+        @Override
+        public String getPluginName() {
+            return "xinput";
         }
     }
 

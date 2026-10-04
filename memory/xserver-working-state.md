@@ -1850,3 +1850,17 @@ Verified with `xinput` itself against this server (and beside the reference): `c
 makes the four devices and `xinput list` draws the same tree the reference draws, `remove-master`
 takes them away again, and removing `"Virtual core pointer"` is refused by both servers with the same
 BadValue (minor 43, value 0).
+
+**2026-10-04 (A48, the passive grabs - the item closes):** "那你继续往下做剩下的" - the last piece of
+the device-model item was `XIPassiveGrabDevice`/`XIPassiveUngrabDevice` (54/55), and it is in: the grab
+is armed on the same `server.passiveGrabs()` table the core `GrabKey`/`GrabButton` use (so a press
+inside the window really activates it), answered with a 32 byte reply whose `num_modifiers` counts the
+modifiers another client already holds for the same window and detail - which is what a reference is
+measured answering when nothing conflicts (0) - and the ungrab removes it (accepted in silence, as a
+reference accepts it). The XI2 mask is translated to the core mask the delivery path works in
+(`XInputMasks.coreMaskFor`), and grab types 3 and up are refused with `BadValue` because no input path
+here arms a crossing grab and neither server has a touch device. Both request layouts are pinned by a
+test: armed (reply, 0 conflicts), a second client told the conflict (naming `XIAnyModifier`), and the
+ungrab taking it back. 486 tests green. What remains of the item is the naming decision for a backend
+device of this server's own (a reference has "Xvfb mouse"/"Xvfb keyboard"), and the barrier item
+stands as A47 recorded it.

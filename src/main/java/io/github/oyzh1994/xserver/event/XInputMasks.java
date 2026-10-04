@@ -207,4 +207,26 @@ public final class XInputMasks {
         int word = bit >>> 5;
         return word < mask.length && (mask[word] & (1 << (bit & 31))) != 0;
     }
+
+    /**
+     * The core mask an XI2 event stands for, which is the inverse of {@link #eventForCoreMask}.
+     *
+     * <p>A passive grab names its mask in XI2's numbering (one bit per event number), while the
+     * delivery path here - and the grab table a core {@code GrabKey} uses - works in the core masks.
+     * A grab is therefore translated when it is armed; the events the owner then receives are the
+     * ones it named, in the rail its own selection on that window chooses.
+     */
+    public static int coreMaskFor(int eventNumber) {
+        return switch (eventNumber) {
+            case KEY_PRESS -> EventMasks.KEY_PRESS;
+            case KEY_RELEASE -> EventMasks.KEY_RELEASE;
+            case BUTTON_PRESS -> EventMasks.BUTTON_PRESS;
+            case BUTTON_RELEASE -> EventMasks.BUTTON_RELEASE;
+            case MOTION -> EventMasks.MOTION;
+            case ENTER -> EventMasks.ENTER_WINDOW;
+            case LEAVE -> EventMasks.LEAVE_WINDOW;
+            case FOCUS_IN, FOCUS_OUT -> EventMasks.FOCUS_CHANGE;
+            default -> 0;
+        };
+    }
 }
