@@ -108,8 +108,9 @@ class XInputTest {
                     + " reference answers");
 
             byte[] devices = request(client, opcode, XI_QUERY_DEVICE, 0);
-            assertEquals(4, RawXClient.readShort(devices, 8),
-                    "the two masters and the two XTEST slaves, which is A48");
+            assertEquals(6, RawXClient.readShort(devices, 8),
+                    "the two masters and their two slave pairs: the XTEST one and the host's, which"
+                            + " is where a reference keeps its backend's (A48)");
             // The records are positional and the classes carry their own lengths. The first device
             // is the pointer at 32, and its name follows the twelve byte header; the keyboard's name
             // is the second record's, which starts after the pointer's three classes.
@@ -154,7 +155,7 @@ class XInputTest {
                     "the master's first class belongs to the slave");
             // And the XI 1 list has them too: AWT reads its device model from that one.
             byte[] legacy = client.extensionRequest(opcode, 2);
-            assertEquals(4, legacy[8] & 0xFF, "ListInputDevices lists the same four");
+            assertEquals(6, legacy[8] & 0xFF, "ListInputDevices lists the same six");
 
             // A device event driven by XTEST carries the slave as its source id (offset 52 in the
             // device shape), where it used to name the master.
@@ -527,8 +528,8 @@ class XInputTest {
         try (RawXClient client = RawXClient.connect(69)) {
             int opcode = client.queryExtension("XInputExtension");
             version(client, opcode, 2, 4);
-            assertEquals(4, RawXClient.readShort(request(client, opcode, XI_QUERY_DEVICE, 0), 8),
-                    "four devices before the change");
+            assertEquals(6, RawXClient.readShort(request(client, opcode, XI_QUERY_DEVICE, 0), 8),
+                    "six devices before the change");
             client.sendRequest(selectMessage(opcode, client.root(), 0, (1 << 1) | (1 << 11)));
             client.flush();
             client.readTimeoutMillis(300);
@@ -552,23 +553,23 @@ class XInputTest {
             assertEquals(0, RawXClient.readShort(event, 10), "device id 0: it is about the set");
             assertEquals(0x55, RawXClient.readInt(event, 16),
                     "MasterAdded | SlaveAdded | SlaveAttached | DeviceEnabled, measured on Xvfb");
-            assertEquals(8, RawXClient.readShort(event, 20), "one record per device: the four plus"
+            assertEquals(10, RawXClient.readShort(event, 20), "one record per device: the six plus"
                     + " the four the change added");
-            assertEquals(128, event.length, "32 bytes and eight 12 byte records");
+            assertEquals(152, event.length, "32 bytes and ten 12 byte records");
             // The last four records are the new devices: a master pair and the XTEST pair under it.
-            assertEquals(6, RawXClient.readShort(event, 32 + 4 * 12), "the new master pointer");
-            assertEquals(7, RawXClient.readShort(event, 32 + 4 * 12 + 2), "attached to its keyboard");
-            assertEquals(1, event[32 + 4 * 12 + 4] & 0xFF, "MasterPointer");
-            assertEquals(7, RawXClient.readShort(event, 32 + 5 * 12), "the new master keyboard");
-            assertEquals(2, event[32 + 5 * 12 + 4] & 0xFF, "MasterKeyboard");
-            assertEquals(8, RawXClient.readShort(event, 32 + 6 * 12), "its XTEST pointer");
-            assertEquals(3, event[32 + 6 * 12 + 4] & 0xFF, "SlavePointer, attached to the new master");
-            assertEquals(9, RawXClient.readShort(event, 32 + 7 * 12), "and its XTEST keyboard");
-            assertEquals(4, event[32 + 7 * 12 + 4] & 0xFF, "SlaveKeyboard");
+            assertEquals(8, RawXClient.readShort(event, 32 + 6 * 12), "the new master pointer");
+            assertEquals(9, RawXClient.readShort(event, 32 + 6 * 12 + 2), "attached to its keyboard");
+            assertEquals(1, event[32 + 6 * 12 + 4] & 0xFF, "MasterPointer");
+            assertEquals(9, RawXClient.readShort(event, 32 + 7 * 12), "the new master keyboard");
+            assertEquals(2, event[32 + 7 * 12 + 4] & 0xFF, "MasterKeyboard");
+            assertEquals(10, RawXClient.readShort(event, 32 + 8 * 12), "its XTEST pointer");
+            assertEquals(3, event[32 + 8 * 12 + 4] & 0xFF, "SlavePointer, attached to the new master");
+            assertEquals(11, RawXClient.readShort(event, 32 + 9 * 12), "and its XTEST keyboard");
+            assertEquals(4, event[32 + 9 * 12 + 4] & 0xFF, "SlaveKeyboard");
 
             byte[] devices = request(client, opcode, XI_QUERY_DEVICE, 0);
-            assertEquals(8, RawXClient.readShort(devices, 8), "the list grew by four");
-            byte[] newPointer = request(client, opcode, XI_QUERY_DEVICE, 6);
+            assertEquals(10, RawXClient.readShort(devices, 8), "the list grew by four");
+            byte[] newPointer = request(client, opcode, XI_QUERY_DEVICE, 8);
             assertEquals(1, RawXClient.readShort(newPointer, 34), "MasterPointer");
             assertEquals("Probe master pointer".length(), RawXClient.readShort(newPointer, 40),
                     "the name a reference gives it");

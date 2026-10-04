@@ -1466,7 +1466,9 @@ public final class XInputExtension implements Extension {
     private int sourceOf(ClientConnection client, int device) {
         io.github.oyzh1994.xserver.input.InputState input = server.inputFor(client);
         int source = input == null ? 0 : input.sourceDevice();
-        return source == 0 ? device : source;
+        // No source marks the host's own input, which a reference puts on its backend's pair
+        // ("Xvfb mouse"/"Xvfb keyboard", 6/7); XTEST marks its slaves (4/5).
+        return source == 0 ? XInputMasks.hostDeviceFor(device) : source;
     }
 
     /** An XI2 event number and the window a core event is reported against. */

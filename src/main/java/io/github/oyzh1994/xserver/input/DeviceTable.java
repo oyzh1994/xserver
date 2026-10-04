@@ -57,7 +57,7 @@ public final class DeviceTable {
      * has devices 2 to 5, so an added master starts at 6 - a reference's starts at 8 because it also
      * has its backend's pair.
      */
-    private int nextId = XInputMasks.XTEST_KEYBOARD_DEVICE + 1;
+    private int nextId = XInputMasks.HOST_KEYBOARD_DEVICE + 1;
 
     public DeviceTable() {
         // The four a reference leads with: the two masters and the two XTEST slaves (A48's first
@@ -75,6 +75,16 @@ public final class DeviceTable {
         devices.add(new Device(XInputMasks.XTEST_KEYBOARD_DEVICE, XInputMasks.SLAVE_KEYBOARD,
                 XInputMasks.KEYBOARD_DEVICE, true, XInputMasks.XTEST_KEYBOARD_NAME,
                 XInputMasks.XTEST_KEYBOARD_DEVICE));
+        // **And the host's own pair**, which is where a reference keeps its backend's: "Xvfb mouse"
+        // is 6 and "Xvfb keyboard" 7, attached to the core pair. This server's input from the host
+        // (the JavaFX window, or whatever backend is showing the screen) arrives on these two, so an
+        // event's source id says XTEST or the host rather than always naming the master.
+        devices.add(new Device(XInputMasks.HOST_POINTER_DEVICE, XInputMasks.SLAVE_POINTER,
+                XInputMasks.POINTER_DEVICE, true, XInputMasks.HOST_POINTER_NAME,
+                XInputMasks.HOST_POINTER_DEVICE));
+        devices.add(new Device(XInputMasks.HOST_KEYBOARD_DEVICE, XInputMasks.SLAVE_KEYBOARD,
+                XInputMasks.KEYBOARD_DEVICE, true, XInputMasks.HOST_KEYBOARD_NAME,
+                XInputMasks.HOST_KEYBOARD_DEVICE));
     }
 
     /** Every device, in id order. */

@@ -62,6 +62,37 @@ public final class XInputMasks {
     public static final int XTEST_POINTER_DEVICE = 4;
     public static final int XTEST_KEYBOARD_DEVICE = 5;
 
+    /**
+     * The two devices this server's <em>own</em> input arrives on, which is the place a reference
+     * puts its backend's pair: {@code Xvfb mouse} is device 6 and {@code Xvfb keyboard} 7 there,
+     * attached to the core pointer and keyboard exactly as these are.
+     *
+     * <p>Measured 2026-10-04 ({@code XiProbe device 0}): a reference's own input comes from these two
+     * slaves while XTEST comes from the pair above, so an event's {@code sourceid} says which of them
+     * produced it - which is the whole reason the field exists. Naming them after the server (as
+     * {@code Xvfb} does) is the only choice here that is not a measurement: they are this server's
+     * host input, and the name is one line to change.
+     */
+    public static final int HOST_POINTER_DEVICE = 6;
+    public static final int HOST_KEYBOARD_DEVICE = 7;
+    public static final String XTEST_POINTER_NAME = "Virtual core XTEST pointer";
+    public static final String XTEST_KEYBOARD_NAME = "Virtual core XTEST keyboard";
+    /** And what the host's pair is called, mirroring the reference's "Xvfb mouse"/"Xvfb keyboard". */
+    public static final String HOST_POINTER_NAME = "xserver mouse";
+    public static final String HOST_KEYBOARD_NAME = "xserver keyboard";
+
+    /** Whether a device is one this server has, for the requests that name one. */
+    public static boolean isDevice(int deviceId) {
+        return deviceId == POINTER_DEVICE || deviceId == KEYBOARD_DEVICE
+                || deviceId == XTEST_POINTER_DEVICE || deviceId == XTEST_KEYBOARD_DEVICE
+                || deviceId == HOST_POINTER_DEVICE || deviceId == HOST_KEYBOARD_DEVICE;
+    }
+
+    /** The device the host's own input arrives on, which is what a master's events name. */
+    public static int hostDeviceFor(int deviceId) {
+        return deviceId == KEYBOARD_DEVICE ? HOST_KEYBOARD_DEVICE : HOST_POINTER_DEVICE;
+    }
+
     /** {@code DeviceType}: what a device is, in {@code XIQueryDevice}'s answer. */
     public static final int MASTER_POINTER = 1;
     public static final int MASTER_KEYBOARD = 2;
@@ -72,16 +103,6 @@ public final class XInputMasks {
     /** What a reference server calls its two masters, measured with {@code XIQueryDevice 0}. */
     public static final String POINTER_NAME = "Virtual core pointer";
     public static final String KEYBOARD_NAME = "Virtual core keyboard";
-    /** A reference's names for its XTEST slaves, measured with the device list above. */
-    public static final String XTEST_POINTER_NAME = "Virtual core XTEST pointer";
-    public static final String XTEST_KEYBOARD_NAME = "Virtual core XTEST keyboard";
-
-    /** Whether a device is one this server has, for the requests that name one. */
-    public static boolean isDevice(int deviceId) {
-        return deviceId == POINTER_DEVICE || deviceId == KEYBOARD_DEVICE
-                || deviceId == XTEST_POINTER_DEVICE || deviceId == XTEST_KEYBOARD_DEVICE;
-    }
-
     /**
      * The slave a master's events come from when the master is not the source itself.
      *

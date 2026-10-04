@@ -1864,3 +1864,13 @@ test: armed (reply, 0 conflicts), a second client told the conflict (naming `XIA
 ungrab taking it back. 486 tests green. What remains of the item is the naming decision for a backend
 device of this server's own (a reference has "Xvfb mouse"/"Xvfb keyboard"), and the barrier item
 stands as A47 recorded it.
+
+**2026-10-04 (A48, the host's pair - the item closes):** the last piece of the device model was the
+one thing that is *not* a measurement: a reference has two more slaves, its backend's ("Xvfb mouse" 6
+and "Xvfb keyboard" 7 attached to the core pair), and this server's host input was the master's own.
+It now has the same pair - `xserver mouse` (6) and `xserver keyboard` (7), names mirroring `Xvfb`'s -
+so the device list is a reference's six, host input names its own device as its source where XTEST
+names its slaves, and an added master starts at 8 exactly as a reference's does. Verified with
+`xinput list` side by side: the same tree with the same ids and attachments, differing only in the
+backend pair's name. 486 tests green. The device-model item (A48) is closed; what is left on the
+XInput page is the barrier item (A47's blocking half, unmeasurable in this bed) and nothing else.
