@@ -1639,7 +1639,9 @@ decisions.
 answered in their own terms - and **macOS Screen Sharing announces 3.3**, which is worth knowing
 before writing the version branch off as legacy: 3.3 has no security-type list and no
 `SecurityResult`, so answering it the 3.8 way leaves the client waiting for a byte that never comes.
-Nothing in this server's own tests spoke 3.3 until a real client did.), security `None`, or the VNC scheme when `--vnc-password-file` is given.
+Nothing in this server's own tests spoke 3.3 until a real client did.), security `None`, or the VNC scheme when `--vnc-password` or `--vnc-password-file` is given
+(the same password, one as a value for an embedder and one as a line for a shell - a value in an
+argument is visible in `ps`, which is why both exist).
 That scheme is a sixteen byte challenge encrypted with the password as a **DES key with each byte's
 bits reversed** - which is not a thing any DES library does for you, and which fails *silently*: the
 server simply refuses every password. It is pinned by a test against a vector computed with

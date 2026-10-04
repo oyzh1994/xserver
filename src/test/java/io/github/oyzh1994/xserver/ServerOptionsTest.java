@@ -62,4 +62,28 @@ class ServerOptionsTest {
         // described to a client at all.
         assertEquals(65535, parse("--max-screen", "100000x100000").maxScreenWidth());
     }
+
+    /**
+     * The VNC password has two forms, and they are the same password: a value for a program that
+     * starts this server as a library, and a file for a shell (where an argument is visible in
+     * {@code ps}). Giving both is refused rather than silently preferring one - "which of these did
+     * it use" is a question a configuration should never raise.
+     */
+    @Test
+    void theVncPasswordCanBeAValueOrAFile() throws java.io.IOException {
+        assertEquals("secret", parse("--vnc-password", "secret").vncPassword(),
+                "the value is the password");
+        assertEquals(null, parse().vncPassword(), "and no password means none is asked for");
+
+        java.nio.file.Path file = java.nio.file.Files.createTempFile("options-pass", ".txt");
+        file.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(file, "from-a-file\n");
+        assertEquals("from-a-file", parse("--vnc-password-file", file.toString()).vncPassword(),
+                "the file form still works, and its trailing newline is not part of the password");
+
+        IllegalArgumentException both = assertThrows(IllegalArgumentException.class,
+                () -> parse("--vnc-password", "one", "--vnc-password-file", file.toString()));
+        assertTrue(both.getMessage().contains("--vnc-password"), both.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> parse("--vnc-password", "").vncPassword());
+    }
 }

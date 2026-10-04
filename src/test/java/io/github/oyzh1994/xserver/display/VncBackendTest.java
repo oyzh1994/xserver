@@ -322,6 +322,33 @@ class VncBackendTest {
     }
 
     /**
+     * The same password given as a **value**: the form an embedder uses, since it has the password in
+     * hand and no file to write it into. It has to reach RFB authentication exactly as the file form
+     * does - a wrong password refused, the right one served the screen - which is the whole of what
+     * "the two forms are the same password" means.
+     */
+    @Test
+    void thePasswordWorksJustAsWellGivenAsAValue() throws Exception {
+        try (Server server = new Server("s3cret", true)) {
+            try (VncClient refused = new VncClient(server.backend.boundPort(), "wrong")) {
+                assertTrue(refused.wasRefused, "a wrong password must be refused, whatever form the"
+                        + " right one was given in");
+            }
+            try (RawXClient client = RawXClient.connect(DISPLAY);
+                    VncClient viewer = server.connect()) {
+                int window = client.allocateId();
+                client.createWindow(window, client.root(), 0, 0, 100, 100, 0x0000FF);
+                client.mapWindow(window);
+                client.flush();
+                Thread.sleep(150);
+                viewer.requestFullFrame();
+                assertEquals(0x0000FF, viewer.readFrame().pixel(50, 50),
+                        "the value form authenticates and gets the screen");
+            }
+        }
+    }
+
+    /**
      * A viewer's copy lands in the X clipboard, and X's copy lands in the viewer's.
      *
      * <p>Both directions go through the server's clipboard bridge - the same one the Mac's pasteboard
@@ -636,6 +663,15 @@ class VncBackendTest {
         }
 
         Server(String password) throws Exception {
+            this(password, false);
+        }
+
+        /**
+         * The same, with the password handed over as {@code --vnc-password} rather than through a
+         * file - the form a program that starts this server as a library uses, because it has the
+         * password in hand and no file to put it in.
+         */
+        Server(String password, boolean asValue) throws Exception {
             this.password = password;
             // Through the real path: `--backend vnc` is parsed, implies single-window (which is what
             // puts a backend on the master screen before any client connects), and the factory makes
@@ -645,13 +681,21 @@ class VncBackendTest {
             if (password != null) {
                 java.nio.file.Files.writeString(passwordFile, password);
             }
-            xserver = new XServer(ServerOptions.parse(password == null
-                    ? new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                            "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
-                            "--no-clipboard"}
-                    : new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
-                            "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
-                            "--vnc-password-file", passwordFile.toString(), "--no-clipboard"}));
+            String[] args;
+            if (password == null) {
+                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
+                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
+                        "--no-clipboard"};
+            } else if (asValue) {
+                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
+                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
+                        "--vnc-password", password, "--no-clipboard"};
+            } else {
+                args = new String[] {"--display", ":" + DISPLAY, "--backend", "vnc", "--vnc-port", "0",
+                        "--vnc-ws-port", "0", "--no-unix", "--geometry", "320x240",
+                        "--vnc-password-file", passwordFile.toString(), "--no-clipboard"};
+            }
+            xserver = new XServer(ServerOptions.parse(args));
             xserver.start();
             xserver.startEventLoop();
             screen = xserver.screen();

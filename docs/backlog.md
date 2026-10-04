@@ -4890,7 +4890,8 @@ this machine, and `display/RfbSession` is the protocol: RFB 3.8 (3.3 and 3.7 are
 terms), security `None` or the VNC scheme, **raw encoding only**, true colour only, the client's own
 pixel format honoured (8, 16 or 32 bits, either byte order, any channel maxima - a 565 client gets
 565), `DesktopSize` for C1's screen growth, and pointer and key events into the same `InputState` the
-other backends feed. `--vnc-port` (5900 by default) and `--vnc-password-file`. It implies
+other backends feed. `--vnc-port` (5900 by default), `--vnc-password` (a value, for an embedder)
+and `--vnc-password-file` (a line, for a shell). It implies
 `--single-window`: one screen is what a viewer watches.
 
 - **It is request-driven, and that is the whole design.** Nothing is sent until a client asks, and the

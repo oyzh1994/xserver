@@ -50,6 +50,7 @@ Options:
 | `--detach-on-close` | closing the window leaves the clients running with no window instead of ending the session |
 | `--control-port N` | listen on `127.0.0.1:N` for `attach`, `detach` and `status` (0: any free port) |
 | `--vnc-port N` | the port `--backend vnc` serves on (default 5900; `vnc` implies `--single-window`) |
+| `--vnc-password VALUE` | require `VALUE` as the password from VNC clients - the form for a program that starts this server as a library (a value in an argument is visible in `ps`, which is why the file form exists) |
 | `--vnc-password-file F` | require the password in `F` (one line) from VNC clients |
 | `--vnc-ws-port N` | also carry the same sessions over WebSocket on port `N`, for a browser |
 
@@ -67,10 +68,15 @@ mvn exec:java -Dexec.args="--backend vnc --vnc-port 5900 --geometry 1300x800"
 # or ask clients for a password (one line in the file; macOS's Screen Sharing requires one)
 echo 'my-password' > ~/.xserver-vnc-pass
 mvn exec:java -Dexec.args="--backend vnc --vnc-password-file ~/.xserver-vnc-pass"
+
+# the same password as a value, which is what embedding this server wants -
+# a library has the password in hand and no file to put it in. It is visible
+# to anyone who can run ps, so a shell should prefer the file above
+mvn exec:java -Dexec.args="--backend vnc --vnc-password my-password"
 ```
 
 Any VNC client works (`vnc://host:5900`), including the ones on phones; macOS's Screen Sharing
-**requires** a password, so use `--vnc-password-file` if that is the client - on the Mac, Finder's
+**requires** a password, so use `--vnc-password`/`--vnc-password-file` if that is the client - on the Mac, Finder's
 **Cmd-K** takes `vnc://host:5900` directly. `--vnc-port 0` takes any free port and prints the one it
 got, which is the honest way to run it beside anything else. **This mode opens no host window** - that
 is what lets it run on a machine with no display - and it implies `--single-window`, so every client

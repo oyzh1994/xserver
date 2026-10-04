@@ -122,8 +122,9 @@ public final class VncBackend implements DisplayBackend {
             log.info("VNC on port {}: connect with vnc://<this machine>:{} - {}",
                     boundPort, boundPort, password == null
                             ? "the display is served to anyone who connects, so this is for a"
-                                    + " network you trust (--vnc-password-file asks for a password)"
-                            : "clients are asked for the password in --vnc-password-file");
+                                    + " network you trust (--vnc-password asks for a password)"
+                            : "clients are asked for a password (--vnc-password, or the file form"
+                                    + " --vnc-password-file)");
         } catch (IOException e) {
             running.set(false);
             throw new IllegalStateException("cannot listen for VNC on port " + port + ": "

@@ -179,6 +179,17 @@ public final class ServerOptions {
     private File vncPasswordFile;
 
     /**
+     * The same password, given as a value rather than read from a file.
+     *
+     * <p>For an embedder: a program that starts this server as a library has the password in hand
+     * already and has nowhere to write it, and the file form exists for a *shell*, where an argument
+     * is an argument everyone on the machine can read with {@code ps}. Both forms are the same
+     * password to the VNC backend; giving both at once is refused rather than silently preferring
+     * one, because "which of these two did it use" is exactly what a user should never have to ask.
+     */
+    private String vncPasswordValue;
+
+    /**
      * The port the browser path listens on: the same RFB sessions carried inside WebSocket frames,
      * or -1 for none (backlog D2). A page cannot open a TCP socket, so this is what lets noVNC - or
      * anything else that speaks RFB over a WebSocket - reach the display with nothing installed.
@@ -232,6 +243,7 @@ public final class ServerOptions {
                 case "--detach-on-close" -> options.detachOnClose = true;
                 case "--vnc-port" -> options.vncPort = Integer.parseInt(next(args, ++i));
                 case "--vnc-password-file" -> options.vncPasswordFile = new File(next(args, ++i));
+                case "--vnc-password" -> options.vncPasswordValue = next(args, ++i);
                 case "--vnc-ws-port" -> options.vncWebSocketPort =
                         Integer.parseInt(next(args, ++i));
                 case "--control-port" -> options.controlPort = Integer.parseInt(next(args, ++i));
@@ -266,6 +278,13 @@ public final class ServerOptions {
             // One screen, watched by whoever connects: the backend serves the whole framebuffer, and
             // a screen per client - with a VNC port per client - is not a thing a viewer can use.
             options.singleWindow = true;
+        }
+        if (options.vncPasswordValue != null && options.vncPasswordFile != null) {
+            // Two ways to say the same thing, so which one was meant is a question with no answer -
+            // refused here, where the message can name both options, rather than silently preferring
+            // one and leaving the other as a line in a configuration that does nothing.
+            throw new IllegalArgumentException("--vnc-password and --vnc-password-file are the same"
+                    + " password two ways: give one of them");
         }
         return options;
     }
@@ -345,8 +364,13 @@ public final class ServerOptions {
                   --vnc-port N          the port --backend vnc serves on, 0 for any free one
                                         (default 5900). vnc serves the whole screen, so it implies
                                         --single-window
-                  --vnc-password-file F  require the password in FILE (one line) from VNC clients;
-                                        without it the display is served to anyone who connects
+                  --vnc-password VALUE  require VALUE as the password from VNC clients. This is the
+                                        form for a program that starts this server as a library;
+                                        **VALUE is visible to anyone who can run `ps`**, which is
+                                        why the file form exists for a shell
+                  --vnc-password-file F  require the password in FILE (one line) from VNC clients.
+                                        Give one of the two, not both; without either the display is
+                                        served to anyone who connects
                   --vnc-ws-port N       also serve the same VNC sessions over WebSocket on port N,
                                         so a browser (noVNC) can connect with nothing installed
                                         (default: no browser path)
@@ -597,8 +621,23 @@ public final class ServerOptions {
         return vncWebSocketPort;
     }
 
-    /** The VNC password a client must type, read from its file, or null when there is none. */
+    /**
+     * The VNC password a client must type - the value that was given, or the one line in the file -
+     * or null when the display is served to anyone who connects.
+     *
+     * <p>The file is read here rather than at parse time so that a server which never builds a VNC
+     * backend never touches it; the value is taken as given and only checked to be non-empty, which is
+     * the one mistake that would otherwise turn into a display a *known* key opens (RFB derives a DES
+     * key from the password, and a zero key is weak).
+     */
     public String vncPassword() {
+        if (vncPasswordValue != null) {
+            if (vncPasswordValue.isEmpty()) {
+                throw new IllegalArgumentException("--vnc-password is empty: give a password, or"
+                        + " leave the option out to serve the display to anyone who connects");
+            }
+            return vncPasswordValue;
+        }
         if (vncPasswordFile == null) {
             return null;
         }

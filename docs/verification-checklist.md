@@ -120,6 +120,7 @@ mouse and keyboard do is drive the X pointer and keyboard (`RfbSession` -> `inpu
 echo 'my-password' > ~/.xserver-vnc-pass
 mvn exec:java -Dexec.args="--backend vnc --vnc-port 0 --geometry 1300x800 \
     --vnc-password-file ~/.xserver-vnc-pass --vnc-ws-port 6080"
+# (or --vnc-password VALUE - the same password as a value, for an embedded launch)
 # the log then says:  VNC on port <N>: connect with vnc://<this machine>:<N>
 #                     VNC over WebSocket on port 6080: point noVNC at ws://<this machine>:6080/
 ```
