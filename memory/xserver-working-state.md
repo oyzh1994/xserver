@@ -1936,3 +1936,22 @@ matrix result was the probe closing each connection before the next, so it never
 compatibility and ignored (the root is always 24 bit; the server now warns once at startup) - the doc
 is the checklist's §7 and the entry. Everything else measured green, including both passwords forms
 (handshake OK / wrong refused) and the both-forms and missing-file refusals. **493 tests green.**
+
+**2026-10-06 (A53, EasyShell and termora on every backend and both window modes):** the user asked for
+the two applications to be walked over the whole configuration matrix - "各种backend都测试下，各种窗口
+模式也都是测试下…窗口弹窗，输入，右键功能，右键菜单". Both apps were launched against javafx, swing,
+headless and vnc in single-window, and against javafx and swing per-client (vnc implies single-window;
+headless per-client has no window to look at by design). Everything renders and answers: context menus,
+a wizard, a dialog with a text field, termora's Quick Connect and a modal message dialog, a local
+terminal that runs commands, ASCII and Chinese typing, clicks and hover. **The single-window
+framebuffer is byte-identical between javafx, swing, headless and vnc** (`md5` of the `xwd` captures;
+the one difference was termora's own hover/selection state, 0.63% of pixels in one row). Two lessons
+about the instruments: single-window mode is the only mode an XTEST driver can reach (per-client gives
+every client its own screen, so per-client must be driven with `tools/host-input.c` through the host
+window), and `xwd` captures are 1:1 while `screencapture` of a window is 2x. **One candidate bug
+recorded**: `host-input type "中文输入abc"` (a keycode-0 event carrying text, the shape an IME's commit
+has) arrives as `aaaaaaa` - the server translates the keycode and drops the event's text; whether a
+real Mac IME commit is affected needs a hand test (the `InputMethodEvent` path exists and was added for
+this report). Three app-side behaviours were reproduced **identically on Xvfb** and are therefore not
+this server's: termora's context-menu items ignore synthetic clicks, EasyShell's own title-bar items
+do nothing, and termora's empty Quick Connect shows its own `getScheme(...) must not be null`.

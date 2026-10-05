@@ -213,6 +213,13 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
   asked for `x16` answers `depth of root window: 24 planes` and says so once at startup. It is
   accepted because it is part of the usual X-server invocation (the bed's own Xvfb runs `x16`), and
   honouring it would mean the whole framebuffer path at another root depth.
+- **A headless server in per-client mode shows nothing anywhere** (A53). The client connects, draws
+  and runs; there is no window on the host and no way to see the client's own screen - every
+  connection gets a screen of its own, which is the mode's design, so this is not a defect to report.
+- **The applications' own quirks, not this server's** (A53, each reproduced identically on Xvfb): a
+  synthetic click does not activate termora's context-menu *items* (the menu opens and stays open),
+  a click on EasyShell's own title-bar items (片段 消息 工具 关于 设置 退出) does nothing, and
+  termora's Quick Connect with an empty form answers with its own `getScheme(...) must not be null`.
 
 ## 8. How a run lies (measured traps)
 
@@ -254,6 +261,16 @@ not done" and `docs/backlog.md`'s §7 have the measurement.
 13. **Every client's log has a few `0x0` refusals of its own** - `GetProperty`, `GetWindowAttributes`
     and `GetGeometry` on window/drawable `0x0` - as a toolkit starts and asks about things it has not
     made yet. A reference refuses them too; they are not findings.
+14. **A capture is in pixels of *something*, and the two kinds differ by a factor of two** (A53):
+    `xwd -root` on the server's own root is 1:1, so a point in that image *is* a screen coordinate -
+    but `screencapture -l <window id>` of a host window is **2x the frame's points**, so a click
+    computed from it must be halved. Mixing the two puts the pointer at twice the intended place,
+    which reads as "the app ignores clicks there".
+15. **A synthetic click and a synthetic keystroke are not the same instrument on every toolkit**
+    (A53): JavaFX (EasyShell) activates a context-menu item from `xdotool mousemove x y click 1`,
+    while Swing (termora) does not activate one from that, a separate move-then-click, or a
+    press-hold-release - **on this server and on Xvfb alike**. Before recording "the menu does not
+    work", run the same gesture on the reference; what is left is the application's.
 
 ## What the 2026-09-28 verification round found
 
