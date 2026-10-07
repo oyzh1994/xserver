@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -82,6 +83,29 @@ class TypedCharacterTest {
             assertNull(find(drain(client), KEY_PRESS),
                     "the keycode path already carries this character");
         }
+    }
+
+    /**
+     * Where the character is put, which is not a matter of taste.
+     *
+     * <p>Measured 2026-10-08 with a real toolkit on the other end: when the server claimed the
+     * <em>highest</em> keycode, 255, for 中, a text field in a forwarded EasyShell received nothing at
+     * all for it - the mapping answered the character, and the client still resolved the keycode to
+     * nothing, because a keycode at the far end of the range is one the map's own tables can leave
+     * without an entry. The same character typed by {@code xdotool}, which claims **keycode 8** (its
+     * log line: {@code client mapping change: first=8 count=1 perKeycode=1 keysyms=[16797229]}),
+     * arrived. So the claim is the lowest keycode nothing carries.
+     */
+    @Test
+    void theCharacterGoesToTheLowestKeycodeNothingCarries() throws IOException {
+        startServer();
+        int synthetic = Keymap.syntheticKeycode();
+        assertNotEquals(Keymap.MAX_KEYCODE & 0xFF, synthetic,
+                "not the end of the range: a client could not resolve it (255 failed where 8 worked)");
+        // The lowest free keycodes on these tables are 8 and 9; the first one a key really carries is
+        // the digit row at 10. A choice that far up the range is the bug this pins.
+        assertTrue(synthetic >= (Keymap.MIN_KEYCODE & 0xFF) && synthetic < 10,
+                "the claim belongs at the bottom of the range, not at " + synthetic);
     }
 
     /**

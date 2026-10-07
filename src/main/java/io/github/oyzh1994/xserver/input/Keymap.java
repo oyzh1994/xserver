@@ -219,13 +219,24 @@ public final class Keymap {
      *
      * <p>Chosen once and kept: a client caches the mapping it is told about, and moving the
      * character from one keycode to another on every keystroke would mean a mapping change per
-     * character. It is the top of the keycode range a real keyboard never reaches.
+     * character.
+     *
+     * <p><b>It is the *lowest* keycode nothing carries, and that is a measurement, not a taste.</b>
+     * It used to be the highest, 255, on the reasoning that no keyboard reaches up there - and a real
+     * toolkit could not resolve the character at all: measured 2026-10-08, a text field in a forwarded
+     * EasyShell received nothing for {@code 中} when the server pressed 255, and the same character
+     * worked when {@code xdotool} typed it - which remaps **keycode 8**, the first keycode a client's
+     * keymap covers (its log line: {@code client mapping change: first=8 count=1 perKeycode=1
+     * keysyms=[16797229]}). A toolkit resolves a keycode through the map the server advertises, and a
+     * keycode at the far end of the range is one the map's own tables can leave without an entry, so
+     * the character has no keysym as far as the client is concerned. The low end has no such hole.
      */
     public static synchronized int syntheticKeycode() {
         if (syntheticKeycode == 0) {
-            int candidate = MAX_KEYCODE & 0xFF;
-            while (candidate > (MIN_KEYCODE & 0xFF) && keysym(candidate, 0) != Keysyms.NONE) {
-                candidate--;
+            int candidate = MIN_KEYCODE & 0xFF;
+            while (candidate < (MAX_KEYCODE & 0xFF) && (keysym(candidate, 0) != Keysyms.NONE
+                    || keysym(candidate, 1) != Keysyms.NONE)) {
+                candidate++;
             }
             syntheticKeycode = candidate;
         }

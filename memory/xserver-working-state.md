@@ -1955,3 +1955,23 @@ real Mac IME commit is affected needs a hand test (the `InputMethodEvent` path e
 this report). Three app-side behaviours were reproduced **identically on Xvfb** and are therefore not
 this server's: termora's context-menu items ignore synthetic clicks, EasyShell's own title-bar items
 do nothing, and termora's empty Quick Connect shows its own `getScheme(...) must not be null`.
+
+**2026-10-08 (A53's finding, fixed: "中文输入实际上都是英文字符"):** the user's follow-up settled what the
+A53 pass had only suspected - typing with the Mac's own **Pinyin** source into a forwarded text field
+produced **English letters and no `input method committed` line** - and it was three bugs in a row.
+(1) The scene was never an input method client: JavaFX enables input method events only when the
+scene's *focus owner* carries both `getInputMethodRequests()` and `getOnInputMethodTextChanged()`
+(`Scene.InputMethodStateManager` asks exactly that), and this window had no focus owner while the
+handler sat on the Scene. The content now owns both - and the scene may **not** also have a handler,
+because the event is fired at the focus owner and bubbles, so two handlers type every character
+twice. (2) The manager re-decides only on a focus *change*, and the content was focused while the
+window was still coming up, so it composed on some runs and not others: the content is now
+non-traversable until the window has the focus, and every window focus takes it while the focus is
+parked on a hidden node first. (3) The composed character went on **keycode 255**, which a real
+toolkit cannot resolve - the mapping answered the character and the application still showed nothing;
+the claim is now the **lowest** keycode nothing carries, which is what `xdotool` does too (keycode 8
+in the server's own log). A key event that carries text but no usable keycode no longer types the
+keycode either. **Verified end to end**: `n i h a o` + space with Pinyin into a forwarded EasyShell
+text field produced **你好**; real keycodes `a b c 1 2 3` with the ABC source produced `abc123`.
+**494 tests green** (`TypedCharacterTest.theCharacterGoesToTheLowestKeycodeNothingCarries` fails on
+the old claim).

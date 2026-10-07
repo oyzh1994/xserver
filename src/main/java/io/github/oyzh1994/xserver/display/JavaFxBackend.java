@@ -17,6 +17,8 @@ import javafx.scene.image.PixelBuffer;
 import javafx.scene.image.PixelFormat;
 import javafx.scene.image.WritableImage;
 import javafx.scene.input.KeyCode;
+import javafx.scene.input.InputMethodEvent;
+import javafx.scene.input.InputMethodRequests;
 import javafx.scene.input.MouseButton;
 import javafx.scene.input.MouseEvent;
 import javafx.scene.input.ScrollEvent;
@@ -110,6 +112,29 @@ public final class JavaFxBackend implements DisplayBackend {
     private Scene scene;
     /** The canvas the screen is drawn into - the window's *content*, below the header bar. */
     private Canvas canvas;
+
+    /**
+     * The node the window's content lives in, which is also what owns the scene's focus and its input
+     * method - see the setup in {@link #openWindow} for why the *focus owner* has to carry the input
+     * method handlers for the platform to compose anything at all.
+     */
+    private Pane content;
+
+    /**
+     * A node that holds the focus for exactly as long as it takes to hand it back to {@link #content}.
+     *
+     * <p>See the focus listener in {@link #openWindow}: JavaFX decides whether the platform should be
+     * asked for input method text only when the scene's focus owner <em>changes</em>, so a focus the
+     * content never loses is an input method that is never re-enabled.
+     */
+    private Pane focusParking;
+
+    /**
+     * Where the pointer last was, in scene coordinates: the place the platform's input method is told
+     * to put its candidate window, since this side has no caret - the text is drawn by an X client.
+     */
+    private double pointerSceneX;
+    private double pointerSceneY;
 
     /**
      * The key that leaves full screen, which is the platform's own convention rather than Escape (see
@@ -1134,7 +1159,7 @@ public final class JavaFxBackend implements DisplayBackend {
         // The canvas sits in the *centre* of a BorderPane whose top is the header bar, so the
         // content starts below the title bar by the layout itself and nothing here has to place it.
         headerBar = extendedWindow() ? buildHeaderBar() : null;
-        Pane content = new Pane(canvas);
+        content = new Pane(canvas);
         canvas.setManaged(false);
         BorderPane root = new BorderPane();
         if (headerBar != null) {
@@ -1170,6 +1195,14 @@ public final class JavaFxBackend implements DisplayBackend {
             // with it, and that is the one thing this flag is for - see {@link #windowMovedByUser}.
             hostButtonHeld = true;
             enterWindow();
+            // **A press on the client's page takes the scene's focus back to the content.** Pressing
+            // one of the header bar's buttons makes that button the scene's focus owner, and the
+            // platform only routes composed text to the focus owner - so without this a click on 最小化
+            // would silently turn the input method off for everything typed afterwards.
+            if (overContent(event)) {
+                content.setFocusTraversable(true);
+                content.requestFocus();
+            }
             mouseButton(event, true);
         });
         scene.setOnMouseReleased(event -> {
@@ -1207,27 +1240,46 @@ public final class JavaFxBackend implements DisplayBackend {
             event.setDropCompleted(taken);
             event.consume();
         });
-        scene.setOnKeyPressed(event -> keyChanged(event.getCode(), true));
-        scene.setOnKeyReleased(event -> keyChanged(event.getCode(), false));
+        scene.setOnKeyPressed(event -> keyChanged(event, true));
+        scene.setOnKeyReleased(event -> keyChanged(event, false));
         // The character the input method or the dead key produced, which is not the key that was
         // pressed: JavaFX reports it here, after the platform's own composition has run.
-        scene.setOnKeyTyped(event -> input.keyTyped(event.getCharacter().isEmpty()
-                ? 0 : event.getCharacter().charAt(0)));
-        // And this is where an input method's *result* arrives - the text the user chose from the
-        // candidate list. Measured: KEY_TYPED does not carry it, so a Mac's Chinese input method
-        // typed into a forwarded window produced nothing at all until this was handled. The
-        // committed text is what the user meant to type; the composition itself is the platform's
-        // own window and never reaches the X client.
-        scene.setOnInputMethodTextChanged(event -> {
-            String committed = event.getCommitted();
-            if (committed == null || committed.isEmpty()) {
-                return;
-            }
-            log.debug("input method committed {} characters", committed.length());
-            for (int i = 0; i < committed.length(); i++) {
-                input.keyTyped(committed.charAt(i));
-            }
+        scene.setOnKeyTyped(event -> {
+            log.debug("key typed '{}' (code {})", event.getCharacter(), event.getCode());
+            input.keyTyped(event.getCharacter().isEmpty() ? 0 : event.getCharacter().charAt(0));
         });
+        // **An input method's result arrives at the scene's focus owner, and the platform is only
+        // asked to compose anything while that owner carries an input method of its own.** JavaFX's
+        // {@code Scene.InputMethodStateManager} calls {@code Scene.enableInputMethodEvents} exactly
+        // when some scene's {@code getFocusOwner()} is non-null, its {@code getInputMethodRequests()}
+        // is non-null *and* its {@code getOnInputMethodTextChanged()} is non-null - so a window with
+        // no focus owner, or one whose focus owner has no handler of its own, never becomes an input
+        // method client at all, and the platform never composes: the keystrokes arrive as the letters
+        // printed on the keys. That is the report of 2026-10-08 ("中文输入实际上都是英文字符，好像也没
+        // 看到 input method committed 这种消息"), reproduced with the Mac's own "Pinyin - Simplified"
+        // source and real keycodes: a forwarded text field received `nihao` where the input method
+        // meant 你好. The content is the focus owner and carries the handler; the scene must **not**
+        // also carry one, because the event is fired *at the focus owner* and then bubbles to the
+        // scene, so two handlers would type every committed character twice.
+        //
+        // **Not traversable yet.** A scene's first focusable node is made the focus owner the moment
+        // the scene is shown - before the window is up and key - and the platform only enables input
+        // method events when that owner *changes*, so an owner taken that early is an input method
+        // that never turns on (measured 2026-10-08: the same build came up composing on one run and
+        // not the next). The focus is taken in the stage's own focus listener instead, where the
+        // window is up; see there.
+        content.setFocusTraversable(false);
+        content.setInputMethodRequests(new ContentInputMethodRequests());
+        content.setOnInputMethodTextChanged(this::inputMethodText);
+        // The node the focus is parked on for the moment it takes to hand it back - see the focus
+        // listener below. Unmanaged, so it takes no part in the layout and cannot show anything.
+        focusParking = new Pane();
+        focusParking.setManaged(false);
+        focusParking.setFocusTraversable(true);
+        root.getChildren().add(focusParking);
+        log.debug("input method owner: requests={} handler={} traversable={}",
+                content.getInputMethodRequests() != null,
+                content.getOnInputMethodTextChanged() != null, content.isFocusTraversable());
 
         // **The title bar is JavaFX's own from 27 on** (StageStyle.EXTENDED): the window's header
         // buttons stay the platform's, drawn over the top of the scene, and the strip they are in
@@ -1350,12 +1402,34 @@ public final class JavaFxBackend implements DisplayBackend {
         sizeFrameToContent();
         // Scene has no focus property of its own, so focus comes from the window.
         stage.focusedProperty().addListener((observable, wasFocused, focused) -> {
+            Node ownerBefore = scene.getFocusOwner();
             setWindowFocused(focused);
             input.focusChanged(focused);
             applyHostCursor();
             // The sprite starts or stops being drawn with the focus, and no client has to draw
             // anything for the canvas to be wrong: repaint its own box.
             repaintCursorArea();
+            // **The input method's owner takes the focus when the window does, not when it is shown.**
+            // JavaFX enables input method events only when the scene's focus owner *changes*
+            // (`Scene.InputMethodStateManager` re-decides on every focus change), and asking in
+            // {@link #showWindow} - the moment the window appears - does not always stick: measured
+            // 2026-10-08, the same build could come up with the content as the focus owner and no
+            // input method, and a Mac's Chinese input method then composed nothing at all. Taking the
+            // focus here, while the window is up and key, is the moment the platform has a view to
+            // route the composition to.
+            if (focused && content != null) {
+                content.setFocusTraversable(true);
+                if (scene.getFocusOwner() == content && focusParking != null) {
+                    // The content already had the focus, and a focus that does not *change* is one
+                    // JavaFX does not re-decide on - so it is given up and taken again, which is the
+                    // change the platform waits for. Without this the composition works when the
+                    // window happens to be focused at the right moment and not otherwise.
+                    focusParking.requestFocus();
+                }
+                content.requestFocus();
+            }
+            log.debug("stage focused {} -> {}, input method owner is {} (was {})", wasFocused, focused,
+                    scene.getFocusOwner(), ownerBefore);
         });
         stage.setOnCloseRequest(event -> {
             closed = true;
@@ -2057,6 +2131,10 @@ public final class JavaFxBackend implements DisplayBackend {
         // 导致我想按一下最小化或者全屏按钮都很困难". Re-decided from where the pointer is, which is
         // what {@link #updatePointerOverWindow} asks about; cheap, and a no-op when nothing changed.
         applyHostCursor();
+        // Remembered before the chrome guard: where the platform's input method candidate window
+        // belongs is where the user is looking, whether that is over the page or over the title bar.
+        pointerSceneX = event.getSceneX();
+        pointerSceneY = event.getSceneY();
         if (heldButtons == 0 && !overContent(event)) {
             // Over the header bar, which is the window's chrome rather than the client's page: the
             // pointer is not on the screen the client is being shown, and moving the window by its
@@ -2071,6 +2149,8 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     private void mouseButton(MouseEvent event, boolean pressed) {
+        pointerSceneX = event.getSceneX();
+        pointerSceneY = event.getSceneY();
         int x = screenX(event.getX());
         int y = screenY(event.getY());
         pointerX = x;
@@ -2126,13 +2206,104 @@ public final class JavaFxBackend implements DisplayBackend {
         input.buttonChanged(button, false, x, y);
     }
 
-    private void keyChanged(KeyCode code, boolean pressed) {
-        int keycode = xKeycode(code);
+    private void keyChanged(javafx.scene.input.KeyEvent event, boolean pressed) {
+        if (carriesACharacterNoKeyHas(event)) {
+            // **The platform is telling us the character, not the key.** An input method that hands
+            // its result over as a key event - which is what macOS does for composed text, and what
+            // tools/host-input.c reproduces - arrives as the keycode of whatever key sits at nought
+            // (`a` on a Mac keyboard) with the real text in the event. Sending that keycode types an
+            // `a` and nothing else: measured 2026-10-08, `host-input type "中文输入abc"` put `aaaaaaa`
+            // into a forwarded text field. The character itself comes through KEY_TYPED, which is
+            // already wired to {@link InputSink#keyTyped}, so the key event is dropped instead.
+            return;
+        }
+        int keycode = xKeycode(event.getCode());
         if (keycode == 0) {
             // No mapping means no keycode: reporting one would invent a key the client never has.
             return;
         }
         input.keyChanged(keycode, pressed, pointerX, pointerY);
+    }
+
+    /**
+     * Whether the event's own text is a character no key on this keyboard can produce - which is how
+     * an input method's result is told apart from a key press.
+     *
+     * <p>What a key press carries otherwise is text too (Shift+1 is {@code !}), so the test cannot be
+     * "the text differs from the key": it is whether the *keyboard* could have typed it at all, which
+     * is the same question {@link Keymap#keycodeForKeysym} answers for every character.
+     */
+    private static boolean carriesACharacterNoKeyHas(javafx.scene.input.KeyEvent event) {
+        String text = event.getText();
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            int keysym = Keymap.keysymFor(text.charAt(i));
+            if (keysym != 0 && Keymap.keycodeForKeysym(keysym) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The text an input method composed, which is the half of typing no keycode can carry: a keycode
+     * says which key was pressed and a client turns that into a character with its own keymap, which
+     * works for everything printed on a keyboard and for nothing else. The composition itself is the
+     * platform's own window and never reaches the X client; what goes is the committed text, and
+     * {@link InputSink#keyTyped} is what turns each character into a keystroke a client can read.
+     */
+    private void inputMethodText(InputMethodEvent event) {
+        String committed = event.getCommitted();
+        if (committed == null || committed.isEmpty()) {
+            return;
+        }
+        log.debug("input method committed {} characters", committed.length());
+        for (int i = 0; i < committed.length(); i++) {
+            input.keyTyped(committed.charAt(i));
+        }
+    }
+
+    /**
+     * The input method's half of a window whose client is a whole desktop: where the platform should
+     * put its candidate list.
+     *
+     * <p>There is no caret on this side - the text goes to an X client that draws its own, and this
+     * window only ever shows the pixels - so the pointer is the honest answer. The coordinates are
+     * what JavaFX asks for, which are the screen's own: the same sum {@code TextInputControlSkin} does
+     * for a text field (the window's position, the scene's inside it, then the point in the scene).
+     */
+    private final class ContentInputMethodRequests implements InputMethodRequests {
+
+        @Override
+        public Point2D getTextLocation(int offset) {
+            double x = pointerSceneX;
+            double y = pointerSceneY;
+            if (stage != null && scene != null) {
+                x += stage.getX() + scene.getX();
+                y += stage.getY() + scene.getY();
+            }
+            return new Point2D(x, y);
+        }
+
+        @Override
+        public int getLocationOffset(int x, int y) {
+            // Asked where in the *composed* text the platform's own point falls; this side never sees
+            // the composition, so there is no offset it could answer with.
+            return 0;
+        }
+
+        @Override
+        public void cancelLatestCommittedText() {
+            // The text has already gone to the client; there is nothing here to take back.
+        }
+
+        @Override
+        public String getSelectedText() {
+            // Nothing is ever selected on this side.
+            return null;
+        }
     }
 
     /**

@@ -1192,6 +1192,8 @@ public final class InputState implements DisplayBackend.InputSink {
         // the same character typed twice is two keystrokes, and the second one has to be sent like
         // the first.
         boolean alreadyOnAKey = onTheKeyboard != 0 && onTheKeyboard != Keymap.syntheticKeycode();
+        log.debug("keyTyped '{}' keysym=0x{} onTheKeyboard={} already={}", character,
+                Integer.toHexString(keysym), onTheKeyboard, alreadyOnAKey);
         if (keysym == Keysyms.NONE || alreadyOnAKey) {
             return;
         }

@@ -520,6 +520,8 @@ public final class InputHandlers {
             System.arraycopy(keysyms, i * perKeycode, row, 0, perKeycode);
             Keymap.assign(first + i, row);
         }
+        log.debug("client mapping change: first={} count={} perKeycode={} keysyms={}", first, count,
+                perKeycode, keysyms);
         // Clients are told the mapping changed so they can refresh their caches.
         server.broadcastMappingNotify((byte) 0, (byte) first, (byte) count);
     }
