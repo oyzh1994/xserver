@@ -59,6 +59,18 @@ public final class Keymap {
 
     /** The keycode the server types a composed character with, chosen once. */
     private static int syntheticKeycode;
+
+    /**
+     * The keycode each composed character has been given, by the character's keysym.
+     *
+     * <p>**One keycode per character rather than one for all of them**, which is a measurement and not
+     * tidiness: a client that has not re-read the mapping yet resolves a keycode to whatever it was
+     * *last* told, so two different characters typed back to back on one keycode both come out as the
+     * second one - measured 2026-10-08, a commit of 你好 reached the field as 好好, with the two
+     * keystrokes 25 ms and 150 ms apart alike. Giving each character its own keycode removes the
+     * question: nothing is re-assigned between the two presses.
+     */
+    private static final Map<Integer, Integer> CLAIMED = new java.util.concurrent.ConcurrentHashMap<>();
     private static final int[][] MODIFIERS = new int[MODIFIER_COUNT][];
 
     static {
@@ -241,6 +253,36 @@ public final class Keymap {
             syntheticKeycode = candidate;
         }
         return syntheticKeycode;
+    }
+
+    /**
+     * The keycode to carry {@code keysym} for a composed character: the same one every time that
+     * character is typed, and a different one for a different character - see {@link #CLAIMED} for
+     * why the second half matters. The first claim is {@link #syntheticKeycode()}, so a single
+     * composed character goes exactly where it always did.
+     */
+    public static synchronized int claimKeycodeFor(int keysym) {
+        Integer claimed = CLAIMED.get(keysym);
+        if (claimed != null) {
+            return claimed;
+        }
+        int candidate = syntheticKeycode();
+        while (candidate <= (MAX_KEYCODE & 0xFF)
+                && (keysym(candidate, 0) != Keysyms.NONE || keysym(candidate, 1) != Keysyms.NONE)) {
+            candidate++;
+        }
+        if (candidate > (MAX_KEYCODE & 0xFF)) {
+            // Every keycode there is carries something: fall back to the one key the server has always
+            // used, which is at least a keycode the client has been told about.
+            candidate = syntheticKeycode();
+        }
+        CLAIMED.put(keysym, candidate);
+        return candidate;
+    }
+
+    /** True for a keycode the server claimed for a composed character, rather than a key's own. */
+    public static boolean isClaimed(int keycode) {
+        return CLAIMED.containsValue(keycode);
     }
 
     /** The keycode carrying a keysym, or 0 when no key does. */

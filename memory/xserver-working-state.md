@@ -1975,3 +1975,17 @@ keycode either. **Verified end to end**: `n i h a o` + space with Pinyin into a 
 text field produced **你好**; real keycodes `a b c 1 2 3` with the ABC source produced `abc123`.
 **494 tests green** (`TypedCharacterTest.theCharacterGoesToTheLowestKeycodeNothingCarries` fails on
 the old claim).
+
+**2026-10-09 (the same path, two more things the user found):** "输入框应当显示中间字符…按下空格后提交内容…这时候
+直接回车…输入框应当是aaaaa". The platform's own reports were logged first: `nihao` arrives as
+`composed='n' … 'ni hao'` then `committed='你好'`, and `aaaaa` as `'a' … 'a a a a a'` then, on
+**Return**, `committed='aaaaa'` - exactly the two shapes asked for, and neither reached the field.
+Fixed by (1) **typing the pre-edit into the field and taking it back when it changes**: each
+`InputMethodEvent` deletes what is on screen (`preEditLength` BackSpaces) and puts the new state
+down - the composed text while composing, the committed text once it commits; that is what a local
+input method does to a field. (2) **a keycode per composed character**: one keycode re-assigned per
+character is how 你好 arrived as **好好** (a client resolves a keycode through the mapping it was last
+told - 25 ms and 150 ms apart alike, so no delay fixes it); `Keymap.claimKeycodeFor` gives each
+character its own (8, then 93) and keeps it. Characters the keyboard carries go on their own key, with
+Shift when needed. Verified: `ni hao` → 你好, `a a a a a` → Return → `aaaaa`, and `abc123` still
+works. 494 tests green.

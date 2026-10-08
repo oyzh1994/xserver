@@ -129,11 +129,21 @@ class TypedCharacterTest {
         }
     }
 
+    /**
+     * Where two different characters go, which is *not* the same keycode - and that is a measurement.
+     *
+     * <p>The design used to be one keycode for every composed character, re-assigned each time ("a
+     * mapping change per character would be a mapping change per keystroke"). Measured 2026-10-08
+     * against a real client: a client resolves a keycode through the mapping it was *last* told, so
+     * 你好 typed back to back on one keycode reached a forwarded text field as **好好** - with the two
+     * keystrokes 25 ms apart and 150 ms apart alike. Each character now has a keycode of its own, and
+     * the same character keeps the one it has.
+     */
     @Test
-    void theMappingFollowsTheNextCharacter() throws IOException {
+    void eachComposedCharacterKeepsItsOwnKeycode() throws IOException {
         startServer();
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
-            int window = watchKeys(client);
+            watchKeys(client);
 
             server.inputFor(server.screen()).keyTyped('\u4f60');
             client.flush();
@@ -145,13 +155,20 @@ class TypedCharacterTest {
             byte[] second = find(drain(client), KEY_PRESS);
             assertNotNull(second, "and so has the second");
 
-            assertEquals(first[1] & 0xFF, second[1] & 0xFF,
-                    "one keycode is claimed and kept: a mapping change per character would be "
-                            + "a mapping change per keystroke");
+            assertNotEquals(first[1] & 0xFF, second[1] & 0xFF,
+                    "two different characters on one keycode is how 你好 arrives as 好好");
+            assertEquals(UNICODE_KEYSYM | '\u4f60', client.keyboardMapping(first[1] & 0xFF, 1)[0],
+                    "each keycode carries its own character");
             assertEquals(UNICODE_KEYSYM | '\u597d',
                     client.keyboardMapping(second[1] & 0xFF, 1)[0],
-                    "and it carries the character last typed");
-            assertTrue(window != 0);
+                    "each keycode carries its own character");
+
+            server.inputFor(server.screen()).keyTyped('\u4f60');
+            client.flush();
+            byte[] again = find(drain(client), KEY_PRESS);
+            assertNotNull(again, "a character typed twice is two keystrokes");
+            assertEquals(first[1] & 0xFF, again[1] & 0xFF,
+                    "and the second one comes off the keycode the first one already claimed");
         }
     }
 

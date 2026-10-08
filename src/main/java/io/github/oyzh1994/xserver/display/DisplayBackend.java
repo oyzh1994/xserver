@@ -41,6 +41,17 @@ public interface DisplayBackend {
         }
 
         /**
+         * A character the host's input method is putting *into the application*: the pre-edit it is
+         * showing in the field, or the text it committed.
+         *
+         * <p>Unlike {@link #keyTyped}, this is typed even when a key carries the character: the
+         * keystroke that would have carried it went to the input method, so the application never saw
+         * it. {@code InputState.inputMethodTyped} is the implementation that knows that.
+         */
+        default void inputMethodTyped(char character) {
+        }
+
+        /**
          * The user dropped files from the host's desktop onto this window, at a point on the
          * screen in framebuffer coordinates.
          *

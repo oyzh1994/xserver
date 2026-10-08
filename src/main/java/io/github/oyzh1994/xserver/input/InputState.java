@@ -1191,25 +1191,75 @@ public final class InputState implements DisplayBackend.InputSink {
         // A keycode the server claimed for an earlier character does not count as "on the keyboard":
         // the same character typed twice is two keystrokes, and the second one has to be sent like
         // the first.
-        boolean alreadyOnAKey = onTheKeyboard != 0 && onTheKeyboard != Keymap.syntheticKeycode();
+        boolean alreadyOnAKey = onTheKeyboard != 0 && !Keymap.isClaimed(onTheKeyboard);
         log.debug("keyTyped '{}' keysym=0x{} onTheKeyboard={} already={}", character,
                 Integer.toHexString(keysym), onTheKeyboard, alreadyOnAKey);
         if (keysym == Keysyms.NONE || alreadyOnAKey) {
             return;
         }
+        typeComposed(keysym);
+    }
+
+    /**
+     * A character the host's input method is putting *into the application*, rather than a keystroke
+     * the platform delivered: the pre-edit it is showing in the field, or the text it committed.
+     *
+     * <p><b>It is always typed, even for a character a key carries</b>, because the keystroke that
+     * would have carried it went to the input method instead and the application never saw it. A
+     * character the keyboard carries goes on its own key - a key that was always there needs no
+     * mapping change, and a client can resolve it however stale its own copy is - and anything else
+     * goes on the keycode claimed for it. Shift goes around the key when the character is the shifted
+     * half of the pair, which is the one case where "the key carries it" is not enough by itself.
+     */
+    public void inputMethodTyped(char character) {
+        int keysym = Keymap.keysymFor(character);
+        if (keysym == Keysyms.NONE) {
+            return;
+        }
+        int onTheKeyboard = Keymap.keycodeForKeysym(keysym);
+        if (onTheKeyboard != 0 && !Keymap.isClaimed(onTheKeyboard)) {
+            boolean shifted = Keymap.keysym(onTheKeyboard, 0) != keysym;
+            log.debug("input method typed '{}' on keycode {}{}", character, onTheKeyboard,
+                    shifted ? " with shift" : "");
+            pressKey(onTheKeyboard, shifted);
+            return;
+        }
+        log.debug("input method typed '{}' on a claimed keycode", character);
+        typeComposed(keysym);
+    }
+
+    /**
+     * Puts {@code keysym} on the keycode claimed for it and presses that key.
+     *
+     * <p>The mapping first, then the key: a client that has not re-read the mapping yet would read
+     * the keycode as whatever it used to carry.
+     */
+    private void typeComposed(int keysym) {
         server.lockServer();
         try {
-            int keycode = Keymap.syntheticKeycode();
-            // The mapping first, then the key: a client that has not re-read the mapping yet would
-            // read the keycode as whatever it used to carry.
+            int keycode = Keymap.claimKeycodeFor(keysym);
             Keymap.assign(keycode, new int[] {keysym, keysym});
             server.broadcastMappingNotify((byte) 0, (byte) keycode, (byte) 1);
-            // The key pair goes the way every key does, so a frozen keyboard holds it - the mapping
-            // change is not the client's to defer, but the keystroke is.
-            deliver(new Held(false, KIND_KEY, keycode, true, reportedX(), reportedY()));
-            deliver(new Held(false, KIND_KEY, keycode, false, reportedX(), reportedY()));
+            pressKey(keycode, false);
         } finally {
             server.unlockServer();
+        }
+    }
+
+    /**
+     * One key down and up, with Shift held around it when the character is the shifted half of its
+     * key. The key pair goes the way every key does, so a frozen keyboard holds it - the mapping
+     * change is not the client's to defer, but the keystroke is.
+     */
+    private void pressKey(int keycode, boolean shiftHeld) {
+        int shift = Keymap.keycodeForKeysym(Keysyms.SHIFT_L);
+        if (shiftHeld && shift != 0) {
+            deliver(new Held(false, KIND_KEY, shift, true, reportedX(), reportedY()));
+        }
+        deliver(new Held(false, KIND_KEY, keycode, true, reportedX(), reportedY()));
+        deliver(new Held(false, KIND_KEY, keycode, false, reportedX(), reportedY()));
+        if (shiftHeld && shift != 0) {
+            deliver(new Held(false, KIND_KEY, shift, false, reportedX(), reportedY()));
         }
     }
 

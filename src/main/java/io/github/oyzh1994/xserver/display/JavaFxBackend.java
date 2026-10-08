@@ -137,6 +137,15 @@ public final class JavaFxBackend implements DisplayBackend {
     private double pointerSceneY;
 
     /**
+     * How many characters of the input method's pre-edit the client's field is currently showing.
+     *
+     * <p>The composition belongs to the platform and the application never sees it, so the server
+     * types it into the field itself and has to know how much to take back when it changes - see
+     * {@link #inputMethodText}.
+     */
+    private int preEditLength;
+
+    /**
      * The key that leaves full screen, which is the platform's own convention rather than Escape (see
      * the call in {@link #openWindow} for why Escape is not it).
      *
@@ -2217,7 +2226,12 @@ public final class JavaFxBackend implements DisplayBackend {
             // already wired to {@link InputSink#keyTyped}, so the key event is dropped instead.
             return;
         }
-        int keycode = xKeycode(event.getCode());
+        keyChanged(event.getCode(), pressed);
+    }
+
+    /** A key this side decided to press, with no event behind it: the input method's own BackSpaces. */
+    private void keyChanged(KeyCode code, boolean pressed) {
+        int keycode = xKeycode(code);
         if (keycode == 0) {
             // No mapping means no keycode: reporting one would invent a key the client never has.
             return;
@@ -2255,14 +2269,40 @@ public final class JavaFxBackend implements DisplayBackend {
      * {@link InputSink#keyTyped} is what turns each character into a keystroke a client can read.
      */
     private void inputMethodText(InputMethodEvent event) {
-        String committed = event.getCommitted();
-        if (committed == null || committed.isEmpty()) {
+        String committed = event.getCommitted() == null ? "" : event.getCommitted();
+        StringBuilder composed = new StringBuilder();
+        for (javafx.scene.input.InputMethodTextRun run : event.getComposed()) {
+            composed.append(run.getText());
+        }
+        log.debug("input method: composed='{}' committed='{}'", composed, committed);
+        // **What the client is being shown as the pre-edit comes off first.** The composition is a
+        // conversation between the platform and the person; the application on the other side of this
+        // server never sees it - the composition window is the platform's own - so the only way the
+        // field can show what is being typed is for the server to type it, and the only way that text
+        // can change is to take it back and put the new text down. That is what a local input method
+        // does to a field, one BackSpace at a time, and it is what makes `a a` appear while the
+        // person types and 啊啊 replace it when they press space.
+        for (int i = 0; i < preEditLength; i++) {
+            pressBackspace();
+        }
+        preEditLength = 0;
+        if (!committed.isEmpty()) {
+            log.debug("input method committed {} characters", committed.length());
+            for (int i = 0; i < committed.length(); i++) {
+                input.inputMethodTyped(committed.charAt(i));
+            }
             return;
         }
-        log.debug("input method committed {} characters", committed.length());
-        for (int i = 0; i < committed.length(); i++) {
-            input.keyTyped(committed.charAt(i));
+        for (int i = 0; i < composed.length(); i++) {
+            input.inputMethodTyped(composed.charAt(i));
         }
+        preEditLength = composed.length();
+    }
+
+    /** Takes one character of the pre-edit back out of the client's field. */
+    private void pressBackspace() {
+        keyChanged(KeyCode.BACK_SPACE, true);
+        keyChanged(KeyCode.BACK_SPACE, false);
     }
 
     /**
