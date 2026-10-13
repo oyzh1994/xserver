@@ -758,7 +758,7 @@ public final class WindowHandlers {
             // A restack changes who is visible where just as a move does, so it is reported and
             // repainted the same way - until now it did neither.
             notifyConfigure(window, r, mask, moved, resized);
-            visibilityChanged(window, before, visibleRegionOf(window), moved);
+            visibilityChanged(window, before, visibleRegionOf(window), moved, resized);
             if (resized) {
                 // The window's own pixels, moved the way its bit gravity asks - after the area it
                 // gained has been painted, because what moves lands on top of that.
@@ -987,7 +987,7 @@ public final class WindowHandlers {
                 log.debug("child 0x{} moved to {},{} by win gravity {}: the parent grew by {},{}",
                         Integer.toHexString(child.id()), x, y, gravity, deltaWidth, deltaHeight);
             }
-            visibilityChanged(child, was, coveredRegionOf(child), true);
+            visibilityChanged(child, was, coveredRegionOf(child), true, false);
             server.markScreenDirty(child);
         }
     }
@@ -1497,7 +1497,7 @@ public final class WindowHandlers {
      * lower window's background and letting its client repaint the content.
      */
     private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after) {
-        visibilityChanged(window, before, after, false);
+        visibilityChanged(window, before, after, false, false);
     }
 
     /**
@@ -1506,9 +1506,11 @@ public final class WindowHandlers {
      *     of its new area has to be drawn again, not just the strip it gained. Without that a moved
      *     window shows a mix of its old content and whatever it used to be covering, which is what
      *     makes a dragged window look like it stopped working.
+     * @param resized true when the window's size changed, which owes the client the *whole* window
+     *     rather than the strip it gained - see the Expose below.
      */
     private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after,
-                                   boolean moved) {
+                                   boolean moved, boolean resized) {
         List<Rectangle> gained = moved ? after : ShapeState.subtract(after, before);
         for (Rectangle area : gained) {
             if (window.keepsOwnPixels() && moved) {
@@ -1522,10 +1524,17 @@ public final class WindowHandlers {
                 paintBackground(window, area);
             }
         }
-        // The whole of what it gained goes out as one series, so that a toolkit sees the strip as the
-        // single change it is rather than as a last Expose for each rectangle of it (see
-        // {@link #deliverExpose(XWindow, List)}).
-        deliverExpose(window, gained);
+        // **A resize is a whole window's worth of exposure, not the strip it gained.** Measured on
+        // the reference (Xvfb) with a raw client: a 300x300 window grown to 800x300, grown to
+        // 300x800, a 600x500 window grown to 800x600, and a shrink to 400x400 are each sent *one*
+        // Expose covering the whole new window with count 0 - never the gained strip alone. A
+        // toolkit repaints exactly what it is named - xclock builds a fresh pixmap at the new size
+        // and paints the damage into it - so the strip alone leaves the rest of a stretched window
+        // undefined: the black band down the side of a wide xclock, and the clock that comes back
+        // half drawn from a restore. Everything else that gains area (a map, a reveal, a restack,
+        // the area a shape gives back) is the strip itself, and goes out as one series so that a
+        // toolkit sees it as the single change it is (see {@link #deliverExpose(XWindow, List)}).
+        deliverExpose(window, resized ? after : gained);
         if (window.isViewable()) {
             deliverVisibilityNotify(window, visibilityStateOf(window));
         }

@@ -769,10 +769,12 @@ public final class JavaFxBackend implements DisplayBackend {
      * <p>Called while a maximize or a restore is settling: the platform applies its own geometry for
      * those gestures a moment after this server has applied its own, and macOS reports that as a
      * content resize. Setting the size back is a no-op in every other case (the two sizes agree).
-     * Runs on the FX thread.
+     * A window the platform has maximized is left alone - its frame is the platform's, and putting a
+     * size on it is what took the maximize away (see {@link #platformOwnsFrame}). Runs on the FX
+     * thread.
      */
     private void enforceWindowSize() {
-        if (stage == null || stage.isFullScreen()) {
+        if (stage == null || stage.isFullScreen() || stage.isMaximized()) {
             return;
         }
         double wantedWidth = frameWidth(logical(viewport.width));
@@ -821,16 +823,32 @@ public final class JavaFxBackend implements DisplayBackend {
      * Whether the platform, rather than this backend, is the one that owns the frame's size at this
      * moment.
      *
-     * <p>Two situations say yes, and they are one rule: a drag of the frame's edge, where the platform
-     * is computing the size from the pointer, and a full screen window, whose frame belongs to the
-     * platform's Space. In both, sizing or moving the window takes the platform's own arithmetic away
-     * from it - for a drag that is the drift {@link #dragInFlight} describes, and for full screen it
-     * is a window that leaves its Space without giving it back (the menu bar and the Dock stay hidden
-     * until the session is locked and unlocked). The canvas still follows the viewport; the window
-     * does not.
+     * <p>Three situations say yes, and they are one rule: a drag of the frame's edge, where the
+     * platform is computing the size from the pointer; a full screen window, whose frame belongs to
+     * the platform's Space; and a maximized window, whose frame is the display's work area. In all of
+     * them, sizing or moving the window takes the platform's own arithmetic away from it - for a drag
+     * that is the drift {@link #dragInFlight} describes, for full screen a window that leaves its
+     * Space without giving it back (the menu bar and the Dock stay hidden until the session is locked
+     * and unlocked), and for a maximized window the size it comes back to: measured 2026-10-13, a
+     * size set on a window the platform has maximized *un-maximizes* it on Windows, and the size it
+     * was left at - the content plus the frame, which is not the work area - becomes the one the
+     * platform restores to. The client's window is never told anything, because the frame it is drawn
+     * in never changed size, and a maximized window the user restored stays as large as the maximized
+     * one was. The canvas still follows the viewport; the window does not.
      */
     private boolean platformOwnsFrame() {
-        return stage.isFullScreen() || dragInFlight();
+        return platformOwnsFrame(stage.isFullScreen(), stage.isMaximized(), dragInFlight());
+    }
+
+    /**
+     * Whether the platform is the one that owns the frame's size, from the three things that say so.
+     *
+     * <p>Package-private and static so the rule is pinned without a window, next to the arithmetic
+     * {@link #frameWidth} and {@link #windowHeight} are: the three cases are one rule, and forgetting
+     * one of them is what a maximized window that would not come back to its size looked like.
+     */
+    static boolean platformOwnsFrame(boolean fullScreen, boolean maximized, boolean dragging) {
+        return fullScreen || maximized || dragging;
     }
 
     /**
@@ -893,13 +911,16 @@ public final class JavaFxBackend implements DisplayBackend {
      * frame behave the same way.
      */
     private void sizeFrameToContent() {
-        if (stage.isFullScreen()) {
-            // **The one window this backend never sizes is a full screen one.** Its frame belongs to
-            // the platform's Space, and setting a size on it (or moving it) leaves the Space standing
-            // with no window in it - the picture jumps back to the old place, the front application
-            // becomes whoever was behind, and the Dock and menu bar do not come back until the
-            // session is locked and unlocked. The canvas still follows the viewport, which is what
-            // {@link #setViewport} does for a drag in flight as well.
+        if (stage.isFullScreen() || stage.isMaximized()) {
+            // **The one window this backend never sizes is one the platform has taken.** A full screen
+            // window's frame belongs to the platform's Space, and setting a size on it (or moving it)
+            // leaves the Space standing with no window in it - the picture jumps back to the old
+            // place, the front application becomes whoever was behind, and the Dock and menu bar do
+            // not come back until the session is locked and unlocked. A maximized window's frame is
+            // the display's work area, and a size set on it un-maximizes the window and leaves the
+            // platform restoring to that size instead (see {@link #platformOwnsFrame}). The canvas
+            // still follows the viewport, which is what {@link #setViewport} does for a drag in flight
+            // as well.
             return;
         }
         double width = frameWidth(logical(viewport.width));

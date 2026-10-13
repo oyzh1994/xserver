@@ -395,6 +395,29 @@ class JavaFxBackendTest {
                 "a window with no area yet is not a resize either");
     }
 
+    /**
+     * The frame belongs to the platform while the window is full screen or maximized, and while a drag
+     * of its edge is in flight; only then may this backend size it.
+     *
+     * <p>A size set on a window the platform has maximized *un-maximizes* it on Windows (measured
+     * 2026-10-13), and the size it is left at - the content plus the frame, which is not the work area
+     * - becomes the one the platform then restores to. The client is never told anything, because the
+     * frame it is drawn in did not change size, so a maximized window the user restored stayed as
+     * large as the maximized one was: the window that "suddenly gets bigger" after a few maximize and
+     * restore cycles and never comes back.
+     */
+    @Test
+    void theFrameIsThePlatformsWhileItIsMaximizedOrFullScreen() {
+        assertTrue(JavaFxBackend.platformOwnsFrame(true, false, false),
+                "a full screen window's frame is the platform's Space");
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, true, false),
+                "and a maximized window's is the work area: a size set on it takes the maximize away");
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, false, true),
+                "so is the frame under a drag of its edge, sized from the pointer");
+        assertFalse(JavaFxBackend.platformOwnsFrame(false, false, false),
+                "every other frame is this backend's to size");
+    }
+
     /** The server only calls back into this when the pointer moves, which the test never does. */
     private static final class NoopInput implements DisplayBackend.InputSink {
         @Override

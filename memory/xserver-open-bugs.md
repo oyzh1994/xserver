@@ -256,3 +256,61 @@ Harness warning for whoever picks this up: scripted clicks have real effects on 
 them opened an SSH session in the test instance), so the app's state drifts during a measurement run
 and menu coordinates from an earlier run go stale - restart the app (`/tmp/cycle92.sh`) before
 trusting a coordinate-based check.
+
+**2026-10-13, real machine (xclock/xeyes from the VM 192.168.3.21 forwarded to display :5).** Two
+bugs were reproduced and fixed, and both are the "the window shrank / went black / would not come
+back" family the report named.
+
+*Fixed*: **stretching xclock showed a black band, and after a restore the clock was drawn only in
+its top-left corner.** The Expose a resize owes is the *whole* of the new window, not the strip the
+window gained. Measured against the reference (Xvfb) with a raw client: a 600x500 window grown to
+800x600, a width-only growth, a height-only growth and a shrink to 400x400 are each sent **one**
+Expose covering the whole new window with count 0 - never the gained strip alone.
+`WindowHandlers.visibilityChanged` delivered `gained`; it now takes a `resized` flag
+(`applyConfigure` passes it, the gravity path and the map path pass false) and delivers `after`.
+`xclock` (`XtExposeCompressMaximal`) frees its backing pixmap on a resize, makes a new one at the new
+size and paints into it *exactly the area its Exposes name*, so the strip alone left the rest of a
+stretched window undefined - the black band down the side, and the half-drawn clock a restore came
+back to. `xeyes` was never affected for the same reason it "looked fine": it is not xclock's
+free-the-pixmap shape, so a strip-only Expose is enough for it. Verified on the real machine: a
+stretched xclock renders its whole face, and after four maximize/restore cycles it comes back fully
+drawn.
+
+*Fixed*: **after a few maximize/restore cycles - especially after stretching - the window suddenly
+got bigger and never came back to its size.** The backend sized the frame on every flushed frame
+(`fitWindowToViewport`/`sizeFrameToContent`, and `setViewport`) even while the host window was
+**maximized**. Setting a size on a window the platform has maximized *un-maximizes* it on Windows,
+and the size it is left at - the content plus the frame, not the work area - becomes the one the
+platform then restores to; the client is never told anything, because the frame it is drawn in did
+not change size. Control experiment (old behaviour, forced frames while maximized): the client's
+window shrank every second, 3413x1764 -> 3413x1749 -> 3413x1735 -> 3413x1721. `platformOwnsFrame`
+now includes `stage.isMaximized()` (the rule is the static `platformOwnsFrame(fullScreen, maximized,
+dragging)`, pinned by a test), and `sizeFrameToContent`/`enforceWindowSize` return early while
+maximized. Verified: stretch 1900x1050, then four maximize/restore cycles with forced frames,
+restore returns to exactly 1901x1050 every time, no shrink and no growth; the maximized xclock
+renders its whole face.
+
+*Still open, recorded and deliberately not changed*: **the first stretch that has to grow the X
+screen can revert.** With xclock at 1000x700, a `MoveWindow` to 1900x1050 - which needs the screen
+grown from 2560x1600 to 3772x2025 - snapped the window back to ~1001x700, three attempts running in
+the same session; the *same* call after the screen had already grown took the size (1901x1050)
+first time, and every stretch that fits the screen (1400x900, 1650x1000, 1500x1050) always took.
+The log shows `growing the screen of display :5 to 3772x2025` and then `window now shows
+...1971x1325` - the *pre-stretch* client window - followed by a 1px oscillation (1971/1972), i.e.
+the frame being settled back to the viewport the server had before the stretch. The likely cause is
+that the first growth (a framebuffer reallocation) outlives the 1000ms drag deadline, so the
+viewport the server pushes afterwards is applied when the backend is no longer "drag in flight" and
+`sizeFrameToContent` pulls the frame down to the stale, pre-stretch viewport. Left alone: the exact
+trigger is not pinned down, it reproduces only on the first growth, and the drag/settle invariants
+around it are delicate. Recipe: a fresh server, one xclock, one resize past the screen edge.
+
+*Also seen once, not reproduced (recorded, not fixed)*: in one run with **xeyes** as a second client
+(the X screen already grown to 3772x2025 by the stretches above), three maximize/restore cycles in a
+row left the window at the *maximized* size after every restore - `rect` read 1721x919 with
+`zoom=False` where the pre-maximize size was 700x500, the "window suddenly got bigger" symptom -
+and the log shows the restore's settle reporting the maximized content (`platform gesture settled at
+3412x1764`) instead of the restored one. Rendering stayed correct (both eyes drawn), only the
+geometry was wrong, and 919 against the platform's usual 927 for that work area is the tell that
+some size was put on the frame while maximized. Four cycles on a *fresh* server first thing, and
+four more on a fresh server with the screen grown first, both restored to 700x500 every time, so it
+is state-dependent and not reproducible on demand. xclock never showed it in any run.

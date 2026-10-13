@@ -10,27 +10,27 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The Exposes a resize owes are one series, and each one says how many are still to come.
+ * A resize owes the client the whole of the window, and a series counts itself down.
  *
- * <p>A window grown by its client is told to draw the strip it gained, and a real server sends the
- * rectangles of that strip as a *series*: the {@code count} field of every Expose but the last says
- * how many more are on the way. Toolkits read it - it is the whole point of the field - and Xt's
- * exposure compression waits for the rest of a series and hands the widget one region, whose bounding
- * box is then the whole window.
+ * <p>A resize is a whole window's worth of damage, not the strip the window gained. A server cannot
+ * carry a resized window's pixels over, so every resized window is exposed again in full - a growth, a
+ * shrink, and a change of one side only alike. Measured against a reference server (Xvfb) with a raw
+ * client: a 600x500 window grown to 800x600 is sent *one* Expose of {@code 0,0 800x600 count 0}, and
+ * so are a width-only growth, a height-only growth, and a shrink to 400x400.
  *
- * <p>That is what {@code xclock} needs and what this server did not give it. Grown from 300x300 to a
- * maximised window, xclock frees its backing pixmap, makes a new one at the new size, and lays out the
- * clock again - but it draws only the area the Exposes name. Sent two Exposes that each claim to be
- * the last, it draws both strips separately and copies its new, mostly untouched pixmap over the
- * window, and the untouched part of it - whatever the server's fresh memory holds, black here - lands
- * on screen: the black box in the top left corner of the maximised window.
+ * <p>That is what {@code xclock} needs and what this server did not give it. Sent only the strip it
+ * had gained, it drew just that strip: xclock frees its backing pixmap on a resize, makes a new one at
+ * the new size and paints into it exactly the area its Exposes name, so the rest of a stretched window
+ * was left undefined - the black band down the side of a wide xclock, and the clock that came back
+ * half drawn when a maximised window was restored.
  *
- * <p>Every number below was measured against a reference server (Xvfb) with a raw client that
- * creates a 600x500 window, grows it to 800x600, and prints each Expose it is sent; the reference's
- * answer is exactly the two rectangles and the two counts asserted here.
+ * <p>The other half of the contract is the series: the {@code count} field of every Expose but the
+ * last says how many more are on the way, which is what Xt's exposure compression reads before it
+ * hands a widget one region.
  */
 class WindowResizeExposeTest {
 
@@ -57,11 +57,12 @@ class WindowResizeExposeTest {
     private static final int COUNT = 16;
 
     @Test
-    void aResizeSendsTheGainedAreaAsASeriesThatCountsItselfDown() throws Exception {
+    void aResizeExposesTheWholeWindow() throws Exception {
         XServer server = new XServer(ServerOptions.parse(new String[]{"--display", ":" + DISPLAY,
                 "--backend", "headless", "--no-unix"}));
         server.start();
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            client.socketTimeout(1000);
             int window = client.allocateId();
             client.createWindow(window, client.root(), 0, 0, 600, 500);
             client.selectInput(window, EXPOSURE_MASK);
@@ -70,23 +71,16 @@ class WindowResizeExposeTest {
 
             byte[] alone = client.readEvent(EXPOSE);
             assertNotNull(alone, "the map owes the window an Expose for the whole of itself");
-            assertEquals(0, RawXClient.readShort(alone, COUNT),
-                    "an Expose with nothing behind it is the last of its series");
+            assertExpose(alone, 0, 0, 600, 500, 0);
 
             client.configureWindow(window, 0, 0, 800, 600);
             client.flush();
 
-            List<byte[]> series = new ArrayList<>();
-            byte[] expose;
-            do {
-                expose = client.readEvent(EXPOSE);
-                assertNotNull(expose, "the series ended while its last Expose still promised more");
-                series.add(expose);
-            } while (RawXClient.readShort(expose, COUNT) != 0);
-
-            assertEquals(2, series.size(), "the grown strip is the two rectangles the reference sends");
-            assertExpose(series.get(0), 600, 0, 200, 500, 1);
-            assertExpose(series.get(1), 0, 500, 800, 100, 0);
+            byte[] resized = client.readEvent(EXPOSE);
+            assertNotNull(resized, "a resize owes the client an Expose");
+            assertExpose(resized, 0, 0, 800, 600, 0);
+            assertNull(client.readEvent(EXPOSE),
+                    "the whole window goes out as the one Expose, not the strip it gained");
         } finally {
             server.stop();
         }
