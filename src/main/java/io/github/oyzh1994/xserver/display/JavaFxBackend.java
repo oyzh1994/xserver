@@ -285,6 +285,29 @@ public final class JavaFxBackend implements DisplayBackend {
      * framebuffer pixel per device pixel, which is the whole point.
      */
     private int scale = 1;
+    /**
+     * How much smaller than its own layout the content is drawn, when the whole of what the window
+     * shows will not fit on the display. 1 - nothing scaled, one framebuffer pixel per layout pixel -
+     * whenever it fits, which is every ordinary case.
+     *
+     * <p><b>Windows does not show a window that is bigger than the screen, and that is the whole
+     * reason this exists.</b> The window is sized to what it shows (see {@link #sizeFrameToContent}),
+     * and what it shows is the part of the screen the client's windows occupy - which for a client
+     * that draws itself at the size of the screen it was told about is very nearly the whole screen.
+     * A window that comes out wider or taller than the display's usable area is *clipped* by the
+     * platform: the part outside the display is not drawn and cannot be reached, which measured as
+     * the sides of the client's own window going missing (2026-10-13: a 1800x900 xclock on a display
+     * whose usable area is 1707x912 points gave a frame 1814x667, and the right 107 points of it, the
+     * client's own clock face included, were simply off screen). macOS is why this was not seen
+     * there: it is happy to draw a window larger than the display and lets the user move it, so the
+     * same server looked correct.
+     *
+     * <p>The window is not made to fit by cropping it - that is the bug - and not by asking the
+     * client to draw less: the picture is drawn into the canvas at this factor instead, so all of it
+     * stays visible and only its size on screen changes. It is what a VNC viewer does when the remote
+     * screen is bigger than its own window.
+     */
+    private double viewScale = 1.0;
     private int screenWidth;
     private int screenHeight;
     private int pointerX;
@@ -510,8 +533,8 @@ public final class JavaFxBackend implements DisplayBackend {
                 || stage.isFullScreen()) {
             return;
         }
-        stage.setMaxWidth(frameWidth(logical(maxClientAreaWidth)));
-        stage.setMaxHeight(frameHeight(logical(maxClientAreaHeight)));
+        stage.setMaxWidth(frameWidth(logical(maxClientAreaWidth) * viewScale));
+        stage.setMaxHeight(frameHeight(logical(maxClientAreaHeight) * viewScale));
     }
 
     /**
@@ -810,8 +833,8 @@ public final class JavaFxBackend implements DisplayBackend {
         if (stage == null || stage.isFullScreen() || stage.isMaximized()) {
             return;
         }
-        double wantedWidth = frameWidth(logical(viewport.width));
-        double wantedHeight = frameHeight(logical(viewport.height));
+        double wantedWidth = frameWidth(logical(viewport.width) * viewScale);
+        double wantedHeight = frameHeight(logical(viewport.height) * viewScale);
         if (Math.abs(stage.getWidth() - wantedWidth) <= 1.0
                 && Math.abs(stage.getHeight() - wantedHeight) <= 1.0) {
             return;
@@ -1001,6 +1024,9 @@ public final class JavaFxBackend implements DisplayBackend {
      * frame behave the same way.
      */
     private void sizeFrameToContent() {
+        // Before the early return: a window the platform has taken still needs its content drawn
+        // small enough to fit it, and a maximized frame is the work area like any other.
+        applyViewScale();
         if (stage.isFullScreen() || stage.isMaximized()) {
             // **The one window this backend never sizes is one the platform has taken.** A full screen
             // window's frame belongs to the platform's Space, and setting a size on it (or moving it)
@@ -1013,8 +1039,8 @@ public final class JavaFxBackend implements DisplayBackend {
             // as well.
             return;
         }
-        double width = frameWidth(logical(viewport.width));
-        double height = frameHeight(logical(viewport.height));
+        double width = frameWidth(logical(viewport.width) * viewScale);
+        double height = frameHeight(logical(viewport.height) * viewScale);
         double x = stage.getX();
         double y = stage.getY();
         if (dragJustEnded) {
@@ -1284,8 +1310,11 @@ public final class JavaFxBackend implements DisplayBackend {
             root.setTop(headerBar);
         }
         root.setCenter(content);
-        Scene scene = new Scene(root, logical(viewport.width), frameHeight(logical(viewport.height)),
-                Color.BLACK);
+        // Before the window is built rather than after: the scene's own size is what the platform
+        // sizes the window to, so a screen that has to be drawn smaller has to be known by now.
+        applyViewScale();
+        Scene scene = new Scene(root, logical(viewport.width) * viewScale,
+                frameHeight(logical(viewport.height) * viewScale), Color.BLACK);
         this.scene = scene;
         // The platform would otherwise draw its own arrow over the window, on top of the sprite the
         // server renders from the client's cursor: two pointers, and the host one always wins.
@@ -2569,6 +2598,63 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     /**
+     * Recomputes {@link #viewScale} and puts it on the canvas. Runs on the FX thread.
+     *
+     * <p>Cheap and idempotent - the transform is only replaced when the factor actually changed - so
+     * the places that know the window's geometry may have moved (the frame being sized, the viewport
+     * being set, the window being shown) can all call it, and the frames where nothing did pay
+     * nothing.
+     */
+    private void applyViewScale() {
+        double wanted = fitScale(logical(viewport.width), logical(viewport.height));
+        if (Math.abs(wanted - viewScale) < 0.0005) {
+            return;
+        }
+        viewScale = wanted;
+        if (canvas != null) {
+            canvas.getTransforms().setAll(
+                    new javafx.scene.transform.Scale(viewScale, viewScale, 0, 0));
+        }
+        if (viewScale < 1) {
+            log.info("this display cannot show the whole screen: it is drawn at {}% of its size, "
+                            + "because a window bigger than the display is clipped by it and the "
+                            + "rest of it could not be reached", Math.round(viewScale * 100));
+        } else {
+            log.info("the whole screen fits the display again: it is drawn at its own size");
+        }
+    }
+
+    /**
+     * The largest factor the content may be drawn at so that the whole window - the content, the
+     * frame the platform puts around it and this backend's own header bar - stays inside the
+     * display's usable area. 1 when it already does, and 1 for a full screen window, whose frame is
+     * the display's own and is as large as the display can make it.
+     */
+    private double fitScale(double contentWidth, double contentHeight) {
+        if (stage != null && stage.isFullScreen()) {
+            return 1;
+        }
+        javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
+        // The chrome is not scaled with the content: the header bar is inside the scene but has a
+        // height of its own in points, and the frame is outside the scene altogether.
+        return fitScale(contentWidth, contentHeight, usable.getWidth() - sceneBorderWidth,
+                usable.getHeight() - sceneBorderHeight - headerHeight());
+    }
+
+    /**
+     * The same for a content of a given size and an area of a given size, which is the half a test
+     * can pin without a display. Zero and negative numbers answer 1: a window with no content, or a
+     * display with no room, is not a window to draw smaller.
+     */
+    static double fitScale(double contentWidth, double contentHeight, double availableWidth,
+                           double availableHeight) {
+        if (contentWidth <= 0 || contentHeight <= 0 || availableWidth <= 0 || availableHeight <= 0) {
+            return 1;
+        }
+        return Math.min(1, Math.min(availableWidth / contentWidth, availableHeight / contentHeight));
+    }
+
+    /**
      * The size of the window's content - what the screen is drawn into - in framebuffer pixels, read
      * from the window as it stands.
      *
@@ -2585,11 +2671,11 @@ public final class JavaFxBackend implements DisplayBackend {
      * band of the scene was left showing along the right and the bottom of the picture.
      */
     private int contentWidth() {
-        return contentExtent(scene.getWidth(), scale);
+        return contentExtent(scene.getWidth() / viewScale, scale);
     }
 
     private int contentHeight() {
-        return contentExtent(scene.getHeight() - headerHeight(), scale);
+        return contentExtent((scene.getHeight() - headerHeight()) / viewScale, scale);
     }
 
     /**
@@ -2603,11 +2689,13 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     private int screenX(double sceneX) {
-        return screenCoordinate(sceneX - contentOrigin().getX(), viewport.x, scale, screenWidth);
+        return screenCoordinate((sceneX - contentOrigin().getX()) / viewScale, viewport.x, scale,
+                screenWidth);
     }
 
     private int screenY(double sceneY) {
-        return screenCoordinate(sceneY - contentOrigin().getY(), viewport.y, scale, screenHeight);
+        return screenCoordinate((sceneY - contentOrigin().getY()) / viewScale, viewport.y, scale,
+                screenHeight);
     }
 
     /**

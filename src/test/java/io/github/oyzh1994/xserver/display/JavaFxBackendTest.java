@@ -234,6 +234,31 @@ class JavaFxBackendTest {
     }
 
     /**
+     * A window bigger than the display is not shown by Windows - the part outside it is not drawn and
+     * cannot be reached, which is the sides of a forwarded window going missing - so the content is
+     * drawn smaller instead, and only when it has to be.
+     *
+     * <p>Measured 2026-10-13: an 1800x900 xclock, whose screen the server had grown to 3600x1200,
+     * wanted a frame 1814x667 points on a display with 1707x912 of usable area, and the right 107
+     * points of it were off the screen. At 94% the whole of it fits.
+     */
+    @Test
+    void contentTooLargeForTheDisplayIsDrawnSmallerRatherThanClipped() {
+        assertEquals(1.0, JavaFxBackend.fitScale(1300, 700, 1707, 912),
+                "content that fits the display is not scaled at all");
+        assertEquals(1.0, JavaFxBackend.fitScale(1300, 700, 1300, 700),
+                "content that exactly fits is not scaled either");
+        assertEquals(1707.0 / 1814.0, JavaFxBackend.fitScale(1814, 667, 1707, 912), 0.0001,
+                "the width binds, and the factor is what makes the window as wide as the display");
+        assertEquals(912.0 / 1000.0, JavaFxBackend.fitScale(300, 1000, 1707, 912), 0.0001,
+                "the height binds when it is the taller of the two");
+        assertEquals(1.0, JavaFxBackend.fitScale(0, 700, 1707, 912),
+                "a window with no content, or a display with no room, is left alone");
+        assertEquals(1.0, JavaFxBackend.fitScale(1300, 700, 0, 0),
+                "a display the platform will not describe does not make the content smaller");
+    }
+
+    /**
      * Where the pointer really is decides whether the platform pointer is handed back, and a window
      * that moves or changes size under a pointer that does not move is what the enter and leave
      * events miss.

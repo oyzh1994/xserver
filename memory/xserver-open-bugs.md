@@ -390,3 +390,29 @@ enough:
 *Recorded, not changed*: `eog` could not serve as the end-to-end F11 client on this VM - it starts
 and logs nothing but never maps a window, so the F11/EWMH path was exercised with the raw client
 above instead. That looks like the test VM (dbus/session), not the server.
+
+*Recorded 2026-10-14, on the Windows half of A54* (the fix is A56 in `docs/backlog.md`; this is what
+was measured and what was found **not** to be a bug, so a later reader does not re-chase it):
+
+- **The clip is the platform's, and it is a display *size* question, not a client one.** The X side
+  is right after A54 - measured, EasyShell's `2600x1400` framebuffer window was moved from `-20,67`
+  to `0,67` and the screen grew to `2600x1600`, so nothing inside the picture is lost. What goes
+  missing is the host frame itself: `JavaFxBackend` sizes it one point per framebuffer pixel over
+  `scale`, and **Windows clips a top-level window larger than the display's usable area** (macOS
+  draws it past the edge and lets the user move it, which is why the same server looked whole
+  there). Measured on the 2560x1440-at-150% host: `xclock -geometry 3600x1200` gave a frame
+  `2722x956` physical against a 2560-wide display - the right of the clock face off the screen -
+  and EasyShell at a 1280x720 logical work area gave `2622x1471` against 2560x1440.
+- **`--scale 1` does not crop EasyShell, and neither does `--scale auto` on this host.** EasyShell's
+  fixed `1300x700` window makes a `1314x737` frame, which fits a 1707x912 usable area with room to
+  spare; the crop needs a display whose *usable* area is narrower than the frame (a 1280x720 work
+  area does it). The `xclock` case above was used to force the same shape on a bigger display, and
+  the two behave identically - so this is the size of the frame against the size of the display, not
+  a client or a scale setting.
+- **The header bar and the platform frame come off the area before anything is scaled.** They are 30
+  and ~37 logical points on this host; a window that fits only because it ignores them still comes
+  out larger than the display.
+- **Maximize and restore were re-checked and are not involved.** With the window at the display's
+  own bounds, `2200x1200 <-> -11,-11 2582x1390` and the restore landed back at exactly
+  `294,56 2200x1200`; the crop does not depend on either. (See A41's `platformOwnsFrame` entry above
+  for the maximize/restore rules themselves.)
