@@ -218,7 +218,7 @@ public final class ServerOptions {
             switch (arg) {
                 case "-help", "--help", "-h" -> {
                     printUsage();
-                    System.exit(0);
+//                    System.exit(0);
                 }
                 case "--display", "-display" -> options.displayNumber = parseDisplay(next(args, ++i));
                 case "--geometry", "-geometry" -> options.parseGeometry(next(args, ++i));

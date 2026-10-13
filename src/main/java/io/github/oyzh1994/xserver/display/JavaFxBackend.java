@@ -293,7 +293,7 @@ public final class JavaFxBackend implements DisplayBackend {
         } catch (RuntimeException | Error e) {
             // An open toolkit would keep the JVM alive through its non-daemon FX thread even though
             // this backend never got as far as showing anything.
-            Platform.exit();
+//            Platform.exit();
             throw e;
         }
         javafx.stage.Screen display = javafx.stage.Screen.getPrimary();

@@ -9,12 +9,10 @@ import io.github.oyzh1994.xserver.Main;
  */
 public class XServerTest {
 
-    static void main() {
-        //        String[] args = new String[]{"--display", "10", "--geometry", "1300x800"};
-        //                String[] args = new String[]{"--display", "10", "--geometry", "1300x800", "--log-requests"};
-        //        String[] args = new String[]{"--display", "10", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
-        //        String[] args = new String[]{"--display", "10","--single-window", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
-        String[] args = new String[]{"--display", "10", "--focus-on-click", "--glx", "--geometry", "1300x800", "--log-requests"};
-        Main.main(args);
+    public static void main() {
+        String[] args_single = new String[]{"--display", "10", "--glx", "--single-window", "--geometry", "1300x800", "--log-requests"};
+        String[] args_vnc = new String[]{"--display", "10", "--backend", "vnc", "--vnc-password", "123456", "--glx", "--geometry", "1300x800", "--log-requests"};
+        String[] args_standard = new String[]{"--display", "10", "--glx", "--geometry", "1300x800", "--log-requests"};
+        Main.main(args_standard);
     }
 }

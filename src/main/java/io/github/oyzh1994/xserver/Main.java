@@ -23,7 +23,7 @@ public final class Main {
             options = ServerOptions.parse(args);
         } catch (IllegalArgumentException e) {
             System.err.println("xserver: " + e.getMessage());
-            System.exit(2);
+//            System.exit(2);
             return;
         }
 
@@ -42,7 +42,7 @@ public final class Main {
         } catch (Exception e) {
             log.error("failed to start", e);
             System.err.println("xserver: " + e.getMessage());
-            System.exit(1);
+//            System.exit(1);
             return;
         }
 
@@ -64,6 +64,6 @@ public final class Main {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        System.exit(0);
+//        System.exit(0);
     }
 }
