@@ -1133,6 +1133,9 @@ public final class JavaFxBackend implements DisplayBackend {
         bar.setMinHeight(HEADER_HEIGHT);
         bar.setPrefHeight(HEADER_HEIGHT);
         bar.setMaxHeight(HEADER_HEIGHT);
+        //bar.setMinWidth(Short.MAX_VALUE);
+        //bar.setMaxWidth(Short.MAX_VALUE);
+        //bar.setPrefWidth(Short.MAX_VALUE);
 
         titleLabel = new Label(this.title);
         titleLabel.setTextOverrun(OverrunStyle.ELLIPSIS);
@@ -1394,15 +1397,15 @@ public final class JavaFxBackend implements DisplayBackend {
             // 这个 xserver 要超过 1 秒" of the report. The anchor is still kept away from a full screen
             // move - the property change above clears it, and the frame is the platform's while it is
             // full screen anyway.
-            if (headerBar != null) {
-                // **The header bar is chrome, and full screen is where chrome goes.** The platform
-                // hides its own title bar there and the picture is meant to have the whole display -
-                // thirty points of title bar would be thirty points of screen the client cannot use.
-                // Unmanaged rather than only invisible: an invisible managed node still takes its
-                // place in the layout, so the content would keep the gap.
-                headerBar.setManaged(!is);
-                headerBar.setVisible(!is);
-            }
+            //if (headerBar != null) {
+            //    // **The header bar is chrome, and full screen is where chrome goes.** The platform
+            //    // hides its own title bar there and the picture is meant to have the whole display -
+            //    // thirty points of title bar would be thirty points of screen the client cannot use.
+            //    // Unmanaged rather than only invisible: an invisible managed node still takes its
+            //    // place in the layout, so the content would keep the gap.
+            //    headerBar.setManaged(!is);
+            //    headerBar.setVisible(!is);
+            //}
             if (!is) {
                 // A limit that arrived while the window was full screen has been waiting for a
                 // moment the window could take it.
