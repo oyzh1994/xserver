@@ -63,7 +63,11 @@ class PerClientWindowTest {
                     "the first client's window belongs to the first client's root");
             assertEquals(second.root(), second.rootOf(secondWindow),
                     "and the second's to the second's");
-            assertEquals(List.of(firstWindow), List.of(childrenOf(first)),
+            // The display's own EWMH check window ({@code _NET_SUPPORTING_WM_CHECK}) is a child of the
+            // root as well - chrome the display publishes on every screen, not a client's window - so
+            // the root holds it and the first client's window, and none of the second's. It is made
+            // before the client connects, which is why it comes first in the stacking order.
+            assertEquals(List.of(wmCheckWindow(first), firstWindow), List.of(childrenOf(first)),
                     "the first client's root holds its own window and none of the other's");
 
             // Two screens means two framebuffers: the same coordinates hold each client's own pixels.
@@ -304,6 +308,12 @@ class PerClientWindowTest {
             boxed[i] = children[i];
         }
         return boxed;
+    }
+
+    /** The window the root points at as its window manager, which the display publishes itself. */
+    private static int wmCheckWindow(RawXClient client) throws Exception {
+        int atom = client.internAtom("_NET_SUPPORTING_WM_CHECK");
+        return RawXClient.readInt(client.getProperty(client.root(), atom, 0, false), 32);
     }
 
     /** The colour of a pixel of a client's own screen, read back as ZPixmap bytes (BGRA). */

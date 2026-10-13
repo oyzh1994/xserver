@@ -166,6 +166,31 @@ public final class JavaFxBackend implements DisplayBackend {
                 ? "Ctrl+Meta+F"
                 : "F11";
     }
+
+    /**
+     * The platform's own full screen key as it is matched against a keystroke, kept rather than
+     * rebuilt because one is read for every key the window receives. What the key is, and why it is
+     * the platform's rather than Escape, is {@link #fullScreenExitKey}.
+     */
+    private javafx.scene.input.KeyCombination fullScreenKey;
+
+    /**
+     * When the window last entered or left full screen, in {@code System.currentTimeMillis()}. Read
+     * by the full screen key so a press that JavaFX has already answered is not answered twice - see
+     * {@link #keyChanged(javafx.scene.input.KeyEvent, boolean)}.
+     */
+    private long fullScreenChangedAt;
+
+    /**
+     * How long a full screen state change is taken to belong to the press that made it, in
+     * milliseconds. JavaFX's own full screen exit runs before the scene's key filter and does not
+     * consume the event it answers, so a press of {@link #fullScreenKey} on a full screen window
+     * arrives at {@link #keyChanged(javafx.scene.input.KeyEvent, boolean)} with the window already
+     * out of full screen; without a window this wide the second half of that one press would put it
+     * straight back in (measured 2026-10-13: one F11 press left full screen and re-entered it).
+     */
+    static final long FULL_SCREEN_PRESS_MILLIS = 500;
+
     /**
      * The client-area header bar: the window's title bar, drawn by JavaFX (JavaFX 27's
      * {@link StageStyle#EXTENDED}), or null where the platform has no extended windows and the
@@ -831,32 +856,89 @@ public final class JavaFxBackend implements DisplayBackend {
      * Whether the platform, rather than this backend, is the one that owns the frame's size at this
      * moment.
      *
-     * <p>Three situations say yes, and they are one rule: a drag of the frame's edge, where the
+     * <p>Five situations say yes, and they are one rule: a drag of the frame's edge, where the
      * platform is computing the size from the pointer; a full screen window, whose frame belongs to
-     * the platform's Space; and a maximized window, whose frame is the display's work area. In all of
-     * them, sizing or moving the window takes the platform's own arithmetic away from it - for a drag
-     * that is the drift {@link #dragInFlight} describes, for full screen a window that leaves its
-     * Space without giving it back (the menu bar and the Dock stay hidden until the session is locked
-     * and unlocked), and for a maximized window the size it comes back to: measured 2026-10-13, a
-     * size set on a window the platform has maximized *un-maximizes* it on Windows, and the size it
-     * was left at - the content plus the frame, which is not the work area - becomes the one the
-     * platform restores to. The client's window is never told anything, because the frame it is drawn
-     * in never changed size, and a maximized window the user restored stays as large as the maximized
-     * one was. The canvas still follows the viewport; the window does not.
+     * the platform's Space; a maximized window, whose frame is the display's work area; the moment
+     * after the platform has *begun* a zoom or a restore and not finished applying it
+     * ({@link #platformGestureUntil}); and the frame a zoom has already made but not yet reported
+     * ({@link #zoomedByPlatform}). In all of them, sizing or moving the window takes the platform's
+     * own arithmetic away from it - for a drag that is the drift {@link #dragInFlight} describes, for
+     * full screen a window that leaves its Space without giving it back (the menu bar and the Dock
+     * stay hidden until the session is locked and unlocked), and for a maximized window the size it
+     * comes back to: measured 2026-10-13, a size set on a window the platform has maximized
+     * *un-maximizes* it on Windows, and the size it was left at - the content plus the frame, which
+     * is not the work area - becomes the one the platform restores to. The client's window is never
+     * told anything, because the frame it is drawn in never changed size, and a maximized window the
+     * user restored stays as large as the maximized one was. The canvas still follows the viewport;
+     * the window does not.
+     *
+     * <p>**A zoom is reported in two pieces, and either of them can arrive first.** Measured
+     * 2026-10-13 on the real machine, and both orders cost the same thing - a frame this backend
+     * wrote while the platform was working.
+     *
+     * <ul><li>**A restore by the header bar's own control** - a JavaFX {@code EXTENDED} window's
+     * double-click or restore button - flips {@code maximized} to false *before* the platform has put
+     * the window back, and the frame that runs in between is the one {@link #fitWindowToViewport}
+     * sizes: the viewport is still the maximized one, so the window was set to 1721x919 against the
+     * work area's 1721x927, and that is the size it kept and the size the platform then restored to -
+     * a stretched window left as large as the maximized one, its position the only thing that came
+     * back. The same restore driven from outside the window (`ShowWindow`) is unaffected, because
+     * there the window is already back at its size when the flag flips.
+     * <li>**On the way in**, the platform moves and resizes the window *before* it reports the
+     * maximize, and the frame written in that gap is what every later restore came back to: measure
+     * it by the frame's own rectangle, because a restore lands on it exactly - a 499x421 frame at the
+     * work area's corner, where the user's window was 498x421 somewhere else entirely, and 499 is
+     * this backend's own arithmetic rather than the platform's. {@link #zoomedByPlatform} is what
+     * says so in that gap, since nothing else does: the property still says "not maximized".
+     * </ul>
+     *
+     * <p>Left alone for the length of the gesture, the platform's own restore wins and the client is
+     * told the size it stopped at by {@link #platformSettle}.
      */
     private boolean platformOwnsFrame() {
-        return platformOwnsFrame(stage.isFullScreen(), stage.isMaximized(), dragInFlight());
+        return platformOwnsFrame(stage.isFullScreen(), stage.isMaximized(), dragInFlight(),
+                System.currentTimeMillis() < platformGestureUntil, zoomedByPlatform());
     }
 
     /**
-     * Whether the platform is the one that owns the frame's size, from the three things that say so.
+     * Whether the frame this instant is the one a zoom makes of it: the work area's size, at the work
+     * area's corner and a little outside it.
+     *
+     * <p>**It is the only thing that says a zoom is happening while it is happening.** The platform
+     * moves and resizes the window first and reports the state afterwards - measured 146 ms apart -
+     * and in that gap a window the property still calls "not maximized" and the display says fills
+     * the screen is read as one the user made: its size is corrected to the viewport, which on
+     * Windows *un-maximizes* it, and the rectangle it is left at becomes the window's own.
+     *
+     * <p>What a maximized frame looks like on Windows is the work area's size *plus the invisible
+     * resize border*, placed at the work area's corner *minus that border* - so its origin is a few
+     * pixels above and left of the usable area, which is where the platform will not let a window be
+     * dragged to (the caption is what a drag holds, and it is clamped below the top of the work
+     * area). On a platform whose zoomed frame is exactly the usable area - macOS - the origin test is
+     * false and this is inert: that platform reports the zoom before its geometry, which the cases
+     * above already cover.
+     */
+    private boolean zoomedByPlatform() {
+        Stage open = stage;
+        if (open == null || open.isFullScreen() || open.isMaximized()) {
+            return false;
+        }
+        javafx.geometry.Rectangle2D usable = javafx.stage.Screen.getPrimary().getVisualBounds();
+        return open.getX() < usable.getMinX() - 2 && open.getY() < usable.getMinY() - 2
+                && open.getWidth() >= usable.getWidth() - 2;
+    }
+
+    /**
+     * Whether the platform is the one that owns the frame's size, from the five things that say so.
      *
      * <p>Package-private and static so the rule is pinned without a window, next to the arithmetic
-     * {@link #frameWidth} and {@link #windowHeight} are: the three cases are one rule, and forgetting
-     * one of them is what a maximized window that would not come back to its size looked like.
+     * {@link #frameWidth} and {@link #windowHeight} are: the cases are one rule, and forgetting one of
+     * them is what a maximized window that would not come back to its size looked like - three times
+     * over, in the end.
      */
-    static boolean platformOwnsFrame(boolean fullScreen, boolean maximized, boolean dragging) {
-        return fullScreen || maximized || dragging;
+    static boolean platformOwnsFrame(boolean fullScreen, boolean maximized, boolean dragging,
+                                     boolean platformGesture, boolean zoomedGeometry) {
+        return fullScreen || maximized || dragging || platformGesture || zoomedGeometry;
     }
 
     /**
@@ -1332,7 +1414,8 @@ public final class JavaFxBackend implements DisplayBackend {
         // and an IDE all need - and pressing it would throw the window out of full screen instead.
         // Which key to use instead is the platform's own convention, not this server's (see
         // {@link #fullScreenExitKey}).
-        stage.setFullScreenExitKeyCombination(fullScreenExitKey(System.getProperty("os.name")));
+        fullScreenKey = fullScreenExitKey(System.getProperty("os.name"));
+        stage.setFullScreenExitKeyCombination(fullScreenKey);
         // The window is the frame around the client's window, so pulling its edge is the gesture a
         // window manager's frame has always had: the client's window is resized to match. A scene
         // listener rather than a stage one, because the content area is the client's size and the
@@ -1387,6 +1470,7 @@ public final class JavaFxBackend implements DisplayBackend {
         });
         stage.fullScreenProperty().addListener((observable, was, is) -> {
             log.debug("host window fullScreen {} -> {}", was, is);
+            fullScreenChangedAt = System.currentTimeMillis();
             // Whatever edge a drag pulled before the window went full screen, and wherever the window
             // stood, has nothing to do with where it comes back to: the Space puts it at the top left
             // of the display, and the platform's own frame is what it returns to.
@@ -2318,6 +2402,29 @@ public final class JavaFxBackend implements DisplayBackend {
             // `a` and nothing else: measured 2026-10-08, `host-input type "中文输入abc"` put `aaaaaaa`
             // into a forwarded text field. The character itself comes through KEY_TYPED, which is
             // already wired to {@link InputSink#keyTyped}, so the key event is dropped instead.
+            return;
+        }
+        if (pressed && fullScreenKey != null && fullScreenKey.match(event)) {
+            // **The platform's full screen key goes both ways, and this is the half JavaFX does not
+            // have.** `setFullScreenExitKeyCombination` is read as the way *out* of full screen only:
+            // the key it names leaves the window, and one pressed on a window that is not full screen
+            // does nothing at all - measured 2026-10-13 on the real machine, where F11 was expected
+            // to fill the display and produced no state change anywhere. So the same key is handled
+            // here for the other direction, and the exit is still JavaFX's own.
+            //
+            // **JavaFX's own handling runs first and does not consume the event**, which is the one
+            // thing this branch has to allow for: measured the same day, one press of F11 on a full
+            // screen window left full screen and then entered it again - the state had already been
+            // put back to false when this ran, so `!isFullScreen` was true. The two are told apart by
+            // time rather than by the event, because the event carries no mark: a press that finds
+            // the state *just* changed is the same press that changed it, and is not answered again.
+            //
+            // **The key belongs to the window's chrome while this window has the keyboard** - it is
+            // the same key the platform's own full screen convention names - so it is taken rather
+            // than forwarded, exactly as it already is while the window is full screen.
+            if (System.currentTimeMillis() - fullScreenChangedAt > FULL_SCREEN_PRESS_MILLIS) {
+                setFullScreen(!stage.isFullScreen());
+            }
             return;
         }
         keyChanged(event.getCode(), pressed);
