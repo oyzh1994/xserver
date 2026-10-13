@@ -2371,16 +2371,34 @@ public final class JavaFxBackend implements DisplayBackend {
      * The size of the window's content - what the screen is drawn into - in framebuffer pixels, read
      * from the window as it stands.
      *
-     * <p>The scene is the whole window *including* the header bar and the platform's own frame, and
-     * the client is not shown those: a window that reported its whole height as the content would
-     * hand the client thirty points of screen that the title bar is standing in front of.
+     * <p>The scene <em>is</em> the window's client area: what the platform puts around it - the frame
+     * {@link #rememberSceneBorder} measures, and adds back in {@link #frameWidth}/{@link #frameHeight}
+     * - lies <em>outside</em> the scene, so it must not be taken off again here. Only the header bar
+     * is inside the scene and does come off the height (see {@link #headerHeight()}).
+     *
+     * <p>Subtracting the frame a second time is what this did until 2026-10-13, and it was invisible
+     * on macOS because an extended window there has no frame at all - {@code sceneBorderWidth} and
+     * {@code sceneBorderHeight} are zero. On Windows an extended window keeps an invisible resize
+     * border, so the content came out 15x7 small: the client's window was resized to the short number
+     * on every maximize and restore (it shrank, and never came back to the size it started at), and a
+     * band of the scene was left showing along the right and the bottom of the picture.
      */
     private int contentWidth() {
-        return (int) Math.round((scene.getWidth() - sceneBorderWidth) * scale);
+        return contentExtent(scene.getWidth(), scale);
     }
 
     private int contentHeight() {
-        return (int) Math.round((scene.getHeight() - headerHeight() - sceneBorderHeight) * scale);
+        return contentExtent(scene.getHeight() - headerHeight(), scale);
+    }
+
+    /**
+     * A length the window is laid out in, in the framebuffer pixels a client is told about.
+     *
+     * <p>Package-private and static so the one piece of arithmetic {@link #contentWidth} and
+     * {@link #contentHeight} are is pinned without a window, next to {@link #windowHeight}.
+     */
+    static int contentExtent(double logical, int scale) {
+        return (int) Math.round(Math.max(0, logical) * scale);
     }
 
     private int screenX(double sceneX) {

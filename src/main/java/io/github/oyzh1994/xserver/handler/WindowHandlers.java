@@ -78,6 +78,17 @@ public final class WindowHandlers {
     private static final org.slf4j.Logger log =
             org.slf4j.LoggerFactory.getLogger(WindowHandlers.class);
 
+    /**
+     * How many Exposes one change may put in a series before it is sent as its bounding rectangle.
+     *
+     * <p>A bounding shape arrives as a bit mask, and a mask that is not a plain rectangle - xeyes'
+     * eyes, for one - leaves one rectangle per scanned row, none of them mergeable. One Expose each
+     * is both useless to the client (a toolkit combines a series into one region anyway, which is
+     * the bounding box) and a flood: a maximised xeyes is about two thousand rows, which overflows
+     * the connection's own queue of a thousand messages and drops the client (2026-10-13).
+     */
+    private static final int MAX_EXPOSE_PIECES = 64;
+
     private final XServer server;
 
     public WindowHandlers(XServer server) {
@@ -847,10 +858,11 @@ public final class WindowHandlers {
             moved.add(destination);
         }
         // What the content left behind: the window, minus what was moved into it.
-        for (Rectangle left : ShapeState.subtract(List.of(windowRect), moved)) {
-            paintBackground(window, left);
-            deliverExpose(window, left);
+        List<Rectangle> left = ShapeState.subtract(List.of(windowRect), moved);
+        for (Rectangle area : left) {
+            paintBackground(window, area);
         }
+        deliverExpose(window, left);
         if (log.isDebugEnabled()) {
             log.debug("bit gravity {} on 0x{}: the contents moved by {},{}",
                     gravity, Integer.toHexString(window.id()), shiftX, shiftY);
@@ -912,12 +924,14 @@ public final class WindowHandlers {
         // back into screen ones for the two helpers that speak them.
         int originX = window.absoluteX();
         int originY = window.absoluteY();
-        for (Rectangle left : ShapeState.subtract(List.of(newBounds), moved)) {
-            Rectangle onScreen = new Rectangle(left.x + originX, left.y + originY, left.width,
-                    left.height);
+        List<Rectangle> left = new ArrayList<>();
+        for (Rectangle area : ShapeState.subtract(List.of(newBounds), moved)) {
+            Rectangle onScreen = new Rectangle(area.x + originX, area.y + originY, area.width,
+                    area.height);
             paintBackground(window, onScreen);
-            deliverExpose(window, onScreen);
+            left.add(onScreen);
         }
+        deliverExpose(window, left);
         server.compositeOwnPixels(window, newBounds);
         if (log.isDebugEnabled()) {
             log.debug("bit gravity {} on 0x{}: the contents moved by {},{} in its own store",
@@ -1241,7 +1255,19 @@ public final class WindowHandlers {
      * and every caller - a map, a configure, a clear, a resize - would have to remember not to.
      */
     public void paintBackground(XWindow window, Rectangle clip) {
-        if (window.isInputOnly()) {
+        paintBackground(window, List.of(clip));
+    }
+
+    /**
+     * The same, for a region to paint rather than one rectangle.
+     *
+     * <p>What a shape change hands back is a region, and a region can be thousands of rectangles - a
+     * shape taken from a mask is one rectangle per row. Each rectangle used to pay for a visible
+     * region computation of its own, which is where a shape change on a maximised window spent tens
+     * of seconds; the whole region is painted with one here.
+     */
+    public void paintBackground(XWindow window, List<Rectangle> clips) {
+        if (window.isInputOnly() || clips.isEmpty()) {
             return;
         }
         if (window.isTransparentUntilDrawn()) {
@@ -1254,41 +1280,63 @@ public final class WindowHandlers {
             // A window with pixels of its own is painted into them - the whole window, not only the
             // part that shows - and composited from there (B5). The clip the caller passes is in
             // screen coordinates, as every caller works in them.
-            Rectangle area = window.absoluteBounds().intersection(clip);
-            if (area.isEmpty()) {
+            Rectangle bounds = window.absoluteBounds();
+            List<Rectangle> areas = new ArrayList<>(clips.size());
+            List<Rectangle> local = new ArrayList<>(clips.size());
+            for (Rectangle clip : clips) {
+                Rectangle area = bounds.intersection(clip);
+                if (area.isEmpty()) {
+                    continue;
+                }
+                areas.add(area);
+                local.add(new Rectangle(area.x - window.absoluteX(), area.y - window.absoluteY(),
+                        area.width, area.height));
+            }
+            if (areas.isEmpty()) {
                 return;
             }
             Framebuffer pixels = window.ownPixels();
-            Rectangle local = new Rectangle(area.x - window.absoluteX(), area.y - window.absoluteY(),
-                    area.width, area.height);
             if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
-                tileInto(pixels, tile, local, 0, 0);
+                for (Rectangle part : local) {
+                    tileInto(pixels, tile, part, 0, 0);
+                }
             } else {
-                pixels.fillRect(local.x, local.y, local.width, local.height,
-                        window.backgroundPixel());
+                for (Rectangle part : local) {
+                    pixels.fillRect(part.x, part.y, part.width, part.height,
+                            window.backgroundPixel());
+                }
             }
             server.compositeOwnPixels(window, local);
-            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
+            for (Rectangle area : areas) {
+                io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
+            }
             return;
         }
         Framebuffer framebuffer = window.screen().framebuffer();
-        for (Rectangle piece : window.visibleRegion()) {
-            Rectangle area = window.absoluteBounds().intersection(clip).intersection(piece);
-            if (area.isEmpty()) {
+        List<Rectangle> visible = window.visibleRegion();
+        for (Rectangle clip : clips) {
+            Rectangle clipped = window.absoluteBounds().intersection(clip);
+            if (clipped.isEmpty()) {
                 continue;
             }
-            if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
-                tileInto(framebuffer, tile, area, window.absoluteX(), window.absoluteY());
-            } else {
-                framebuffer.fillRect(area.x, area.y, area.width, area.height,
-                        window.backgroundPixel());
+            for (Rectangle piece : visible) {
+                Rectangle area = clipped.intersection(piece);
+                if (area.isEmpty()) {
+                    continue;
+                }
+                if (window.isBackgroundPixmap() && window.backgroundPixmap() instanceof XPixmap tile) {
+                    tileInto(framebuffer, tile, area, window.absoluteX(), window.absoluteY());
+                } else {
+                    framebuffer.fillRect(area.x, area.y, area.width, area.height,
+                            window.backgroundPixel());
+                }
+                // The server painting a window's background is a change to that window's pixels like
+                // any other, and a client that asked to be told about changes hears it: measured with
+                // tools/DamageProbe, where a reference server's accumulated damage covers the whole
+                // window once it has been mapped and this server (which hooked only the drawing
+                // requests) reported only what the client drew itself.
+                io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
             }
-            // The server painting a window's background is a change to that window's pixels like any
-            // other, and a client that asked to be told about changes hears it: measured with
-            // tools/DamageProbe, where a reference server's accumulated damage covers the whole
-            // window once it has been mapped and this server (which hooked only the drawing requests)
-            // reported only what the client drew itself.
-            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, window, area);
         }
     }
 
@@ -1373,19 +1421,50 @@ public final class WindowHandlers {
     /**
      * Sends an Expose for the part of {@code rect} that is actually visible.
      *
-     * <p>{@code rect} arrives in screen coordinates, which is what every caller works in, but the
+     * <p>One change's worth on its own; a change that is more than one rectangle goes out as one
+     * series through {@link #deliverExpose(XWindow, List)}.
+     */
+    public void deliverExpose(XWindow window, Rectangle rect) {
+        deliverExpose(window, List.of(rect));
+    }
+
+    /**
+     * Sends the Exposes for the rectangles one change left to be drawn, as a single series.
+     *
+     * <p>The rectangles are the pieces of one thing that happened to the window - the strip a resize
+     * gained, the areas a shape gave back, the parts a reveal uncovered - and the client is told
+     * about them together. The {@code count} on every Expose but the last is how many more are still
+     * on the way, and it is not decoration: it is what a toolkit reads to know that a series is
+     * unfinished. Xt's exposure compression waits for the rest of one and hands the widget a single
+     * region, whose bounding box is then the whole window - and that decides what {@code xclock}
+     * draws. Grown by its window, xclock throws its backing pixmap away, makes one at the new size,
+     * and paints only the area the Exposes name; told that each rectangle was the last, it paints
+     * only those strips and then copies the rest of its new, untouched pixmap over the window, which
+     * is the black box in the corner of a maximised xclock (2026-10-13).
+     *
+     * <p>Measured against a reference server (Xvfb) with a raw client: a 600x500 window grown to
+     * 800x600 is sent {@code (600,0,200,500)} with count 1 and then {@code (0,500,800,100)} with
+     * count 0.
+     *
+     * <p>{@code rects} arrive in screen coordinates, which is what every caller works in, but the
      * event carries window relative ones. Without the translation a window away from the origin is
      * told to repaint a rectangle that lies outside it - a window at y=600 is told "repaint from
      * y=600" - and a client that believes the rectangle redraws nothing at all, leaving the window
      * as whatever the framebuffer held before: a black window that never paints.
      */
-    public void deliverExpose(XWindow window, Rectangle rect) {
+    public void deliverExpose(XWindow window, List<Rectangle> rects) {
         if (!window.isViewable()) {
             return;
         }
-        // A window that is partly covered is told about the visible pieces only, and the count field
-        // tells it how many more exposes are on the way.
-        List<Rectangle> pieces = ShapeState.intersect(List.of(rect), window.visibleRegion());
+        // The rectangles are one region, so they are combined before the visible part of them is
+        // taken: each piece of it is named once, whatever the caller's own rectangles did.
+        List<Rectangle> pieces = ShapeState.intersect(ShapeState.union(rects, List.of()),
+                window.visibleRegion());
+        // A region this finely divided is sent whole rather than a piece at a time - see
+        // MAX_EXPOSE_PIECES. The pieces are all on the window, so their bounding box is too.
+        if (pieces.size() > MAX_EXPOSE_PIECES) {
+            pieces = List.of(ShapeState.extents(pieces));
+        }
         for (int i = 0; i < pieces.size(); i++) {
             Rectangle visible = pieces.get(i);
             int x = visible.x - window.absoluteX();
@@ -1430,19 +1509,23 @@ public final class WindowHandlers {
      */
     private void visibilityChanged(XWindow window, List<Rectangle> before, List<Rectangle> after,
                                    boolean moved) {
-        for (Rectangle gained : moved ? after : ShapeState.subtract(after, before)) {
+        List<Rectangle> gained = moved ? after : ShapeState.subtract(after, before);
+        for (Rectangle area : gained) {
             if (window.keepsOwnPixels() && moved) {
                 // A move carries the window's own pixels along with it - only the screen copy is
                 // left behind - so the area shows the store, not a fresh background. Painting a
                 // background here would wipe the window's contents on every move (B5). Everything
                 // else that gains area (a map, a resize, a restack) is painted with the background:
                 // it is an area the window has to be told to draw anyway.
-                compositeArea(window, gained);
+                compositeArea(window, area);
             } else {
-                paintBackground(window, gained);
+                paintBackground(window, area);
             }
-            deliverExpose(window, gained);
         }
+        // The whole of what it gained goes out as one series, so that a toolkit sees the strip as the
+        // single change it is rather than as a last Expose for each rectangle of it (see
+        // {@link #deliverExpose(XWindow, List)}).
+        deliverExpose(window, gained);
         if (window.isViewable()) {
             deliverVisibilityNotify(window, visibilityStateOf(window));
         }
@@ -1495,12 +1578,45 @@ public final class WindowHandlers {
         if (!lost.isEmpty()) {
             repaintUnder(lost, window);
         }
-        for (Rectangle area : gained) {
+        if (!gained.isEmpty()) {
             // The area a shape gives back was never part of the window - its own region stops at the
             // shape, so nothing was ever drawn there - so it is painted with the background and the
-            // client is asked to draw it, exactly as a resize's new area is.
-            paintBackground(window, area);
-            deliverExpose(window, area);
+            // client is asked to draw it, exactly as a resize's new area is. It is painted in one
+            // call rather than a rectangle at a time: a region from a mask is thousands of one pixel
+            // tall rectangles, and each of them used to cost a region operation of its own.
+            paintBackground(window, gained);
+            // The shape clips what is *inside* the window too, so the area it gained belongs to the
+            // children that show there as much as to the window itself: they have to be told to draw
+            // it, exactly as the window is.
+            exposeInferiors(window, gained);
+        }
+        deliverExpose(window, gained);
+    }
+
+    /**
+     * Paints and asks to draw the windows inside {@code window} that a shape revealed.
+     *
+     * <p>A bounding shape clips a window's inferiors as surely as the window itself: a child's
+     * visible region is intersected with every ancestor's shape, so when the shape gains area the
+     * child's does too. The window cannot stand in for it - {@code paintBackground(window)} fills
+     * only the part of it the child does not cover, and {@code deliverExpose(window)} names only
+     * that part - so the Expose a shape gain owes has to reach the child that shows there.
+     *
+     * <p>xeyes is where this was found: the shell carries the eyes' mask and the eyes widget covers
+     * the whole shell, so the shell's own region is empty. Maximised, the eyes were never redrawn -
+     * only their pupils moved, on the client's own timer - and the eyes stayed at the size they had
+     * before (2026-10-13).
+     */
+    private void exposeInferiors(XWindow window, List<Rectangle> gained) {
+        for (XWindow child : window.children()) {
+            if (child.isViewable() && !child.isInputOnly()) {
+                List<Rectangle> parts = ShapeState.intersect(gained, child.visibleRegion());
+                if (!parts.isEmpty()) {
+                    paintBackground(child, parts);
+                    deliverExpose(child, parts);
+                }
+            }
+            exposeInferiors(child, gained);
         }
     }
 
@@ -1537,39 +1653,64 @@ public final class WindowHandlers {
                 // A window above the one that changed was never covered by it.
                 continue;
             }
+            // One region computation per candidate rather than one per rectangle: what a shape change
+            // uncovers is a region - thousands of one pixel tall rectangles when the shape came from a
+            // mask - and paying a region operation for each of them is what made that quadratically
+            // slow.
             List<Rectangle> visible = candidate.visibleRegion();
+            List<Rectangle> parts = new ArrayList<>();
             for (Rectangle area : areas) {
                 for (Rectangle piece : visible) {
                     Rectangle part = area.intersection(piece);
                     if (!part.isEmpty()) {
-                        // **A window in the way is composited from its own pixels, and asked to draw
-                        // nothing**: nothing was lost while it was covered (B5). The root is the one
-                        // window with no store, so it is painted and exposed the way every window
-                        // used to be.
-                        if (candidate.keepsOwnPixels()) {
-                            server.compositeOwnPixels(candidate, new Rectangle(
-                                    part.x - candidate.absoluteX(), part.y - candidate.absoluteY(),
-                                    part.width, part.height));
-                            // Pixels that came back changed the window's pixels like any other, and a
-                            // client that watches damage is told about them.
-                            io.github.oyzh1994.xserver.extension.DamageExtension.drew(server,
-                                    candidate, part);
-                        } else {
-                            paintBackground(candidate, part);
-                            deliverExpose(candidate, part);
-                        }
-                        // The border ring is outside the candidate's content, so it is the area this
-                        // repaint is about that says whether any of it needs drawing - and the ring
-                        // already excludes the windows above, which have just been painted.
-                        for (Rectangle edge : candidate.outerVisibleRegion()) {
-                            if (!edge.intersection(area).isEmpty()) {
-                                paintBorder(candidate, edge);
-                            }
-                        }
+                        parts.add(part);
                     }
                 }
             }
+            if (parts.isEmpty()) {
+                continue;
+            }
+            // **A window in the way is composited from its own pixels, and asked to draw nothing**:
+            // nothing was lost while it was covered (B5). The root is the one window with no store, so
+            // it is painted and exposed the way every window used to be.
+            List<Rectangle> uncovered = new ArrayList<>();
+            if (candidate.keepsOwnPixels()) {
+                server.compositeOwnPixels(candidate, localParts(candidate, parts));
+                // Pixels that came back changed the window's pixels like any other, and a client that
+                // watches damage is told about them.
+                for (Rectangle part : parts) {
+                    io.github.oyzh1994.xserver.extension.DamageExtension.drew(server, candidate, part);
+                }
+            } else {
+                paintBackground(candidate, parts);
+                uncovered.addAll(parts);
+            }
+            // The border ring is outside the candidate's content, so it is the area this repaint is
+            // about that says whether any of it needs drawing - and the ring already excludes the
+            // windows above, which have just been painted. Painting an edge again paints the same
+            // pixels, so each edge is painted once however many of the parts touch it.
+            for (Rectangle edge : candidate.outerVisibleRegion()) {
+                for (Rectangle area : areas) {
+                    if (!edge.intersection(area).isEmpty()) {
+                        paintBorder(candidate, edge);
+                        break;
+                    }
+                }
+            }
+            // All of the parts this window got back are one series, for the same reason a resize's
+            // strip is one: it is a single change to the window, and the count field is what says so.
+            deliverExpose(candidate, uncovered);
         }
+    }
+
+    /** A region of screen rectangles, in a window's own coordinates. */
+    private static List<Rectangle> localParts(XWindow window, List<Rectangle> parts) {
+        List<Rectangle> local = new ArrayList<>(parts.size());
+        for (Rectangle part : parts) {
+            local.add(new Rectangle(part.x - window.absoluteX(), part.y - window.absoluteY(),
+                    part.width, part.height));
+        }
+        return local;
     }
 
     /** The windows of the tree, a parent before its children and siblings bottom to top. */

@@ -2405,13 +2405,31 @@ public final class XServer {
      * @param local the region the request wrote, in the window's own coordinates
      */
     public void compositeOwnPixels(XWindow window, Rectangle local) {
+        compositeOwnPixels(window, List.of(local));
+    }
+
+    /**
+     * The same for a region of the window rather than one rectangle.
+     *
+     * <p>A move, a shape change and a reveal all hand over a <em>region</em>, and a region can be
+     * thousands of rectangles - a shape taken from a mask is one rectangle per row. Intersecting
+     * each of them with the window's visible region is a region operation each, which is what made
+     * setting a shape on a maximised window take tens of seconds; intersecting them as one region
+     * costs one.
+     */
+    public void compositeOwnPixels(XWindow window, List<Rectangle> local) {
+        if (local.isEmpty()) {
+            return;
+        }
         if (window.isRedirected()) {
             // A redirected window is somebody else's to place (Composite): what it drew stays in its
             // store, which is what `NameWindowPixmap` hands out, and the screen is left alone. The
             // region is reported as damage all the same, and in the window's own coordinates rather
             // than clipped to what shows - a compositor watching a redirected window wants to hear
             // about the pixels it cannot see, because those are the ones it is about to draw.
-            io.github.oyzh1994.xserver.extension.DamageExtension.drew(this, window, local);
+            for (Rectangle part : local) {
+                io.github.oyzh1994.xserver.extension.DamageExtension.drew(this, window, part);
+            }
             return;
         }
         if (window.isTransparentUntilDrawn() && window.ownPixelsIfAllocated() == null) {
@@ -2424,10 +2442,13 @@ public final class XServer {
         io.github.oyzh1994.xserver.draw.Framebuffer source = window.ownPixels();
         int originX = window.absoluteX();
         int originY = window.absoluteY();
-        Rectangle onScreen = new Rectangle(local.x + originX, local.y + originY, local.width,
-                local.height);
+        List<Rectangle> onScreen = new ArrayList<>(local.size());
+        for (Rectangle part : local) {
+            onScreen.add(new Rectangle(part.x + originX, part.y + originY, part.width,
+                    part.height));
+        }
         List<Rectangle> visible = io.github.oyzh1994.xserver.resource.ShapeState.intersect(
-                List.of(onScreen), window.visibleRegion());
+                onScreen, window.visibleRegion());
         boolean blend = source.keepsAlpha();
         for (Rectangle part : visible) {
             if (blend) {

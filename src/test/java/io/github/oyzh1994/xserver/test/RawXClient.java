@@ -1287,6 +1287,28 @@ public final class RawXClient implements AutoCloseable {
     }
 
     /**
+     * SHAPE's {@code ShapeMask}: sets or combines a shape from a one bit pixmap, whose set bits are
+     * the shape. This is what {@code XShapeCombineMask} sends, and the call xeyes shapes its window
+     * with - the mask is built by drawing into a depth 1 pixmap, so using it exercises the whole
+     * path from a pixmap's bits to a window's shape.
+     */
+    public void shapeMask(int opcode, int window, int kind, int operation, int xOffset, int yOffset,
+                          int bitmap) throws IOException {
+        byte[] request = new byte[20];
+        request[0] = (byte) opcode;
+        request[1] = 2;                             // minor: ShapeMask
+        writeShort(request, 2, 5);
+        request[4] = (byte) operation;
+        request[5] = (byte) kind;
+        request[6] = 0;                             // ordering: UnSorted
+        writeInt(request, 8, window);
+        writeShort(request, 12, (short) xOffset);
+        writeShort(request, 14, (short) yOffset);
+        writeInt(request, 16, bitmap);
+        send(request);
+    }
+
+    /**
      * SHAPE's {@code ShapeRectangles}: replaces or combines one of a window's shapes, in window
      * coordinates. {@code kind} is 0 bounding, 1 clip, 2 input; {@code operation} is 0 set, 1 union,
      * 2 intersect, 3 subtract, 4 invert.

@@ -281,4 +281,46 @@ class ShapeClippingTest {
                     "the child is outside the parent's shape, so its paint does not land");
         }
     }
+
+    /**
+     * A shape set the way a toolkit sets one when it has no rectangle list to hand: a one bit mask
+     * pixmap, which is what {@code XShapeCombineMask} sends and what xeyes shapes its window with.
+     *
+     * <p>The mask is built exactly as xeyes builds its own - a depth 1 pixmap, a GC whose foreground
+     * is 0 to clear it and 1 to set the shape - because the failure this test is for is a mask whose
+     * set bits never reach the window: the corners stay painted and the window is a rectangle again.
+     */
+    @Test
+    void aBoundingShapeSetFromAOneBitMaskClipsDrawing() throws IOException {
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            int mask = client.allocateId();
+            int maskGc = client.allocateId();
+            int gc = client.allocateId();
+            client.createWindow(window, client.root(), 1100, 100, 40, 40);
+            client.mapWindow(window);
+            client.createPixmap(mask, client.root(), 40, 40, 1);
+            client.createGC(maskGc, client.root(), 0);
+            client.changeGC(maskGc, RawXClient.GCFOREGROUND, 0);
+            client.fillRectangle(mask, maskGc, 0, 0, 40, 40);
+            client.changeGC(maskGc, RawXClient.GCFOREGROUND, 1);
+            client.fillRectangle(mask, maskGc, 10, 10, 20, 20);
+            sync(client, window);
+
+            int shape = client.queryExtension("SHAPE");
+            assertTrue(shape != 0, "the extension this test is about");
+            client.shapeMask(shape, window, KIND_BOUNDING, 0, 0, 0, mask);
+            sync(client, window);
+
+            client.createGC(gc, client.root(), FILL);
+            client.fillRectangle(window, gc, 0, 0, 40, 40);
+            sync(client, window);
+
+            Screen screen = server.screen();
+            assertEquals(FILL, screen.framebuffer().pixel(1115, 115) & 0xFFFFFF,
+                    "a point whose mask bit is set is painted");
+            assertEquals(BACKGROUND, screen.framebuffer().pixel(1102, 102) & 0xFFFFFF,
+                    "and a corner the mask cleared is not");
+        }
+    }
 }

@@ -139,6 +139,12 @@ public final class Picture extends XResource {
     private List<Rectangle> windowOwn;
 
     /**
+     * The row query over {@link #windowOwn} the write path uses - see {@link RowIndex}. Renewed
+     * with the region, so it answers about the region the current request was handed.
+     */
+    private RowIndex ownIndex;
+
+    /**
      * What this picture has written since the last composite, in the window's own coordinates.
      * RENDER draws into a window's own store, and the store has to reach the screen when the request
      * ends - {@code Compositor.finish} is that moment and this is the region it composites (B5).
@@ -507,6 +513,7 @@ public final class Picture extends XResource {
         if (window == null) {
             windowClip = null;
             windowOwn = null;
+            ownIndex = null;
             return;
         }
         if (window.keepsOwnPixels()) {
@@ -520,9 +527,11 @@ public final class Picture extends XResource {
             windowOwn = window.ownRegion();
             windowClip = subwindowMode == INCLUDE_INFERIORS ? window.shownRegion()
                     : window.ownShownRegion();
+            ownIndex = new RowIndex(windowOwn);
             return;
         }
         windowOwn = null;
+        ownIndex = null;
         drawableX = window.absoluteX();
         drawableY = window.absoluteY();
         // A picture over a window reads that window's own pixels and stops where a child begins.
@@ -614,7 +623,58 @@ public final class Picture extends XResource {
             // by whatever covers it, exactly as every read is.
             return hasContent(x, y) && withinClip(x, y);
         }
-        return ShapeState.containsPoint(windowOwn, x, y) && withinClip(x, y);
+        return ownIndex.contains(x, y) && withinClip(x, y);
+    }
+
+    /**
+     * The x intervals of a region's rectangles that cover one row, kept for the row a request is
+     * drawing.
+     *
+     * <p>{@link ShapeState#containsPoint} is a scan, which is the right answer for the handful of
+     * questions the region algebra asks of a list; a renderer asks it once per pixel instead, and
+     * pays a scan per pixel. A shape taken from a mask is thousands of one pixel tall rectangles -
+     * xeyes' maximised mask is 1927 of them - and the trapezoids that draw its eyes are 1.8 million
+     * pixels each, so the scan turned one drawing request into billions of comparisons: measured
+     * 2026-10-13, a single maximised eye took 3.5 seconds and the server answered nothing else
+     * while it did. Every pixel of a row is asking the same rectangles, so the row's intervals are
+     * collected once and each pixel is a scan of that row alone.
+     */
+    private static final class RowIndex {
+
+        private final List<Rectangle> region;
+        private int rowY = Integer.MIN_VALUE;
+        private int[] intervals = new int[0];
+        private int count;
+
+        RowIndex(List<Rectangle> region) {
+            this.region = region;
+        }
+
+        /** Whether the region covers {@code (x, y)}. */
+        boolean contains(int x, int y) {
+            if (region == null) {
+                return true;
+            }
+            if (y != rowY) {
+                rowY = y;
+                count = 0;
+                if (intervals.length < region.size() * 2) {
+                    intervals = new int[region.size() * 2];
+                }
+                for (Rectangle rectangle : region) {
+                    if (y >= rectangle.y && y < rectangle.y + rectangle.height) {
+                        intervals[count++] = rectangle.x;
+                        intervals[count++] = rectangle.x + rectangle.width;
+                    }
+                }
+            }
+            for (int i = 0; i < count; i += 2) {
+                if (x >= intervals[i] && x < intervals[i + 1]) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 
     /** Writes a non-premultiplied ARGB pixel, ignoring the write when the clip forbids it. */

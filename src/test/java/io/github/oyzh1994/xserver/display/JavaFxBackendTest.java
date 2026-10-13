@@ -193,6 +193,27 @@ class JavaFxBackendTest {
     }
 
     /**
+     * The content is the scene, and the platform's frame is outside the scene - so measuring the
+     * content off the scene must not take the frame off a second time.
+     *
+     * <p>It did until 2026-10-13, and no macOS run could show it: an extended window there has no
+     * frame, so the subtraction was zero. On Windows the extended window keeps an invisible resize
+     * border, and the content came out 15x7 small - measured with xclock, the client's window was
+     * resized to that short number on every maximize and restore (and never came back to the size it
+     * started at), and a band of the scene was left showing down the right and the bottom of the
+     * picture, with the old window's box left behind in the framebuffer.
+     */
+    @Test
+    void thePlatformsFrameIsOutsideTheSceneAndIsNotTakenOffTheContentTwice() {
+        assertEquals(300, JavaFxBackend.contentExtent(300, 1),
+                "a scene of 300 points is 300 framebuffer pixels at scale 1, whatever frame is around it");
+        assertEquals(600, JavaFxBackend.contentExtent(300, 2),
+                "a scaled display is the pixels per point the client is told about");
+        assertEquals(0, JavaFxBackend.contentExtent(-4, 1),
+                "a scene smaller than the header bar it carries has no content at all");
+    }
+
+    /**
      * Where the pointer really is decides whether the platform pointer is handed back, and a window
      * that moves or changes size under a pointer that does not move is what the enter and leave
      * events miss.

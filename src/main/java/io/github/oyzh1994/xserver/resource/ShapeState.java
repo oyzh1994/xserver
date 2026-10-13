@@ -198,7 +198,7 @@ public final class ShapeState {
             if (mode == MODE_MASK) {
                 return mask != null && localX >= 0 && localY >= 0
                         && localX < mask.width() && localY < mask.height()
-                        && mask.pixel(localX, localY) != 0;
+                        && maskBit(mask.pixel(localX, localY));
             }
             return mode == MODE_RECTANGLES && containsPoint(rectangles, localX, localY);
         }
@@ -324,25 +324,41 @@ public final class ShapeState {
     /**
      * Splits both operands at every rectangle edge, solves each horizontal band as one dimensional
      * intervals, and merges bands that came out identical back into taller rectangles.
+     *
+     * <p>The rectangles are <em>swept</em> band by band rather than scanned for every band. Every
+     * rectangle edge is a band boundary, so a rectangle either covers a band completely or does not
+     * touch it at all - which means the rectangles that count for a band are exactly the ones whose
+     * top has been passed and whose bottom has not, and a sweep can keep that open set without
+     * looking at the rest. Scanning the whole operand per band (what this did first) is
+     * {@code O(bands x rectangles)}, and a shape taken from a mask makes that the ordinary case
+     * rather than a corner: xeyes' mask decomposes into one rectangle per row, so its maximised
+     * window carried about three and a half thousand one pixel tall rectangles, every region
+     * operation over them cost millions of comparisons, and setting the shape stopped the server
+     * for over half a minute.
      */
     private static List<Rectangle> bandCombine(List<Rectangle> a, List<Rectangle> b, int operation) {
         TreeSet<Integer> cuts = new TreeSet<>();
         for (Rectangle rectangle : a) {
-            cuts.add(rectangle.y);
-            cuts.add(rectangle.y + rectangle.height);
+            if (rectangle.width > 0 && rectangle.height > 0) {
+                cuts.add(rectangle.y);
+                cuts.add(rectangle.y + rectangle.height);
+            }
         }
         for (Rectangle rectangle : b) {
-            cuts.add(rectangle.y);
-            cuts.add(rectangle.y + rectangle.height);
+            if (rectangle.width > 0 && rectangle.height > 0) {
+                cuts.add(rectangle.y);
+                cuts.add(rectangle.y + rectangle.height);
+            }
         }
         List<Integer> rows = new ArrayList<>(cuts);
+        Sweep left = new Sweep(a);
+        Sweep right = new Sweep(b);
         List<Rectangle> result = new ArrayList<>();
         List<int[]> previousSpans = null;
         for (int i = 0; i + 1 < rows.size(); i++) {
             int top = rows.get(i);
             int bottom = rows.get(i + 1);
-            List<int[]> spans = combineSpans(clipToBand(a, top, bottom), clipToBand(b, top, bottom),
-                    operation);
+            List<int[]> spans = combineSpans(left.openAt(top), right.openAt(top), operation);
             if (spans.isEmpty()) {
                 previousSpans = null;
                 continue;
@@ -362,15 +378,37 @@ public final class ShapeState {
         return result;
     }
 
-    /** The x intervals the rectangles cover inside the horizontal band {@code [top, bottom)}. */
-    private static List<int[]> clipToBand(List<Rectangle> rectangles, int top, int bottom) {
-        List<int[]> spans = new ArrayList<>();
-        for (Rectangle rectangle : rectangles) {
-            if (rectangle.y < bottom && rectangle.y + rectangle.height > top) {
-                spans.add(new int[]{rectangle.x, rectangle.x + rectangle.width});
+    /**
+     * One operand of {@link #bandCombine} being swept from top to bottom: its rectangles sorted by
+     * top edge, and the ones its sweep has entered and not yet left, as {@code {x, x+width, bottom}}
+     * spans. Both lists are only ever read by the caller, so the same span arrays are handed out
+     * again for every band they cover.
+     */
+    private static final class Sweep {
+
+        private final List<Rectangle> byTop = new ArrayList<>();
+        private final List<int[]> open = new ArrayList<>();
+        private int next;
+
+        Sweep(List<Rectangle> rectangles) {
+            for (Rectangle rectangle : rectangles) {
+                if (rectangle.width > 0 && rectangle.height > 0) {
+                    byTop.add(rectangle);
+                }
             }
+            byTop.sort(Comparator.comparingInt((Rectangle rectangle) -> rectangle.y));
         }
-        return spans;
+
+        /** Leaves out what ended at {@code top}, takes in what starts there, and returns the rest. */
+        List<int[]> openAt(int top) {
+            open.removeIf(span -> span[2] <= top);
+            while (next < byTop.size() && byTop.get(next).y <= top) {
+                Rectangle rectangle = byTop.get(next++);
+                open.add(new int[]{rectangle.x, rectangle.x + rectangle.width,
+                        rectangle.y + rectangle.height});
+            }
+            return open;
+        }
     }
 
     private static List<int[]> combineSpans(List<int[]> a, List<int[]> b, int operation) {
@@ -486,7 +524,7 @@ public final class ShapeState {
         for (int y = 0; y < mask.height(); y++) {
             int runStart = -1;
             for (int x = 0; x < mask.width(); x++) {
-                boolean set = mask.pixel(x, y) != 0;
+                boolean set = maskBit(mask.pixel(x, y));
                 if (set && runStart < 0) {
                     runStart = x;
                 } else if (!set && runStart >= 0) {
@@ -499,5 +537,24 @@ public final class ShapeState {
             }
         }
         return rectangles;
+    }
+
+    /**
+     * Whether a mask pixel is a set bit.
+     *
+     * <p>A mask is a one bit pixmap, and its pixels are held here the way every other drawable's
+     * are: as {@code 0xAARRGGBB}, where the pixel <em>value</em> 0 is written as opaque black
+     * ({@code 0xFF000000}) rather than as 0 - a plain 0 is transparent, and a client drawing with
+     * the default foreground would then see nothing (see {@code XGC}'s foreground). Reading a mask
+     * bit as "the stored word is non zero" therefore reads every <em>cleared</em> bit as set, which
+     * turns a window's shape into its whole rectangle. That is what happened to xeyes: it clears its
+     * mask with foreground 0 and then draws the eyes into it with foreground 1, so every cleared bit
+     * read as set and the shape covered the entire window - the black rim that should have been
+     * clipped away was painted, and the square corners stayed. The test is the one
+     * {@code Rasterizer.bitSet} already applies to a clip mask or a stipple, which is what keeps the
+     * two halves of "what is a set bit" in step.
+     */
+    private static boolean maskBit(int argb) {
+        return (argb & 0x00FFFFFF) != 0;
     }
 }
