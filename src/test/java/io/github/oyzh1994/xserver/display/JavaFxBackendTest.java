@@ -61,7 +61,27 @@ class JavaFxBackendTest {
         assertEquals(0xFF102030, readPixel(backend, 0, 0),
                 "the background should have reached the JavaFX image too");
 
-        backend.stop();
+        // **The window is not taken away in the same turn the pointer is handed back to it** (A55).
+        // Releasing the pointer is a task the toolkit applies at a pulse, and the platform's own close
+        // disposes the window in the same turn - so the release is posted, the window is gone, and the
+        // posted task no-ops against a dead scene: the process-wide hide stays and the desktop has no
+        // arrow ("点击关闭窗口…鼠标也跟随消失了"). Closing a pulse later is what gives the release a
+        // window to land in, and that deferral is the whole of what can be checked from inside a test:
+        // right after `stop()`, the window is still there. On a real display the arrow coming back is
+        // what is checked - see docs/backlog.md, A55.
+        assertTrue(onFxThread(() -> {
+            backend.stop();
+            return backend.windowStillOpen();
+        }), "the window must outlive the turn that hands the pointer back to it");
+        assertSame(Cursor.DEFAULT, onFxThread(backend::windowCursor),
+                "and the pointer is handed back as the window goes, not hidden with it");
+        // And the delay is a pulse, not a leak: the window is taken down once the release has landed.
+        long deadline = System.currentTimeMillis() + 5000;
+        while (onFxThread(backend::windowStillOpen) && System.currentTimeMillis() < deadline) {
+            Thread.sleep(20);
+        }
+        assertFalse(onFxThread(backend::windowStillOpen),
+                "the window is still taken down, a pulse after the release");
     }
 
     /**

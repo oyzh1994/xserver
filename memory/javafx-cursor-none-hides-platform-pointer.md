@@ -38,6 +38,19 @@ on the machine (macOS + JavaFX 25.0.1 loaded from the classpath) on 2026-09-22:
   `ImageCursor.getCurrentFrame()` returns an `ImageCursorFrame`, not the `Cursor.DEFAULT` fallback -
   so this is the native side dropping it, and no choice of pixels helps. (A fully transparent image
   was earlier blamed for a white square; that square is really the *sprite*, see below.)
+- **Handing the pointer back is a *queued* call, and a window closed in the same turn loses it**
+  (A55, 2026-10-13, JavaFX 27 sources read on the machine). `Scene.setCursor(DEFAULT)` only marks
+  `CURSOR_DIRTY`; the cursor reaches the platform from the scene's own pass inside a pulse
+  (`Scene.syncAll` -> `Scene.mouseHandler.updateCursorFrame()` -> `Scene.peer.setCursor`), and
+  `ViewScene.setCursor` posts the native part through `Application.invokeLater` with an
+  `if (platformView != null)` guard - the same queue `Platform.runLater` uses
+  (`QuantumToolkit.defer`). A close that happens in the same turn as the release therefore disposes
+  the scene before the task runs, the task no-ops, and because `MacCursor.isNSCursorVisible` is a
+  **stale cache** that still says "hidden", no later `NONE -> DEFAULT` lifts it either: the desktop
+  keeps no pointer until another application is activated (measured: the toolkit's own record read
+  `false` a minute after the window had gone). `JavaFxBackend.handBackPointerThenClose` closes the
+  window **two pulses after** the release for exactly this reason. A55 in `docs/backlog.md` has the
+  numbers and the harness.
 - **`screencapture -C` cannot verify any of this.** It composites the cursor into the image itself
   and ignores whether the app has hidden it: a capture with the cursor deliberately visible and one
   with it hidden by `Cursor.NONE` came out **byte-identical** (same crop, same pointer position). So

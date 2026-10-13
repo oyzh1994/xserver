@@ -2,6 +2,7 @@ package io.github.oyzh1994.xserver.display;
 
 import io.github.oyzh1994.xserver.draw.Framebuffer;
 import io.github.oyzh1994.xserver.input.Keymap;
+import javafx.animation.AnimationTimer;
 import javafx.application.Platform;
 import javafx.application.ConditionalFeature;
 import javafx.geometry.Point2D;
@@ -196,6 +197,13 @@ public final class JavaFxBackend implements DisplayBackend {
      * True while no client is connected, so the window has no pointer of its own to show.
      */
     private boolean idle;
+    /**
+     * True from the moment this backend decides its window is going until the platform has taken it
+     * away - see {@link #handBackPointerThenClose}, which clears {@link #stage} at the decision so
+     * that nothing can schedule the close twice, and this so that there is still an answer to "is
+     * the window there". Touched on the FX thread only.
+     */
+    private boolean closePending;
     /**
      * Whether this window is counted in {@link #FOCUSED_WINDOWS}. Touched on the FX thread only, and
      * kept so a window cannot be counted twice or lost from the count when it closes.
@@ -964,12 +972,7 @@ public final class JavaFxBackend implements DisplayBackend {
         try {
             runOnFxThreadAndWait(() -> {
                 setWindowFocused(false);
-                releaseHostCursor();
-                if (stage != null) {
-                    stage.close();
-                    stage = null;
-                    LIVE_WINDOWS.decrementAndGet();
-                }
+                handBackPointerThenClose();
             });
         } catch (RuntimeException e) {
             log.debug("JavaFX had already stopped", e);
@@ -1465,11 +1468,16 @@ public final class JavaFxBackend implements DisplayBackend {
                     scene.getFocusOwner(), ownerBefore);
         });
         stage.setOnCloseRequest(event -> {
+            // **The close is finished here, once the toolkit has had a pulse to apply the released
+            // pointer**, rather than by the platform the moment this handler returns - see
+            // handBackPointerThenClose, which is the whole of why: releasing the pointer is a queued
+            // task that needs the window to still be there, and the platform's own close takes it away
+            // in the same turn. The event is consumed so that the close really is ours to finish; the
+            // window is closed a pulse later, which is not something a user can see.
+            event.consume();
             closed = true;
             setWindowFocused(false);
-            // The window is going away with the pointer possibly hidden; the platform would keep it
-            // hidden for the whole process, and a server whose display loop has exited may live on.
-            releaseHostCursor();
+            handBackPointerThenClose();
         });
         // **And the window is not shown yet.** Whether it should be is the server's answer, given by
         // {@link #setIdle}, which the server calls with the *session's* answer before this method even
@@ -1597,6 +1605,59 @@ public final class JavaFxBackend implements DisplayBackend {
     }
 
     /**
+     * Hands the platform pointer back and closes the window, a pulse apart - the release first, and
+     * the window only once it has landed.
+     *
+     * <p>**The release is not a native call in this turn.** It goes through the scene's cursor, and
+     * the toolkit applies that at a *pulse*: {@code Scene.doLayoutPass} ->
+     * {@code MouseHandler.updateCursorFrame} -> {@code ViewScene.setCursor} ->
+     * {@code Application.invokeLater} - and the task that last step posts reads the scene's
+     * {@code platformView} and does **nothing at all** once the window has been disposed. A window
+     * closed in the same turn as the release therefore loses the race, and the process-wide
+     * {@code [NSCursor hide]} stays in place with nothing left to lift it: measured 2026-10-13 with
+     * the toolkit's own record of it ({@code MacCursor.isNSCursorVisible} false before the close and
+     * still false a minute after it), which is the report "点击关闭窗口…鼠标也跟随消失了" - the frame
+     * went, the desktop had no pointer, and only activating another application brought it back.
+     *
+     * <p>Closing on the **second** pulse after the release is enough by the queue's own order: the
+     * scene's pass runs inside a pulse and the task it queues is drained before the next pulse
+     * ({@code Platform.runLater} and {@code Application.invokeLater} are the same queue), so by then
+     * the window the pointer is over has taken the arrow back. A pulse later than that costs nothing
+     * either way - the window is on its way out and the pointer is already the platform's.
+     *
+     * <p>Runs on the FX thread, and takes the window with it: {@link #stage} is cleared here, so a
+     * `stop()` that arrives behind this one finds no window to close a second time.
+     */
+    private void handBackPointerThenClose() {
+        Stage closing = stage;
+        stage = null;
+        // Whatever happens next, the pointer is the platform's from here on: nothing in this backend
+        // can decide to hide it again, because every decision needs the stage that has just gone.
+        releaseHostCursor();
+        if (closing == null) {
+            return;
+        }
+        closePending = true;
+        // Counted as gone the moment it is decided, not when the platform finishes taking it away:
+        // the count is only how far along the next window is placed, and a toolkit that is exiting
+        // (releaseToolkit, on the way out of the process) never reaches the timer below.
+        LIVE_WINDOWS.decrementAndGet();
+        new AnimationTimer() {
+            private int pulses;
+
+            @Override
+            public void handle(long now) {
+                if (++pulses < 2) {
+                    return;
+                }
+                stop();
+                closePending = false;
+                closing.close();
+            }
+        }.start();
+    }
+
+    /**
      * Whether the platform pointer is over what this window *shows*, taken from where the pointer
      * really is.
      *
@@ -1720,6 +1781,15 @@ public final class JavaFxBackend implements DisplayBackend {
      */
     public Cursor windowCursor() {
         return scene == null ? null : scene.getCursor();
+    }
+
+    /**
+     * Whether a window is still this backend's, for a test of the one thing about the close that can
+     * be seen from in here: that it does not happen in the same turn the pointer is handed back - see
+     * {@link #handBackPointerThenClose}. Runs on the FX thread.
+     */
+    boolean windowStillOpen() {
+        return stage != null || closePending;
     }
 
     /**

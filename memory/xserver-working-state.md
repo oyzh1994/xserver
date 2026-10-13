@@ -2008,3 +2008,25 @@ whole, and a 164x164 xclock untouched at `+0+0` with no growth. `HostWindowTest`
 asserted the old crop (`Rectangle[0,20,1250,700]`) and now assert the whole window; `ScreenResizeTest`
 gained four tests (off the left, taller than the screen, past `--max-screen`, and the client being
 told). **504 tests green.**
+
+**2026-10-13 (A55, "关闭窗口后鼠标也跟随消失了"):** the frame went and the desktop was left with no
+pointer. The platform pointer is hidden as a **loan** (`Cursor.NONE` is a process-wide `[NSCursor
+hide]` on macOS), and handing it back is **not a native call in the same turn**: the scene's cursor is
+applied from its own pass inside a pulse and `ViewScene.setCursor` posts the native part through
+`Application.invokeLater` behind an `if (platformView != null)` guard. A window closed in the same turn
+as the release therefore wins the race, the posted task no-ops against a disposed scene, and the hide
+stays - `MacCursor.isNSCursorVisible` measured **false** a minute after the window had gone, and only
+activating another application brought the arrow back. Fixed with `JavaFxBackend.handBackPointerThenClose`
+(one path, used by both `stop()` and `stage.setOnCloseRequest`): hand the pointer back, then close the
+window **two pulses later** (an `AnimationTimer` counts them), and `consume()` the platform's close
+request so the close is this server's to finish - `isClosed()` is still set in the same turn, so
+`XServer.onWindowClosed` and everything behind it (per-client, single-window, `--detach-on-close`) is
+unchanged. `LIVE_WINDOWS` is decremented at the decision rather than in the timer, so a toolkit that is
+exiting cannot leak it. Verified on the real machine with the toolkit's own record of the hide
+(`--display 61`, xclock forwarded from 192.168.22.152, pointer parked inside the client's page so the
+arrow was hidden): the arrow came back both when the **client exited by itself** (the reported case)
+and when the **frame's close button** was clicked, `CGCursorIsVisible=1` each time, and the next window
+opened at the same `116,66`, the counter back at zero. `JavaFxBackendTest.presentsFramebufferToImage`
+now pins the half a test can see - right after `stop()` the window is still there (`windowStillOpen()`),
+and it is taken down once the release has landed - which fails against the old same-turn close. **504
+tests green.** See also [[javafx-cursor-none-hides-platform-pointer]].
