@@ -416,3 +416,35 @@ was measured and what was found **not** to be a bug, so a later reader does not 
   own bounds, `2200x1200 <-> -11,-11 2582x1390` and the restore landed back at exactly
   `294,56 2200x1200`; the crop does not depend on either. (See A41's `platformOwnsFrame` entry above
   for the maximize/restore rules themselves.)
+
+*Recorded 2026-10-14, from the A57 work on the display loop (the entry is in `docs/backlog.md`; these are
+the things that were measured and found **not** to be the cause, so a later reader does not re-chase them
+- and one behaviour that was seen while verifying and is **not** this change's):*
+
+- **The Windows timer is not coarse on this host, so it is not what the loop's 18.7 ms was.** A
+  throwaway probe (`Thread.sleep` / `LockSupport.parkNanos`, 200 samples each): `sleep(16)` **16.0-16.6 ms**
+  p50, `sleep(2)` 2.0-2.2 ms, `sleep(1)` **1.06 ms**, `parkNanos(200us)` 1.05 ms. The 1 ms floor is real,
+  so a loop that asks for a 16.7 ms sleep gets one; the extra 2 ms per tick was the loop's own
+  accounting (the sleep started *after* the work) and not the platform's clock.
+- **`Platform.requestNextPulse()` after the `runLater` buys nothing here.** Added to `present` it measured
+  **6.9 ms** mean damage-to-flush where the same client without it measured **5.0 ms**, on the same 180 Hz
+  display - JavaFX already pulses promptly for a frame handed to it, and the call was removed rather than
+  kept on the strength of the javadoc. (What was left in its place is the *server-side* half: the loop is
+  woken by the damage instead of by the clock.)
+- **A programmatic maximize is not the title bar's gesture, and its anomaly is older than this work.**
+  `win2.ps1 -Action max|restore` is `ShowWindow(SW_MAXIMIZE)` / `SW_RESTORE`. Three cycles on a forwarded
+  EasyShell (host window `1972x1106` at `342,104` on a 2560x1440 display whose usable area is 1707x960
+  logical): filled to `-11,-11 2582x1390`; then `zoom=true` with the window left at `952,104` and its own
+  size (no fill, no move by the platform); then filled again. The **same three cycles in the same order,
+  and the same for the stretch-then-maximize shape** (resize to 2100x1200 first: filled, then left at
+  `342,104`, then `824,104` with `zoom=true`, then filled) run against `7088da4` with none of this work in
+  it. So the change does not touch it. Whether this is the gesture the user reported ("最大化和取消最大化
+  经常出问题") is **not settled**: that repro goes through a real drag, which is `platformOwnsFrame`'s path
+  (A38/A39) and needs a real pointer drag to re-measure, not `MoveWindow`. Recorded, not fixed.
+- **The display path still draws a frame for damage that changes no pixel.** A client that repaints its
+  whole window without changing it (`EasyShell` paints its panel ~300 times a second) marks damage every
+  time, and the host window has no equivalent of the VNC path's `sentPixels` comparison (A25), so each of
+  those marks now costs a frame at the `FRAMES_PER_PERIOD` limit rather than one per tick. Measured cost of
+  that worst case, a client damaging continuously: **2.2% of one core**, against 1.7% with the tick alone -
+  bounded, and left as it is; the comparison is what the wire path needed, and the toolkit coalesces the
+  frames it is handed.

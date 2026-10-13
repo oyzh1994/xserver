@@ -276,10 +276,30 @@ public final class Framebuffer implements PixelStore {
         markDirty(dx0, dy0, dx1, dy1);
     }
 
+    /**
+     * Called on whichever thread drew, the first time damage is marked after the last frame was
+     * taken, so that a display can draw the frame at once instead of at the end of its tick. Null
+     * for a store no display watches - a window's own store, and any framebuffer a test builds.
+     *
+     * <p>One call per batch of damage rather than one per mark: the damage between two frames is
+     * already accumulated here, and what a display waits to hear about is the *arrival* of the
+     * first of it.
+     */
+    private volatile Runnable damageListener;
+
+    /** Sets the listener above; see it for what it is for. */
+    public void setDamageListener(Runnable listener) {
+        damageListener = listener;
+    }
+
     /** Marks a rectangle as needing to reach the screen. */
     public void markDirty(int x0, int y0, int x1, int y1) {
         if (!dirty) {
             dirty = true;
+            Runnable listener = damageListener;
+            if (listener != null) {
+                listener.run();
+            }
             dirtyX0 = x0;
             dirtyY0 = y0;
             dirtyX1 = x1;

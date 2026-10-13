@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -131,6 +132,32 @@ class DamageTrackingTest {
         Rectangle damage = target.takeDamage();
         assertTrue(damage == null || damage.isEmpty(),
                 "a request that drew nothing on this surface must not mark it, saw " + damage);
+    }
+
+    /**
+     * A batch of damage tells the display once, not once per mark.
+     *
+     * <p>{@link Framebuffer#setDamageListener} is what wakes the display loop when a client draws,
+     * and it is called on the thread that drew - so a client marking damage a hundred times a second
+     * must not cost a hundred wakes for the frame that will pick all of them up. The listener is told
+     * on the first mark of a batch, and again only once that batch has been taken.
+     */
+    @Test
+    void aBatchOfDamageWakesTheDisplayOnce() {
+        Framebuffer target = new Framebuffer(SIZE, SIZE, BACKGROUND);
+        target.pixels();
+        target.takeDamage();
+        int[] wakes = {0};
+        target.setDamageListener(() -> wakes[0]++);
+
+        target.markDirty(1, 1, 5, 5);
+        target.markDirty(6, 6, 9, 9);
+        target.markDirty(0, 0, SIZE, SIZE);
+        assertEquals(1, wakes[0], "three marks of one batch are one wake, not three");
+
+        target.takeDamage();
+        target.markDirty(2, 2, 3, 3);
+        assertEquals(2, wakes[0], "damage after the batch was taken is a wake of its own");
     }
 
     /**

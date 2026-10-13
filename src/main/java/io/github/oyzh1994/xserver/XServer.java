@@ -210,6 +210,13 @@ public final class XServer {
         // as large a picture at the same size on screen.
         Screen created = new Screen(number, options.pixelWidth(), options.pixelHeight(),
                 options.scale(), visuals, ROOT_DEPTH, rootVisual.id());
+        // **What a client draws wakes the display loop there and then.** Without this the frame
+        // waited for the end of the tick period - up to 16.7 ms at 60 - on top of the wait for the
+        // toolkit to paint it, and that extra period is a large part of the difference between this
+        // and the VNC pair the same clients are usually watched through, whose server paints the
+        // framebuffer as soon as it changes. The period itself is still what a quiet screen is drawn
+        // at; see eventLoop.
+        created.framebuffer().setDamageListener(this::requestFrame);
         XColormap colormap = new XColormap(resourceIdCounter++, null, created, rootVisual, true);
         resources.add(colormap);
         XWindow root = new XWindow(resourceIdCounter++, null, created, null, ROOT_DEPTH,
@@ -1264,9 +1271,67 @@ public final class XServer {
         return loop;
     }
 
+    /** Guards {@link #frameRequested}, and what the display loop waits on. */
+    private final Object frameWake = new Object();
+    /**
+     * True when something has been drawn since the frame being drawn now started. The next frame is
+     * then due as soon as {@link #FRAMES_PER_PERIOD} allows, rather than at the end of the period.
+     */
+    private boolean frameRequested;
+
+    /**
+     * How many frames one tick period may hold when a client is drawing continuously. Drawing early
+     * only helps up to the rate the toolkit paints at, and the toolkit coalesces whatever is left
+     * over, so this is not a frame rate anybody could see: it is the limit that keeps a client
+     * damaging its window in a tight loop from turning the display loop into a spin.
+     */
+    private static final int FRAMES_PER_PERIOD = 4;
+
+    /**
+     * Asks the display loop for a frame now, rather than at the end of its period.
+     *
+     * <p>Called on whichever thread has just drawn - see {@link Framebuffer#setDamageListener} - so it
+     * must not block and must not take the server lock, which that thread holds while it draws. All
+     * of it is one flag under the monitor the loop waits on, and the loop reads the flag while
+     * holding that monitor, so a call that lands between the loop's check and its wait is not lost.
+     */
+    private void requestFrame() {
+        synchronized (frameWake) {
+            frameRequested = true;
+            frameWake.notifyAll();
+        }
+    }
+
     private void eventLoop() {
-        long frameMillis = Math.max(1, 1000 / Math.max(1, options.tickRate()));
+        // **The frame rate is kept against an absolute clock, not against how long the last frame
+        // happened to take, and a client that draws gets its frame at once rather than at the end of
+        // the period.**
+        //
+        // Two things were wrong with sleeping a fixed number of milliseconds after the work. The work
+        // itself was added to every frame, so the loop ran at whatever `--tick-rate` minus that cost
+        // came to (measured 2026-10-14, one window under continuous damage: 2 ms of work on a 16.7 ms
+        // frame gave 18.7 ms per tick, 53 fps where 60 was asked for); and because that sleep is
+        // measured from the end of the work, the delay of its own wake-up was added to the *next*
+        // frame as well, so a sleep that woke 1.2 ms late pushed every later frame back by the same
+        // 1.2 ms for ever. Sleeping until the next deadline on a clock that does not move with the
+        // work fixes both: the cost of a frame is that frame's, and a late wake-up is corrected for by
+        // the next sleep rather than accumulated.
+        //
+        // The period is then only what a quiet screen is drawn at. A frame whose pixels have changed
+        // is worth drawing as soon as they have changed, because the toolkit paints when it next looks
+        // rather than when it is told: a frame handed over earlier is a frame shown earlier, and what
+        // was left to wait for was the rest of the period - a whole period of delay on every frame of a
+        // client that draws steadily, which is the lag this removes.
+        // {@link #requestFrame} is what a client's own drawing calls, and the wait below ends on it.
+        long frameNanos = Math.max(1L, 1_000_000_000L / Math.max(1, options.tickRate()));
+        long earliestNanos = Math.max(1_000_000L, frameNanos / FRAMES_PER_PERIOD);
         while (running) {
+            long frameStart = System.nanoTime();
+            synchronized (frameWake) {
+                // Anything drawn from here on is drawn after this frame has taken its damage, and is
+                // what the next frame is for.
+                frameRequested = false;
+            }
             for (ScreenSession session : sessions) {
                 tick(session);
             }
@@ -1276,11 +1341,28 @@ public final class XServer {
                 // grace period, so the session is over.
                 break;
             }
-            try {
-                Thread.sleep(frameMillis);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
+            synchronized (frameWake) {
+                while (running) {
+                    long now = System.nanoTime();
+                    // The period runs from the start of this frame's work, so that the work is part of
+                    // the period rather than added to it, and a frame that overran is not caught up in
+                    // a burst of back-to-back ones - that is a stutter, not a frame rate.
+                    long due = frameStart + frameNanos;
+                    if (frameRequested) {
+                        due = Math.min(due, Math.max(now, frameStart + earliestNanos));
+                    }
+                    if (due <= now) {
+                        break;
+                    }
+                    try {
+                        long wait = due - now;
+                        frameWake.wait(wait / 1_000_000L, (int) (wait % 1_000_000L));
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        running = false;
+                        break;
+                    }
+                }
             }
         }
         stop();
