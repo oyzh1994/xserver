@@ -110,12 +110,15 @@ a window manager sends, and the area the window stops covering is handed back to
 not the same number, and both differences were reported as bugs before they were fixed:
 
 - A window that hangs off the screen is showing less than its own size. EasyShell's own window, measured,
-  is `1300x700+-50+20` on a 1280x800 root: 1250x700 of it is visible. Dragging the frame *taller* used to
-  set the window's width to the number the drag reported, which shrank it from 1300 to 1250 and changed
-  the width of a window whose height was the only thing dragged - so the frame came out 1200 wide. The
-  window size that shows `wanted` pixels is `wanted` plus the part hanging off the start of the screen,
-  capped at the screen's far edge (`XServer.windowExtent`), and a dimension whose visible size did not
-  change is left alone entirely.
+  is `1300x700+-50+20` on a 1280x800 root: 1250x700 of what it asked for is on the screen. Dragging the
+  frame *taller* used to set the window's width to the number the drag reported, which shrank it from 1300
+  to 1250 and changed the width of a window whose height was the only thing dragged - so the frame came
+  out 1200 wide. The window size that shows `wanted` pixels is `wanted` plus the part hanging off the
+  start of the screen, capped at the screen's far edge (`XServer.windowExtent`), and a dimension whose
+  visible size did not change is left alone entirely. **As of A54 the surviving half of that case is the
+  far edge and `--max-screen`**: a window that *arrives* off the left or the top - which is what
+  EasyShell's centred 1300 wide window on a 1280 wide screen is - is moved onto the screen and the screen
+  grows to its far edge, so the frame is no longer smaller than the window it frames.
 - A drag stops at the most there is, and does not overshoot and get pulled back: since the screen
   grows to fit the drag, the most there is is now `--max-screen`, and a drag that reaches it lands
   there rather than being pulled back to a size the frame had already left.

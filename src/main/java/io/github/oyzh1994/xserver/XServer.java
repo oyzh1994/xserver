@@ -1237,6 +1237,10 @@ public final class XServer {
             // A resize the user asked for goes first: it changes the windows the rectangle below is
             // the union of, so doing it after would put the window and the frame one tick apart.
             applyRequestedSize(session);
+            // **A window the client mapped where the screen cannot show all of it is not cropped.**
+            // Completing the rule the resize above starts: the screen follows the window, whether the
+            // window asked for the size with a drag or arrived with it - see fitContentOnScreen.
+            fitContentOnScreen(session.screen());
             // A held key repeats from here rather than from the client: the tick is where the
             // server's own periodic work lives, and the lock is already held.
             inputFor(session.screen()).pollAutoRepeat(System.currentTimeMillis());
@@ -1740,6 +1744,23 @@ public final class XServer {
         if (!anything) {
             return false;
         }
+        return growScreen(screen, wantedWidth, wantedHeight,
+                "a client's window was dragged past it");
+    }
+
+    /**
+     * Grows a screen to the size asked for, up to {@code --max-screen}.
+     *
+     * <p>The one place a screen's size changes: everything that can ask for more room ends up here,
+     * so the pixels are reallocated, the clients that asked to hear about it are told, and every
+     * session showing this screen is marked so its backend rebuilds what it holds around the new
+     * pixels - in that order, once, whoever asked.
+     *
+     * @param why the rest of the line the growth is logged with, so a reader can tell a drag from a
+     *     window that arrived too large
+     * @return true when the screen grew
+     */
+    private boolean growScreen(Screen screen, int wantedWidth, int wantedHeight, String why) {
         int width = Math.min(wantedWidth, options.maxScreenWidth());
         int height = Math.min(wantedHeight, options.maxScreenHeight());
         if (width == screen.width() && height == screen.height()) {
@@ -1749,8 +1770,8 @@ public final class XServer {
             }
             return false;
         }
-        log.info("growing the screen of display :{} to {}x{}: a client's window was dragged past it",
-                options.displayNumber(), width, height);
+        log.info("growing the screen of display :{} to {}x{}: {}",
+                options.displayNumber(), width, height, why);
         screen.resize(width, height);
         tellClientsTheScreenChanged(screen);
         for (ScreenSession session : sessions) {
@@ -1759,6 +1780,62 @@ public final class XServer {
             }
         }
         return true;
+    }
+
+    /**
+     * **A client's window is not cropped by the screen: it is nudged onto it, and the screen grows to
+     * fit what the client has mapped.**
+     *
+     * <p>Reported 2026-10-13: "without a suitable geometry, EasyShell on the VM is visibly clipped a
+     * little on both the left and the right, while xclock and xeyes are fine". Measured: EasyShell's
+     * window is 1300x700 and it centres itself on the screen it is told about, so on the default
+     * 1280x800 screen it lands at {@code -10+33} - ten pixels off each side - and the host window,
+     * which is the frame around what the client's windows occupy, showed the 1280 columns that exist.
+     * xclock and xeyes fit on the screen, which is the whole of why they were never seen clipped.
+     *
+     * <p>The screen is the reason the window cannot be shown: it is 1280 wide, the client was told
+     * 1280, and it asked for a window 20 pixels wider anyway. Two things are done about it, and both
+     * are things a window manager's placement or this server's own drag path already do:
+     *
+     * <ul>
+     * <li><b>a window that starts off the left or the top is moved onto the screen.</b> Pixels at a
+     *     negative position do not exist on an X screen, so no framebuffer size can ever show them -
+     *     the client is told with an ordinary ConfigureNotify (see
+     *     {@link io.github.oyzh1994.xserver.handler.WindowHandlers#moveWindow}), which is what a
+     *     window manager that re-places a window does.</li>
+     * <li><b>the screen grows to the far edge of what the client has mapped</b>, so a window wider
+     *     or taller than the screen does not have its right or bottom edge cut off. That is C1's rule
+     *     - the screen follows the window - applied to a window that <em>arrived</em> too large
+     *     rather than to one the user dragged, capped at {@code --max-screen} like the drag.</li>
+     * </ul>
+     *
+     * <p>Together they are what {@code --geometry 1300x800} was being used for: EasyShell's own
+     * window ends up at {@code +0+33} on a 1300x800 screen, whole, with no geometry asked for. The
+     * work is one pass over the mapped top level windows - the same set {@link #contentBounds}
+     * measures - and both halves are no-ops once they have happened, so this costs a loop per tick on
+     * a screen that already fits its content.
+     */
+    private void fitContentOnScreen(Screen screen) {
+        int wantedWidth = screen.width();
+        int wantedHeight = screen.height();
+        for (XWindow window : screen.root().children()) {
+            if (!window.isMapped() || window.isInputOnly() || window.isOverrideRedirect()) {
+                continue;
+            }
+            if (window.x() < 0 || window.y() < 0) {
+                log.info("moving a {}x{} window of display :{} from {},{} to {},{}: a window that starts "
+                                + "off the screen can never be shown in full",
+                        window.width(), window.height(), options.displayNumber(),
+                        window.x(), window.y(), Math.max(0, window.x()), Math.max(0, window.y()));
+                windows().moveWindow(window, Math.max(0, window.x()), Math.max(0, window.y()));
+            }
+            // The far edge of every window, which is the most of the screen any of them needs: a
+            // window that starts inside it needs room for all of its pixels, and one that started off
+            // the left has just been moved onto it and needs the same.
+            wantedWidth = Math.max(wantedWidth, window.x() + window.width());
+            wantedHeight = Math.max(wantedHeight, window.y() + window.height());
+        }
+        growScreen(screen, wantedWidth, wantedHeight, "a client's window does not fit on it");
     }
 
     /**

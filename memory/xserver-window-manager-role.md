@@ -25,10 +25,13 @@ manager's frame does. Added 2026-09-23 (uncommitted); the durable write-up is in
 Two rules added the same evening, both after the user reported the frame jumping:
 
 - **A drag is measured in what the frame can show, not in the client window's size.** EasyShell's
-  window is `1300x700+-50+20` on a 1280x800 root, so only 1250x700 of it is visible. Setting the
-  window's size to the number the drag reported shrank its *width* when only the height was dragged.
-  `XServer.windowExtent`/`visibleExtent` convert between the two, and a dimension whose visible size
-  did not change is left alone.
+  window is `1300x700+-50+20` on a 1280x800 root, so only 1250x700 of what it asked for was on the
+  screen. Setting the window's size to the number the drag reported shrank its *width* when only the
+  height was dragged. `XServer.windowExtent`/`visibleExtent` convert between the two, and a
+  dimension whose visible size did not change is left alone. **Since 2026-10-13 (A54) that window is
+  no longer the state an application starts in**: `XServer.fitContentOnScreen` moves a window that
+  arrives off the left or the top onto the screen and grows the screen to its far edge, so the
+  conversion is left guarding the far edge and `--max-screen`.
 - **A menu must not size the frame it opens in.** A context menu is an override-redirect top-level
   window, and the frame is the union of the client's top-level windows - so counting menus as content
   grew the frame when one opened and shrank it back when it closed (measured 700 to 740 and back).

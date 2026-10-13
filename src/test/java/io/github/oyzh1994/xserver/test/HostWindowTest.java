@@ -140,14 +140,17 @@ class HostWindowTest {
     }
 
     /**
-     * The screen is bigger than the window's own corner of it, and a window that centres itself on
-     * the root - which is what a toolkit does - starts away from the origin. Dragging the frame then
-     * has to be understood as "make this much of the client visible", not "make the client's window
-     * this big": the two differ by the part of the window that hangs off the screen, and using the
-     * second shrinks the client's window in the dimension the user did not touch.
+     * **A window that arrives larger than the screen is put on it, not cropped by it**, and a drag
+     * after that changes exactly the dimension that was dragged.
+     *
+     * <p>The window here is EasyShell's own, measured: 1300x700 "centred" on the 1280x800 screen it
+     * was told about, so it arrives at -50+20 - ten pixels of it off each side, which the frame used
+     * to show as a crop (it showed 1250 of the 1300 columns). The server now moves the window onto
+     * the screen and grows the screen to the window's far edge, so what the frame shows is the
+     * window; the part of the screen the window starts down (its y of 20) is still the client's own.
      */
     @Test
-    void aDragIsMeasuredInWhatTheFrameCanShow() throws Exception {
+    void aWindowLargerThanTheScreenIsPutOnItAndADragStillFollowsIt() throws Exception {
         Server server = new Server(DISPLAY);
         try (RawXClient client = RawXClient.connect(DISPLAY)) {
             int window = client.allocateId();
@@ -157,11 +160,14 @@ class HostWindowTest {
             client.flush();
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 700));
+            waitUntil(() -> backend.screen.width() == 1300,
+                    "the screen should have grown to the window's far edge, was "
+                            + backend.screen.width());
 
             // Taller by fifty, which fits. Only the height was dragged, so only the height changes.
-            backend.input.windowResized(1250, 750);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 750));
+            backend.input.windowResized(1300, 750);
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 750));
         } finally {
             server.stop();
         }
@@ -185,11 +191,11 @@ class HostWindowTest {
             client.flush();
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 700));
             assertEquals(800, backend.screen.height(), "the screen starts at --geometry's height");
 
-            backend.input.windowResized(1250, 4000);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 4000));
+            backend.input.windowResized(1300, 4000);
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 4000));
             // Twenty pixels more than the drag asked for: the window sits twenty pixels down the
             // screen, and those twenty are part of the screen the window is on.
             assertEquals(4020, backend.screen.height(),
@@ -217,7 +223,7 @@ class HostWindowTest {
             client.flush();
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 700));
 
             // A menu below the window's bottom edge, but still on the screen: exactly the case where
             // counting it as content would make the frame grow.
@@ -227,13 +233,13 @@ class HostWindowTest {
             client.mapWindow(menu);
             client.flush();
             Thread.sleep(300);
-            assertEquals(new Rectangle(0, 20, 1250, 700), backend.viewport,
+            assertEquals(new Rectangle(0, 20, 1300, 700), backend.viewport,
                     "a menu opening grew the frame around it");
 
             client.unmapWindow(menu);
             client.flush();
             Thread.sleep(300);
-            assertEquals(new Rectangle(0, 20, 1250, 700), backend.viewport,
+            assertEquals(new Rectangle(0, 20, 1300, 700), backend.viewport,
                     "a menu closing changed the frame around it");
         } finally {
             server.stop();
@@ -260,7 +266,7 @@ class HostWindowTest {
             client.flush();
             waitUntil(() -> server.windows.size() == 1, "the window should have opened");
             TestBackend backend = server.windows.get(0);
-            waitForFrame(backend, new Rectangle(0, 20, 1250, 700));
+            waitForFrame(backend, new Rectangle(0, 20, 1300, 700));
 
             // --max-screen is the limit, less the twenty pixels of it the client's window starts
             // below.

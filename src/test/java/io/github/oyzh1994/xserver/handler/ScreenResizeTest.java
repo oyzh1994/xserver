@@ -153,6 +153,92 @@ class ScreenResizeTest {
         }
     }
 
+    /**
+     * A window the client mapped where the screen cannot show all of it, measured on the real
+     * application: EasyShell centres a 1300x700 window on the 1280x800 screen it was told about, so
+     * it lands at {@code -10+33} and ten pixels of it are off each side. Nothing can show a pixel at
+     * a negative position, so the server puts the window on the screen - and then the screen is
+     * widened to the window's far edge, which is the same rule a drag follows.
+     */
+    @Test
+    void aWindowMappedOffTheLeftOfTheScreenIsPutOnItAndTheScreenFitsIt() throws IOException {
+        startServer();
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            // Wider than the 400x300 screen and starting off its left edge, which is the shape a
+            // toolkit that centres a window larger than the display produces.
+            int window = mapWindow(client, -50, 0, 500, 200);
+
+            eventually("the window to be put back on the screen",
+                    () -> client.geometry(window)[0] == 0);
+            eventually("the screen to be widened to the window's far edge",
+                    () -> width(client) == 500);
+            assertEquals(0, client.geometry(window)[0], "ten pixels of it were off the left");
+            assertEquals(300, height(client), "the window fits vertically: nothing to grow there");
+            assertEquals(500, client.geometry(window)[2], "the client's own size is left alone");
+        }
+    }
+
+    /** A window taller than the screen grows it downwards, the other half of the same rule. */
+    @Test
+    void aWindowTallerThanTheScreenGrowsItToo() throws IOException {
+        startServer();
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            mapWindow(client, 0, -20, 200, 400);
+
+            eventually("the screen to be made tall enough", () -> height(client) == 400);
+            assertEquals(400, width(client), "and no wider than it has to be");
+        }
+    }
+
+    /** Both halves stop where every other growth does, at {@code --max-screen}. */
+    @Test
+    void aWindowBiggerThanMaxScreenIsStillPutOnTheScreen() throws IOException {
+        startServer();
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = mapWindow(client, -100, -100, 4000, 4000);
+
+            eventually("the window to be put back on the screen",
+                    () -> client.geometry(window)[0] == 0 && client.geometry(window)[1] == 0);
+            eventually("the screen to reach the ceiling", () -> height(client) == 600);
+            assertEquals(800, width(client), "--max-screen is a ceiling, not a suggestion");
+            assertEquals(600, height(client));
+        }
+    }
+
+    /**
+     * The client is told, like any other configure: the application sees a ConfigureNotify carrying
+     * the position the server chose, which is what a window manager's own placement sends.
+     */
+    @Test
+    void theClientIsToldItsWindowWasMoved() throws IOException {
+        startServer();
+        try (RawXClient client = RawXClient.connect(DISPLAY)) {
+            int window = client.allocateId();
+            client.createWindow(window, client.root(), -60, 0, 200, 200, 0x00FF00);
+            client.selectInput(window, STRUCTURE_NOTIFY);
+            client.mapWindow(window);
+            client.flush();
+
+            byte[] event = null;
+            long deadline = System.currentTimeMillis() + 4000;
+            client.readTimeoutMillis(500);
+            try {
+                while (event == null && System.currentTimeMillis() < deadline) {
+                    byte[] next = client.readEvent();
+                    if (next != null && (next[0] & 0x7F) == CONFIGURE_NOTIFY
+                            && RawXClient.readInt(next, 8) == window) {
+                        event = next;
+                    }
+                }
+            } finally {
+                client.readTimeoutMillis(5000);
+            }
+            assertNotNull(event, "the window was moved and nobody was told");
+            assertEquals(0, RawXClient.readShort(event, 16), "the event carries the new position");
+            assertEquals(0, RawXClient.readShort(event, 18));
+        }
+    }
+
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------

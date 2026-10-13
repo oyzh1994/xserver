@@ -1989,3 +1989,22 @@ told - 25 ms and 150 ms apart alike, so no delay fixes it); `Keymap.claimKeycode
 character its own (8, then 93) and keeps it. Characters the keyboard carries go on their own key, with
 Shift when needed. Verified: `ni hao` → 你好, `a a a a a` → Return → `aaaaa`, and `abc123` still
 works. 494 tests green.
+
+**2026-10-13 (A54, "不指定合适的geometry时 easyshell 左右都被裁剪"):** nothing was wrong with the
+renderer or with the frame - the **client** asks for a window the screen cannot hold and then centres
+it there. EasyShell's window is a fixed **1300x700** and it centres itself on the screen it was told
+about, so on the default 1280x800 screen it lands at **`-10+33`**: ten pixels off each side, which the
+frame showed as a crop of exactly 1280 columns. The VM's own **`Xvfb :98` at 1280x800** puts the same
+window in the same place, so this is what a reference does too - and **xclock and xeyes simply fit**,
+which is why only EasyShell was reported. `--geometry 1300x800` worked around it by making the screen
+as wide as the window. Fixed by `XServer.fitContentOnScreen` (in the tick, before the frame's
+rectangle): a mapped window that starts off the left or the top is **moved onto the screen**
+(`WindowHandlers.moveWindow`, an ordinary ConfigureNotify - nothing can show a negative-position
+pixel) and the screen **grows to the window's far edge** through the same `growScreen` the drag path
+uses, capped at `--max-screen`. Measured on the real machine in both window modes with no geometry:
+`moving a 1300x700 window of display :61 from -10,33 to 0,33`, `growing the screen of display :61 to
+1300x800`, then `showing Rectangle[x=0,y=33,width=1300,height=700]` on a 1300x730 frame - EasyShell
+whole, and a 164x164 xclock untouched at `+0+0` with no growth. `HostWindowTest`'s four window cases
+asserted the old crop (`Rectangle[0,20,1250,700]`) and now assert the whole window; `ScreenResizeTest`
+gained four tests (off the left, taller than the screen, past `--max-screen`, and the client being
+told). **504 tests green.**

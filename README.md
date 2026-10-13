@@ -268,7 +268,12 @@ can do for it. The server logs a line saying so when it is running unscaled on a
 The screen grows with the window it shows: dragging the frame's edge past what the screen can show
 makes the screen bigger - the framebuffer, the root and the size clients are told all follow, up to
 `--max-screen` - so a forwarded application can be given a window bigger than `--geometry`. The screen
-never shrinks. A client that watches its root is sent a `ConfigureNotify` for the new size, and one
+never shrinks. The same rule covers a window that **arrives** too large for it, which is what an
+application that centres a fixed-size window on the display does: a window mapped off the left or the
+top of the screen is moved onto it (the pixels at a negative position do not exist, so nothing else
+could ever show them) and the screen grows to the window's far edge, so `--geometry` does not have to
+be chosen around the size an application asks for. A client that watches its root is sent a
+`ConfigureNotify` for the new size, and one
 that listens through RandR is sent `ScreenChangeNotify` - which is what a modern toolkit, browser or
 terminal actually waits for.
 

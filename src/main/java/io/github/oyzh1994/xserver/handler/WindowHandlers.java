@@ -699,6 +699,28 @@ public final class WindowHandlers {
     }
 
     /**
+     * Moves a window on the user's behalf, as the placement a window manager does to a window whose
+     * position the screen cannot show.
+     *
+     * <p>The other half of the server's own configure: a client is free to put its top level window
+     * anywhere, including ten pixels off the left of a screen it has just been told is narrower than
+     * the window it is creating - which is what a toolkit that centres a window larger than the
+     * display comes out as (see {@code XServer.fitContentOnScreen}, and EasyShell's own 1300x700
+     * window on a 1280x800 screen). Those pixels do not exist, so the window is put back on the
+     * screen with the same ConfigureNotify a window manager's placement would send.
+     */
+    public void moveWindow(XWindow window, int x, int y) {
+        if (window.isRoot()) {
+            return;
+        }
+        applyConfigure(window, ConfigureWindow.builder()
+                .window(window.id())
+                .x((short) x)
+                .y((short) y)
+                .build(), null);
+    }
+
+    /**
      * @param client the connection a rejected change is reported to, or null when the server is the
      *     one making it. Only the stacking path ever needs it, and no server-initiated change
      *     restacks anything.
