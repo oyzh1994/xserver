@@ -314,3 +314,79 @@ geometry was wrong, and 919 against the platform's usual 927 for that work area 
 some size was put on the frame while maximized. Four cycles on a *fresh* server first thing, and
 four more on a fresh server with the screen grown first, both restored to 700x500 every time, so it
 is state-dependent and not reproducible on demand. xclock never showed it in any run.
+
+
+**2026-10-13, real machine (xclock forwarded to display :5), third round.** The report this time was
+three things: Windows F11 "seems to do nothing"; a stretch, then maximize, then restore that comes
+back at the wrong size *and* in the wrong place, every time; and (once) a window that suddenly grew
+after a few maximize/restore cycles.
+
+*Fixed*: **stretch, then maximize, then restore returned the wrong size and the wrong position.**
+Two mechanisms write the frame while the platform is between "not maximized" and "maximized", and
+both leave behind the rectangle the platform later restores to (setting a size on a maximized window
+*un-maximizes* it on Windows):
+
+- **the restore gap** - the header bar's own restore control flips `maximized` to false *before* the
+  platform has put the window back, and the frame that runs in between sizes it to the viewport that
+  is still the maximized one. Covered by the gesture deadline (`platformGestureUntil`), which
+  `platformOwnsFrame` now reads.
+- **the zoom-in gap** - Windows moves and resizes the window to the work area *before* it reports
+  `maximized = true` (~146 ms measured). For that moment every flag says the window is an ordinary
+  one, nothing else marks the zoom, and the size written into the frame then is the size the
+  platform ever after restores to. `platformOwnsFrame` therefore also takes
+  `zoomedByPlatform()`: not full screen and not maximized, but positioned past the top-left of the
+  usable area and no narrower than it - a frame only the platform's own zoom puts there (macOS zooms
+  exactly to the usable area, so the origin test is false there and the rule is inert).
+
+  `platformOwnsFrame` is now the static five-argument
+  `platformOwnsFrame(fullScreen, maximized, dragging, platformGesture, zoomedGeometry)`. Verified on
+  the real machine, DPI-aware measurements: fresh server, one xclock, stretch the bottom-right corner
+  +500,+350 (747x631 frame at 357,104), maximize, restore: **five cycles, every restore exactly
+  `357,104 747x631`**, every maximized frame `-11,-11 2582x1390`. A pre-fix build was poisoned to
+  `-7,-7 499x421` (wrong position *and* size) by the same recipe; that is the state the zoom-in rule
+  prevents. The poisoning is timing-dependent (it did not re-trigger on the fixed build), so the rule
+  is pinned by the mechanism and by the test rather than by an A/B on one run.
+
+*Fixed*: **F11 did nothing.** Two halves, both needed, and the second is why the first alone was not
+enough:
+
+- **The platform's full screen key was the way out and never the way in.** JavaFX's
+  `setFullScreenExitKeyCombination` only *leaves* full screen. The scene key filter now reads the
+  same key (F11 here, `Ctrl+Meta+F` on macOS) and, when the window is not full screen, enters it -
+  taken rather than forwarded, exactly as it already is while the window is full screen.
+  JavaFX's own exit handler runs **first and does not consume the event**, so a press on a full
+  screen window arrives with the window *already* out of full screen: without a guard the second
+  half of that one press put it straight back in (measured: `false -> true -> false -> true` from a
+  single press). The state change now stamps `fullScreenChangedAt`, and a press within
+  `FULL_SCREEN_PRESS_MILLIS` (500) of it is the same press and is not answered again. Verified: one
+  F11 in - `fullScreen false -> true`, frame `0,0 1707x960`; one F11 out - `true -> false`, frame
+  back to `206,37 165x187`.
+- **The root advertised nothing, so a toolkit never asked.** The server honours
+  `_NET_WM_STATE_FULLSCREEN` (a `ClientMessage` to the root, `AtomHandlers.applyWindowStateMessage`)
+  but published neither `_NET_SUPPORTED` nor `_NET_SUPPORTING_WM_CHECK`. GDK's
+  `gdk_x11_window_set_fullscreen` returns without sending anything unless the root's
+  `_NET_SUPPORTED` lists the state, and AWT asks for `_NET_SUPPORTING_WM_CHECK` before it will use
+  EWMH at all. A missing state is not refused, it is never *asked for* - measured: `eog` forwarded
+  to :5, F11 pressed, no request arrived at all. `XServer.publishWindowManagerHints(Screen)` now
+  publishes, on **every** screen's root (a client asks its own root in the default one-screen-per-
+  client mode, as `_XKB_RULES_NAMES` already does): `_NET_SUPPORTED` =
+  { `_NET_WM_STATE_FULLSCREEN`, `_NET_WM_STATE` }, and a 1x1 unmapped child of that root carrying
+  `_NET_SUPPORTING_WM_CHECK` pointing at itself and `_NET_WM_NAME` = "xserver", with the root
+  pointing at it. The maximised states are deliberately *not* advertised: a client that found them
+  would stop resizing itself for a maximised window and wait for a manager that does not act on
+  them.
+
+  Two things found while wiring it: `AtomTable.intern(name, true)` is the **only-if-exists**
+  overload and answers none for atoms no client has interned yet, so the method published nothing at
+  startup until it interned them properly (measured: `xprop -root` showed no `_NET_SUPPORTED` even
+  though the code ran); and the manager window is made per screen (one per client connection), so it
+  is now freed in `closeClientScreen` with that screen's root. Verified with a raw client on the VM:
+  root `_NET_SUPPORTED` = `_NET_WM_STATE_FULLSCREEN, _NET_WM_STATE`; the check window is a child of
+  the root and points at itself; and a `_NET_WM_STATE` add/remove `ClientMessage` - byte for byte
+  what GTK sends - takes the host window to `0,0 1707x960` full screen and back to its exact size.
+  Pinned by `WindowManagerHintsTest` (new) and by the updated `PerClientWindowTest`, which now
+  allows the display's own check window among a root's children.
+
+*Recorded, not changed*: `eog` could not serve as the end-to-end F11 client on this VM - it starts
+and logs nothing but never maps a window, so the F11/EWMH path was exercised with the raw client
+above instead. That looks like the test VM (dbus/session), not the server.

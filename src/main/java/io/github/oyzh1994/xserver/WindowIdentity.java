@@ -37,6 +37,18 @@ public record WindowIdentity(String title, int[] iconArgb, int iconWidth, int ic
     /** The state a client asks for when it wants to fill the display. */
     public static final String NET_WM_STATE_FULLSCREEN = "_NET_WM_STATE_FULLSCREEN";
 
+    /**
+     * The list of EWMH features the window manager says it honours, on the root window: what a
+     * toolkit reads before it asks for any of them (see {@code XServer.publishWindowManagerHints}).
+     */
+    public static final String NET_SUPPORTED = "_NET_SUPPORTED";
+
+    /**
+     * EWMH's "a window manager is here" pointer: the root's own answer is a window of the manager's,
+     * and that window's answer is itself.
+     */
+    public static final String NET_SUPPORTING_WM_CHECK = "_NET_SUPPORTING_WM_CHECK";
+
     /** The older hints, one bit of whose flags says "the user should look at this". */
     public static final String WM_HINTS = "WM_HINTS";
 

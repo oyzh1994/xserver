@@ -226,6 +226,7 @@ public final class XServer {
         created.setBlackPixel(rootVisual.fromArgb(0xFF000000));
         created.setWhitePixel(rootVisual.fromArgb(0xFFFFFFFF));
         publishXkbRulesNames(created);
+        publishWindowManagerHints(created);
         if (options.scale() > 1) {
             publishDpi(created);
         }
@@ -598,6 +599,77 @@ public final class XServer {
         screen.root().properties().put(name, new XProperty(name, string, 8, value));
     }
 
+    /**
+     * Publishes what tells a client that this display has a window manager to ask, and which of the
+     * window-manager things it will be answered about.
+     *
+     * <p>**A client does not write {@code _NET_WM_STATE} itself; it asks its window manager, in
+     * EWMH's words - but only after checking that there is one to ask.** GDK's
+     * {@code gdk_x11_window_set_fullscreen} returns without sending anything unless the root's
+     * {@code _NET_SUPPORTED} lists {@code _NET_WM_STATE_FULLSCREEN}, and AWT asks the root for
+     * {@code _NET_SUPPORTING_WM_CHECK} before it will use EWMH at all. Without both, a request for
+     * the whole screen is not refused, it is *never made*, and from the outside that is a key - F11
+     * in a viewer, a browser's full screen - that does nothing. Measured 2026-10-13 on the real
+     * machine: {@code eog} forwarded to display :5, F11 pressed, nothing happened and the log showed
+     * no request at all; the message {@link AtomHandlers#applyWindowStateMessage} already handles
+     * arrives as soon as the client believes there is somebody to send it to.
+     *
+     * <p>**Only what this server acts on is advertised, because the list is a promise.** A toolkit
+     * that finds a state in {@code _NET_SUPPORTED} leaves that state to the manager; full screen is
+     * the one state {@link WindowIdentity} acts on - it is what the frame of the host window is
+     * made to match - so the list is that state and the property that carries it. The maximised
+     * states are deliberately not in it: a client that found them would stop resizing itself for a
+     * maximised window and wait for a manager that does not do that, which is worse than the state
+     * not being named at all.
+     *
+     * <p>The check window is EWMH's way of telling a live manager from a stale property on the root:
+     * the root points at a window of the manager's own, that window points at itself, and a client
+     * that finds the two agreeing knows a manager is there. It is a child of the root and is never
+     * mapped - it exists to be pointed at, not to be seen.
+     */
+    private void publishWindowManagerHints(Screen screen) {
+        // **Interning, not looking up**: these are names this server is about to write onto its own
+        // root window, and none of them exists yet - a client has not run to ask for them. The lookup
+        // that only finds what is already there (the {@code onlyIfExists} overload) answers none for
+        // every one of them at startup, which is how this method once published nothing at all -
+        // measured 2026-10-13, where the root carried no {@code _NET_SUPPORTED} and the F11 this is
+        // for still did nothing.
+        int supported = atoms.intern(WindowIdentity.NET_SUPPORTED);
+        int check = atoms.intern(WindowIdentity.NET_SUPPORTING_WM_CHECK);
+        int atomType = atoms.intern("ATOM");
+        int windowType = atoms.intern("WINDOW");
+        int state = atoms.intern(WindowIdentity.NET_WM_STATE);
+        int fullScreen = atoms.intern(WindowIdentity.NET_WM_STATE_FULLSCREEN);
+        XWindow manager = new XWindow(nextServerResourceId(), null, screen, screen.root(),
+                screen.root().depth(), XWindow.INPUT_OUTPUT, screen.root().visual(), 0, 0, 1, 1, 0);
+        resources.add(manager);
+        // **One per screen, not one for the server**: a client's root is its own screen's root in the
+        // default mode, and EWMH wants the window the root points at to be a child of that root. It is
+        // taken down with the screen - see {@link #closeClientScreen}.
+        screen.setWmCheckWindow(manager);
+        byte[] self = card32Words(manager.id());
+        manager.properties().put(check, new XProperty(check, windowType, 32, self));
+        int name = atoms.intern(WindowIdentity.NET_WM_NAME);
+        int utf8 = atoms.intern("UTF8_STRING");
+        byte[] title = "xserver".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        manager.properties().put(name, new XProperty(name, utf8, 8, title));
+        screen.root().properties().put(check, new XProperty(check, windowType, 32, self));
+        screen.root().properties().put(supported, new XProperty(supported, atomType, 32,
+                card32Words(fullScreen, state)));
+    }
+
+    /** A property value of card32s, in the big-endian order a property is stored in. */
+    private static byte[] card32Words(int... values) {
+        byte[] bytes = new byte[values.length * 4];
+        for (int i = 0; i < values.length; i++) {
+            bytes[i * 4] = (byte) (values[i] >>> 24);
+            bytes[i * 4 + 1] = (byte) (values[i] >>> 16);
+            bytes[i * 4 + 2] = (byte) (values[i] >>> 8);
+            bytes[i * 4 + 3] = (byte) values[i];
+        }
+        return bytes;
+    }
+
     private void publishDpi(Screen screen) {
         int atom = atoms.intern("RESOURCE_MANAGER", true);
         int string = atoms.intern("STRING", true);
@@ -777,6 +849,11 @@ public final class XServer {
             return;
         }
         session.markClosed();
+        XWindow check = session.screen().wmCheckWindow();
+        if (check != null) {
+            // The manager window the root pointed at goes with the root it was a child of.
+            resources.free(check.id());
+        }
         resources.free(session.screen().root().id());
         resources.free(session.screen().defaultColormap().id());
         resources.free(session.screen().rootCursor().id());

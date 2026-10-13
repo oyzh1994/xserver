@@ -65,6 +65,12 @@ public final class Screen {
     private XColormap defaultColormap;
     /** The cursor a window on this screen gets when it has none of its own. */
     private XCursor rootCursor;
+    /**
+     * The 1x1 child of the root that EWMH's "is a window manager here" check points at, and that
+     * points back at itself - see {@code XServer.publishWindowManagerHints}. Held so the screen takes
+     * it with it when it goes: one is made per screen, and a screen is one client's own root.
+     */
+    private XWindow wmCheckWindow;
     private int whitePixel;
     private int blackPixel;
 
@@ -235,6 +241,14 @@ public final class Screen {
 
     public void setRootCursor(XCursor rootCursor) {
         this.rootCursor = rootCursor;
+    }
+
+    public XWindow wmCheckWindow() {
+        return wmCheckWindow;
+    }
+
+    public void setWmCheckWindow(XWindow wmCheckWindow) {
+        this.wmCheckWindow = wmCheckWindow;
     }
 
     public XColormap defaultColormap() {

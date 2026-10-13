@@ -396,8 +396,9 @@ class JavaFxBackendTest {
     }
 
     /**
-     * The frame belongs to the platform while the window is full screen or maximized, and while a drag
-     * of its edge is in flight; only then may this backend size it.
+     * The frame belongs to the platform while the window is full screen or maximized, while a drag of
+     * its edge is in flight, and while a gesture of the platform's own (a zoom, or a restore) is
+     * still settling; only then may this backend size it.
      *
      * <p>A size set on a window the platform has maximized *un-maximizes* it on Windows (measured
      * 2026-10-13), and the size it is left at - the content plus the frame, which is not the work area
@@ -405,16 +406,32 @@ class JavaFxBackendTest {
      * frame it is drawn in did not change size, so a maximized window the user restored stayed as
      * large as the maximized one was: the window that "suddenly gets bigger" after a few maximize and
      * restore cycles and never comes back.
+     *
+     * <p>The settling case is the second half of the same thing, and the one a restore by the header
+     * bar's own control reaches (measured the same day): the {@code maximized} flag flips back to
+     * false *before* the platform has put the window back, and the frame that runs in between sizes
+     * the window to a viewport that is still the maximized one - 1721x919 against the work area's
+     * 1721x927 - which is the size it then keeps. The platform's gesture has to be allowed to finish.
+     *
+     * <p>The last case is the mirror of it, the zoom-in gap: Windows moves and resizes the window to
+     * the work area *before* it reports {@code maximized=true}, and for that moment the flags say the
+     * window is an ordinary one - so the frame the backend wrote in it was the one the platform ever
+     * after restored to, at the position it was written at (measured 2026-10-13: a stretched window
+     * came back to {@code -7,-7 499x421}).
      */
     @Test
     void theFrameIsThePlatformsWhileItIsMaximizedOrFullScreen() {
-        assertTrue(JavaFxBackend.platformOwnsFrame(true, false, false),
+        assertTrue(JavaFxBackend.platformOwnsFrame(true, false, false, false, false),
                 "a full screen window's frame is the platform's Space");
-        assertTrue(JavaFxBackend.platformOwnsFrame(false, true, false),
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, true, false, false, false),
                 "and a maximized window's is the work area: a size set on it takes the maximize away");
-        assertTrue(JavaFxBackend.platformOwnsFrame(false, false, true),
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, false, true, false, false),
                 "so is the frame under a drag of its edge, sized from the pointer");
-        assertFalse(JavaFxBackend.platformOwnsFrame(false, false, false),
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, false, false, true, false),
+                "and so is the frame while the platform is still applying its own gesture");
+        assertTrue(JavaFxBackend.platformOwnsFrame(false, false, false, false, true),
+                "and the frame a zoom has already made but not yet reported");
+        assertFalse(JavaFxBackend.platformOwnsFrame(false, false, false, false, false),
                 "every other frame is this backend's to size");
     }
 
