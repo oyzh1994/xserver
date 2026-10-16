@@ -7,6 +7,9 @@ paints their windows into a framebuffer that is blitted to the screen. It is not
 shim around an existing server: the window tree, the resource model, event delivery, grabs and the
 rasteriser are all implemented here.
 
+Follow-up updates  
+https://github.com/oyzh1994/fx-base/tree/master/fx-xserver  
+
 ## Running it
 
 Build with Maven (3.9 or newer) and run:
